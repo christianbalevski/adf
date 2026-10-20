@@ -37,6 +37,8 @@ import { ApprovalControls, OverrideBadge } from './ApprovalControls'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
+import { AttachedImage, AttachmentList } from './ChatAttachments'
+import { adfFileUrl, type DisplayAttachment } from '../../../shared/utils/file-ref'
 import {
   TOOL_FAMILY_STYLES,
   ATTENTION_TOOL_STYLE,
@@ -155,21 +157,6 @@ function uploadKind(mimeType: string): UploadKind {
   return 'file'
 }
 
-function bytesToBase64(bytes: Uint8Array): string {
-  let binary = ''
-  const chunkSize = 0x8000
-  for (let i = 0; i < bytes.length; i += chunkSize) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunkSize))
-  }
-  return btoa(binary)
-}
-
-function audioFormat(file: File, mimeType: string): string {
-  if (mimeType.includes('mpeg')) return 'mp3'
-  if (mimeType.includes('wav')) return 'wav'
-  return file.name.split('.').pop()?.toLowerCase() || 'wav'
-}
-
 function formatBytes(size: number): string {
   if (size < 1024) return `${size} B`
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
@@ -178,10 +165,6 @@ function formatBytes(size: number): string {
 
 function attachmentReference(path: string, mimeType: string, size: number): string {
   return `[Uploaded file: ${path} (${mimeType}, ${formatBytes(size)}). Use fs_read with path "${path}" to inspect it.]`
-}
-
-function adfFileUrl(path: string): string {
-  return `adf-file://${path.split('/').map(encodeURIComponent).join('/')}`
 }
 
 /** Compact fallback for older tool calls that do not provide `_reason`. */
@@ -538,6 +521,7 @@ const LogEntryRow = memo(({
   onSuspendRespond,
   toolResultIsError,
   toolResultImageUrl,
+  toolResultAttachments,
   askAnswer,
   compact = false,
   continuing = false,
@@ -563,6 +547,8 @@ const LogEntryRow = memo(({
   onSuspendRespond?: (resume: boolean) => void
   toolResultIsError?: boolean | null
   toolResultImageUrl?: string | null
+  /** References the tool result carries (a deleted one shows `[deleted: name]`). */
+  toolResultAttachments?: DisplayAttachment[] | null
   askAnswer?: string | null
   compact?: boolean
   /** The agent is still working from this step, even if its tool has returned. */
@@ -617,14 +603,17 @@ const LogEntryRow = memo(({
           {Array.isArray(entry.metadata?.imagePreviewUrls) && entry.metadata.imagePreviewUrls.length > 0 && (
             <div className="flex max-w-[85%] flex-wrap justify-end gap-1.5">
               {(entry.metadata.imagePreviewUrls as string[]).map((url, index) => (
-                <img
+                <AttachedImage
                   key={`${url}-${index}`}
-                  src={url}
+                  url={url}
                   alt="uploaded image"
                   className="max-h-64 max-w-full rounded-lg border border-[var(--rule)]"
                 />
               ))}
             </div>
+          )}
+          {Array.isArray(entry.metadata?.attachments) && (
+            <AttachmentList attachments={entry.metadata.attachments as DisplayAttachment[]} />
           )}
           {entry.timestamp > 0 && (
             <span className="mr-1 text-[10px] text-[var(--ink-faint)]">
@@ -838,11 +827,16 @@ const LogEntryRow = memo(({
           )}
           {entry.metadata?.name !== 'ask' && toolResultImageUrl && (
             <div className="mt-1">
-              <img
-                src={toolResultImageUrl}
+              <AttachedImage
+                url={toolResultImageUrl}
                 alt={(entry.metadata?.input as { path?: string })?.path ?? 'image'}
                 className="max-h-64 max-w-full rounded-lg border border-[var(--rule)]"
               />
+            </div>
+          )}
+          {entry.metadata?.name !== 'ask' && toolResultAttachments && (
+            <div className="mt-1">
+              <AttachmentList attachments={toolResultAttachments} align="start" />
             </div>
           )}
         </>
@@ -1652,17 +1646,11 @@ function LoopStream({ loop }: { loop: string }) {
     const supportedNative = kind !== 'file' && mediaSupport[kind]
     const withinLimit = kind !== 'file' && bytes.length <= mediaLimits[kind]
     const native = supportedNative && withinLimit
-    let contentBlock: ContentBlock | undefined
-    if (native) {
-      const base64 = bytesToBase64(bytes)
-      if (kind === 'image') {
-        contentBlock = { type: 'image_url', image_url: { url: `data:${mimeType};base64,${base64}` } }
-      } else if (kind === 'audio') {
-        contentBlock = { type: 'input_audio', input_audio: { data: base64, format: audioFormat(file, mimeType) } }
-      } else if (kind === 'video') {
-        contentBlock = { type: 'video_url', video_url: { url: `data:${mimeType};base64,${base64}` } }
-      }
-    }
+    // The message refers to the uploaded file; the runtime loads its bytes for
+    // each request, so the model sees it for as long as history holds it.
+    const contentBlock: ContentBlock | undefined = native
+      ? { type: 'file_ref', file_ref: { path: uploadPath, mime_type: mimeType, size: bytes.length } }
+      : undefined
 
     return {
       id: nanoid(),
@@ -2142,6 +2130,7 @@ function LoopStream({ loop }: { loop: string }) {
         onSuspendRespond={handleSuspendRespond}
         toolResultIsError={toolResultIsError}
         toolResultImageUrl={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.imageUrl as string | undefined) ?? null : null}
+        toolResultAttachments={entry.type === 'tool_call' ? (toolPair?.result?.metadata?.attachments as DisplayAttachment[] | undefined) ?? null : null}
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
         continuing={activity.entryId === entry.id}

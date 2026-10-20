@@ -65,6 +65,7 @@ import { currentSourceOrUnknown } from '../runtime/execution-context'
 import { emitUmbilicalEvent } from '../runtime/emit-umbilical'
 // Cycle-free: derive-loop-config imports only shared types.
 import { MAIN_LOOP } from './derive-loop-config'
+import { applyFileRefChanges, isFileRefBlock, type FileRefChange } from '../../shared/utils/file-ref'
 
 /** Off-event-loop brotli — see AdfWorkspace.runLoopMutation. */
 const brotliCompressAsync = promisify(brotliCompress)
@@ -257,6 +258,16 @@ function assertEd25519Pair(privateKey: Buffer, publicKey: Buffer): void {
 const CODE_FORBIDDEN_WRITE_RE = /^crypto:/
 export function isCodeForbiddenIdentityWrite(purpose: string): boolean {
   return CODE_FORBIDDEN_WRITE_RE.test(purpose)
+}
+
+/** A loop row's content blocks; an unreadable row has none. */
+function parseLoopContent(json: string): ContentBlock[] {
+  try {
+    const parsed: unknown = JSON.parse(json)
+    return Array.isArray(parsed) ? parsed as ContentBlock[] : []
+  } catch {
+    return []
+  }
 }
 
 export class AdfWorkspace {
@@ -2096,6 +2107,7 @@ export class AdfWorkspace {
       if (deleted) {
         this.emitUmbilical('file.deleted', { path: relativePath })
         this.emitFileChange(relativePath, 'deleted', undefined, entry?.content, metadata)
+        this.rewriteFileRefs([{ op: 'delete', path: relativePath }])
       }
       return deleted
     }
@@ -2106,6 +2118,7 @@ export class AdfWorkspace {
     if (deleted) {
       this.emitUmbilical('file.deleted', { path: relativePath })
       this.emitFileChange(relativePath, 'deleted', undefined, previous, metadata)
+      this.rewriteFileRefs([{ op: 'delete', path: relativePath }])
     }
     return deleted
   }
@@ -2141,7 +2154,12 @@ export class AdfWorkspace {
   renameInternalFile(oldPath: string, newPath: string): boolean {
     const previous = this.onFileChangeCallback ? this.db.readFile(oldPath)?.content : undefined
     const metadata = this.fileChangeMeta(oldPath)
-    const renamed = this.db.renameFile(oldPath, newPath)
+    // The rename and the references that follow it commit together.
+    const renamed = this.db.transaction(() => {
+      const done = this.db.renameFile(oldPath, newPath)
+      if (done) this.rewriteFileRefs([{ op: 'rename', from: oldPath, to: newPath }])
+      return done
+    })
     if (renamed) {
       // Model a rename as delete + create so existing file-change consumers do
       // not need a fourth operation and watches on either path are reliable.
@@ -2163,9 +2181,15 @@ export class AdfWorkspace {
         content: notify ? this.db.readFile(file.path)?.content : undefined,
         metadata: notify ? this.getFileMeta(file.path) : null
       }))
-    const count = this.db.renameFolder(oldPrefix, newPrefix)
+    const replacementPrefix = newPrefix.endsWith('/') ? newPrefix : `${newPrefix}/`
+    const count = this.db.transaction(() => {
+      const changed = this.db.renameFolder(oldPrefix, newPrefix)
+      if (changed > 0) {
+        this.rewriteFileRefs(moved.map(file => ({ op: 'rename' as const, from: file.path, to: replacementPrefix + file.path.slice(prefix.length) })))
+      }
+      return changed
+    })
     if (count > 0) {
-      const replacementPrefix = newPrefix.endsWith('/') ? newPrefix : `${newPrefix}/`
       for (const file of moved) {
         const newPath = replacementPrefix + file.path.slice(prefix.length)
         this.emitFileChange(file.path, 'deleted', undefined, file.content, file.metadata)
@@ -2213,6 +2237,43 @@ export class AdfWorkspace {
     } catch { /* notification is best-effort — never fail the write */ }
   }
 
+  /**
+   * Keep file references (`file_ref` blocks) pointing at the right file: a
+   * rename or move rewrites the path, a delete leaves a tombstone. Rewrites
+   * every loop row that names the file, then every live session's copy. Only
+   * files some row references cost a scan; the set of referenced paths is
+   * built once per process and kept current by loop writes.
+   */
+  private rewriteFileRefs(changes: FileRefChange[]): void {
+    if (changes.length === 0) return
+    const registry = this.db.getFileRefRegistry()
+    try {
+      if (!registry.referenced) {
+        const referenced = new Set<string>()
+        for (const row of this.db.getLoopRowsWithFileRefs()) {
+          for (const block of parseLoopContent(row.content_json)) {
+            if (isFileRefBlock(block) && !block.file_ref.deleted) referenced.add(block.file_ref.path)
+          }
+        }
+        registry.referenced = referenced
+      }
+      if (!registry.affects(changes)) return
+      this.db.transaction(() => {
+        for (const row of this.db.getLoopRowsWithFileRefs()) {
+          const content = parseLoopContent(row.content_json)
+          const next = applyFileRefChanges(content, changes)
+          if (next !== content) this.db.updateLoopContent(row.loop, row.seq, next)
+        }
+      })
+      registry.noteChanges(changes)
+    } catch (error) {
+      // The file operation itself succeeded. A reference left behind resolves
+      // as deleted at request time; it never fails a turn.
+      console.error('[AdfWorkspace] Could not update file references:', error)
+    }
+    registry.notifyHolders(changes)
+  }
+
   private emitFileChange(
     path: string,
     operation: WorkspaceFileChange['operation'],
@@ -2220,6 +2281,8 @@ export class AdfWorkspace {
     previousContent: Buffer | undefined,
     metadata: WorkspaceFileChange['metadata'],
   ): void {
+    // Loaded media for this path no longer matches the file.
+    this.db.getFileRefRegistry().invalidate(path)
     // Ahead of the callback guard: skill indexing must happen for every writer
     // whether or not a runtime is attached to this workspace. The indexer's own
     // write targets skills-registry.json, which is not a watched path, so this

@@ -121,7 +121,10 @@ describe('chat while the agent is working', () => {
       expect(JSON.stringify(next.content)).toContain('also check the logs')
       if (imageEnabled) expect(JSON.stringify(next.content)).toContain('image_url')
       else expect(JSON.stringify(next.content)).toContain('image attachment omitted')
-      expect(JSON.stringify(agent.session.getMessages())).toContain('image_url')
+      // History holds a reference to the saved upload, never the bytes.
+      expect(JSON.stringify(agent.session.getMessages())).toContain('"file_ref"')
+      expect(JSON.stringify(agent.session.getMessages())).not.toContain('AAAA')
+      expect(workspace.fileExists('loop-upload/image.png')).toBe(true)
       const completed = events.filter((e) => e.event_type === 'turn.completed')
       expect(completed.map((e) => e.payload.interrupted === true)).toEqual([false])
       expect(completed[0].payload.absorbed_turn_ids).toEqual(['turn_b'])

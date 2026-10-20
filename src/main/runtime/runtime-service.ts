@@ -1395,6 +1395,8 @@ export class RuntimeService extends EventEmitter {
     const managed = this.requireAgent(agentId)
     const name = loop || MAIN_LOOP
     const executor = name === MAIN_LOOP ? managed.agent.executor : managed.agent.loopPool.getRuntime(name)?.executor
+    const missing = executor?.fileRefInputError(content)
+    if (missing) throw new RuntimeLoopError(missing, 400, 'file_not_found')
     const error = executor?.mediaInputError(content)
     if (error) throw new RuntimeLoopError(error, 400, 'media_unsupported')
   }

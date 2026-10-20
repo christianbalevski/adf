@@ -116,37 +116,33 @@ describe('shell media manifest', () => {
   })
 })
 
-describe('executor shell media extraction', () => {
-  function callExtract(resultContent: string, opts?: { imageEnabled?: boolean; buffer?: Buffer | null }) {
+describe('executor shell media references', () => {
+  function callExtract(resultContent: string, opts?: { exists?: boolean }) {
     const fakeThis: any = {
-      session: { getWorkspace: () => ({ readFileBuffer: () => opts?.buffer !== undefined ? opts.buffer : Buffer.from('fake-png-bytes') }) },
-      config: { limits: {} },
-      isMultimodalEnabled: (m: string) => (opts?.imageEnabled ?? true) && m === 'image',
+      session: {
+        getWorkspace: () => ({
+          getFileMeta: (path: string) => opts?.exists === false ? null : { path, mime_type: 'image/png', size: 14 },
+        }),
+      },
     }
-    // Bind the real private extractors onto the fake receiver
-    for (const m of ['maybeExtractImageBlock', 'maybeExtractAudioBlock', 'maybeExtractVideoBlock', 'extractShellMediaBlocks']) {
-      fakeThis[m] = (AgentExecutor.prototype as any)[m]
-    }
-    return fakeThis.extractShellMediaBlocks({ content: resultContent, isError: false })
+    fakeThis.shellFileRefs = (AgentExecutor.prototype as any).shellFileRefs
+    return fakeThis.shellFileRefs({ content: resultContent, isError: false })
   }
 
-  it('turns a media manifest into an image block via the fs_read machinery', () => {
+  it('turns a media manifest into a reference to the file', () => {
     const blocks = callExtract(JSON.stringify({
       exit_code: 0, stdout: '[image/png: photo.png]', stderr: '',
-      media: [{ path: 'photo.png', mime_type: 'image/png' }],
+      media: [{ path: 'photo.png', mime_type: 'image/png' }, { path: 'photo.png', mime_type: 'image/png' }],
     }))
-    expect(blocks).toHaveLength(1)
-    expect(blocks[0].type).toBe('image_url')
-    expect(blocks[0].image_url.url).toContain('data:image/png;base64,')
+    expect(blocks).toEqual([{ type: 'file_ref', file_ref: { path: 'photo.png', mime_type: 'image/png', size: 14 } }])
   })
 
-  it('returns nothing when modality disabled or file missing', () => {
+  it('returns nothing when the file is missing', () => {
     const manifest = JSON.stringify({
       exit_code: 0, stdout: '', stderr: '',
       media: [{ path: 'photo.png', mime_type: 'image/png' }],
     })
-    expect(callExtract(manifest, { imageEnabled: false })).toHaveLength(0)
-    expect(callExtract(manifest, { buffer: null })).toHaveLength(0)
+    expect(callExtract(manifest, { exists: false })).toHaveLength(0)
   })
 
   it('ignores results without a media field', () => {

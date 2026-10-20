@@ -1,6 +1,7 @@
 import type { ModelConfig } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { MediaKind, MediaSupport, MediaRefusals } from '../../shared/types/media.types'
+import { fileRefKind, isFileRefBlock } from '../../shared/utils/file-ref'
 
 export type { MediaKind, MediaSupport, MediaRefusals } from '../../shared/types/media.types'
 type MediaToggles = Pick<ModelConfig, 'multimodal' | 'vision'>
@@ -42,10 +43,15 @@ export function effectiveMediaSupport(model: MediaToggles | undefined, provider:
   }
 }
 
+/**
+ * The media kind a block carries to the model. A `file_ref` carries its
+ * file's kind; a deleted one carries nothing (it becomes `[deleted: …]`).
+ */
 export function mediaKindOf(block: ContentBlock): MediaKind | undefined {
   if (block.type === 'image_url') return 'image'
   if (block.type === 'input_audio') return 'audio'
   if (block.type === 'video_url') return 'video'
+  if (isFileRefBlock(block) && !block.file_ref.deleted) return fileRefKind(block.file_ref)
   return undefined
 }
 

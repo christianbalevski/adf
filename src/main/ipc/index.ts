@@ -5216,7 +5216,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // chat route refuses it (400 media_unsupported): the chat shows why.
     const mediaError = (agent: NonNullable<typeof currentAssembledAgent>): string | null => {
       const executor = targetLoop === MAIN_LOOP ? agent.executor : agent.loopPool.getRuntime(targetLoop)?.executor
-      return executor?.mediaInputError(contentJson) ?? null
+      return executor?.fileRefInputError(contentJson) ?? executor?.mediaInputError(contentJson) ?? null
     }
 
     // If targeting the foreground agent

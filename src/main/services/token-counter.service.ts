@@ -1,5 +1,6 @@
 import { createRequire } from 'node:module'
 import { PROVIDER_TYPES, type ProviderType } from '../../shared/constants/adf-defaults'
+import { mediaKindOfMime } from '../../shared/utils/file-ref'
 
 export type TokenizerFamily = 'anthropic' | 'gpt'
 
@@ -227,6 +228,15 @@ export class TokenCounterService {
             totalChars += (block.input_audio?.format?.length ?? 0)
           } else if (block.type === 'video_url') {
             mediaChars += (block.video_url?.url?.length ?? 0)
+          } else if (block.type === 'file_ref' && block.file_ref) {
+            // A reference the request may resolve to media. An image costs
+            // about the same whatever its file size (providers tile it); audio
+            // and video by their base64 size, as inline blocks are counted.
+            const ref = block.file_ref
+            const kind = ref.deleted ? undefined : mediaKindOfMime(ref.mime_type)
+            if (kind === 'image') mediaChars += IMAGE_REF_TOKENS * MEDIA_CHARS_PER_TOKEN
+            else if (kind) mediaChars += Math.ceil((ref.size ?? 0) * 4 / 3)
+            else totalChars += ref.path.length + 16
           }
         }
       }
@@ -248,6 +258,9 @@ export class TokenCounterService {
  * pasted screenshot as an entire context window.
  */
 const MEDIA_CHARS_PER_TOKEN = 100
+
+/** Tokens an image reference is estimated at: about one 1-megapixel image on Claude or GPT. */
+const IMAGE_REF_TOKENS = 1_600
 
 /**
  * Estimate the character length of an object without JSON.stringify allocation.

@@ -386,7 +386,9 @@ interface ChatBody {
   text?: string
   /**
    * The message as content blocks (Studio's AGENT_INVOKE `content`): text,
-   * images (`image_url` data URIs), audio, video. Used instead of `text`.
+   * `file_ref` (a file in the agent's Files), or inline images (`image_url`
+   * data URIs), audio and video, which the runtime saves to Files and
+   * replaces with references. Used instead of `text`.
    */
   content?: ContentBlock[]
   /** Cognition loop to talk to. Absent = main (docs/design/agent-loops-mvp.md §6.2). */
@@ -399,7 +401,7 @@ interface ChatBody {
 const CHAT_BODY_LIMIT = CHAT_BODY_LIMIT_BYTES
 
 /** Block types a user message may carry (the rest are model output). */
-const USER_CONTENT_TYPES = new Set(['text', 'image_url', 'input_audio', 'video_url'])
+const USER_CONTENT_TYPES = new Set(['text', 'file_ref', 'image_url', 'input_audio', 'video_url'])
 
 /** Why `content` is not a list of user content blocks, or null. */
 function invalidChatContent(content: unknown): string | null {
@@ -408,6 +410,7 @@ function invalidChatContent(content: unknown): string | null {
     if (!isRecord(block) || typeof block.type !== 'string') return `content[${i}] must be an object with a type`
     if (!USER_CONTENT_TYPES.has(block.type)) return `content[${i}].type must be one of: ${[...USER_CONTENT_TYPES].join(', ')}`
     if (block.type === 'text' && typeof block.text !== 'string') return `content[${i}].text must be a string`
+    if (block.type === 'file_ref' && (!isRecord(block.file_ref) || typeof block.file_ref.path !== 'string' || !block.file_ref.path)) return `content[${i}].file_ref.path must be a file path`
     if (block.type === 'image_url' && (!isRecord(block.image_url) || typeof block.image_url.url !== 'string')) return `content[${i}].image_url.url must be a string`
     if (block.type === 'video_url' && (!isRecord(block.video_url) || typeof block.video_url.url !== 'string')) return `content[${i}].video_url.url must be a string`
     if (block.type === 'input_audio' && (!isRecord(block.input_audio) || typeof block.input_audio.data !== 'string' || typeof block.input_audio.format !== 'string')) {

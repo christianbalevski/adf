@@ -6,6 +6,8 @@
 // refetch without dropping anything the user has not seen persisted.
 
 import * as loopParserNs from '../../../shared/utils/loop-parser'
+import * as fileRefNs from '../../../shared/utils/file-ref'
+import type { DisplayAttachment } from '../../../shared/utils/file-ref'
 import type { LoopEntry, UmbilicalEvent } from '../api/types'
 import { cjs } from '../interop'
 import type { AssistantItem, ThinkingItem, ToolItem, Transcript, TranscriptItem, UserItem } from './types'
@@ -14,6 +16,14 @@ import type { AssistantItem, ThinkingItem, ToolItem, Transcript, TranscriptItem,
 export const MAX_TRANSCRIPT_ITEMS = 2000
 
 const { parseLoopToDisplay } = cjs(loopParserNs)
+const { attachmentText } = cjs(fileRefNs)
+
+/** `text` followed by one line per attachment (`[image: path]`, `[deleted: name]`). */
+function withAttachments(text: string, attachments: unknown): string {
+  if (!Array.isArray(attachments) || attachments.length === 0) return text
+  const lines = (attachments as DisplayAttachment[]).map(attachmentText)
+  return [text, ...lines].filter(Boolean).join('\n')
+}
 
 let localCounter = 0
 
@@ -76,7 +86,7 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
     const base = { id: `h:${entry.id}`, at: entry.timestamp, seq: typeof meta.seq === 'number' ? meta.seq : undefined }
     switch (entry.type) {
       case 'user':
-        items.push({ ...base, kind: 'user', text: entry.content, origin: 'owner' })
+        items.push({ ...base, kind: 'user', text: withAttachments(entry.content, meta.attachments), origin: 'owner' })
         break
       case 'trigger':
         items.push({ ...base, kind: 'user', text: entry.content, origin: 'runtime' })
@@ -128,7 +138,7 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
             break
           }
           call.status = status
-          call.result = entry.content
+          call.result = withAttachments(entry.content, meta.attachments)
           call.completedAt = entry.timestamp
         } else {
           items.push({ ...base, kind: 'tool', toolUseId: useId, name: typeof meta.name === 'string' ? meta.name : 'tool', input: undefined, status, result: entry.content, completedAt: entry.timestamp })

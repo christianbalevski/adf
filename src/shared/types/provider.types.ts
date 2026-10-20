@@ -28,8 +28,23 @@ export interface ReasoningConfig {
 /** Which native reasoning mapping a provider uses. Set by the provider factory. */
 export type ReasoningStyle = 'anthropic' | 'openrouter' | 'openai' | 'xai' | 'none'
 
+/**
+ * A file in the agent's Files that a message refers to (a `file_ref` block).
+ * The bytes stay in `adf_files`; the runtime loads them when it builds each
+ * request. See src/shared/utils/file-ref.ts and ADF spec §13.1.
+ */
+export interface FileRef {
+  /** `adf_files.path`. Rewritten when the file is renamed or moved. */
+  path: string
+  mime_type: string
+  /** Size in bytes when the reference was made. */
+  size: number
+  /** The file was deleted. The reference stays, as a tombstone. */
+  deleted?: true
+}
+
 export interface ContentBlock {
-  type: 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'image_url' | 'input_audio' | 'video_url'
+  type: 'text' | 'tool_use' | 'tool_result' | 'thinking' | 'image_url' | 'input_audio' | 'video_url' | 'file_ref'
   text?: string
   thinking?: string
   id?: string
@@ -51,6 +66,8 @@ export interface ContentBlock {
   input_audio?: { data: string; format: string }
   // Multimodal: video data as data URI (OpenAI-compatible format)
   video_url?: { url: string }
+  // A file in the agent's Files; resolved to media when a request is built
+  file_ref?: FileRef
 }
 
 export interface LLMMessage {

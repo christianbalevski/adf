@@ -28,33 +28,8 @@ export function isTextMime(mime: string | undefined | null): boolean {
   return TEXT_MIME_EXACT.has(mime)
 }
 
-const VISION_MIMES = new Set([
-  'image/png', 'image/jpeg', 'image/gif', 'image/webp'
-])
-
-export function isVisionMime(mime: string | undefined): boolean {
-  if (!mime) return false
-  return VISION_MIMES.has(mime)
-}
-
-const AUDIO_INPUT_MIMES = new Set([
-  'audio/wav', 'audio/mpeg', 'audio/mp3', 'audio/aiff',
-  'audio/aac', 'audio/ogg', 'audio/flac', 'audio/x-m4a', 'audio/webm'
-])
-
-export function isAudioInputMime(mime: string | undefined): boolean {
-  if (!mime) return false
-  return AUDIO_INPUT_MIMES.has(mime)
-}
-
-const VIDEO_INPUT_MIMES = new Set([
-  'video/mp4', 'video/mpeg', 'video/quicktime', 'video/webm'
-])
-
-export function isVideoInputMime(mime: string | undefined): boolean {
-  if (!mime) return false
-  return VIDEO_INPUT_MIMES.has(mime)
-}
+// The model-media types are shared with Studio and the TUI (file references).
+export { isVisionMime, isAudioInputMime, isVideoInputMime } from '../../../shared/utils/file-ref'
 
 const AUDIO_FORMAT_MAP: Record<string, string> = {
   'audio/wav': 'wav', 'audio/mpeg': 'mp3', 'audio/mp3': 'mp3',

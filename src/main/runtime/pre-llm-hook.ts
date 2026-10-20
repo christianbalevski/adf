@@ -202,6 +202,13 @@ function validateContentBlock(block: unknown, messageIndex: number, blockIndex: 
         throw new PreLlmHookError(`${path} must be a user video_url block with video_url.url`)
       }
       break
+    case 'file_ref':
+      // A reference to a file in Files: the runtime loads it after the hook.
+      if (role !== 'user' || !isPlainObject(block.file_ref) || typeof block.file_ref.path !== 'string' ||
+          typeof block.file_ref.mime_type !== 'string' || typeof block.file_ref.size !== 'number') {
+        throw new PreLlmHookError(`${path} must be a user file_ref block with file_ref.path, mime_type and size`)
+      }
+      break
     default:
       throw new PreLlmHookError(`${path}.type "${block.type}" is not supported by the provider request contract`)
   }

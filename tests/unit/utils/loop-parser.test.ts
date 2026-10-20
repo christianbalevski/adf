@@ -9,6 +9,36 @@ function userEntry(blocks: LoopEntry['content_json'], seq = 1): LoopEntry {
   return { seq, role: 'user', content_json: blocks, created_at: 1000 }
 }
 
+describe('loop-parser file references', () => {
+  const ref = (path: string, deleted?: true) => ({ type: 'file_ref' as const, file_ref: { path, mime_type: 'image/png', size: 4, ...(deleted ? { deleted } : {}) } })
+
+  it('shows an image reference as a preview and a deleted one as an attachment marked deleted', () => {
+    for (const parse of [parseLoopToDisplay, parseLoopWithToolPairs]) {
+      const [entry] = parse([userEntry([{ type: 'text', text: 'two files' }, ref('pics/a b.png'), ref('pics/gone.png', true)])])
+      expect(entry.metadata?.imagePreviewUrls).toEqual(['adf-file://pics/a%20b.png'])
+      expect(entry.metadata?.attachments).toEqual([
+        { path: 'pics/a b.png', name: 'a b.png', mime_type: 'image/png', kind: 'image' },
+        { path: 'pics/gone.png', name: 'gone.png', mime_type: 'image/png', kind: 'image', deleted: true },
+      ])
+    }
+  })
+
+  it('a message of attachments alone is still a user entry', () => {
+    const display = parseLoopToDisplay([userEntry([ref('a.png')])])
+    expect(display).toEqual([expect.objectContaining({ type: 'user', content: '', metadata: expect.objectContaining({ attachments: [expect.objectContaining({ path: 'a.png' })] }) })])
+  })
+
+  it('a tool result whose image was deleted has no preview, and says so', () => {
+    const entries: LoopEntry[] = [
+      { seq: 1, role: 'assistant', content_json: [{ type: 'tool_use', id: 't1', name: 'fs_read', input: { path: 'a.png' } }], created_at: 1 },
+      userEntry([{ type: 'tool_result', tool_use_id: 't1', content: '{"path":"a.png","content":"[image: a.png (image/png)]"}' }, ref('a.png', true)], 2),
+    ]
+    const result = parseLoopToDisplay(entries).find(e => e.type === 'tool_result')!
+    expect(result.metadata?.imageUrl).toBeUndefined()
+    expect(result.metadata?.attachments).toEqual([expect.objectContaining({ path: 'a.png', deleted: true })])
+  })
+})
+
 describe('loop-parser media restore', () => {
   it('carries image_url blocks through to user entry metadata', () => {
     const entries = [
