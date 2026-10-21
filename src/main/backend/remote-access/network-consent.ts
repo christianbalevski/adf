@@ -1,11 +1,13 @@
 /**
- * "Remote access paused on <network>." (docs/design/remote-access.md §3.3.1,
- * owner decision 2026-10-18 b). Remote access and the mesh's LAN mode
- * listen only on networks the user allowed; when either is on and this
- * computer is on a network that is not allowed, Studio shows a non-modal
- * notice in the window (consent review 3), once per network per session:
- * Wi-Fi that drops and comes back never shows it again. The status line in
- * Settings → Networking shows the same state the whole time.
+ * "<Service> paused on <network>." (docs/design/remote-access.md §3.3.1,
+ * owner decision 2026-10-18 b). Remote access and the mesh's LAN mode (the
+ * Network switch, or an agent with lan or public visibility) listen only on
+ * networks the user allowed; when either is on and this computer is on a
+ * network that is not allowed, Studio shows a non-modal notice in the window
+ * (consent review 3), once per network per session: Wi-Fi that drops and
+ * comes back never shows it again. The notice names the service that waits:
+ * "Remote access", "Agent sharing", or both. The status card in Settings →
+ * Networking shows the same state the whole time.
  *
  * Electron-free: reading the networks and showing the notice are
  * dependencies; Allow goes through NETWORK_ALLOW like the status line's.
@@ -13,10 +15,15 @@
 
 import type { NetworkView } from '../../../shared/types/remote-access.types'
 import type { NetworkNotice } from '../../../shared/types/remote-access-ipc.types'
+import { PUBLIC_MESH_WARNING, PUBLIC_WARNING, pausedText, publicNetworkWarning, waitingServicesText, type WaitingServices } from '../../../shared/utils/network-consent-text'
 
 export interface NetworkConsentDeps {
-  /** Remote access or mesh LAN on, and the networks now; null when not readable (remote mode, no daemon). */
-  read: () => Promise<{ active: boolean; networks: NetworkView[] } | null>
+  /**
+   * Remote access or mesh LAN on, and the networks now; null when not
+   * readable (remote mode, no daemon). `services`: which of them waits
+   * (default: remote access only).
+   */
+  read: () => Promise<{ active: boolean; networks: NetworkView[]; services?: WaitingServices } | null>
   /** Show a new notice. */
   show: (notice: NetworkQuestion) => void
   /** Take these notices away: their network is allowed, left, or remote access and mesh LAN are off. */
@@ -26,19 +33,20 @@ export interface NetworkConsentDeps {
 
 export type NetworkQuestion = NetworkNotice
 
-export const PUBLIC_WARNING = 'Public network. The token is sent unencrypted.'
+export { PUBLIC_MESH_WARNING, PUBLIC_WARNING, waitingServicesText, type WaitingServices }
 
 /** One key per network: its id, or per interface for an unidentified one. */
 export function networkKey(network: NetworkView): string {
   return network.id ?? `unidentified:${network.kind}:${network.ifaces.join(',')}`
 }
 
-export function networkQuestion(network: NetworkView): NetworkQuestion {
+export function networkQuestion(network: NetworkView, services: WaitingServices = { remoteAccess: true, mesh: false }): NetworkQuestion {
+  const exposed = !!network.id && network.kind === 'lan' && network.osCategory !== 'private'
   return {
     key: networkKey(network),
     networkId: network.id,
-    message: `Remote access paused on ${network.label}.`,
-    warning: network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_WARNING : null,
+    message: pausedText(services, network.label),
+    warning: exposed ? publicNetworkWarning(services) : null,
     canAllow: !!network.id,
   }
 }
@@ -71,7 +79,7 @@ export class NetworkConsentPrompt {
         if (this.shown.has(key)) continue
         this.shown.add(key)
         this.visible.add(key)
-        const notice = networkQuestion(network)
+        const notice = networkQuestion(network, read.services)
         this.deps.log?.log(`[Remote access] ${notice.message}${notice.warning ? ` ${notice.warning}` : ''}`)
         this.deps.show(notice)
       }

@@ -1,17 +1,22 @@
 /**
  * Settings → Studio → Connections (docs/design/settings-scopes.md §5,
- * docs/design/multi-runtime.md §6.5): the runtimes Studio connects to. With
- * no runtime on another computer saved it is one line, "Runtimes on other
- * computers", with Add (SimpleConnections). Otherwise one list: This
- * computer, Inside Studio (legacy) while it runs or is saved, the saved
- * connections (shared with `adf`: cli-remotes.json and the OS keychain), each
- * connected while it is saved and shown with its state, and the computers
- * found on the network that are not saved, each with Add. Remove is in a
- * saved row's More menu: it disconnects and forgets.
+ * docs/design/multi-runtime.md §6.5): one **Add** and two lists.
  *
- * Add is one dialog for a typed address and a found computer: the code, or a
- * token. On success the connection is saved and connects; there is no
- * Connect step. No token ever reaches the renderer.
+ * - **Remotes**: the runtimes this Studio uses. With none on another
+ *   computer saved it is "None." (SimpleConnections). Otherwise This
+ *   computer, Inside Studio (legacy) while it runs or is saved, and the
+ *   saved connections (shared with `adf`: cli-remotes.json and the OS
+ *   keychain), each connected while it is saved and shown with its state.
+ *   Remove is in a saved row's More menu: it disconnects and forgets.
+ * - **Devices**: the computers using this runtime, each with Revoke, and
+ *   the Remote access switch (RemoteAccessSettings.tsx DevicesGroup).
+ *
+ * Add opens one dialog with two choices. **Connect** (this Studio uses a
+ * remote): the computers found on the network, or a typed address, then
+ * the code; a token under Details. On success the connection is saved and
+ * connects. **Share** (another computer uses this runtime): consent inline,
+ * the addresses, the pairing code (RemoteAccessSettings.tsx SharePanel).
+ * No token of a connection ever reaches the renderer.
  *
  * This computer and Inside Studio (legacy) are whole-Studio modes: choosing
  * one saves it for the next launch (multi-runtime.md §7.2). Nothing restarts
@@ -32,7 +37,7 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import { CONNECTION_STATE_LABELS, type ConnectionResult, type ConnectionRow, type ConnectionsView } from '../../../shared/types/connection.types'
 import type { BackendDaemonStatus, BackendSettingsView, StudioRunMode } from '../../../shared/types/backend.types'
 import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
-import { pairMessage } from './RemoteAccessSettings'
+import { DevicesGroup, SharePanel, pairMessage } from './RemoteAccessSettings'
 import type { RemoteDiscoveryEntry } from '../../../shared/types/remote-access-ipc.types'
 import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
 
@@ -164,10 +169,10 @@ function RowMenu({ items, disabled }: { items: RowMenuItem[]; disabled: boolean 
   )
 }
 
-/** Under the list while the network search runs and found nothing to pair or connect to. */
+/** Under Connect's list while the network search runs and found nothing to pair with. */
 export function emptyDiscoveryLine(view: Pick<ConnectionsView, 'rows' | 'discovery'>): string | null {
   if (!view.discovery || view.discovery.problem) return null
-  return view.rows.some((r) => r.kind === 'found' || r.kind === 'saved') ? null : 'None found yet; turn on Remote access on the other computer.'
+  return view.rows.some((r) => r.kind === 'found') ? null : 'None found yet. On the other computer: Add, then Share.'
 }
 
 /** The list (static markup in tests): name, state, detail, one action, the More menu. */
@@ -239,23 +244,61 @@ export async function startPairing(start: (request: RemotePairStartRequest) => P
   return start({ ...request, replace: true })
 }
 
-/** A computer found on the network, as the Add dialog opens on it. */
-export type AddTarget = Pick<RemoteDiscoveryEntry, 'name' | 'url' | 'address' | 'fingerprint' | 'encrypted'>
+/** A computer found on the network, as Connect lists it. */
+export type AddTarget = Pick<RemoteDiscoveryEntry, 'name' | 'url' | 'address' | 'fingerprint' | 'encrypted'> & { pairingOpen?: boolean }
 
 /** The found computer answered as another one: nothing is sent to it. */
 export function foundMismatchMessage(found: AddTarget, shown: string): string {
   return `${found.address} now answers as another computer (${shown}). Add it from the list again.`
 }
 
+/** Connect's list: the Not paired rows of this computer's network search. */
+export function foundTargets(rows: ConnectionRow[]): AddTarget[] {
+  return rows
+    .filter((r) => r.kind === 'found' && !!r.url && !!r.fingerprint)
+    .map((r) => ({ name: r.name, url: r.url!, address: r.address ?? r.url!, fingerprint: r.fingerprint!, encrypted: r.encrypted, pairingOpen: r.pairingOpen }))
+}
+
+/** The computers found (static in tests): pick one, or type an address below. */
+export function FoundList({ targets, selected, disabled, onPick }: { targets: AddTarget[]; selected: string | null; disabled: boolean; onPick: (target: AddTarget) => void }) {
+  if (targets.length === 0) return null
+  return (
+    <ul aria-label="Found" className="divide-y divide-[var(--adf-ui-separator)] rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)]">
+      {targets.map((t) => (
+        <li key={`${t.fingerprint}@${t.url}`}>
+          <button
+            type="button"
+            disabled={disabled}
+            aria-pressed={selected === t.url}
+            onClick={() => onPick(t)}
+            className={`flex w-full items-center justify-between gap-2 px-3 py-2 text-left ${selected === t.url ? 'bg-[var(--adf-ui-accent-subtle)]' : 'hover:bg-[var(--adf-ui-surface-hover)]'}`}
+          >
+            <span className="min-w-0">
+              <span className="block text-[13px] font-medium text-[var(--adf-ui-text)]">{t.name}</span>
+              <span className="block break-all text-[11px] text-[var(--adf-ui-text-muted)]">{[t.address, t.fingerprint, t.pairingOpen ? 'Pairing open' : null].filter(Boolean).join(' · ')}</span>
+            </span>
+            {!t.encrypted && <span className="shrink-0 rounded bg-[var(--adf-ui-warning-subtle)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-text)]">Not encrypted</span>}
+          </button>
+        </li>
+      ))}
+    </ul>
+  )
+}
+
 /**
- * Add (settings-scopes.md §5.3, multi-runtime.md §6.5): Address, Next
- * (hello), then the code, or a token. Without a hello the token is the only
- * way, and the connection has no fingerprint. Opened on a found computer,
- * the address is its own and the hello must show its fingerprint. On
- * success the connection is saved and connects: Done is the only button.
+ * Add → Connect (settings-scopes.md §5.3, multi-runtime.md §6.5): a
+ * computer found on the network, or an Address; Next (hello), then the
+ * code. A token is under Details. Without a hello the token is the only
+ * way, and the connection has no fingerprint. On a found computer the hello
+ * must show its fingerprint. On success the connection is saved and
+ * connects: Done is the only button.
  */
-export function AddConnectionDialog({ onClose, found = null }: { onClose: () => void; found?: AddTarget | null }) {
-  const [url, setUrl] = useState(found?.url ?? '')
+export function AddConnectionDialog({ onClose, onBack, found: initialFound = null }: { onClose: () => void; onBack?: () => void; found?: AddTarget | null }) {
+  const rows = useConnectionStore((s) => s.view?.rows ?? null)
+  const search = useConnectionStore((s) => s.view?.discovery ?? null)
+  const targets = foundTargets(rows ?? [])
+  const [found, setFound] = useState<AddTarget | null>(initialFound)
+  const [url, setUrl] = useState(initialFound?.url ?? '')
   const [trusted, setTrusted] = useState(false)
   const [step, setStep] = useState<'address' | 'code' | 'token' | 'done'>('address')
   const [pair, setPair] = useState<RemotePairState | null>(null)
@@ -267,6 +310,13 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
   const [confirmDialog, confirm] = useConfirm()
   const check = url.trim() ? checkRemoteDaemonUrl(url) : null
   const insecure = check?.kind === 'insecure-http'
+  const empty = rows ? emptyDiscoveryLine({ rows, discovery: search }) : null
+
+  // This computer's network search, while Connect is open.
+  useEffect(() => {
+    void window.adfApi?.startRemoteDiscovery?.().catch(() => {})
+    return () => { void window.adfApi?.stopRemoteDiscovery?.().catch(() => {}) }
+  }, [])
 
   useEffect(() => window.adfApi?.onRemotePairingState?.((next) => {
     if (step !== 'code' || (next.host && check?.url && next.host.url !== check.url)) return
@@ -275,6 +325,12 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
     setMessage(pairMessage(next, next.host?.name ?? ''))
   }), [step, check?.url])
 
+  const pick = (target: AddTarget) => {
+    setFound(target)
+    setUrl(target.url)
+    setTrusted(false)
+    setMessage(null)
+  }
   const next = async () => {
     if (!check?.url) return
     setBusy(true)
@@ -321,7 +377,12 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
     if (step === 'code') void window.adfApi.cancelRemotePairing()
     onClose()
   }
+  const back = () => {
+    if (step === 'code') void window.adfApi.cancelRemotePairing()
+    onBack?.()
+  }
   const waiting = pair?.step === 'claiming' || pair?.step === 'waiting'
+  const addressReady = !!check?.url && (!insecure || trusted)
 
   return (
     <Dialog open title="Add" onClose={close} lightDismiss={false}>
@@ -329,10 +390,13 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
       <div className="space-y-3 text-[12px]">
         {step === 'address' && (
           <>
+            <FoundList targets={targets} selected={found?.url ?? null} disabled={busy} onPick={pick} />
+            {empty && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">{empty}</p>}
+            {search?.problem && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">{search.problem}</p>}
             {found && <p className="text-[var(--adf-ui-text-muted)]">{found.name} at {found.address}, fingerprint {found.fingerprint}.</p>}
             <label className="block space-y-1">
               <span className="text-[var(--adf-ui-text)]">Address</span>
-              <TextInput value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://adf.example.com" spellCheck={false} autoComplete="off" aria-label="Address" autoFocus />
+              <TextInput value={url} onChange={(e) => { setUrl(e.target.value); if (found && e.target.value !== found.url) setFound(null) }} placeholder="https://adf.example.com" spellCheck={false} autoComplete="off" aria-label="Address" autoFocus />
             </label>
             {check?.kind === 'invalid' && <p className="text-[var(--adf-ui-danger)]">{check.reason}</p>}
             {insecure && (
@@ -341,6 +405,16 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
                 I trust this network; the token is sent unencrypted.
               </label>
             )}
+            <details>
+              <summary className="cursor-pointer select-none text-[var(--adf-ui-text-muted)]">Details</summary>
+              <div className="mt-2 flex items-end gap-2">
+                <label className="block flex-1 space-y-1">
+                  <span className="text-[var(--adf-ui-text)]">Token</span>
+                  <TextInput type="password" value={token} onChange={(e) => setToken(e.target.value)} spellCheck={false} autoComplete="off" aria-label="Token" />
+                </label>
+                <Button disabled={!addressReady || !token.trim()} loading={busy} onClick={() => void saveToken()}>Save</Button>
+              </div>
+            </details>
           </>
         )}
         {step === 'code' && pair?.host && (
@@ -350,7 +424,6 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
               <span className="text-[var(--adf-ui-text)]">Code</span>
               <TextInput value={code} onChange={(e) => setCode(e.target.value)} inputMode="numeric" maxLength={7} placeholder="123 456" disabled={waiting} aria-label="Pairing code" className="font-mono text-[18px] tracking-[0.2em]" />
             </label>
-            <button type="button" className="text-[var(--adf-ui-accent)] hover:underline" disabled={waiting} onClick={() => { void window.adfApi.cancelRemotePairing(); setMessage(null); setStep('token') }}>Use a token instead</button>
           </>
         )}
         {step === 'token' && (
@@ -368,9 +441,9 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
             <Button variant="primary" onClick={onClose}>Done</Button>
           ) : (
             <>
+              {onBack && <Button onClick={back}>Back</Button>}
               <Button onClick={close}>Cancel</Button>
-              {step === 'address' && <Button variant="primary" disabled={!check?.url || (insecure && !trusted)} loading={busy} onClick={() => void next()}>Next</Button>}
-              {step === 'address' && message && <Button disabled={!check?.url || (insecure && !trusted)} onClick={() => { setMessage(null); setStep('token') }}>Use a token instead</Button>}
+              {step === 'address' && <Button variant="primary" disabled={!addressReady} loading={busy} onClick={() => void next()}>Next</Button>}
               {step === 'code' && <Button variant="primary" disabled={code.replace(/\s/g, '').length !== 6} loading={busy || waiting} onClick={() => void sendCode()}>Pair</Button>}
               {step === 'token' && <Button variant="primary" disabled={!token.trim()} loading={busy} onClick={() => void saveToken()}>Save</Button>}
             </>
@@ -381,24 +454,75 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
   )
 }
 
+/** The help line of each Add choice (owner decision 2026-10-21). */
+export const CONNECT_HELP = 'Use a runtime on another computer.'
+export const SHARE_HELP = 'Let another computer use this runtime.'
+
+function ChoiceButton({ title, help, disabled, reason, onClick }: { title: string; help: string; disabled?: boolean; reason?: string | null; onClick: () => void }) {
+  const button = (
+    <button
+      type="button"
+      disabled={disabled}
+      onClick={onClick}
+      className="flex w-full flex-col items-start gap-0.5 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2.5 text-left hover:bg-[var(--adf-ui-surface-hover)] disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <span className="text-[13px] font-medium text-[var(--adf-ui-text)]">{title}</span>
+      <span className="text-[12px] text-[var(--adf-ui-text-muted)]">{help}</span>
+    </button>
+  )
+  return disabled && reason ? <Tooltip tip={reason}>{button}</Tooltip> : button
+}
+
+/** Add's first step (static in tests): Connect or Share. Share needs this computer's daemon (local mode). */
+export function AddChoice({ share, onConnect, onShare }: { share: { available: boolean; reason: string | null }; onConnect: () => void; onShare: () => void }) {
+  return (
+    <div className="grid gap-2">
+      <ChoiceButton title="Connect" help={CONNECT_HELP} onClick={onConnect} />
+      <ChoiceButton title="Share" help={SHARE_HELP} disabled={!share.available} reason={share.reason} onClick={onShare} />
+    </div>
+  )
+}
+
+/** Add: Connect (this Studio uses a remote) or Share (another computer uses this runtime). */
+export function AddDialog({ onClose }: { onClose: () => void }) {
+  const [choice, setChoice] = useState<'choose' | 'connect' | 'share'>('choose')
+  const [share, setShare] = useState<{ available: boolean; reason: string | null }>({ available: true, reason: null })
+  useEffect(() => {
+    let alive = true
+    window.adfApi?.getRemoteAccess?.().then((v) => { if (alive) setShare({ available: v.available, reason: v.unavailableReason }) }).catch(() => {})
+    return () => { alive = false }
+  }, [])
+  if (choice === 'connect') return <AddConnectionDialog onClose={onClose} onBack={() => setChoice('choose')} />
+  return (
+    <Dialog open title="Add" onClose={onClose} lightDismiss={false}>
+      {choice === 'choose' ? (
+        <div className="space-y-3 text-[12px]">
+          <AddChoice share={share} onConnect={() => setChoice('connect')} onShare={() => setChoice('share')} />
+          <div className="flex justify-end pt-1">
+            <Button onClick={onClose}>Cancel</Button>
+          </div>
+        </div>
+      ) : (
+        <SharePanel onBack={() => setChoice('choose')} onDone={onClose} />
+      )}
+    </Dialog>
+  )
+}
+
 /**
- * Connections with no runtime on another computer saved: one line and Add
- * (the existing pairing flow). This computer's daemon, Background and Inside
- * Studio (legacy) stay one click away under Details.
+ * Remotes with no runtime on another computer saved: "None.". This
+ * computer's daemon, Background and Inside Studio (legacy) stay one click
+ * away under Details.
  */
-export function SimpleConnections({ busy, message, onAdd, onLegacy, details, extra }: {
+export function SimpleConnections({ busy, onLegacy, details, extra }: {
   busy: boolean
-  message: { kind: 'ok' | 'error'; text: string } | null
-  onAdd: () => void
   onLegacy: () => void
   details: React.ReactNode
   extra?: React.ReactNode
 }) {
   return (
-    <SettingsGroup>
-      <SettingsRow label={<Tooltip tip="Runtimes on other computers."><span>Remotes</span></Tooltip>} error={message?.kind === 'error' ? message.text : undefined} help={message?.kind === 'ok' ? message.text : undefined}>
-        <Button disabled={busy} onClick={onAdd}>Add</Button>
-      </SettingsRow>
+    <SettingsGroup title="Remotes" hint={REMOTES_HINT} docs={DOCS.backendConnection}>
+      <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-muted)]">None.</p>
       {extra}
       <details className="border-t border-[var(--adf-ui-separator)]">
         <summary className="cursor-pointer select-none px-4 py-2.5 text-[12px] text-[var(--adf-ui-text-muted)]">Details</summary>
@@ -411,14 +535,26 @@ export function SimpleConnections({ busy, message, onAdd, onLegacy, details, ext
   )
 }
 
+/** The Remotes heading's tooltip. */
+export const REMOTES_HINT = 'Runtimes this Studio uses.'
+
+/** Add, the one on the page, with the page's message line. */
+export function AddBar({ busy, message, onAdd }: { busy: boolean; message: { kind: 'ok' | 'error'; text: string } | null; onAdd: () => void }) {
+  return (
+    <div className="flex items-center justify-end gap-3">
+      <MessageLine message={message} />
+      <Button variant="primary" disabled={busy} onClick={onAdd}>Add</Button>
+    </div>
+  )
+}
+
 export function ConnectionSettings() {
   const view = useConnectionStore((s) => s.view)
   const [backend, setBackend] = useState<BackendSettingsView | null>(null)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  // The Add dialog: on a typed address (true) or on a found computer.
-  const [adding, setAdding] = useState<AddTarget | true | null>(null)
+  const [adding, setAdding] = useState(false)
   const { track } = useSettingsSave()
 
   useEffect(() => {
@@ -430,15 +566,8 @@ export function ConnectionSettings() {
     return () => { cancelled = true }
   }, [])
 
-  // No remote saved: the page is one line with Add, and nothing searches the network.
+  // No remote saved: Remotes says "None.", and nothing searches the network until Add → Connect.
   const simple = !!view && view.current.kind === 'local' && !remoteConnectionsSaved(view)
-  // The Not paired rows: this computer's network search, while the full list is open.
-  const listing = !!view && !simple
-  useEffect(() => {
-    if (!listing) return
-    void window.adfApi?.startRemoteDiscovery?.().catch(() => {})
-    return () => { void window.adfApi?.stopRemoteDiscovery?.().catch(() => {}) }
-  }, [listing])
 
   // While the daemon connects, follow it.
   const daemonState = backend?.daemon?.connection
@@ -477,11 +606,19 @@ export function ConnectionSettings() {
     const prev = backend
     setBackend({ ...backend, configured: { ...backend.configured, keepDaemonRunning: next } })
     void track(window.adfApi.setBackendSettings({ keepDaemonRunning: next }).then((result) => {
-      if (!result.ok) return { ok: false as const, error: result.error }
+      if (!result.ok) return { ok: false, error: result.error }
       setBackend(result.view)
       if (result.notices.length > 0) setMessage({ kind: 'ok', text: result.notices.join(' ') })
       return { ok: true as const }
     }), () => setBackend(prev))
+  }
+  /** Devices → On quit → Keep running: the same setting as Background. */
+  const keepRunning = async () => {
+    await track(window.adfApi.setBackendSettings({ keepDaemonRunning: true }).then((r) => {
+      if (!r.ok) return { ok: false as const, error: r.error }
+      setBackend(r.view)
+      return { ok: true as const }
+    }))
   }
 
   if (!view || !backend) {
@@ -540,32 +677,30 @@ export function ConnectionSettings() {
 
   const notices = <>
     {(backend.active.notices.length > 0 || override) && (
-      <div role="status" className="mb-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+      <div role="status" className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
         {override && <p>{override}</p>}
         {backend.active.notices.map((notice) => <p key={notice}>{notice}</p>)}
       </div>
     )}
     {nextLine && (
-      <div role="status" className="mb-3 flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
+      <div role="status" className="flex items-center justify-between gap-3 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
         <span>{nextLine}</span>
         <Button size="compact" onClick={() => void window.adfApi.restartStudio()}>Restart</Button>
       </div>
     )}
   </>
 
+  const addBar = <AddBar busy={busy} message={message} onAdd={() => setAdding(true)} />
+  const devices = <DevicesGroup onKeepRunning={keepRunning} />
+
   if (simple) {
     return (
       <>
         {notices}
-        <SimpleConnections
-          busy={busy}
-          message={message}
-          onAdd={() => setAdding(true)}
-          onLegacy={() => connect('embedded')}
-          details={thisComputerRows}
-          extra={switchRows}
-        />
-        {adding && <AddConnectionDialog onClose={() => setAdding(null)} found={adding === true ? null : adding} />}
+        {addBar}
+        <SimpleConnections busy={busy} onLegacy={() => connect('embedded')} details={thisComputerRows} extra={switchRows} />
+        {devices}
+        {adding && <AddDialog onClose={() => setAdding(false)} />}
       </>
     )
   }
@@ -573,21 +708,18 @@ export function ConnectionSettings() {
   return (
     <>
       {notices}
+      {addBar}
 
-      <SettingsGroup title="Runtimes" docs={DOCS.backendConnection}>
-        <ConnectionRows rows={view.rows} busy={busy} onConnect={connect} onAdd={(row) => row.url && row.fingerprint && setAdding({ name: row.name, url: row.url, address: row.address ?? row.url, fingerprint: row.fingerprint, encrypted: row.encrypted })} onRemove={remove} />
-        {view.discovery?.problem && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{view.discovery.problem}</p>}
-        {emptyDiscoveryLine(view) && <p className="border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[11px] text-[var(--adf-ui-text-subtle)]">{emptyDiscoveryLine(view)}</p>}
-        <div className="flex items-center justify-between gap-4 border-t border-[var(--adf-ui-separator)] px-4 py-3">
-          <MessageLine message={message} />
-          <Button disabled={busy} onClick={() => setAdding(true)}>Add</Button>
-        </div>
+      <SettingsGroup title="Remotes" hint={REMOTES_HINT} docs={DOCS.backendConnection}>
+        <ConnectionRows rows={view.rows.filter((r) => r.kind !== 'found')} busy={busy} onConnect={connect} onAdd={() => setAdding(true)} onRemove={remove} />
         {switchRows}
       </SettingsGroup>
 
+      {devices}
+
       {local && <SettingsGroup title={view.rows.find((r) => r.kind === 'local')?.name ?? LOCAL_LABEL}>{thisComputerRows}</SettingsGroup>}
 
-      {adding && <AddConnectionDialog onClose={() => setAdding(null)} found={adding === true ? null : adding} />}
+      {adding && <AddDialog onClose={() => setAdding(false)} />}
     </>
   )
 }

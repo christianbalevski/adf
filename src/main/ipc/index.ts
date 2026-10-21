@@ -403,9 +403,9 @@ async function startMdnsIfEligibleInner(): Promise<void> {
   if (host !== '0.0.0.0') return  // only announce/browse when LAN-bound
   if (!meshServer.isLanReachable()) return  // LAN mode on a network not allowed: nothing to announce
 
-  // LAN-visible spans both 'lan' and 'public' tiers: a public agent is
-  // reachable from the public internet, which subsumes the LAN, so it must
-  // announce over mDNS too. (The old gate checked only 'lan', so a runtime
+  // LAN-visible spans both 'lan' and 'public' tiers: both listen on the
+  // allowed networks (the same consent per network), so a public agent
+  // announces over mDNS too. (The old gate checked only 'lan', so a runtime
   // whose sole reachable agent was 'public' never announced.)
   const hasLanAgent =
     (meshManager?.hasAgentOfTier('lan') ?? false) ||
@@ -6319,7 +6319,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // LAN reachability preconditions: is the mesh server LAN-bound, and is the
   // inbound firewall rule that lets peers fetch our directory in place? Drives
-  // the "Visible on LAN" gate in Settings → Networking. Read-only, no elevation.
+  // the Firewall row in Settings → Networking → Advanced. Read-only, no elevation;
+  // Studio never adds a rule (remote-access.md R9): it shows the commands.
   ipcMain.handle(IPC.MESH_FIREWALL_CHECK, async () => {
     const { checkLanFirewall } = await import('../services/firewall-service')
     const port = meshServer?.getPort() ?? 7295
@@ -6332,14 +6333,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       fw.supported ? fw.ruleConfigured === true : fw.reachable === true
     )
     return { ...fw, port, serverLanBound, verified }
-  })
-
-  // Create/repair the inbound firewall rule, prompting the user for elevation
-  // (UAC on Windows, admin prompt on macOS). One prompt covers all rules.
-  ipcMain.handle(IPC.MESH_FIREWALL_APPLY, async () => {
-    const { applyLanFirewall } = await import('../services/firewall-service')
-    const port = meshServer?.getPort() ?? 7295
-    return applyLanFirewall(port)
   })
 
   // Fetch one of a remote agent's shared files for the fleet-map card viewer.

@@ -28,7 +28,7 @@ import { DaemonPeerFeed, RemoteDiscovery, type PeerFeed } from '../../src/main/b
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
 import { claimQuestion, networkStatusView, registerRemoteAccessHandlers, runtimeName, unavailableReason } from '../../src/main/backend/remote-access-ipc'
 import type { LanReach } from '../../src/main/services/lan-reach'
-import { NetworkConsentPrompt, networkQuestion, PUBLIC_WARNING, type NetworkQuestion } from '../../src/main/backend/remote-access/network-consent'
+import { NetworkConsentPrompt, networkQuestion, PUBLIC_MESH_WARNING, PUBLIC_WARNING, type NetworkQuestion } from '../../src/main/backend/remote-access/network-consent'
 import type { NetworkPeer, NetworkView } from '../../src/shared/types/remote-access.types'
 import { hostname } from 'node:os'
 import { applyBackendPatch, createBackendSettingsStore, defaultBackendConfig, normalizeBackendConfig, resolveBootBackend, type SecretCodec } from '../../src/main/backend/backend-config'
@@ -88,7 +88,7 @@ function hostSetup(over: Partial<RemoteAccessHostDeps> = {}) {
   }
 }
 
-describe('host panel (Settings → Networking → Remote access)', () => {
+describe('host panel (Settings → Connections: Add → Share, Devices)', () => {
   let h: ReturnType<typeof hostSetup>
   beforeEach(() => { h = hostSetup() })
   afterEach(() => h.host.dispose())
@@ -119,6 +119,19 @@ describe('host panel (Settings → Networking → Remote access)', () => {
     const off = await h.host.set({ enabled: false })
     expect(off.ok && off.view.status?.enabled).toBe(false)
     expect(h.confirms).toHaveLength(2)
+  })
+
+  it('Add → Share: Allow under the same sentence is the confirmation, so no second dialog; only `confirmed: true` skips it', async () => {
+    await h.host.get()
+    // Anything but true asks.
+    h.setConfirm(false)
+    expect(await h.host.set({ enabled: true, confirmed: 'yes' })).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(h.confirms).toHaveLength(1)
+    const on = await h.host.set({ enabled: true, confirmed: true })
+    expect(on.ok && on.view.status?.enabled).toBe(true)
+    expect(h.confirms).toHaveLength(1)
+    // The daemon gets only `enabled`: `confirmed` is Studio's own.
+    expect(h.daemon.requests.find((r) => r.method === 'PUT')?.body).toEqual({ enabled: true })
   })
 
   it('Add a computer returns the device token once, with a notice; the view never holds it', async () => {
@@ -524,7 +537,7 @@ describe('pairing from Settings → Connections', () => {
     await p.flow.start({ url: TAILNET })
     expect(await p.flow.submitCode('111111')).toMatchObject({ step: 'need_code', code: 'wrong_code', attemptsLeft: 4, message: 'Wrong code. 4 tries left.' })
     p.daemon.state.pairing!.attemptsLeft = 1
-    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code and no tries left; choose Add device on agent-1-pc for a new code.' })
+    expect(await p.flow.submitCode('222222')).toMatchObject({ step: 'failed', code: 'attempts_used', message: 'Wrong code and no tries left; on agent-1-pc choose Add, then Share, for a new code.' })
   })
 
   it('collects the token with the collect secret from the 202; the claim id alone gets nothing, and the secret is never pushed or logged', async () => {
@@ -566,7 +579,7 @@ describe('pairing from Settings → Connections', () => {
     const p = pairSetup()
     await p.flow.start({ url: TAILNET })
     p.daemon.state.pairing = null
-    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed; choose Add device there for a new code.' })
+    expect(await p.flow.submitCode('654321')).toMatchObject({ step: 'failed', code: 'window_closed', message: 'The pairing window on agent-1-pc is closed; on it choose Add, then Share, for a new code.' })
   })
 
   it('host refused', async () => {
@@ -981,8 +994,10 @@ describe('one name and the Networking status line', () => {
     const allowedTailnet = [{ id: 'tailnet-0123456789abcdef', kind: 'tailnet' as const, label: 'Tailnet tail1234.ts.net', addedAt: '2026-10-18T00:00:00Z' }]
     expect(networkStatusView(snapshot, { state: 'ok', message: '', commands: [] }, allowedTailnet)).toEqual({
       available: true, lan: [{ address: '192.168.1.20', iface: 'Wi-Fi', allowed: false }], networks: [lan], allowedNetworks: allowedTailnet,
-      tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' },
+      tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, waiting: { remoteAccess: false, mesh: false },
     })
+    // The services that wait for a network: the status card names them.
+    expect(networkStatusView(snapshot, { state: 'ok', message: '', commands: [] }, allowedTailnet, { remoteAccess: true, mesh: false }).waiting).toEqual({ remoteAccess: true, mesh: false })
   })
 
   it('NETWORK_STATUS_GET reads this computer\'s network; remote mode answers available: false', async () => {
@@ -1014,8 +1029,11 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
   const net = (over: Partial<NetworkView> = {}): NetworkView => ({ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'unknown', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'], ...over })
 
-  it('the notice: "Remote access paused on <network>." with Allow on this network; the warning only on a LAN not reported Private', () => {
+  it('the notice: "Remote access paused on <network>." with Allow; the warning only on a LAN not reported Private', () => {
     expect(networkQuestion(net())).toMatchObject({ key: 'lan-0123456789abcdef', networkId: 'lan-0123456789abcdef', message: 'Remote access paused on Cafe (10.0.0.0/24).', canAllow: true, warning: PUBLIC_WARNING })
+    // P0 (owner decision 2026-10-21): the notice names the service that waits, never Remote when only the mesh waits.
+    expect(networkQuestion(net(), { remoteAccess: false, mesh: true })).toMatchObject({ message: 'Agent sharing paused on Cafe (10.0.0.0/24).', warning: PUBLIC_MESH_WARNING })
+    expect(networkQuestion(net(), { remoteAccess: true, mesh: true })).toMatchObject({ message: 'Remote access and agent sharing paused on Cafe (10.0.0.0/24).', warning: PUBLIC_WARNING })
     expect(PUBLIC_WARNING).toBe('Public network. The token is sent unencrypted.')
     expect(networkQuestion(net({ osCategory: 'public' })).warning).toBe(PUBLIC_WARNING)
     expect(networkQuestion(net({ osCategory: 'private' })).warning).toBeNull()
@@ -1076,9 +1094,10 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     await ipc.consent.check()
     expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
     const last = () => electronStub.pushes.filter((p) => p.channel === IPC.NETWORK_NOTICES_CHANGED).at(-1)?.args[0] as Array<{ key: string; message: string; warning: string | null; canAllow: boolean }>
+    // Without a daemon only the mesh's LAN mode waits: the notice says Agent sharing, not Remote access.
     expect(last().map((n) => [n.message, n.warning, n.canAllow])).toEqual([
-      ['Remote access paused on Cafe (10.0.0.0/24).', PUBLIC_WARNING, true],
-      ['Remote access paused on Home (192.168.1.0/24).', null, true],
+      ['Agent sharing paused on Cafe (10.0.0.0/24).', PUBLIC_MESH_WARNING, true],
+      ['Agent sharing paused on Home (192.168.1.0/24).', null, true],
     ])
     expect(await electronStub.handlers.get(IPC.NETWORK_NOTICES_GET)!({})).toEqual(last())
     // Not now on Home; Allow on this network on Cafe.

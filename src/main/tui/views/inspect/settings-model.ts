@@ -47,8 +47,8 @@ export const VISIBILITY_HINTS: Record<VisibilityTier, string> = {
   off: 'nobody: no inbound messages, sends still allowed',
   directory: 'only ancestor-directory agents on this runtime',
   localhost: 'any agent on this machine',
-  lan: 'any agent on the local network (binds 0.0.0.0)',
-  public: 'any agent reachable over the public internet (binds 0.0.0.0)',
+  lan: 'any agent on an allowed network',
+  public: 'any agent that reaches this computer, also only on an allowed network',
 }
 export const SEND_MODES = ['proactive', 'respond_only', 'listen_only'] as const
 export type SendMode = typeof SEND_MODES[number]

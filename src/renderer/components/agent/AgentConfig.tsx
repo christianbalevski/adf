@@ -3552,7 +3552,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     : 'Paste a DID (did:key:...) or discover agents first'}
                 />
               </Field>
-              <Field label="Visibility" hint="Directory: only ancestor-directory agents on this runtime. Localhost: any agent on this machine. LAN: any agent on the local network (binds 0.0.0.0). Public: any agent reachable over the public internet (binds 0.0.0.0). Off: nobody — no inbound, sends still allowed.">
+              <Field label="Visibility" hint="Directory: only ancestor-directory agents on this runtime. Localhost: any agent on this computer. LAN: any agent on an allowed network (Settings → Networking). Public: any agent that reaches this computer, also only on an allowed network. Off: nobody; no inbound, sends still allowed.">
                 <div className="flex rounded-md border border-neutral-200 dark:border-neutral-700 overflow-hidden">
                   {VISIBILITY_VALUES.map((tier, i) => (
                     <button

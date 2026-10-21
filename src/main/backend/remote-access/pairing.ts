@@ -166,7 +166,7 @@ export class PairingFlow {
       return this.set({
         step: 'need_code',
         host: { ...host, name: hello.name, fingerprint: hello.fingerprint },
-        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open; choose Add device there.`,
+        message: hello.pairingOpen ? null : `${hello.name} has no pairing window open; on it choose Add, then Share.`,
       })
     } catch (err) {
       if (abort.signal.aborted) return this.current
@@ -325,12 +325,12 @@ export class PairingFlow {
     switch (err.code) {
       case 'wrong_code': {
         const left = err.extra.attemptsLeft ?? null
-        if (left === 0) return this.fail('attempts_used', `Wrong code and no tries left; choose Add device on ${host.name} for a new code.`)
+        if (left === 0) return this.fail('attempts_used', `Wrong code and no tries left; on ${host.name} choose Add, then Share, for a new code.`)
         this.log.warn(`[Remote access] Pairing with ${host.name}: wrong code${left !== null ? `, ${left} left` : ''}`)
         return this.set({ step: 'need_code', code: 'wrong_code', attemptsLeft: left, message: `Wrong code.${left !== null ? ` ${left} ${left === 1 ? 'try' : 'tries'} left.` : ''}` })
       }
       case 'pairing_closed':
-        return this.fail('window_closed', `The pairing window on ${host.name} is closed; choose Add device there for a new code.`)
+        return this.fail('window_closed', `The pairing window on ${host.name} is closed; on it choose Add, then Share, for a new code.`)
       case 'pairing_busy':
         return this.fail('busy', `${host.name} is already asking about another device. Try again in a moment.`, true)
       case 'rate_limited':
@@ -351,7 +351,7 @@ export class PairingFlow {
     if (err instanceof RemoteAccessApiError && err.status !== null) {
       // An ADF daemon from before remote access asks for a token on /remote/hello and /pair/*.
       if (err.status === 401) return this.fail('old_daemon', `${host.name} runs an older ADF. Update ADF there, then pair again.`)
-      if (err.code === 'remote_access_off') return this.fail('remote_access_off', `${host.url} has remote access off. Turn it on there: Settings → Networking → Remote access.`)
+      if (err.code === 'remote_access_off') return this.fail('remote_access_off', `${host.url} has remote access off. Turn it on there: Settings → Connections → Add → Share.`)
       return this.fail('unreachable', `${host.url} does not answer as an ADF computer with remote access on (${err.message}).`)
     }
     const code = err instanceof RemoteAccessApiError ? err.code : 'unreachable'

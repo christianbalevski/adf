@@ -7,7 +7,7 @@
 
 import type { AllowedNetwork, NetworkView, RemoteAccessStatus, RemoteDevice } from './remote-access.types'
 
-/** Settings → Networking → Remote access: the host panel. */
+/** Remote access, host side: Settings → Connections → Add → Share, and Devices. */
 export interface RemoteAccessView {
   /** Studio runs the ADF daemon on this computer (local mode); otherwise the panel is read-only. */
   available: boolean
@@ -44,7 +44,7 @@ export type RemoteDeviceAddResult =
   | { ok: true; view: RemoteAccessView; device: RemoteDevice; token: string }
   | { ok: false; code: RemoteAccessErrorCode; error: string }
 
-// --- Settings → Networking: the status line ------------------------------------
+// --- Settings → Networking: the status card ------------------------------------
 
 /**
  * This computer's network, as the mesh's LAN mode and remote access see it
@@ -63,10 +63,17 @@ export interface NetworkStatusView {
   /** This computer's tailnet IPv4 address, or null. */
   tailnetAddress: string | null
   firewall: { state: 'ok' | 'blocked' | 'unknown'; message: string }
+  /**
+   * The services that listen beyond loopback once a network is allowed:
+   * remote access (on) and the mesh's LAN mode (the Network switch, or an
+   * agent with lan or public visibility).
+   */
+  waiting: { remoteAccess: boolean; mesh: boolean }
 }
 
 /**
- * "Remote access paused on <network>." shown in the window, not as a dialog
+ * "<Service> paused on <network>." ("Remote access", "Agent sharing", or
+ * both) shown in the window, not as a dialog
  * (NETWORK_NOTICES_CHANGED / NETWORK_NOTICES_GET): once per network per
  * session, until Allow, Not now (NETWORK_NOTICE_DISMISS), or the network goes.
  */
@@ -76,7 +83,7 @@ export interface NetworkNotice {
   /** Null: an unidentified network, which cannot be allowed. */
   networkId: string | null
   message: string
-  /** "Public network. The token is sent unencrypted." on a LAN the OS reports Public or does not report. */
+  /** On a LAN the OS reports Public or does not report: "Public network. The token is sent unencrypted." (remote access), else the mesh's sentence. */
   warning: string | null
   canAllow: boolean
 }

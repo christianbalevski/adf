@@ -4,7 +4,7 @@ import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDe
 import { RemoteAccessApiError, RemoteAccessManagement } from './client'
 
 /**
- * Settings → Networking → Remote access
+ * Remote access in Settings → Connections (Add → Share, Devices)
  * (docs/design/remote-access.md §7, §8). Studio main's side of the host
  * panel, local mode only: every action goes to the daemon's management
  * routes (master token, local proof); Studio keeps no remote-access state
@@ -137,20 +137,27 @@ export class RemoteAccessHost {
     }
   }
 
-  /** The toggle (turning it on is confirmed once, plainly) and the computer's name. */
-  async set(request: { enabled?: unknown; name?: unknown }): Promise<RemoteAccessResult> {
+  /**
+   * The switch (turning it on is confirmed once, plainly) and the
+   * computer's name. `confirmed: true`: the user pressed Allow under
+   * ENABLE_DETAIL in Add → Share, which is that confirmation; no second dialog.
+   */
+  async set(request: { enabled?: unknown; name?: unknown; confirmed?: unknown }): Promise<RemoteAccessResult> {
     const enabled = typeof request?.enabled === 'boolean' ? request.enabled : undefined
+    const confirmed = request?.confirmed === true
     const name = typeof request?.name === 'string' && request.name.trim() ? request.name.trim() : undefined
     if (enabled === undefined && name === undefined) return { ok: false, code: 'daemon', error: 'Nothing to change.' }
     if (typeof this.management() === 'string') return { ok: false, code: 'unavailable', error: this.management() as string }
     if (enabled === undefined) {
       return this.run('Renaming', async (m) => {
         const s = await m.set({ ...(name ? { name } : {}) })
-        this.log.log(`[Remote access] Name: ${s.name} (Settings → Networking): ${s.message}`)
+        this.log.log(`[Remote access] Name: ${s.name} (Settings): ${s.message}`)
         return s
       })
     }
-    if (enabled && !this.last?.enabled) {
+    if (enabled && !this.last?.enabled && confirmed) {
+      this.log.log('[Remote access] Turning on: allowed in Settings → Connections → Add → Share')
+    } else if (enabled && !this.last?.enabled) {
       const ok = await this.deps.confirm({
         message: 'Turn on remote access',
         detail: [ENABLE_DETAIL, ...((this.deps.platform ?? process.platform) === 'win32' ? [WINDOWS_FIREWALL_DETAIL] : [])].join('\n\n'),
@@ -175,7 +182,7 @@ export class RemoteAccessHost {
     return this.run(action === 'allow' ? 'Allow on this network' : 'Remove network', async (m) => {
       const s = action === 'allow' ? await m.allowNetwork(id) : await m.forgetNetwork(id)
       const label = s.networks.find((n) => n.id === id)?.label ?? s.allowedNetworks.find((n) => n.id === id)?.label ?? id
-      this.log.log(`[Remote access] ${action === 'allow' ? 'Allowed on' : 'Removed'} ${label} (Settings → Networking): ${s.message}`)
+      this.log.log(`[Remote access] ${action === 'allow' ? 'Allowed on' : 'Removed'} ${label} (Settings): ${s.message}`)
       return s
     })
   }
