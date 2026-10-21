@@ -1,10 +1,13 @@
-import { useState, useEffect, useLayoutEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { create } from 'zustand'
 import { MAIN_LOOP, selectLoopSlice, useAgentStore, type TokenUsage } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
 import { Tooltip } from '../common/Tooltip'
+import { ContextMenu } from '../common/ContextMenu'
+import { IconButton } from '../ui/IconButton'
 import { RemoteMark } from '../common/RemoteMark'
 import { LOCAL_LABEL } from '../../../shared/runtime-name'
 import { loopColor } from '../../utils/loop-color'
@@ -39,53 +42,80 @@ export function killTooltip(current: Pick<ConnectionCurrent, 'name'> | null, nam
   return named ? `Stops all agents and mesh on ${current?.name ?? LOCAL_LABEL}` : 'Stops all agents and mesh'
 }
 
+/** Kill all's tooltip (multi-runtime.md §6.2). */
+export const KILL_ALL_TIP = 'Stops all agents and mesh on every runtime'
+
 /**
- * The status bar's runtime groups fold when they do not fit (multi-runtime.md
- * §6.2): the remote groups become one Runtimes button. Folded at the width
- * the inline groups needed; unfolded once the bar is that wide again.
+ * Kill results by runtime id ('all': Kill all), each shown for a few
+ * seconds wherever that Kill is: the status bar group and the Runtimes
+ * popover row show the same result, so a Kill is never silent.
  */
-export interface RuntimeGroupsFold { folded: boolean; needed: number }
-export function foldRuntimeGroups(state: RuntimeGroupsFold, bar: { scrollWidth: number; clientWidth: number }): RuntimeGroupsFold {
-  if (!state.folded) return bar.scrollWidth > bar.clientWidth + 1 ? { folded: true, needed: bar.scrollWidth } : state
-  return bar.clientWidth >= state.needed ? { folded: false, needed: 0 } : state
+interface KillResultsState { results: Record<string, string> }
+export const useKillResultsStore = create<KillResultsState>(() => ({ results: {} }))
+const killTimers = new Map<string, ReturnType<typeof setTimeout>>()
+export function showKillResult(key: string, text: string): void {
+  useKillResultsStore.setState((s) => ({ results: { ...s.results, [key]: text } }))
+  const previous = killTimers.get(key)
+  if (previous) clearTimeout(previous)
+  killTimers.set(key, setTimeout(() => {
+    killTimers.delete(key)
+    useKillResultsStore.setState((s) => { const { [key]: _gone, ...rest } = s.results; return { results: rest } })
+  }, 6000))
+}
+const useKillResult = (key: string): string | null => useKillResultsStore((s) => s.results[key] ?? null)
+
+/** A runtime's slice key in this window's stores; undefined: the window's own (This computer, or an agent window's runtime). */
+function sliceOf(runtime: Pick<RuntimeView, 'id'>): RuntimeId | undefined {
+  return runtime.id === LOCAL_RUNTIME || isAgentWindow ? undefined : runtime.id
+}
+
+/** The surface a runtime's Kill calls: the window's own, else the runtime's (tagged). */
+function stopApi(runtime: Pick<RuntimeView, 'id'>) {
+  return sliceOf(runtime) === undefined ? window.adfApi : apiFor(runtime.id)
+}
+
+/** After a stop that held: the runtime's slices show nothing running; their own events say otherwise. */
+function clearStopped(runtime: Pick<RuntimeView, 'id'>): void {
+  const slice = sliceOf(runtime)
+  const open = useDocumentStore.getState()
+  if (open.filePath && (isAgentWindow || (open.runtimeId || LOCAL_RUNTIME) === runtime.id)) useAgentStore.getState().setState('off')
+  useMeshStore.getState().reset(slice)
+  useBackgroundAgentsStore.getState().setAgents([], slice)
 }
 
 /**
- * Measure the fold again whenever the bar or what it holds changes size: the
- * bar itself, every item in it (an agent opened, a runtime's state, a Kill
- * result) and items added later. While folded, the width the inline groups
- * need moves with the items beside them. Answers the teardown.
+ * Kill all (§6.2): emergencyStop on every connected runtime at once. The
+ * result says what happened: what was stopped; "Partial stop" when a
+ * runtime stopped only part; the runtimes not reached (down, or the call
+ * failed) by name.
  */
-export function watchRuntimeFold(
-  bar: HTMLElement,
-  groups: HTMLElement,
-  setFold: (update: (state: RuntimeGroupsFold) => RuntimeGroupsFold) => void,
-): () => void {
-  const beside = (): number => {
-    const items = Array.from(bar.children).filter((c) => c !== groups)
-    const gap = typeof getComputedStyle === 'function' ? parseFloat(getComputedStyle(bar).columnGap) || 0 : 0
-    return items.reduce((w, c) => w + c.getBoundingClientRect().width, 0) + gap * items.length
-  }
-  let besideWidth = beside()
-  const check = (): void => {
-    const now = beside()
-    const moved = now - besideWidth
-    besideWidth = now
-    setFold((state) => foldRuntimeGroups(state.folded && moved !== 0 ? { ...state, needed: state.needed + moved } : state, bar))
-  }
-  const resize = new ResizeObserver(check)
-  const observeAll = (): void => {
-    resize.observe(bar)
-    for (const item of Array.from(bar.children)) resize.observe(item)
-  }
-  observeAll()
-  const added = typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => { observeAll(); check() })
-  added?.observe(bar, { childList: true })
-  check()
-  return () => {
-    resize.disconnect()
-    added?.disconnect()
-  }
+export async function killAll(runtimes: readonly RuntimeView[]): Promise<string> {
+  const reachable = runtimes.filter((r) => r.state === 'connected')
+  const missed = runtimes.filter((r) => r.state !== 'connected').map((r) => r.name)
+  const settled = await Promise.allSettled(reachable.map((r) => stopApi(r).emergencyStop()))
+  let stopped = 0
+  let counted = true
+  let partial = false
+  let reached = 0
+  let firstError: string | null = null
+  settled.forEach((outcome, i) => {
+    const runtime = reachable[i]
+    if (outcome.status === 'rejected') {
+      console.error(`[StatusBar] Emergency stop on ${runtime.name} failed:`, outcome.reason)
+      firstError ??= outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason)
+      missed.push(runtime.name)
+      return
+    }
+    reached++
+    const result = outcome.value
+    if (result && result.success === false) { partial = true; return }
+    if (result?.stoppedAgents === undefined) counted = false
+    else stopped += result.stoppedAgents
+    clearStopped(runtime)
+  })
+  if (reached === 0 && firstError) return `Not stopped: ${firstError}`
+  if (missed.length > 0) return `Partial stop · Not reached: ${missed.join(', ')}`
+  return killResultLabel({ success: !partial, stoppedAgents: counted ? stopped : undefined })
 }
 
 function MeshIcon() {
@@ -264,7 +294,7 @@ export function StatusBar() {
         )}
       </span>
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
-      {multi ? <RuntimeGroups runtimes={runtimes} /> : (
+      {multi ? <FocusedRuntime runtimes={runtimes} /> : (
       <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
       <RuntimeIndicator current={connection} showName={false} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
@@ -312,57 +342,193 @@ export function StatusBar() {
 }
 
 /**
- * More than one runtime (multi-runtime.md §6.2): one group per runtime in the
- * set's order, This computer first: `( [name] [Mesh] [Kill] )`. An agent
- * window shows its own runtime's group only. When the groups do not fit, the
- * remote groups fold into one Runtimes button whose popover lists them.
+ * More than one runtime (multi-runtime.md §6.2): ONE group, the runtime of
+ * the agent this window shows (the main window's open agent, else This
+ * computer; an agent window's own): `( [name] [Mesh] [Kill] )`. In the main
+ * window an up arrow beside it (tooltip "Runtimes") opens a popover of every
+ * runtime in the set's order, each with its state, Mesh and Kill, and Kill
+ * all above them. An agent window reaches its own runtime only: its group,
+ * no arrow.
  */
-export function RuntimeGroups({ runtimes }: { runtimes: RuntimeView[] }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const [fold, setFold] = useState<RuntimeGroupsFold>({ folded: false, needed: 0 })
-  const [open, setOpen] = useState(false)
-  const shown = isAgentWindow ? runtimes.filter((r) => r.id === windowRuntime) : runtimes
-  const ids = shown.map((r) => r.id).join('\n')
-  // Another set is measured again, inline first.
-  useLayoutEffect(() => { setFold({ folded: false, needed: 0 }) }, [ids])
-  useLayoutEffect(() => {
-    const groups = ref.current
-    const bar = groups?.parentElement
-    if (!groups || !bar || typeof ResizeObserver === 'undefined') return
-    return watchRuntimeFold(bar, groups, setFold)
-  }, [ids, fold.folded])
-  useEffect(() => {
-    if (!open) return
-    const close = (event: MouseEvent) => { if (!ref.current?.contains(event.target as Node)) setOpen(false) }
-    document.addEventListener('mousedown', close)
-    return () => document.removeEventListener('mousedown', close)
-  }, [open])
-  const local = shown.filter((r) => r.id === LOCAL_RUNTIME || isAgentWindow)
-  const remotes = shown.filter((r) => !local.includes(r))
-  const folded = fold.folded && remotes.length > 0
+export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
+  const focusedId = useDocumentStore((s) => (isAgentWindow ? windowRuntime : s.filePath ? s.runtimeId || LOCAL_RUNTIME : LOCAL_RUNTIME))
+  const focused = runtimes.find((r) => r.id === focusedId) ?? (isAgentWindow ? null : runtimes[0] ?? null)
+  const arrowRef = useRef<HTMLButtonElement>(null)
+  const [open, setOpen] = useState<{ x: number; y: number } | null>(null)
+  const allResult = useKillResult('all')
+  // The arrow turns red while a runtime not shown is down, as the group's name does for its own.
+  const othersDown = runtimes.some((r) => r.id !== focused?.id && r.state !== 'connected')
+  const toggle = () => {
+    if (open) { setOpen(null); return }
+    const rect = arrowRef.current?.getBoundingClientRect()
+    setOpen(rect ? { x: rect.right, y: rect.top - 6 } : { x: 0, y: 0 })
+  }
   return (
-    <div ref={ref} className="relative flex shrink-0 items-center gap-2">
-      {local.map((r) => <RuntimeGroup key={r.id} runtime={r} />)}
-      {!folded && remotes.map((r) => <RuntimeGroup key={r.id} runtime={r} />)}
-      {folded && (
-        <Tooltip tip={remotes.map((r) => runtimeHeader(r)).join(', ')} className="flex">
-          <button
-            onClick={() => setOpen((o) => !o)}
-            aria-haspopup="dialog"
-            aria-expanded={open}
-            className={`rounded-full border border-[var(--adf-ui-separator)] px-2.5 py-0.5 text-[11px] font-medium hover:text-[var(--adf-ui-text)] ${remotes.some((r) => r.state !== 'connected') ? 'text-[var(--adf-ui-danger)]' : ''}`}
-          >
-            Runtimes
-          </button>
-        </Tooltip>
-      )}
-      {folded && open && (
-        <div role="dialog" aria-label="Runtimes" className="absolute bottom-full right-0 z-20 mb-1.5 flex flex-col items-end gap-1.5 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-2 shadow-lg">
-          {remotes.map((r) => <RuntimeGroup key={r.id} runtime={r} />)}
-        </div>
+    <div className="flex shrink-0 items-center gap-1.5">
+      {focused && <RuntimeGroup runtime={focused} />}
+      {!isAgentWindow && (
+        <>
+          {allResult && !open && (
+            <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">{allResult}</span>
+          )}
+          <Tooltip tip="Runtimes" className="flex">
+            <IconButton
+              ref={arrowRef}
+              onClick={toggle}
+              aria-label="Runtimes"
+              aria-haspopup="menu"
+              aria-expanded={open !== null}
+              variant={open ? 'selected' : 'neutral'}
+              className={`!size-5 ${open ? '' : '!border-transparent !bg-transparent'} ${othersDown ? '!text-[var(--adf-ui-danger)]' : ''}`}
+              data-runtimes-arrow=""
+            >
+              <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                <path d="M2 6.5 5 3.5l3 3" />
+              </svg>
+            </IconButton>
+          </Tooltip>
+          <RuntimesPopover runtimes={runtimes} position={open} onClose={() => setOpen(null)} anchor={arrowRef} />
+        </>
       )}
     </div>
   )
+}
+
+/**
+ * The Runtimes popover (ContextMenu): Kill all, then one row per runtime in
+ * the set's order (This computer first, then the remotes in the order
+ * added): name (remote icon), state, Mesh, Kill. The arrow keys move between
+ * the Kills; Escape closes it and gives the focus back to the arrow.
+ */
+export function RuntimesPopover({ runtimes, position, onClose, anchor }: {
+  runtimes: RuntimeView[]
+  position: { x: number; y: number } | null
+  onClose: () => void
+  anchor?: React.RefObject<HTMLElement | null>
+}) {
+  return (
+    <ContextMenu position={position} onClose={onClose} placement={{ x: 'end', y: 'above' }} label="Runtimes" anchor={anchor}>
+      <KillAllRow runtimes={runtimes} />
+      <div className="my-1 border-t border-hairline" />
+      {runtimes.map((r) => <RuntimeRow key={r.id} runtime={r} />)}
+    </ContextMenu>
+  )
+}
+
+/** A Kill of the popover: a menu item the arrow keys reach. */
+function PopoverKill({ armed, tip, label, onClick, children }: { armed: boolean; tip: string; label: string; onClick: () => void; children: React.ReactNode }) {
+  return (
+    <Tooltip tip={tip} className="flex">
+      <button
+        type="button"
+        role="menuitem"
+        tabIndex={-1}
+        onClick={armed ? onClick : undefined}
+        disabled={!armed}
+        aria-label={label}
+        className={`flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] ${
+          armed
+            ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
+            : 'cursor-default text-[var(--adf-ui-text-disabled)]'
+        }`}
+      >
+        <svg width="9" height="9" viewBox="0 0 10 10" fill="none" aria-hidden="true">
+          <rect x="1" y="1" width="8" height="8" rx="1" fill="currentColor" />
+        </svg>
+        {children}
+      </button>
+    </Tooltip>
+  )
+}
+
+/** Kill all: armed while anything runs on a connected runtime (an agent, a background agent, a mesh). */
+function KillAllRow({ runtimes }: { runtimes: RuntimeView[] }) {
+  const result = useKillResult('all')
+  const live = runtimes.filter((r) => r.state === 'connected')
+  const meshOn = useMeshStore((s) => live.some((r) => selectMeshSlice(s, sliceOf(r)).enabled))
+  const background = useBackgroundAgentsStore((s) => live.some((r) => selectBackgroundAgents(s, sliceOf(r)).length > 0))
+  const openLive = useDocumentStore((s) => !!s.filePath && live.some((r) => r.id === (s.runtimeId || LOCAL_RUNTIME)))
+  const agentState = useAgentStore((s) => s.state)
+  const armed = meshOn || background || (openLive && agentState !== 'off')
+  return (
+    <div role="none" className="flex items-center justify-between gap-3 px-3 py-1" data-kill-all="">
+      <span role="status" className="whitespace-nowrap text-[11px]">{result ?? ''}</span>
+      <PopoverKill
+        armed={armed}
+        tip={armed ? KILL_ALL_TIP : 'Nothing running'}
+        label={armed ? KILL_ALL_TIP : 'Kill all: nothing running'}
+        onClick={() => { void killAll(runtimes).then((text) => showKillResult('all', text)) }}
+      >
+        Kill all
+      </PopoverKill>
+    </div>
+  )
+}
+
+/** One runtime in the popover: name (remote icon), state, Mesh, Kill. */
+function RuntimeRow({ runtime }: { runtime: RuntimeView }) {
+  const k = useRuntimeKill(runtime)
+  return (
+    <div role="none" className="flex items-center gap-3 px-3 py-1" data-runtime-row={runtime.id}>
+      <span className="flex min-w-0 flex-1 items-center gap-1" title={runtime.url ?? undefined}>
+        {runtime.kind === 'remote' && <RemoteMark />}
+        <span className="max-w-[180px] truncate">{runtime.name}</span>
+      </span>
+      <span className={`whitespace-nowrap text-[11px] ${k.down ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`}>
+        {CONNECTION_STATE_LABELS[runtime.state]}
+      </span>
+      <span
+        role="status"
+        aria-label={k.meshLabel}
+        className={`flex items-center gap-1.5 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium ${
+          k.mesh.enabled ? 'bg-[var(--status-stable-bg)] text-[var(--status-stable)]' : 'text-[var(--adf-ui-text-subtle)]'
+        }`}
+      >
+        <MeshIcon />
+        {k.mesh.enabled ? `Mesh (${k.participating})` : 'Mesh off'}
+      </span>
+      {k.result && <span role="status" className="whitespace-nowrap text-[11px]">{k.result}</span>}
+      <PopoverKill armed={k.armed} tip={k.killTip} label={k.killLabel} onClick={() => void k.kill()}>Kill</PopoverKill>
+    </div>
+  )
+}
+
+/**
+ * A runtime's Kill, wherever it shows: armed while something runs there
+ * (the open agent, a background agent, its mesh) and the runtime is
+ * connected. It stops that runtime only (§12 item 4); its result shows.
+ */
+function useRuntimeKill(runtime: RuntimeView) {
+  const slice = sliceOf(runtime)
+  const mesh = useMeshStore((s) => selectMeshSlice(s, slice))
+  const backgroundCount = useBackgroundAgentsStore((s) => selectBackgroundAgents(s, slice).length)
+  const openHere = useDocumentStore((s) => !!s.filePath && (isAgentWindow || (s.runtimeId || LOCAL_RUNTIME) === runtime.id))
+  const agentState = useAgentStore((s) => s.state)
+  const result = useKillResult(runtime.id)
+  const down = runtime.state !== 'connected'
+  const running = (openHere && agentState !== 'off') || backgroundCount > 0 || mesh.enabled
+  const participating = mesh.agents.filter((a) => a.participating).length
+  const armed = running && !down
+  const kill = async () => {
+    try {
+      const outcome = await stopApi(runtime).emergencyStop()
+      showKillResult(runtime.id, killResultLabel(outcome))
+      // A partial stop may leave agents running: their own state events say which.
+      if (outcome && outcome.success === false) return
+    } catch (err) {
+      // The stop did not happen (the runtime was not reached); keep what the window shows.
+      console.error(`[StatusBar] Emergency stop on ${runtime.name} failed:`, err)
+      showKillResult(runtime.id, `Not stopped: ${err instanceof Error ? err.message : String(err)}`)
+      return
+    }
+    clearStopped(runtime)
+  }
+  return {
+    mesh, participating, down, armed, result, kill,
+    meshLabel: mesh.enabled ? `Mesh on, ${participating} participating agents` : 'Mesh off',
+    killTip: down ? CONNECTION_STATE_LABELS[runtime.state] : running ? killTooltip(runtime, true) : 'Nothing running',
+    killLabel: armed ? killTooltip(runtime, true) : `Kill on ${runtime.name}: ${down ? CONNECTION_STATE_LABELS[runtime.state] : 'nothing running'}`,
+  }
 }
 
 /**
@@ -372,42 +538,8 @@ export function RuntimeGroups({ runtimes }: { runtimes: RuntimeView[] }) {
  * computer's group, and an agent window's, read the window's own slices.
  */
 function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
-  const own = runtime.id === LOCAL_RUNTIME || isAgentWindow
-  // The slice key of this runtime in this window's stores; undefined: the window's own.
-  const slice: RuntimeId | undefined = own ? undefined : runtime.id
-  const mesh = useMeshStore((s) => selectMeshSlice(s, slice))
-  const backgroundCount = useBackgroundAgentsStore((s) => selectBackgroundAgents(s, slice).length)
-  const openHere = useDocumentStore((s) => !!s.filePath && (isAgentWindow || (s.runtimeId || LOCAL_RUNTIME) === runtime.id))
-  const agentState = useAgentStore((s) => s.state)
-  const [killResult, setKillResult] = useState<string | null>(null)
-  useEffect(() => {
-    if (!killResult) return
-    const timer = setTimeout(() => setKillResult(null), 6000)
-    return () => clearTimeout(timer)
-  }, [killResult])
-  const down = runtime.state !== 'connected'
-  const running = (openHere && agentState !== 'off') || backgroundCount > 0 || mesh.enabled
-  const participating = mesh.agents.filter((a) => a.participating).length
+  const { mesh, participating, down, armed, result: killResult, kill, meshLabel, killTip, killLabel } = useRuntimeKill(runtime)
   const header = runtimeHeader(runtime)
-  const meshLabel = mesh.enabled ? `Mesh on, ${participating} participating agents` : 'Mesh off'
-  const killTip = down ? CONNECTION_STATE_LABELS[runtime.state] : running ? killTooltip(runtime, true) : 'Nothing running'
-
-  const kill = async () => {
-    try {
-      const result = await (own ? window.adfApi : apiFor(runtime.id)).emergencyStop()
-      setKillResult(killResultLabel(result))
-      // A partial stop may leave agents running: their own state events say which.
-      if (result && result.success === false) return
-    } catch (err) {
-      // The stop did not happen (the runtime was not reached); keep what the window shows.
-      console.error(`[StatusBar] Emergency stop on ${runtime.name} failed:`, err)
-      setKillResult(`Not stopped: ${err instanceof Error ? err.message : String(err)}`)
-      return
-    }
-    if (openHere) useAgentStore.getState().setState('off')
-    useMeshStore.getState().reset(slice)
-    useBackgroundAgentsStore.getState().setAgents([], slice)
-  }
 
   return (
     <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group={runtime.id}>
@@ -442,11 +574,11 @@ function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
       )}
       <Tooltip tip={killTip} className="flex">
       <button
-        onClick={running && !down ? () => void kill() : undefined}
-        disabled={!running || down}
-        aria-label={running && !down ? killTooltip(runtime, true) : `Kill on ${runtime.name}: ${down ? CONNECTION_STATE_LABELS[runtime.state] : 'nothing running'}`}
+        onClick={armed ? () => void kill() : undefined}
+        disabled={!armed}
+        aria-label={killLabel}
         className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
-          running && !down
+          armed
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
             : 'cursor-default text-[var(--adf-ui-text-disabled)]'
         }`}

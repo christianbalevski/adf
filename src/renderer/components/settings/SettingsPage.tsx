@@ -16,7 +16,7 @@ import { AboutTab, UpdatesGroup } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
-import { SettingsRuntimeProvider, useSettingsApi } from './settings-runtime'
+import { SettingsRuntimeBanner, SettingsRuntimeProvider, useSettingsApi } from './settings-runtime'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
 import { changeOn } from './RemoteAccessSettings'
 import { NetworkingSettings } from './NetworkingSettings'
@@ -1443,6 +1443,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
       <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
         <div className="mx-auto max-w-5xl px-8 py-9 lg:px-12">
           <header className="mb-7 border-b border-[var(--adf-ui-separator)] pb-5">
+            {/* Multi-runtime: the picked runtime, above every runtime page (§6.3). Inside the header: the siblings after it keep their place. */}
+            {runtimePage && <SettingsRuntimeBanner />}
             <div className="flex items-baseline gap-3">
               <h1 className="text-2xl font-semibold tracking-tight text-[var(--adf-ui-text)]">
                 {activeNavItem.label}

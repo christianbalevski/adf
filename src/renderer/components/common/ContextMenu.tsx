@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
 
 export interface ContextMenuItem {
@@ -15,7 +15,10 @@ export interface ContextMenuItem {
 interface ContextMenuProps {
   /** Pointer position (clientX/clientY) the menu opens at. `null` = closed. */
   position: { x: number; y: number } | null
-  items: ContextMenuItem[]
+  /** The menu's items; or `children`, a body of its own whose `role="menuitem"` buttons the keys move between. */
+  items?: ContextMenuItem[]
+  /** A body in place of `items`: choosing in it does not close the menu (it shows what it did). */
+  children?: ReactNode
   onClose: () => void
   /**
    * How the menu sits on `position`: the default opens right and down from it;
@@ -25,6 +28,12 @@ interface ContextMenuProps {
   placement?: { x?: 'start' | 'end'; y?: 'below' | 'above' }
   /** Accessible name of the menu. */
   label?: string
+  /**
+   * The control that opened the menu (a popover's button): Escape and Tab
+   * give the focus back to it, and a press on it is not outside, so its own
+   * click toggles the menu.
+   */
+  anchor?: RefObject<HTMLElement | null>
 }
 
 const EDGE = 4
@@ -36,10 +45,13 @@ const EDGE = 4
  * chosen. Arrow keys move focus between enabled items; Enter/Space select;
  * Escape and Tab give the focus back to what had it when the menu opened.
  */
-export function ContextMenu({ position, items, onClose, placement, label }: ContextMenuProps) {
+export function ContextMenu({ position, items = [], children, onClose, placement, label, anchor }: ContextMenuProps) {
   const menuRef = useRef<HTMLDivElement>(null)
-  const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
-  const [clamped, setClamped] = useState<{ x: number; y: number } | null>(null)
+  // The menu's items in order: the buttons of `items`, or those of `children`.
+  const menuItems = (): HTMLButtonElement[] =>
+    Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]') ?? [])
+  // Where the menu sits once measured; the edges it is anchored by stay put when its body grows.
+  const [clamped, setClamped] = useState<{ x: number; y: number; right: number; bottom: number } | null>(null)
   // What had the focus when the menu opened: Escape and Tab give it back.
   const returnFocusRef = useRef<HTMLElement | null>(null)
 
@@ -60,28 +72,26 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
     const r = el.getBoundingClientRect()
     const x = placement?.x === 'end' ? position.x - r.width : position.x
     const y = placement?.y === 'above' ? position.y - r.height : position.y
-    setClamped({
-      x: Math.max(EDGE, Math.min(x, window.innerWidth - r.width - EDGE)),
-      y: Math.max(EDGE, Math.min(y, window.innerHeight - r.height - EDGE))
-    })
+    const left = Math.max(EDGE, Math.min(x, window.innerWidth - r.width - EDGE))
+    const top = Math.max(EDGE, Math.min(y, window.innerHeight - r.height - EDGE))
+    setClamped({ x: left, y: top, right: window.innerWidth - left - r.width, bottom: window.innerHeight - top - r.height })
     // Focus moves into the menu: its first enabled item, else the menu itself
     // (so Escape and a disabled item's hint still reach a keyboard user).
-    const first = itemRefs.current.find((b) => b && !b.disabled)
+    const first = menuItems().find((b) => !b.disabled)
     ;(first ?? el).focus()
   }, [position, placement?.x, placement?.y])
 
   useEffect(() => {
     if (!open) return
     const onPointerDown = (e: PointerEvent) => {
+      if (anchor?.current?.contains(e.target as Node)) return
       if (menuRef.current && !menuRef.current.contains(e.target as Node)) onClose()
     }
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
         e.preventDefault()
         e.stopPropagation()
-        const back = returnFocusRef.current
-        onClose()
-        if (back?.isConnected) back.focus()
+        closeAndReturnFocus()
       }
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -98,10 +108,17 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
     }
   }, [open, onClose])
 
+  /** Close, and give the focus back to the anchor, else to what had it when the menu opened. */
+  function closeAndReturnFocus() {
+    const back = anchor?.current ?? returnFocusRef.current
+    onClose()
+    if (back?.isConnected) back.focus()
+  }
+
   if (!position) return null
 
   const moveFocus = (from: number, delta: 1 | -1) => {
-    const buttons = itemRefs.current
+    const buttons = menuItems()
     const n = buttons.length
     for (let step = 1; step <= n; step++) {
       const idx = (from + delta * step + n * step) % n
@@ -114,7 +131,7 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
   }
 
   const handleMenuKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
-    const current = itemRefs.current.findIndex((b) => b === document.activeElement)
+    const current = menuItems().findIndex((b) => b === document.activeElement)
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       moveFocus(current, 1)
@@ -127,11 +144,11 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
     } else if (e.key === 'End') {
       e.preventDefault()
       moveFocus(0, -1)
-    } else if (e.key === 'Tab') {
+    } else if (e.key === 'Tab' || e.key === 'Escape') {
+      // Escape normally ends at the document listener first; here too, for a menu that has the focus without it.
       e.preventDefault()
-      const back = returnFocusRef.current
-      onClose()
-      if (back?.isConnected) back.focus()
+      e.stopPropagation()
+      closeAndReturnFocus()
     }
   }
 
@@ -152,13 +169,16 @@ export function ContextMenu({ position, items, onClose, placement, label }: Cont
       onKeyDown={handleMenuKeyDown}
       onContextMenu={(e) => e.preventDefault()}
       className="fixed z-[1000] outline-none bg-surface-raised border border-[var(--adf-ui-border)] shadow-float rounded-[var(--adf-ui-container-radius)] py-1 min-w-[180px] text-[12px] text-[var(--adf-ui-text)] select-none"
-      style={{ left: at.x, top: at.y, visibility: clamped ? 'visible' : 'hidden' }}
+      style={{
+        ...(clamped && placement?.x === 'end' ? { right: clamped.right } : { left: at.x }),
+        ...(clamped && placement?.y === 'above' ? { bottom: clamped.bottom } : { top: at.y }),
+        visibility: clamped ? 'visible' : 'hidden'
+      }}
     >
-      {items.map((item, i) => (
+      {children ?? items.map((item, i) => (
         <div key={i}>
           {item.separatorBefore && <div className="border-t border-hairline my-1" />}
           <button
-            ref={(el) => { itemRefs.current[i] = el }}
             type="button"
             role="menuitem"
             tabIndex={-1}
