@@ -9,6 +9,10 @@
  * connections view a single-runtime Studio sends) and with a list of This
  * computer alone. Both must equal the old render.
  *
+ * One edit to a baseline, not a render difference: settings.html links the
+ * Studio section of docs/guides/settings.md as `#studio`, the heading
+ * 59659ca8 gave it (it was `#application-settings`, which no longer exists).
+ *
  * Normalization: React's useId ids (`:R…:` / `«r…»`) are replaced by their
  * order of appearance, as they depend on the shape of the whole tree. Nothing
  * else is changed. Math.random is a fixed sequence (the Mesh view's loading
@@ -57,7 +61,32 @@ const AGENT_2 = { id: '8e2d4b7a-1f3c-4e9b-b2a6-7c5d9f0e3a22', path: '/agents/age
 const CURRENT = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
 const LOCAL = { ...CURRENT }
 
+/** Date.now for surfaces that show an age (the approvals panel). */
+const NOW = 1_760_000_000_000
+
+/** The notifications snapshot of the approvals surfaces: two waiting on agent-2, one answered on agent-1. */
+const SNAPSHOT = {
+  pending: [
+    { id: `${AGENT_2.path}|main|hil-1`, kind: 'approval', requestId: 'hil-1', filePath: AGENT_2.path, agentName: 'agent-2', loop: 'main', toolName: 'sys_fetch', preview: 'https://example.com/docs', reason: 'restricted', requestedAt: NOW - 65_000 },
+    { id: `${AGENT_2.path}|side|ask_1`, kind: 'ask', requestId: 'ask_1', filePath: AGENT_2.path, agentName: 'agent-2', loop: 'side', preview: 'Which folder?', question: 'Which folder?', requestedAt: NOW - 5_000 },
+  ],
+  history: [
+    { id: `${AGENT_1.path}|main|hil-0`, kind: 'approval', requestId: 'hil-0', filePath: AGENT_1.path, agentName: 'agent-1', loop: 'main', toolName: 'fs_write', preview: 'notes.md', reason: 'restricted', requestedAt: NOW - 600_000, outcome: 'approved', resolvedAt: NOW - 300_000 },
+  ],
+}
+
 type Variant = 'none' | 'local'
+type Setup = {
+  search?: string
+  open?: boolean
+  mesh?: boolean
+  /** The connection state of This computer (the status bar's runtime indicator). */
+  state?: 'connected' | 'connecting' | 'retrying' | 'not-connected'
+  /** The notifications snapshot is loaded; `panel`: the bell's panel is open. */
+  approvals?: { panel: boolean }
+  /** Go to agent is open. */
+  switcher?: boolean
+}
 
 /** A process-wide stand-in for main: every call is answered never, every subscription returns a no-op. */
 function inertApi(own: Record<string, unknown>): unknown {
@@ -69,10 +98,11 @@ function inertApi(own: Record<string, unknown>): unknown {
 }
 
 /** A fresh page: the window (`search`), the connections view (`variant`), and the fixtures in the stores. */
-async function page(variant: Variant, opts: { search?: string; open?: boolean; mesh?: boolean } = {}) {
+async function page(variant: Variant, opts: Setup = {}) {
   vi.resetModules()
   let seed = 1
   vi.spyOn(Math, 'random').mockImplementation(() => { seed = (seed * 16807) % 2147483647; return (seed - 1) / 2147483646 })
+  vi.spyOn(Date, 'now').mockReturnValue(NOW)
   vi.stubGlobal('window', {
     location: { search: opts.search ?? '?agentWindows=1' },
     adfApi: inertApi({ platform: 'linux', runtime: undefined, runtimeId: undefined }),
@@ -82,8 +112,9 @@ async function page(variant: Variant, opts: { search?: string; open?: boolean; m
   vi.stubGlobal('document', { title: 'ADF Studio', documentElement: { classList: { contains: () => false } } })
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} })
   const { useConnectionStore } = await import('../../../src/renderer/stores/connection.store')
-  const view: Record<string, unknown> = { current: CURRENT, next: null, rows: [], discovery: null }
-  if (variant === 'local') view.runtimes = [LOCAL]
+  const state = opts.state ?? 'connected'
+  const view: Record<string, unknown> = { current: { ...CURRENT, state }, next: null, rows: [], discovery: null }
+  if (variant === 'local') view.runtimes = [{ ...LOCAL, state }]
   useConnectionStore.getState().setView(view as never)
 
   const { useTrackedDirsStore } = await import('../../../src/renderer/stores/tracked-dirs.store')
@@ -111,6 +142,14 @@ async function page(variant: Variant, opts: { search?: string; open?: boolean; m
   }
 
   const { useApprovalsStore } = await import('../../../src/renderer/stores/approvals.store')
+  if (opts.approvals) {
+    useApprovalsStore.getState().setSnapshot(SNAPSHOT as never)
+    useApprovalsStore.getState().setPanelOpen(opts.approvals.panel)
+  }
+  if (opts.switcher) {
+    const { useKeyboardStore } = await import('../../../src/renderer/stores/keyboard.store')
+    useKeyboardStore.getState().setSwitcherOpen(true)
+  }
   useApprovalsStore.getState().pushToast({ id: 'n-1', kind: 'approval', agentName: 'agent-2', loop: 'main', detail: 'sys_fetch', filePath: AGENT_2.path } as never)
   useApprovalsStore.getState().pushToast({ id: 'n-2', kind: 'ask', agentName: 'agent-2', loop: 'side', detail: 'Which folder?', filePath: AGENT_2.path } as never)
 }
@@ -125,7 +164,7 @@ function normalize(html: string): string {
 }
 
 /** Each surface: its name and its render, on a page already set up. */
-const SURFACES: Array<{ name: string; setup: { search?: string; open?: boolean; mesh?: boolean }; render: () => Promise<string> }> = [
+const SURFACES: Array<{ name: string; setup: Setup; render: () => Promise<string> }> = [
   {
     name: 'status-bar',
     setup: {},
@@ -172,6 +211,60 @@ const SURFACES: Array<{ name: string; setup: { search?: string; open?: boolean; 
     render: async () => {
       const { MeshGraphView } = await import('../../../src/renderer/components/mesh/MeshGraphView')
       return renderToStaticMarkup(<MeshGraphView />)
+    },
+  },
+  // This computer not connected: the runtime indicator says so.
+  ...(['connecting', 'retrying', 'not-connected'] as const).map((state) => ({
+    name: `status-bar-${state}`,
+    setup: { state } as Setup,
+    render: async () => {
+      const { StatusBar } = await import('../../../src/renderer/components/layout/StatusBar')
+      return renderToStaticMarkup(<StatusBar />)
+    },
+  })),
+  {
+    // Settings: its nav and the first section.
+    name: 'settings',
+    setup: {},
+    render: async () => {
+      const { SettingsPage } = await import('../../../src/renderer/components/settings/SettingsPage')
+      return renderToStaticMarkup(<SettingsPage />)
+    },
+  },
+  {
+    // The bell with two waiting.
+    name: 'approvals-bell',
+    setup: { approvals: { panel: false } },
+    render: async () => {
+      const { ApprovalsMenu } = await import('../../../src/renderer/components/layout/ApprovalsMenu')
+      return renderToStaticMarkup(<ApprovalsMenu />)
+    },
+  },
+  {
+    // The bell's panel: the rows waiting and the recent one.
+    name: 'approvals-panel',
+    setup: { approvals: { panel: true } },
+    render: async () => {
+      const { ApprovalsMenu } = await import('../../../src/renderer/components/layout/ApprovalsMenu')
+      return renderToStaticMarkup(<ApprovalsMenu />)
+    },
+  },
+  {
+    // Go to agent in the main window, agent-1 open, agent-2 waiting.
+    name: 'go-to-agent',
+    setup: { open: true, switcher: true, approvals: { panel: false } },
+    render: async () => {
+      const { AgentSwitcher } = await import('../../../src/renderer/components/common/AgentSwitcher')
+      return renderToStaticMarkup(<AgentSwitcher />)
+    },
+  },
+  {
+    // Go to agent in agent-1's window.
+    name: 'go-to-agent-window',
+    setup: { search: '?window=agent&file=%2Fagents%2Fagent-1.adf', open: true, switcher: true },
+    render: async () => {
+      const { AgentSwitcher } = await import('../../../src/renderer/components/common/AgentSwitcher')
+      return renderToStaticMarkup(<AgentSwitcher />)
     },
   },
   {
