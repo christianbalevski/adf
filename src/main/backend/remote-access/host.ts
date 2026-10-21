@@ -1,6 +1,7 @@
 import type { DaemonClient } from '../../../shared/daemon-client'
 import type { PairingClaimView, RemoteAccessEvent, RemoteAccessStatus } from '../../../shared/types/remote-access.types'
-import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult } from '../../../shared/types/remote-access-ipc.types'
+import type { RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteShareResult } from '../../../shared/types/remote-access-ipc.types'
+import { listenPlan, listensOnText, NO_NETWORK_YET, PUBLIC_WARNING } from '../../../shared/utils/network-consent-text'
 import { RemoteAccessApiError, RemoteAccessManagement } from './client'
 
 /**
@@ -10,8 +11,11 @@ import { RemoteAccessApiError, RemoteAccessManagement } from './client'
  * routes (master token, local proof); Studio keeps no remote-access state
  * of its own.
  *
- * - Turning access on, removing a computer and changing `tailscale serve`
- *   are confirmed first (a native dialog over the window).
+ * - Turning access on, Add → Share, removing a computer and changing
+ *   `tailscale serve` are confirmed first, in a native dialog over the
+ *   window (review A1: never on the renderer's word). The dialog that
+ *   turns access on names every network it will listen on and warns for a
+ *   Public one (review A2).
  * - While a pairing window is open the status is read every second, so the
  *   countdown, the attempts left and a pending claim show without the
  *   daemon's events; a claim raises "Allow <device>?" once.
@@ -39,6 +43,8 @@ export interface RemoteAccessHostDeps {
   confirm: (prompt: { message: string; detail: string; ok: string }) => Promise<boolean>
   /** "Allow <device>?": true allow, false deny, null when the prompt went away unanswered. */
   askClaim: (prompt: ClaimPrompt) => Promise<boolean | null>
+  /** The local runtime as Studio names it, `<name> (Local)`, while there is more than one runtime; else null (review A6). */
+  localRuntime?: () => string | null
   platform?: NodeJS.Platform
   pollMs?: number
   log?: Pick<Console, 'log' | 'warn'>
@@ -50,7 +56,12 @@ export interface RemoteAccessHostDeps {
  */
 export type RemoteAccessEventPayload = { [K in keyof RemoteAccessEvent]?: unknown }
 
-export const ENABLE_DETAIL = 'Devices you pair or add get full control of this computer\'s agents. A device token is as powerful as your seed phrase.'
+/** The power a device gets; `runtime`: the local runtime's name while there is more than one runtime. */
+export function enableDetail(runtime: string | null = null): string {
+  return `Devices you pair or add get full control of ${runtime ? `the agents of ${runtime}` : 'this computer\'s agents'}. A device token is as powerful as your seed phrase.`
+}
+export const ENABLE_DETAIL = enableDetail()
+export { NO_NETWORK_YET }
 export const WINDOWS_FIREWALL_DETAIL = 'Windows may ask whether ADF Studio may accept connections. Choose Allow on private networks.'
 
 export function deviceAddedNotice(label: string): string {
@@ -82,6 +93,7 @@ export class RemoteAccessHost {
   private readonly recentNotices = new Map<string, number>()
   private disposed = false
   private lockouts = 0
+  private sharing = false
 
   constructor(private readonly deps: RemoteAccessHostDeps) {
     this.log = deps.log ?? console
@@ -138,13 +150,12 @@ export class RemoteAccessHost {
   }
 
   /**
-   * The switch (turning it on is confirmed once, plainly) and the
-   * computer's name. `confirmed: true`: the user pressed Allow under
-   * ENABLE_DETAIL in Add → Share, which is that confirmation; no second dialog.
+   * The switch (turning it on is confirmed once, in main, naming the
+   * networks it listens on) and the computer's name. Nothing the renderer
+   * sends skips the dialog (review A1); Add → Share is share().
    */
-  async set(request: { enabled?: unknown; name?: unknown; confirmed?: unknown }): Promise<RemoteAccessResult> {
+  async set(request: { enabled?: unknown; name?: unknown }): Promise<RemoteAccessResult> {
     const enabled = typeof request?.enabled === 'boolean' ? request.enabled : undefined
-    const confirmed = request?.confirmed === true
     const name = typeof request?.name === 'string' && request.name.trim() ? request.name.trim() : undefined
     if (enabled === undefined && name === undefined) return { ok: false, code: 'daemon', error: 'Nothing to change.' }
     if (typeof this.management() === 'string') return { ok: false, code: 'unavailable', error: this.management() as string }
@@ -155,12 +166,15 @@ export class RemoteAccessHost {
         return s
       })
     }
-    if (enabled && !this.last?.enabled && confirmed) {
-      this.log.log('[Remote access] Turning on: allowed in Settings → Connections → Add → Share')
-    } else if (enabled && !this.last?.enabled) {
+    if (enabled) {
+      // Read now: the dialog names what it listens on at this moment.
+      const status = await (this.management() as RemoteAccessManagement).status().catch(() => this.last)
+      if (status) this.last = status
+    }
+    if (enabled && !this.last?.enabled) {
       const ok = await this.deps.confirm({
         message: 'Turn on remote access',
-        detail: [ENABLE_DETAIL, ...((this.deps.platform ?? process.platform) === 'win32' ? [WINDOWS_FIREWALL_DETAIL] : [])].join('\n\n'),
+        detail: this.consentDetail(this.last ? listenPlan(this.last, { allow: false }) : null),
         ok: 'Turn on',
       })
       if (!ok) {
@@ -174,6 +188,62 @@ export class RemoteAccessHost {
       this.log.log(`[Remote access] ${enabled ? 'On' : 'Off'} (Settings → Connections): ${s?.state ?? '?'}${s?.message ? `: ${s.message}` : ''}`)
     }
     return result
+  }
+
+  /** The dialog body: the power, every network it will listen on, the Public warning, the Windows firewall prompt. */
+  private consentDetail(plan: ReturnType<typeof listenPlan> | null): string {
+    return [
+      enableDetail(this.deps.localRuntime?.() ?? null),
+      plan ? listensOnText(plan.labels) : null,
+      plan?.exposed ? PUBLIC_WARNING : null,
+      (this.deps.platform ?? process.platform) === 'win32' ? WINDOWS_FIREWALL_DETAIL : null,
+    ].filter((line): line is string => !!line).join('\n\n')
+  }
+
+  /**
+   * Add → Share (review A1): one native dialog, owned here, naming every
+   * network remote access will listen on (those already allowed too, review
+   * A2) with the Public warning; Allow turns remote access on and allows
+   * exactly the networks it named, read here, never from the renderer.
+   * Nothing to ask (on, every current network allowed): nothing changes.
+   */
+  async share(): Promise<RemoteShareResult> {
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') return { ok: false, code: 'unavailable', error: mgmt }
+    if (this.sharing) return { ok: false, code: 'cancelled', error: 'Share is already asking.' }
+    this.sharing = true
+    let turnedOn = false
+    try {
+      const status = await mgmt.status()
+      this.adopt(status)
+      const plan = listenPlan(status, { allow: true })
+      const enable = !status.enabled
+      if (!enable && plan.allow.length === 0) return { ok: true, view: this.view(status, null), turnedOn: false }
+      const ok = await this.deps.confirm({ message: 'Share', detail: this.consentDetail(plan), ok: 'Allow' })
+      if (!ok) {
+        this.log.log('[Remote access] Share cancelled in the confirmation')
+        return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
+      }
+      if (enable) {
+        await mgmt.set({ enabled: true })
+        turnedOn = true
+        this.log.log('[Remote access] On (Settings → Connections → Add → Share)')
+      }
+      for (const n of plan.allow) {
+        await mgmt.allowNetwork(n.id!)
+        this.log.log(`[Remote access] Allowed on ${n.label} (Add → Share)`)
+      }
+      const view = this.adopt(await mgmt.status())
+      this.publish(view)
+      return { ok: true, view, turnedOn }
+    } catch (err) {
+      const error = errorText(err)
+      this.log.warn(`[Remote access] Share failed: ${error}`)
+      if (turnedOn) void this.get().then((view) => this.publish(view))
+      return { ok: false, code: 'daemon', error, turnedOn }
+    } finally {
+      this.sharing = false
+    }
   }
 
   /** Allow on this network / Remove (owner decision 2026-10-18 b): the daemon's consent routes. */

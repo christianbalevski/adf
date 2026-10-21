@@ -39,6 +39,16 @@ export type RemoteAccessResult =
   | { ok: true; view: RemoteAccessView }
   | { ok: false; code: RemoteAccessErrorCode; error: string }
 
+/**
+ * Add → Share (REMOTE_ACCESS_SHARE): main asks once in a native dialog,
+ * then turns remote access on and allows the networks it named.
+ * `turnedOn`: this call turned remote access on (also after a later step
+ * failed), so Share turns it off again when left with no device added.
+ */
+export type RemoteShareResult =
+  | { ok: true; view: RemoteAccessView; turnedOn: boolean }
+  | { ok: false; code: RemoteAccessErrorCode; error: string; turnedOn?: boolean }
+
 /** "Add a computer": the token, shown once. */
 export type RemoteDeviceAddResult =
   | { ok: true; view: RemoteAccessView; device: RemoteDevice; token: string }

@@ -22,11 +22,11 @@ import { electronStub } from './daemon-mode-electron'
 import { createFakeRemoteDaemon, device, type FakeRemoteDaemon } from './remote-access-fakes'
 import { DaemonClient, staticCredentials } from '../../src/shared/daemon-client'
 import { IPC } from '../../src/shared/constants/ipc-channels'
-import { RemoteAccessHost, deviceAddedNotice, deviceRemovedNotice, type RemoteAccessHostDeps } from '../../src/main/backend/remote-access/host'
+import { RemoteAccessHost, deviceAddedNotice, deviceRemovedNotice, NO_NETWORK_YET, WINDOWS_FIREWALL_DETAIL, type RemoteAccessHostDeps } from '../../src/main/backend/remote-access/host'
 import { PairingFlow, type PairingSaveInput } from '../../src/main/backend/remote-access/pairing'
 import { DaemonPeerFeed, RemoteDiscovery, type PeerFeed } from '../../src/main/backend/remote-access/discovery'
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
-import { claimQuestion, networkStatusView, registerRemoteAccessHandlers, runtimeName, unavailableReason } from '../../src/main/backend/remote-access-ipc'
+import { claimQuestion, MAIN_WINDOW_ONLY, networkStatusView, registerRemoteAccessHandlers, runtimeName, unavailableReason } from '../../src/main/backend/remote-access-ipc'
 import type { LanReach } from '../../src/main/services/lan-reach'
 import { NetworkConsentPrompt, networkQuestion, PUBLIC_MESH_WARNING, PUBLIC_WARNING, type NetworkQuestion } from '../../src/main/backend/remote-access/network-consent'
 import type { NetworkPeer, NetworkView } from '../../src/shared/types/remote-access.types'
@@ -121,17 +121,92 @@ describe('host panel (Settings → Connections: Add → Share, Devices)', () => 
     expect(h.confirms).toHaveLength(2)
   })
 
-  it('Add → Share: Allow under the same sentence is the confirmation, so no second dialog; only `confirmed: true` skips it', async () => {
+  it('review A1: a renderer-asserted `confirmed` no longer skips the dialog: turning on always asks in main', async () => {
     await h.host.get()
-    // Anything but true asks.
     h.setConfirm(false)
-    expect(await h.host.set({ enabled: true, confirmed: 'yes' })).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(await h.host.set({ enabled: true, confirmed: true } as never)).toMatchObject({ ok: false, code: 'cancelled' })
     expect(h.confirms).toHaveLength(1)
-    const on = await h.host.set({ enabled: true, confirmed: true })
-    expect(on.ok && on.view.status?.enabled).toBe(true)
+    expect(h.daemon.requests.some((r) => r.method === 'PUT')).toBe(false)
+  })
+
+  const HOME = 'Wi-Fi (192.168.1.0/24)'
+  const cafe = (over: Partial<NetworkView> = {}): NetworkView => ({ id: 'lan-fedcba9876543210', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'public', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'], ...over })
+  const allowedCafe = { id: 'lan-fedcba9876543210', kind: 'lan' as const, label: 'Cafe (10.0.0.0/24)', addedAt: '2026-10-18T09:00:00Z' }
+  const posted = (d: FakeRemoteDaemon) => d.requests.filter((r) => r.method === 'POST' && r.path === '/remote-access/networks').map((r) => r.body)
+
+  it('review A1/A2/A4: Share asks ONE native dialog naming every network it will listen on, the Public warning and the Windows firewall sentence; Allow turns it on and allows those networks', async () => {
+    h.daemon.state.networks.push(cafe())
+    const result = await h.host.share()
     expect(h.confirms).toHaveLength(1)
-    // The daemon gets only `enabled`: `confirmed` is Studio's own.
-    expect(h.daemon.requests.find((r) => r.method === 'PUT')?.body).toEqual({ enabled: true })
+    expect(h.confirms[0]).toMatchObject({ message: 'Share', ok: 'Allow' })
+    const detail = h.confirms[0].detail
+    expect(detail).toContain('as powerful as your seed phrase')
+    expect(detail).toContain(`Listens on ${HOME} and Cafe (10.0.0.0/24).`)
+    expect(detail).toContain(PUBLIC_WARNING)
+    expect(detail).toContain(WINDOWS_FIREWALL_DETAIL)
+    expect(result).toMatchObject({ ok: true, turnedOn: true, view: { status: { enabled: true } } })
+    expect(h.daemon.requests.filter((r) => r.method === 'PUT').map((r) => r.body)).toEqual([{ enabled: true }])
+    expect(posted(h.daemon)).toEqual([{ id: 'lan-fedcba9876543210' }])
+  })
+
+  it('review A1: Cancel in the Share dialog changes nothing', async () => {
+    h.daemon.state.networks.push(cafe())
+    h.setConfirm(false)
+    expect(await h.host.share()).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(h.daemon.requests.filter((r) => r.method !== 'GET')).toEqual([])
+  })
+
+  it('review A2: a Public network already allowed (for agent sharing) is still named and warned about; nothing to allow, so it only turns on', async () => {
+    h.daemon.state.networks = [cafe()]
+    h.daemon.state.allowed = [allowedCafe]
+    expect(await h.host.share()).toMatchObject({ ok: true, turnedOn: true })
+    expect(h.confirms[0].detail).toContain('Listens on Cafe (10.0.0.0/24).')
+    expect(h.confirms[0].detail).toContain(PUBLIC_WARNING)
+    expect(posted(h.daemon)).toEqual([])
+  })
+
+  it('review A1: main allows exactly the networks it named: one that appears while the dialog is open is not allowed', async () => {
+    let daemon!: FakeRemoteDaemon
+    const other = hostSetup({ confirm: async () => { daemon.state.networks.push(cafe({ id: 'lan-1111111111111111', label: 'Other (10.1.0.0/24)' })); return true } })
+    daemon = other.daemon
+    daemon.state.networks.push(cafe())
+    expect(await other.host.share()).toMatchObject({ ok: true })
+    expect(posted(daemon)).toEqual([{ id: 'lan-fedcba9876543210' }])
+    other.host.dispose()
+  })
+
+  it('review A1: on, and every network allowed: Share asks nothing and changes nothing', async () => {
+    h.daemon.state.enabled = true
+    expect(await h.host.share()).toMatchObject({ ok: true, turnedOn: false })
+    expect(h.confirms).toEqual([])
+    expect(h.daemon.requests.filter((r) => r.method !== 'GET')).toEqual([])
+  })
+
+  it('review A2: the Devices switch dialog names the networks it listens on, a Public one already allowed with its warning', async () => {
+    h.daemon.state.networks = [cafe()]
+    h.daemon.state.allowed = [allowedCafe]
+    await h.host.set({ enabled: true })
+    expect(h.confirms[0].message).toBe('Turn on remote access')
+    expect(h.confirms[0].detail).toContain('Listens on Cafe (10.0.0.0/24).')
+    expect(h.confirms[0].detail).toContain(PUBLIC_WARNING)
+    // A network not allowed is not listened on by the switch: not named.
+    const other = hostSetup()
+    other.daemon.state.networks = [cafe()]
+    other.daemon.state.allowed = []
+    await other.host.set({ enabled: true })
+    expect(other.confirms[0].detail).toContain(NO_NETWORK_YET)
+    expect(other.confirms[0].detail).not.toContain('Cafe')
+    expect(other.confirms[0].detail).not.toContain(PUBLIC_WARNING)
+    other.host.dispose()
+  })
+
+  it('review A6: with more than one runtime the dialogs name the shared runtime, "<name> (Local)"', async () => {
+    const named = hostSetup({ localRuntime: () => 'box-1 (Local)' })
+    await named.host.share()
+    expect(named.confirms[0].detail).toContain('full control of the agents of box-1 (Local)')
+    named.host.dispose()
+    await h.host.share()
+    expect(h.confirms[0].detail).toContain("full control of this computer's agents")
   })
 
   it('Add a computer returns the device token once, with a notice; the view never holds it', async () => {
@@ -911,6 +986,50 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     ipc.dispose()
   })
 
+  it('review A1: only the main window changes remote access or consent: an agent window (of another runtime too) is refused and nothing reaches the daemon; Share and the switch ask in main', async () => {
+    electronStub.handlers.clear()
+    electronStub.calls.length = 0
+    const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
+    daemon.state.networks.push({ id: 'lan-fedcba9876543210', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'public', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'] })
+    const client = new DaemonClient({ baseUrl: LOOPBACK, credentials: staticCredentials(MASTER), fetch: daemon.fetch })
+    const s = store()
+    const main = { isDestroyed: () => false, isFocused: () => true, webContents: { id: 1 } }
+    const ipc = registerRemoteAccessHandlers({
+      mode: 'local', daemon: () => ({ client: async () => client, status: () => ({ startedBy: 'studio' }) }), backend: s.store, codec: fakeCodec(),
+      window: () => main as never, keepDaemonRunning: () => false,
+      overrides: { discovery: { feed: () => null }, consentPollMs: 0 },
+      log: quiet,
+    })
+    const invoke = (channel: string, event: unknown, ...args: unknown[]) => electronStub.handlers.get(channel)!(event, ...args)
+    const agentWindow = { sender: { id: 2 } }
+    const calls: Array<[string, ...unknown[]]> = [
+      [IPC.REMOTE_ACCESS_SET, { enabled: true }], [IPC.REMOTE_ACCESS_SHARE], [IPC.REMOTE_ACCESS_DEVICE_ADD, 'laptop-1'], [IPC.REMOTE_ACCESS_DEVICE_REMOVE, 'dev1'],
+      [IPC.REMOTE_ACCESS_PAIRING_OPEN], [IPC.REMOTE_ACCESS_PAIRING_CLOSE], [IPC.REMOTE_ACCESS_TAILSCALE_SERVE, true],
+      [IPC.NETWORK_ALLOW, 'lan-fedcba9876543210'], [IPC.NETWORK_FORGET, 'lan-0123456789abcdef']
+    ]
+    for (const [channel, ...args] of calls) {
+      expect(await invoke(channel, agentWindow, ...args), channel).toMatchObject({ ok: false, error: MAIN_WINDOW_ONLY })
+      expect(await invoke(channel, {}, ...args), `${channel} (no sender)`).toMatchObject({ ok: false, error: MAIN_WINDOW_ONLY })
+    }
+    expect(daemon.requests.filter((r) => r.method !== 'GET')).toEqual([])
+    expect(electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
+    // The main window: `confirmed` asks anyway; Cancel there changes nothing.
+    const fromMain = { sender: main.webContents }
+    electronStub.dialogResponse = 1
+    expect(await invoke(IPC.REMOTE_ACCESS_SET, fromMain, { enabled: true, confirmed: true })).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(await invoke(IPC.REMOTE_ACCESS_SHARE, fromMain)).toMatchObject({ ok: false, code: 'cancelled' })
+    expect(daemon.requests.filter((r) => r.method !== 'GET')).toEqual([])
+    // Allow in the one dialog: on, and the named network allowed.
+    electronStub.dialogResponse = 0
+    expect(await invoke(IPC.REMOTE_ACCESS_SHARE, fromMain)).toMatchObject({ ok: true, turnedOn: true })
+    const boxes = electronStub.calls.filter((c) => c.api === 'dialog.showMessageBox').map((c) => c.args[0] as { message: string; detail: string })
+    expect(boxes.map((b) => b.message)).toEqual(['Turn on remote access', 'Share', 'Share'])
+    expect(boxes[2].detail).toContain('Cafe (10.0.0.0/24)')
+    expect(daemon.state.enabled).toBe(true)
+    expect(daemon.state.allowed.map((a) => a.id)).toContain('lan-fedcba9876543210')
+    ipc.dispose()
+  })
+
   it('Allow device cannot be spoofed by the device name (security review 3)', () => {
     const spoof = 'agent-2 laptop\nFrom 192.168.1.5 (this network) · Tailscale owner@example.com\u202e'
     const q = claimQuestion({ claimId: 'c', deviceName: spoof, clientKind: 'studio', address: '203.0.113.9', via: 'lan', tailnetLogin: null, at: '' })
@@ -1025,6 +1144,9 @@ describe('one name and the Networking status line', () => {
 })
 
 describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
+  /** The main window (only it changes consent, review A1). */
+  const mainWindow = { isDestroyed: () => false, isFocused: () => true, webContents: { id: 1 } }
+  const fromMain = { sender: mainWindow.webContents }
   const dirs: string[] = []
   afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
   const net = (over: Partial<NetworkView> = {}): NetworkView => ({ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'unknown', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'], ...over })
@@ -1086,7 +1208,7 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     let networks = [cafe, home]
     const reach = { snapshot: async () => ({ addresses: [], listenable: [], networks, tailscale: 'absent' }) } as unknown as LanReach
     const ipc = registerRemoteAccessHandlers({
-      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
+      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => mainWindow as never, keepDaemonRunning: () => false, settingsDir: dir,
       meshLan: () => ({ on: true, sync: async () => {} }),
       overrides: { reach, consentPollMs: 0, discovery: { feed: () => null } },
       log: quiet,
@@ -1103,7 +1225,7 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     // Not now on Home; Allow on this network on Cafe.
     await electronStub.handlers.get(IPC.NETWORK_NOTICE_DISMISS)!({}, home.id)
     expect(last().map((n) => n.key)).toEqual([cafe.id])
-    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toEqual({ ok: true })
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!(fromMain, cafe.id)).toEqual({ ok: true })
     expect(last()).toEqual([])
     // Home flaps: no new notice this session.
     networks = [cafe]
@@ -1124,23 +1246,23 @@ describe('consent per network in Studio (owner decision 2026-10-18 b)', () => {
     const reach = { snapshot: async () => ({ addresses: [], listenable: [], networks: [cafe], tailscale: 'absent' }) } as unknown as LanReach
     let syncs = 0
     const ipc = registerRemoteAccessHandlers({
-      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, settingsDir: dir,
+      mode: 'embedded', daemon: () => null, backend: store, codec: fakeCodec(), window: () => mainWindow as never, keepDaemonRunning: () => false, settingsDir: dir,
       meshLan: () => ({ on: true, sync: async () => { syncs++ } }),
       overrides: { reach, consentPollMs: 0, discovery: { feed: () => null } },
       log: quiet,
     })
-    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toEqual({ ok: true })
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!(fromMain, cafe.id)).toEqual({ ok: true })
     const saved = () => JSON.parse(readFileSync(join(dir, 'remote-access.json'), 'utf-8')).allowedNetworks
     expect(saved()).toEqual([expect.objectContaining({ id: cafe.id, kind: 'lan', label: cafe.label })])
     expect(syncs).toBe(1)
-    expect(await electronStub.handlers.get(IPC.NETWORK_FORGET)!({}, cafe.id)).toEqual({ ok: true })
+    expect(await electronStub.handlers.get(IPC.NETWORK_FORGET)!(fromMain, cafe.id)).toEqual({ ok: true })
     expect(saved()).toEqual([])
     expect(syncs).toBe(2)
-    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, 'lan-ffffffffffffffff')).toEqual({ ok: false, error: 'That network is not one this computer is on now.' })
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!(fromMain, 'lan-ffffffffffffffff')).toEqual({ ok: false, error: 'That network is not one this computer is on now.' })
     ipc.dispose()
     electronStub.handlers.clear()
-    const remote = registerRemoteAccessHandlers({ mode: 'remote', daemon: () => null, backend: store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false, overrides: { reach, consentPollMs: 0 }, log: quiet })
-    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!({}, cafe.id)).toMatchObject({ ok: false })
+    const remote = registerRemoteAccessHandlers({ mode: 'remote', daemon: () => null, backend: store, codec: fakeCodec(), window: () => mainWindow as never, keepDaemonRunning: () => false, overrides: { reach, consentPollMs: 0 }, log: quiet })
+    expect(await electronStub.handlers.get(IPC.NETWORK_ALLOW)!(fromMain, cafe.id)).toEqual({ ok: false, error: unavailableReason('remote') })
     remote.dispose()
   })
 })

@@ -813,19 +813,35 @@ on ***name* (Local)**; the daemon must be running. Design:
 [remote-access.md](../design/remote-access.md).
 
 On this computer, **Settings → Connections → Add → Share** asks for consent
-when remote access is off or this network is not allowed, in the dialog
-itself, with one **Allow**:
+when remote access is off or a network here is not allowed:
 
 > Computers you pair on *network* get full control of this runtime, as
 > powerful as your seed phrase.
 
-**Allow** turns remote access on and allows the networks named; nothing
-else asks again. The **Remote access** switch in **Devices** turns it on or
-off too; turning it on there asks once, in a dialog titled "Turn on remote
-access":
+It names every network this computer is on, those you allowed earlier
+too, with "Public network. The token is sent unencrypted." when Windows
+calls one of them Public, or on macOS and Linux, which do not say. With
+more than one runtime, "this runtime" is ***name* (Local)**: Share always
+shares this computer's runtime. **Allow** opens one dialog of the OS,
+titled "Share", with the same: every network remote access will listen on
+(those allowed on another visit included), the Public warning, and on
+Windows "Windows may ask whether ADF Studio may accept connections. Choose
+Allow on private networks." **Allow** there turns remote access on and
+allows exactly the networks it named. Only Settings in the main window
+can do this; an agent window cannot.
+
+Leaving Share (**Back**, **Cancel**) before a device is added turns remote
+access off again when Share turned it on. Otherwise Share says "Remote
+access stays on; turn it off in Devices."
+
+The **Remote access** switch in **Devices** turns it on or off too; turning
+it on there asks once, in a dialog titled "Turn on remote access":
 
 > Devices you pair or add get full control of this computer's agents. A
 > device token is as powerful as your seed phrase.
+
+It names the networks you allowed, which it listens on, with the Public
+warning for one of them; a network not allowed yet waits for **Allow**.
 
 A paired device can attach an MCP server or adapter with any command and
 start an agent, so it can run code as you and read the owner seed phrase
@@ -903,7 +919,10 @@ the **On quit** row says "Devices lose the connection when Studio quits."
 1. A 6-digit code, in large digits: the time left (2 minutes), the wrong
    codes left (20) and this computer's fingerprint. Share opens the pairing
    window itself; **Back** or **Cancel** before a computer claims it closes
-   it. An expired code offers **Renew**.
+   it. A code that expired, or closed after too many wrong codes, offers
+   **Renew** for a new one. Below it, when the daemon sees a firewall block
+   or cannot read the firewall (Linux), **Firewall** says what to do, with
+   the commands to run.
 2. **Addresses**, by network, each with **Copy** and a label:
 
    | Group | Address | Label |
@@ -1119,7 +1138,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
 | "Turn on remote access" / "Computers you pair … get full control of this runtime, …" / "Devices lose the connection when Studio quits." / "Change on *name*." | [Remote access](#remote-access) |
 | "Remote access paused on …" / "Agent sharing paused on …" / Allow / Dismiss / "Public network. …" / "Paused on …" / "Listening on …" | [Network status](#network-status) |
-| "Allow device" / "Approved: *name*." / "Anyone on this network can read the token." / Encrypted / Not encrypted / Renew / "Pairing: a device was locked out after 5 wrong codes." / "Pairing closed after too many wrong codes." / "Device added: …" | [Share](#share) |
+| "Allow device" / "Approved: *name*." / "Anyone on this network can read the token." / Encrypted / Not encrypted / Renew / "No code." / Firewall / "Remote access stays on; turn it off in Devices." / "Pairing: a device was locked out after 5 wrong codes." / "Pairing closed after too many wrong codes." / "Device added: …" | [Share](#share) |
 | "Revoke device" / "Device revoked: …" | [Devices](#devices) |
 | Connect / Share / "None found yet. On the other computer: Add, then Share." | [Add](#add) |
 | "Waiting for *host* to allow this device…" / "Wrong code. …" / "… denied this device." / "… The host's firewall may block port 7385." / "Use new address" | [Connect](#connect) |

@@ -18,8 +18,11 @@ import {
   groupedUrls,
   meshServerHosts,
   PUBLIC_NETWORK_WARNING,
+  devicesHint,
   shareConsent,
+  shareLeave,
   SharePanelView,
+  STAYS_ON_LINE,
   NewTokenPanel,
   NOT_ENCRYPTED_WARNING,
   PairingCodePanel,
@@ -164,7 +167,8 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
   it('remote access off: one sentence and one explicit Allow; nothing listens, no address or code is shown', () => {
     const consent = shareConsent(status({ enabled: false, state: 'off', networks: [home] }))
     expect(consent).toMatchObject({ enable: true, networks: [], warning: null })
-    expect(consent!.text).toBe('Computers you pair get full control of this runtime, as powerful as your seed phrase.')
+    // Review A2: the network it will listen on is named, already allowed or not.
+    expect(consent!.text).toBe('Computers you pair on Home (192.168.1.0/24) get full control of this runtime, as powerful as your seed phrase.')
     const html = render(view(status({ enabled: false, state: 'off', networks: [home] })))
     expect(html).toContain(consent!.text)
     expect(html.match(/>Allow</g)).toHaveLength(1)
@@ -178,7 +182,8 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     const consent = shareConsent(status({ networks: [home, cafe] }))
     expect(consent).toMatchObject({ enable: false, warning: PUBLIC_NETWORK_WARNING })
     expect(consent!.networks.map((n) => n.id)).toEqual([cafe.id])
-    expect(consent!.text).toBe('Computers you pair on Cafe (10.0.0.0/24) get full control of this runtime, as powerful as your seed phrase.')
+    // Review A2: every network it will listen on, the one already allowed too.
+    expect(consent!.text).toBe('Computers you pair on Home (192.168.1.0/24) and Cafe (10.0.0.0/24) get full control of this runtime, as powerful as your seed phrase.')
     expect(render(view(status({ networks: [cafe] })))).toContain(PUBLIC_NETWORK_WARNING)
     // An unidentified network cannot be allowed: it is not asked for.
     expect(shareConsent(status({ networks: [home, { ...cafe, id: null, label: 'Unidentified network' }] }))).toBeNull()
@@ -223,9 +228,60 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(addedDeviceLine(new Set(), [device({ id: 'c', origin: 'token' })])).toBeNull()
   })
 
+  it('review A2: a Public network allowed earlier (for agent sharing) still carries the warning when remote access is turned on there', () => {
+    const allowedCafe = { ...cafe, allowed: true }
+    const consent = shareConsent(status({ enabled: false, state: 'off', networks: [allowedCafe] }))
+    expect(consent).toMatchObject({ enable: true, networks: [], warning: PUBLIC_NETWORK_WARNING })
+    expect(consent!.text).toContain('on Cafe (10.0.0.0/24)')
+  })
+
+  it('review A6: with more than one runtime the sentence names the local runtime Share shares', () => {
+    expect(shareConsent(status({ enabled: false, state: 'off', networks: [home] }), 'box-1 (Local)')!.text).toBe('Computers you pair on Home (192.168.1.0/24) get full control of box-1 (Local), as powerful as your seed phrase.')
+    expect(devicesHint('box-1 (Local)')).toBe('Computers using box-1 (Local).')
+    expect(devicesHint(null)).toBe('Computers using this runtime.')
+    const html = renderToStaticMarkup(<DevicesGroupView view={view(status())} runtime="box-1 (Local)" busy={false} message={null} onSwitch={noop} onKeepRunning={noop} onRevoke={noop} />)
+    // The hint is a tooltip; the row says it too.
+    expect(html).toContain('Computers you add use box-1 (Local).')
+    expect(html).not.toContain('this runtime')
+  })
+
   it('an expired code offers Renew; not local mode says why', () => {
     expect(render(view(status({ networks: [home], pairing: { ...pairing, expiresAt: '2026-10-18T11:00:00Z' } })))).toContain('>Renew<')
+    // Review A3: the daemon drops an expired window (pairing null), as after 20 wrong codes or a failed open: Renew, never "Opening…" for good.
+    const closed = render(view(status({ networks: [home], pairing: null })), { opened: true })
+    expect(closed).toContain('>Renew<')
+    expect(closed).not.toContain('Opening…')
+    // Before Share opened one: Opening….
+    expect(render(view(status({ networks: [home], pairing: null })))).toContain('Opening…')
     expect(render(view(null, { available: false, unavailableReason: 'Remote access needs Local as the connection (Settings → Connections).' }))).toContain('Remote access needs Local as the connection')
+  })
+
+  it('review A4: after consent, the firewall line and its commands when the daemon cannot tell or sees a block', () => {
+    const unknown = render(view(status({ networks: [home], pairing, firewall: { state: 'unknown', message: 'Linux does not ask. If ufw or firewalld runs, allow port 7385 from your network.', commands: ['sudo ufw allow from 192.168.0.0/16 to any port 7385 proto tcp'] } })))
+    expect(unknown).toContain('Linux does not ask. If ufw or firewalld runs, allow port 7385 from your network.')
+    expect(unknown).toContain('sudo ufw allow from 192.168.0.0/16 to any port 7385 proto tcp')
+    const blocked = render(view(status({ networks: [home], pairing, firewall: { state: 'blocked', message: 'Windows Firewall blocks ADF Studio.', commands: [] } })))
+    expect(blocked).toContain('Windows Firewall blocks ADF Studio.')
+    expect(render(view(status({ networks: [home], pairing })))).not.toContain('>Firewall<')
+    // Before consent nothing of it shows.
+    expect(render(view(status({ enabled: false, state: 'off', networks: [home], firewall: { state: 'blocked', message: 'Windows Firewall blocks ADF Studio.', commands: [] } })))).not.toContain('Windows Firewall blocks')
+  })
+
+  it('review A5: leaving Share after its Allow: off again when Share turned it on and no device was added; else one line that it stays on', () => {
+    expect(shareLeave({ turnedOn: true, allowed: true, added: false })).toBe('off')
+    expect(shareLeave({ turnedOn: true, allowed: true, added: true })).toBe('stays')
+    expect(shareLeave({ turnedOn: false, allowed: true, added: false })).toBe('stays')
+    expect(shareLeave({ turnedOn: false, allowed: false, added: false })).toBeNull()
+    expect(STAYS_ON_LINE).toBe('Remote access stays on; turn it off in Devices.')
+    expect(STAYS_ON_LINE.split(/[.!?]\s/)).toHaveLength(1)
+    expect(render(view(status({ networks: [home], pairing })), { leave: 'stays' })).toContain(STAYS_ON_LINE)
+    expect(render(view(status({ networks: [home], pairing })), { leave: 'off' })).not.toContain(STAYS_ON_LINE)
+    // The panel turns it off on leaving (Back, Cancel, the dialog closing): in its unmount, with setRemoteAccess, never silently kept on.
+    const src = readFileSync(join(__dirname, '../../../src/renderer/components/settings/RemoteAccessSettings.tsx'), 'utf-8')
+    expect(src).toMatch(/leaveRef\.current === 'off'[^\n]*setRemoteAccess\(\{ enabled: false \}\)/)
+    // Review A1: Share's Allow goes to main's Share call; the renderer never asserts a confirmation.
+    expect(src).toContain('window.adfApi.shareRemoteAccess()')
+    expect(src).not.toContain('confirmed')
   })
 
   it('the token once, with Copy and Done, and where to use it', () => {
