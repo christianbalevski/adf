@@ -53,6 +53,21 @@ describe('Studio client session (W2-B)', () => {
     await session.end()
   })
 
+  it('a proxy\'s 502, 503 or 504 while the daemon behind it is down is retried, never fatal; the session opens once it answers', async () => {
+    const daemon = createFakeDaemon(BASE)
+    const gateway = [502, 503, 504]
+    daemon.routes.set('GET /version', () => (gateway.length ? { status: gateway.shift(), raw: 'Bad Gateway' } : { version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION }))
+    daemon.routes.set('POST /client/sessions', () => ({ sessionId: 's-1', epoch: 'e1', expiresInMs: 60_000 }))
+    daemon.routes.set('GET /client/sessions/s-1/events', () => sse())
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1.0.0', exitDaemonWhenClosed: false, log: quiet, retryMs: 5 })
+    const r = recorder()
+    session.start(r.listener)
+    await waitFor(() => daemon.requests.some((q) => q.path === '/client/sessions'), 'the session opened')
+    expect(gateway).toEqual([])
+    expect(r.fatal).toEqual([])
+    await session.end()
+  })
+
   it('opens a session with exitDaemonWhenClosed, sends focus and holds under it, reads frames and turn ends, and a 404 on reconnect opens a new session', async () => {
     const daemon = createFakeDaemon(BASE)
     let created = 0
@@ -285,5 +300,52 @@ describe('reattach across daemon document lifecycle changes', () => {
       expect(clientSession.sessionId).toBe('s2')
       await waitFor(() => daemon.requests.some((r) => r.path === '/client/sessions/s2/events'), 'the replacement stream')
     } finally { await clientSession.end() }
+  })
+})
+
+describe('calls while the session cannot open (A4)', () => {
+  /** A daemon whose proxy answers 502 to every /version: the open keeps retrying. */
+  function gatewayDown() {
+    const daemon = createFakeDaemon(BASE)
+    daemon.routes.set('GET /version', () => ({ status: 502, raw: 'Bad Gateway' }))
+    return daemon
+  }
+
+  it('end() during the open retry: a waiting call fails at once, and the retry stops', async () => {
+    const daemon = gatewayDown()
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1.0.0', exitDaemonWhenClosed: false, log: quiet, retryMs: 50 })
+    session.start(recorder().listener)
+    await waitFor(() => daemon.requests.filter((q) => q.path === '/version').length >= 2, 'the open retried')
+    const held = session.holdDocument('/srv/agents/agent-1.adf').then(() => 'held', (err: Error) => err.message)
+    await session.end()
+    const outcome = await Promise.race([held, new Promise((r) => setTimeout(() => r('still waiting'), 1_000))])
+    expect(outcome).toBe('Opening the file: Studio is not connected to the ADF daemon')
+    const tries = daemon.requests.filter((q) => q.path === '/version').length
+    await new Promise((r) => setTimeout(r, 200))
+    expect(daemon.requests.filter((q) => q.path === '/version').length).toBe(tries)
+  })
+
+  it('a call waits for the open within its bound, then fails visibly as not connected', async () => {
+    const daemon = gatewayDown()
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1.0.0', exitDaemonWhenClosed: false, log: quiet, retryMs: 20, sessionWaitMs: 150 })
+    session.start(recorder().listener)
+    await waitFor(() => daemon.requests.some((q) => q.path === '/version'), 'the open started')
+    const started = Date.now()
+    await expect(session.holdDocument('/srv/agents/agent-1.adf')).rejects.toThrow('Opening the file: Studio is not connected to the ADF daemon')
+    expect(Date.now() - started).toBeLessThan(1_000)
+    await session.end()
+  })
+
+  it('after end(), the session has no id and calls fail at once', async () => {
+    const daemon = createFakeDaemon(BASE)
+    daemon.routes.set('GET /version', () => ({ version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION }))
+    daemon.routes.set('POST /client/sessions', () => ({ sessionId: 's-1', epoch: 'e1', expiresInMs: 60_000 }))
+    daemon.routes.set('GET /client/sessions/s-1/events', () => sse())
+    const session = createDaemonClientSession(new DaemonClient({ baseUrl: BASE, fetch: daemon.fetch }), { version: '1.0.0', exitDaemonWhenClosed: false, log: quiet, retryMs: 5 })
+    session.start(recorder().listener)
+    await waitFor(() => session.sessionId === 's-1', 'the session opened')
+    await session.end()
+    expect(session.sessionId).toBeNull()
+    await expect(session.holdDocument('/srv/agents/agent-1.adf')).rejects.toThrow('Opening the file: Studio is not connected to the ADF daemon')
   })
 })

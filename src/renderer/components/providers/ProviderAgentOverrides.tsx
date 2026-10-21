@@ -80,7 +80,7 @@ export function ProviderAgentOverrides({ provider, apiKeyPlaceholder, onCountCha
   }, [provider.id])
 
   useEffect(() => { void load() }, [load])
-  useEffect(() => { loadTrackedAdfFiles().then(setTracked).catch(() => setTracked([])) }, [])
+  useEffect(() => { loadTrackedAdfFiles(api).then(setTracked).catch(() => setTracked([])) }, [api])
 
   const nameFor = (filePath: string, fileName: string): string => {
     const t = tracked.find((f) => f.filePath === filePath)

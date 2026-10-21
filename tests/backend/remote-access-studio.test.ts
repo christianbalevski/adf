@@ -336,12 +336,50 @@ describe('pairing from Settings → Connections', () => {
     expect(p.saved).toHaveLength(1)
     expect(p.saved[0]).toMatchObject({ url: TAILNET, allowInsecureHttp: false, fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', label: 'agent-2-laptop' })
     expect(p.saved[0].token).toMatch(/^adfd_/)
-    expect(p.last()).toMatchObject({ savedUrl: TAILNET, savedId: 'remote:agent-1-pc', message: 'Paired with agent-1-pc. Its address and token are saved.' })
+    expect(p.last()).toMatchObject({ savedUrl: TAILNET, savedId: 'remote:agent-1-pc', message: 'Saved agent-1-pc.' })
     const token = p.saved[0].token
     expect(JSON.stringify(p.states)).not.toContain(token)
     expect(JSON.stringify(p.states)).not.toContain('654321')
     expect(p.logs.join('\n')).not.toContain(token)
     expect(p.logs.join('\n')).not.toContain('654321')
+  })
+
+  // R2A-2: a fresh pairing pins the fingerprint only after the computer at the saved address proves it issued the token.
+  it('an older ADF is refused before the code is sent, with one sentence', async () => {
+    const p = pairSetup()
+    p.daemon.state.unsigned = true
+    const started = await p.flow.start({ url: LAN, allowInsecureHttp: true })
+    expect(started).toMatchObject({ step: 'failed', code: 'old_daemon', message: 'agent-1-pc runs an older ADF; update it.' })
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+  })
+
+  it('an approval whose address cannot prove it issued the token saves nothing and names the device to remove', async () => {
+    const p = pairSetup({ useEncrypted: false })
+    await p.flow.start({ url: LAN, allowInsecureHttp: true })
+    await p.flow.submitCode('654321')
+    // An impostor answers at the address after the approval: it shows the fingerprint, but holds no record of the token.
+    p.daemon.decide(true)
+    p.daemon.state.tokens = []
+    await until(() => p.last().step === 'failed')
+    expect(p.last()).toMatchObject({ code: 'fingerprint_mismatch', message: `${LAN} could not prove it is agent-1-pc; Studio saved nothing, so remove "agent-2-laptop" on agent-1-pc.` })
+    expect(p.saved).toEqual([])
+  })
+
+  // R2A-1: as `adf pair`, a list that cannot be read is found before the code is sent.
+  it('a list of saved connections that cannot be read stops the pairing before the code is sent', async () => {
+    const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
+    daemon.state.enabled = true
+    daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
+    const states: RemotePairState[] = []
+    const flow = new PairingFlow({
+      onState: (s) => states.push(s), save: async () => ({ ok: true }), saveBlocked: () => null, defaultDeviceName: () => 'agent-2-laptop',
+      savedListProblem: async () => '/x/cli-remotes.json is not valid JSON. Fix or remove it; nothing was changed.',
+      fetch: daemon.fetch, log: quiet, retryMs: 5,
+    })
+    await flow.start({ url: LAN, allowInsecureHttp: true })
+    const after = await flow.submitCode('654321')
+    expect(after).toMatchObject({ step: 'need_code', code: 'save_failed', message: '/x/cli-remotes.json is not valid JSON. Fix or remove it; nothing was changed.' })
+    expect(daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
   })
 
   it('switches only to a tailnet address or a *.ts.net https name, and only after asking (security review 2)', async () => {
@@ -409,6 +447,26 @@ describe('pairing from Settings → Connections', () => {
     const other = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: 'https://hub.example.com', fingerprint: 'QQQQ-QQQQ' }, { name: 'legacy', url: 'https://old.example.com', fingerprint: null }] })
     expect(await other.flow.start({ url: TAILNET })).toMatchObject({ step: 'need_code' })
     expect(other.replaces).toEqual([])
+  })
+
+  // F5 (review round 3): as `adf pair` asks, Studio never replaces a saved connection's token without asking.
+  it('a computer already saved at this address: asked before the code, nothing sent; Replace pairs again and replaces it', async () => {
+    const saved = [{ name: 'agent-1-pc', url: TAILNET, fingerprint: 'ABCD-EFGH' }]
+    const p = pairSetup({ savedConnections: saved })
+    const asked = await p.flow.start({ url: TAILNET })
+    expect(asked).toMatchObject({ step: 'failed', code: 'already_saved', message: 'agent-1-pc is already saved; replace its address and token?' })
+    expect(p.replaces).toEqual([])
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+    // The code is not taken until the user answers Replace.
+    expect(await p.flow.submitCode('654321')).toMatchObject({ code: 'not_started' })
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+
+    expect(await p.flow.start({ url: TAILNET, replace: true })).toMatchObject({ step: 'need_code', code: null })
+    await p.flow.submitCode('654321')
+    p.daemon.decide(true)
+    await until(() => p.last().step === 'paired')
+    expect(p.saved).toHaveLength(1)
+    expect(p.saved[0]).toMatchObject({ url: TAILNET, fingerprint: 'ABCD-EFGH' })
   })
 
   it('re-review 3: only this tailnet\'s ts.net names and Tailscale peers qualify; without Tailscale nothing switches', async () => {

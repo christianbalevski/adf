@@ -262,6 +262,8 @@ export class EventBridge {
   }
 
   handleFrame(frame: ClientFrame): void {
+    // A disposed bridge (quit, or its runtime left the set) pushes nothing more.
+    if (this.disposed) return
     try {
       if (frame.kind === 'executor') {
         // The executor frame first, then the turn end it carries (D5): the order the umbilical turn end had.
@@ -401,6 +403,7 @@ export class EventBridge {
   }
 
   handleGap(gap: StreamGap): Promise<void> {
+    if (this.disposed) return Promise.resolve()
     this.log.warn(`[Backend] The client event stream lost frames (${gap.reason}${gap.dropped !== undefined ? `, ${gap.dropped} dropped` : ''}); resyncing`)
     // A wait whose end was among the lost frames settles when its loop is not busy (resync reads it, or the next state change says so).
     for (const w of this.waiters) w.lenient = true

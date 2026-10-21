@@ -252,9 +252,21 @@ export interface DaemonClientSessionOptions {
   retryMs?: number
   /** EventStream idle timeout (tests). */
   idleTimeoutMs?: number
+  /** How long a call waits for the session to open (the daemon unreachable meanwhile) before it fails as not connected. */
+  sessionWaitMs?: number
 }
 
+/** How long a call waits for a session that is still opening. */
+export const SESSION_WAIT_MS = 15_000
+
 const isGone = (err: unknown): boolean => err instanceof DaemonError && err.status === 404
+/**
+ * A proxy in front of the daemon (a TLS proxy, `tailscale serve`, the other
+ * computer's gateway) answers 502, 503 or 504 while the daemon behind it is
+ * down or restarting: the daemon is unreachable for now, so the open is
+ * retried, as for a refused connection.
+ */
+const gatewayDown = (err: unknown): boolean => err instanceof DaemonError && (err.status === 502 || err.status === 503 || err.status === 504)
 /** The session itself is gone (`session_not_found`), not a file or document it names. */
 const sessionGone = (err: unknown): boolean => isGone(err) && ((err as DaemonError).body as { code?: unknown } | null)?.code === 'session_not_found'
 
@@ -263,7 +275,8 @@ const sessionGone = (err: unknown): boolean => isGone(err) && ((err as DaemonErr
  *
  * - Opening: GET /version must report `clientApiVersion` ===
  *   SUPPORTED_CLIENT_API_VERSION, else `onFatal` with an "update the daemon"
- *   message (no fallback stream). An unreachable daemon is retried.
+ *   message (no fallback stream). An unreachable daemon is retried, and so is
+ *   a proxy's 502, 503 or 504 for a daemon behind it that is down.
  * - A 404 on reconnect (the session expired, or the daemon restarted) opens
  *   a new session: the focus and the documents are sent again (awaited
  *   `onReattached`), then its stream starts and the bridge resyncs.
@@ -280,6 +293,14 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
   let ended = false
   let opening: Promise<string | null> | null = null
   let retryTimer: ReturnType<typeof setTimeout> | null = null
+  /** Ends the retry pause at once (end, quit): the open loop then sees `ended`. */
+  let wakeRetry: (() => void) | null = null
+  const stopRetry = (): void => {
+    if (retryTimer) clearTimeout(retryTimer)
+    retryTimer = null
+    wakeRetry?.()
+    wakeRetry = null
+  }
 
   const openSession = async (): Promise<string | null> => {
     while (!ended) {
@@ -296,9 +317,13 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
         return created.sessionId
       } catch (err) {
         if (ended) return null
-        if (err instanceof DaemonError && err.unreachable) {
+        if (err instanceof DaemonError && (err.unreachable || gatewayDown(err))) {
           listener?.onConnection({ state: 'reconnecting', error: err.message })
-          await new Promise<void>((r) => { retryTimer = setTimeout(r, options.retryMs ?? 2_000); retryTimer.unref?.() })
+          await new Promise<void>((r) => {
+            wakeRetry = r
+            retryTimer = setTimeout(() => { retryTimer = null; wakeRetry = null; r() }, options.retryMs ?? 2_000)
+            retryTimer.unref?.()
+          })
           continue
         }
         const message = isGone(err)
@@ -434,12 +459,23 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
    * waits for a whole reopen: that awaits `onReattached`, whose re-holds run
    * after the caller's own operation (session.ts serializes them).
    */
-  const currentId = async (): Promise<string | null> => sessionId ?? (opening ? await opening : sessionId)
+  const currentId = async (): Promise<string | null> => {
+    if (ended) return null
+    if (sessionId || !opening) return sessionId
+    // Bounded: a daemon that stays unreachable fails the call as not connected instead of holding it.
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const id = await Promise.race([
+      opening,
+      new Promise<null>((resolve) => { timer = setTimeout(() => resolve(null), options.sessionWaitMs ?? SESSION_WAIT_MS); timer.unref?.() }),
+    ])
+    if (timer) clearTimeout(timer)
+    return ended ? null : id
+  }
 
   /** Run a call on the session; a `session_not_found` opens a new session and retries once. */
   const withSession = async <T>(what: string, run: (id: string) => Promise<T>): Promise<T> => {
     const id = await currentId()
-    if (!id) throw new Error(`${what}: Studio has no client session on the ADF daemon`)
+    if (!id) throw new Error(`${what}: Studio is not connected to the ADF daemon`)
     try {
       return await run(id)
     } catch (err) {
@@ -493,7 +529,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
       ended = true
       streamGeneration++
       clearReplay?.()
-      if (retryTimer) clearTimeout(retryTimer)
+      stopRetry()
       stream?.close()
       stream = null
       const id = sessionId
@@ -512,7 +548,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
       ended = true
       streamGeneration++
       clearReplay?.()
-      if (retryTimer) clearTimeout(retryTimer)
+      stopRetry()
       stream?.close()
       stream = null
       const id = sessionId

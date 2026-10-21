@@ -21,7 +21,7 @@ import { DAEMON_MODE_HANDLERS } from './handlers'
 import { DaemonModeSession, samePath } from './session'
 import type { ClientSettingsStore } from './settings'
 import type { DaemonVersionInfo } from '../../daemon/routes/meta-routes'
-import { readDaemonExitCause } from './daemon-exit'
+import { readDaemonExitCause, waitForDaemonExit } from './daemon-exit'
 import { processAlive } from '../../cli/daemon-control'
 import { daemonExitSentence } from './connection'
 import { InstallProgressRelay } from './mcp/install-progress'
@@ -81,10 +81,15 @@ export interface RuntimeShared {
   approvals: ApprovalsUi
   hooks: NonNullable<DaemonModeDeps['hooks']>
   firstWindow(): BrowserWindow | null
-  /** A runtime's approvals snapshot (stream push or resync): the merge, notice windows, native notifier. */
-  approvalsIn(runtimeId: RuntimeId, snapshot: NotificationsSnapshot): void
-  /** A runtime's approvals push: the merged snapshot to every window. */
-  publishApprovals(runtimeId: RuntimeId, snapshot: NotificationsSnapshot): void
+  /**
+   * A runtime's approvals snapshot (stream push or resync): the merge, notice
+   * windows, native notifier. `from`: the connection it came on; a snapshot
+   * of a connection that is not (or no longer) the runtime's in the set is
+   * dropped (a runtime that retires).
+   */
+  approvalsIn(runtimeId: RuntimeId, snapshot: NotificationsSnapshot, from: DaemonConnection): void
+  /** A runtime's approvals push: the merged snapshot to every window. Dropped like approvalsIn. */
+  publishApprovals(runtimeId: RuntimeId, snapshot: NotificationsSnapshot, from: DaemonConnection): void
   /** Agent windows that closed (or are closing): their calls are refused (any runtime). */
   closedWindows: Set<number>
   /** A runtime's agent window closed: its notices move to the main window. */
@@ -119,6 +124,19 @@ interface WindowSession {
   ctx: DaemonModeContext
 }
 
+/** How Studio's quit ends a runtime (main/index.ts runShutdownCleanup). */
+export interface QuitOptions {
+  /** "Keep Running" in the question about connected computers: this quit only. */
+  keepDaemonRunning?: boolean
+  /** A restart into Inside Studio: wait up to this long for This computer's daemon to exit once it said it stops. */
+  waitForDaemonExitMs?: number
+  /**
+   * Called when that wait starts (R2A-4): only then is the daemon's answer in, so the caller's own deadline moves
+   * to the wait plus its margin instead of cutting the wait short.
+   */
+  onExitWait?: (ms: number) => void
+}
+
 export interface RuntimeConnection {
   readonly id: RuntimeId
   readonly kind: RuntimeKind
@@ -144,8 +162,8 @@ export interface RuntimeConnection {
   client(): Promise<DaemonClient>
   setKeepDaemonRunning(keep: boolean): Promise<void>
   /** Running agents not focused in the main window, and the main window's foreground agent (menu bar). */
-  menuBarAgents(): Array<{ filePath: string; state: import('../../../shared/types/ipc.types').AgentState; activeLoops?: number }>
-  foreground(): { filePath: string; state: import('../../../shared/types/ipc.types').AgentState } | null
+  menuBarAgents(): Array<{ filePath: string; state: import('../../../shared/types/ipc.types').AgentState; activeLoops?: number; runtimeId?: string }>
+  foreground(): { filePath: string; state: import('../../../shared/types/ipc.types').AgentState; runtimeId?: string } | null
   tokensToday(): { input: number; output: number }
   windows: {
     open(target: WindowTarget): void
@@ -160,7 +178,7 @@ export interface RuntimeConnection {
     send(id: number, channel: string, ...args: unknown[]): void
     stashed(id: number): void
   }
-  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: QuitOptions): Promise<void>
 }
 
 const RESUME_HEALTH_TIMEOUT_MS = 3_000
@@ -406,7 +424,9 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   const runningAgents = () => (bridge ? bridge.runningAgents() : [])
   /** One approvals snapshot: the merge, notice windows, the native notifier and the menu bar; this runtime's MCP sign-ins. */
   const applyApprovals = (snapshot: NotificationsSnapshot): void => {
-    shared.approvalsIn(id, snapshot)
+    // A runtime that is quitting or leaving the set shows nothing more: no notice, no sign-in page.
+    if (shutdownPromise) return
+    shared.approvalsIn(id, snapshot, connection)
     void mcpOAuth.apply(snapshot)
   }
 
@@ -432,7 +452,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   const bridgeOutput = remoteBrowserSession({
     send: (channel: string, ...args: unknown[]) => output.send(channel, ...args),
     sendAll: (channel: string, ...args: unknown[]) => {
-      if (channel === IPC.APPROVALS_CHANGED) shared.publishApprovals(id, args[0] as NotificationsSnapshot)
+      if (channel === IPC.APPROVALS_CHANGED) { if (!shutdownPromise) shared.publishApprovals(id, args[0] as NotificationsSnapshot, connection) }
       else output.sendAll(channel, ...args)
     },
   }, true)
@@ -605,7 +625,12 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   }
   const newClientSession = (client: DaemonClient, exitWhenClosed: boolean): ClientSession =>
     (deps.createSession ?? ((c) => createDaemonClientSession(c, { version: app.getVersion(), exitDaemonWhenClosed: exitWhenClosed, log, ...(kind === 'local' ? { pid: process.pid } : {}) })))(client)
+  /** Quit or Remove came while `started` awaited: it goes no further (no request, no session, no approvals). */
+  const stopIfShutDown = (): void => {
+    if (shutdownPromise) throw new Error(`${opts.name()}: Studio closed this connection`)
+  }
   const started: Promise<DaemonClient> = connection.client().then(async (client) => {
+    stopIfShutDown()
     if (primary) void leases.registerClient(deps.mode, { ...clientRecord, ...(connection.baseUrl ? { controlUrl: connection.baseUrl } : {}) })
     versionInfo = connection.endpointInfo?.daemon ?? null
     if (!versionInfo) void client.request<DaemonVersionInfo>('GET', '/version').then((v) => { versionInfo = v }).catch(() => {})
@@ -615,27 +640,38 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
         .then((r) => log.log(`[Backend] The ADF daemon reloaded the moved credentials: runtime identity ${r.runtime?.state ?? 'n/a'}, ${r.unlocked.length} agent(s) unlocked, ${r.stillLocked.length} still locked, sessions [${r.sessions.join(', ')}]`))
         .catch((err) => log.warn(`[Backend] Asking the ADF daemon to reload the moved credentials failed: ${err instanceof Error ? err.message : String(err)}`))
     }
-    clientSession = newClientSession(client, exitDaemonWhenClosed)
-    session.attach(clientSession)
+    const cs = newClientSession(client, exitDaemonWhenClosed)
+    clientSession = cs
+    session.attach(cs)
+    /** After each await: a quit or Remove meanwhile ends the session it opened here (shutdown may have run before it existed). */
+    const bail = (): void => {
+      if (!shutdownPromise) return
+      void cs.end().catch(() => {})
+      stopIfShutDown()
+    }
     // Learn what already runs and what is pending, without pushing: the
     // renderer pulls its initial state itself.
     try {
       const summaries = await client.request<AgentSummary[]>('GET', '/agents')
       const statuses = await Promise.all(summaries.map((s) =>
         client.request<AgentStatus>('GET', `/agents/${encodeURIComponent(s.id)}/status`).catch(() => null)))
+      bail()
       bridge.seed(statuses.filter((s): s is AgentStatus => !!s))
     } catch (err) {
+      bail()
       log.warn(`[Backend] Could not list the daemon's agents at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
     try {
       const snapshot = await client.request<NotificationsSnapshot>('GET', '/approvals')
+      bail()
       applyApprovals(snapshot)
       // Requests reach the daemon: connected, before the stream's own open.
       connection.markConnected()
     } catch (err) {
+      bail()
       log.warn(`[Backend] Could not read the daemon's approvals at connect: ${err instanceof Error ? err.message : String(err)}`)
     }
-    clientSession.start({
+    cs.start({
       onFrame: (frame) => { if (installs.observe(frame)) bridge.handleFrame(frame) },
       onGap: (gap) => { installs.onGap(); void bridge.handleGap(gap) },
       onConnection: (c) => {
@@ -905,6 +941,8 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
    * to that window only; approvals reach it through publishApprovals.
    */
   const openWindow = (target: WindowTarget): void => {
+    // Quitting or leaving the set: a window opened now would get a session nothing ends.
+    if (shutdownPromise) throw new Error(`${id} is not connected.`)
     if (windowSessions.has(target.id)) return
     const out: BridgeOutput = {
       send: (channel, ...args) => { if (channel !== IPC.APPROVALS_CHANGED) sendToWindow(target, channel, args) },
@@ -924,7 +962,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     })
     const w = { id: target.id, target, session: s, bridge: br, batcher: b, client: null, closed: false } as Omit<WindowSession, 'ready' | 'ctx'> as WindowSession
     w.ready = started.then(async (client) => {
-      if (w.closed) throw new Error('The window closed')
+      if (w.closed || shutdownPromise) throw new Error('The window closed')
       const cs = newClientSession(client, false)
       w.client = cs
       s.attach(cs)
@@ -936,7 +974,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       } catch (err) {
         log.warn(`[Backend] Agent window ${target.id}: could not list the daemon's agents: ${err instanceof Error ? err.message : String(err)}`)
       }
-      if (w.closed) return client
+      if (w.closed || shutdownPromise) { void cs.end().catch(() => {}); return client }
       cs.start({
         onFrame: (frame) => br.handleFrame(frame),
         onGap: (gap) => { void br.handleGap(gap) },
@@ -997,8 +1035,15 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     if (timedOut) log.warn(`[Backend] Quit: the client session did not end within ${AGENT_SESSION_END_TIMEOUT_MS} ms; the daemon expires it`)
   }
 
+  /** Resolves true once the daemon's process exited (its pid, not its /health, which closes first), false at the deadline. */
+  const waitDaemonGone = async (budgetMs: number): Promise<boolean> => {
+    const pid = versionInfo?.pid ?? connection.endpointInfo?.daemon?.pid
+    if (!pid) return true
+    return (deps.waitForExit ?? waitForDaemonExit)(pid, budgetMs)
+  }
+
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (shutdownOpts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (shutdownOpts: QuitOptions = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       stopExitWatch()
       if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
@@ -1033,6 +1078,14 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
         log.log(`[Backend] Quit: client session ended; ${answer.stopping ? 'the ADF daemon is stopping' : 'the ADF daemon keeps running'}: ${answer.reason}`)
       } else if (connection.current) {
         log.log(`[Backend] Quit: client session ended; the ADF daemon keeps running${remote ? ' (remote mode never stops it)' : ''}`)
+      }
+      // A restart into Inside Studio: embedded Studio moves the sign-ins back and starts its agents only once this
+      // daemon is gone (handover.ts toEmbedded), so the quit waits for its process, bounded.
+      if (kind === 'local' && answer?.stopping && shutdownOpts.waitForDaemonExitMs) {
+        log.log(`[Backend] Waiting up to ${Math.round(shutdownOpts.waitForDaemonExitMs / 1000)}s for the ADF daemon to stop its agents and exit`)
+        shutdownOpts.onExitWait?.(shutdownOpts.waitForDaemonExitMs)
+        const gone = await waitDaemonGone(shutdownOpts.waitForDaemonExitMs)
+        log.log(gone ? '[Backend] The ADF daemon exited' : '[Backend] The ADF daemon is still stopping; Studio Inside Studio leaves the sign-ins with it until the next restart')
       }
     })()
     return shutdownPromise
@@ -1112,11 +1165,11 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     setKeepDaemonRunning,
     menuBarAgents: () => runningAgents()
       .filter((a) => !session.isFocused(a.agentId, a.filePath))
-      .map((a) => ({ filePath: a.filePath, state: a.mapping.state, activeLoops: a.mapping.activeLoops })),
+      .map((a) => ({ filePath: a.filePath, state: a.mapping.state, activeLoops: a.mapping.activeLoops, ...(primary ? {} : { runtimeId: id }) })),
     foreground: () => {
       const agentId = session.agentId
       const agent = agentId ? runningAgents().find((a) => a.agentId === agentId) : undefined
-      return agent ? { filePath: agent.filePath, state: agent.mapping.state } : null
+      return agent ? { filePath: agent.filePath, state: agent.mapping.state, ...(primary ? {} : { runtimeId: id }) } : null
     },
     tokensToday: () => tokensToday,
     windows: {

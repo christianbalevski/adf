@@ -20,7 +20,7 @@ import { channelKey, pendingWorkstream } from './pending'
 import { samePath, type DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
 import { REMOTE_MODE_HANDLERS } from './remote/handlers'
-import { createRuntimeConnection, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
+import { createRuntimeConnection, type QuitOptions, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
 import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manager'
 import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
@@ -120,6 +120,14 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.MENU_ACTION_TAKE_PENDING,
 ]
 
+/**
+ * The approvals list's calls (§6.1): a window answers a request of any
+ * runtime, so a tag names the asking runtime even from an agent window of
+ * another one (`local` included). Untagged, an agent window's call is its
+ * own runtime's, as every call.
+ */
+const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
+
 /** Main-window calls that open a file on their runtime: that runtime holds the main window's open agent (§4.3). */
 const MAIN_OPEN_CHANNELS: ReadonlySet<string> = new Set([IPC.FILE_OPEN, IPC.FILE_CREATE, IPC.FILE_CREATE_QUICK])
 
@@ -136,6 +144,8 @@ export interface DaemonModeDeps {
   connect: DaemonConnector
   /** Studio's userData (studio-client-settings.json lives here). */
   userDataDir: string
+  /** Applied to studio-client-settings.json as it is loaded (ClientSettingsStore `migrate`). */
+  clientSettingsMigration?: ((data: Record<string, unknown>) => string[]) | null
   /** `mainWindow`: the main window (pushes not addressed to an agent window go there); default the first window. */
   hooks?: {
     showMainWindow?: () => BrowserWindow | null
@@ -149,6 +159,8 @@ export interface DaemonModeDeps {
     runtimesChanged?: () => void
     /** A runtime other than the primary connected for the first time since its RuntimeConnection was created: its saved agent windows reopen (§7.5). */
     runtimeConnected?: (id: RuntimeId) => void
+    /** A runtime moved to `to` (§20 item 1): its saved agent windows are `to`'s now; `connected`: `to` is connected already. */
+    runtimeMoved?: (from: RuntimeId, to: RuntimeId, connected: boolean) => void
   }
   log?: Pick<Console, 'log' | 'warn' | 'error'>
   /** Agent lease registry (tests); defaults to the process registry. */
@@ -178,6 +190,8 @@ export interface DaemonModeDeps {
   sharedMnemonic?: () => SharedMnemonicStore | null
   /** Tests: whether the daemon's pid is alive (local mode exit detection). Default: process liveness. */
   processAlive?: (pid: number) => boolean
+  /** Tests: wait for the daemon's pid to exit (a restart into Inside Studio). Default: daemon-exit.ts waitForDaemonExit. */
+  waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Tests: the pause after the daemon exited before Studio starts it again, or shows the exit (default DAEMON_RESPAWN_DELAY_MS). */
   respawnDelayMs?: number
   /**
@@ -247,7 +261,7 @@ export interface DaemonModeHandle {
    * (remote-access.md §3.6). Every other runtime ends its sessions in
    * parallel; its daemon keeps running (multi-runtime.md §3.3).
    */
-  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: QuitOptions): Promise<void>
   /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
   windows: DaemonWindows
   /** The runtime set (multi-runtime.md §3.2). */
@@ -299,7 +313,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   const primaryId: RuntimeId = deps.mode === 'local' ? LOCAL_RUNTIME : deps.runtimeId ?? 'remote'
 
   // The client keys were moved into the client file by the switch (handover.ts, at boot).
-  const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
+  const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log, { migrate: deps.clientSettingsMigration ?? null })
 
   const firstWindow = (): BrowserWindow | null => {
     if (hooks.mainWindow) return hooks.mainWindow()
@@ -401,19 +415,24 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     },
     showMainWindow: hooks.showMainWindow,
     openFile: hooks.openFile,
+    ...(hooks.openFileOn ? { openFileOn: hooks.openFileOn } : {}),
     log,
   })
 
+  /** `from` is the connection of runtime `runtimeId` in the set (not one that retires or was replaced). The primary's constructor runs before the manager exists. */
+  const current = (runtimeId: RuntimeId, from: DaemonConnection): boolean => !manager ? runtimeId === primaryId : manager.get(runtimeId)?.connection === from
   const shared: RuntimeShared = {
     clientSettings,
     approvals,
     hooks,
     firstWindow,
-    approvalsIn: (runtimeId, snapshot) => {
+    approvalsIn: (runtimeId, snapshot, from) => {
+      if (!current(runtimeId, from)) return
       aggregator.set(runtimeId, snapshot)
       applyMerged()
     },
-    publishApprovals: (runtimeId, snapshot) => {
+    publishApprovals: (runtimeId, snapshot, from) => {
+      if (!current(runtimeId, from)) return
       aggregator.set(runtimeId, snapshot)
       publishApprovals(aggregator.merged())
     },
@@ -469,7 +488,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           ...set.overrides?.(name),
         },
         shared,
-        recreate: () => { void manager.replace(id) },
+        recreate: () => { void manager.replace(id, runtime) },
       })
       // Its state shows in the runtime list (CONNECTION_CHANGED, §4.5) and the Help menu (§6.6).
       let connected = false
@@ -485,6 +504,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       return runtime
     },
     closeWindow: (windowId, keep) => hooks.closeAgentWindow?.(windowId, keep),
+    onMoved: (from, to) => hooks.runtimeMoved?.(from, to, manager.get(to)?.connection.state.state === 'connected'),
     onChange: () => hooks.runtimesChanged?.(),
     onRemoved: (id) => {
       if (!aggregator.delete(id)) return
@@ -502,8 +522,16 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[IPC] ${channelKey(channel)} was called with a runtime tag (${runtimeId}); it is a Studio call and has no runtime`)
       throw new RuntimeRouteError(NO_RUNTIME_SENTENCE)
     }
-    return { ctx: manager.contextFor(event?.sender?.id, runtimeId), args }
+    const ctx = manager.contextFor(event?.sender?.id, runtimeId, { anyRuntime: ANY_RUNTIME_CHANNELS.has(channel) })
+    // The main window's session resync (a reload) asks the runtime of its open agent (§4.3); the answer names it.
+    if (channel === IPC.FILE_GET_CURRENT && runtimeId === null && !isAgentWindow(event)) return { ctx: manager.mainOpenRuntime().ctx, args }
+    return { ctx, args }
   }
+  /**
+   * The number of the latest main-window open (FILE_OPEN, FILE_CREATE, FILE_CREATE_QUICK), on any runtime. FILE_CLOSE
+   * does not count: the renderer closes an overtaken open on its runtime after the later open was called.
+   */
+  let mainOpenSeq = 0
   const isAgentWindow = (event: { sender?: { id?: number } } | undefined): boolean => {
     const id = event?.sender?.id
     return id !== undefined && manager.runtimeOfWindow(id) !== null
@@ -555,11 +583,23 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           }
           throw new DaemonModeUnavailableError(channelKey(channel), workstream)
         }
+        // The main window's open agent is on the runtime of its latest open (§4.3; R2A-5): each main-window open is
+        // numbered when it is called, on any runtime, and applied when it resolves only while it is still the latest.
+        // One on the runtime the window is on already applies too, so an overtaken open elsewhere cannot move it.
+        const mainOpen = MAIN_OPEN_CHANNELS.has(channel) && ctx.runtime && !isAgentWindow(event) ? { id: ctx.runtime.id, seq: ++mainOpenSeq } : null
         const result = handler(ctx, event, ...args)
-        // The main window's open agent moves to another runtime once a file opens there (§4.3).
-        if (MAIN_OPEN_CHANNELS.has(channel) && ctx.runtime && ctx.runtime.id !== manager.mainOpenRuntime().id && !isAgentWindow(event)) {
-          const id = ctx.runtime.id
-          void Promise.resolve(result).then(() => manager.setMainOpenRuntime(id), () => {})
+        if (mainOpen) {
+          void Promise.resolve(result).then((r) => {
+            // R3B-5: an open or create that failed opened nothing there.
+            if ((r as { success?: unknown } | null)?.success !== true) return
+            if (mainOpen.seq === mainOpenSeq) manager.setMainOpenRuntime(mainOpen.id)
+            else log.log(`[Runtimes] A main-window open on ${mainOpen.id} was overtaken by a later one; the main window stays on ${manager.mainOpenRuntime().id}`)
+          }, () => {})
+        }
+        // The file is on a runtime other than This computer: the renderer reopens it there.
+        if (channel === IPC.FILE_GET_CURRENT && ctx.runtime && !ctx.runtime.primary) {
+          const runtimeId = ctx.runtime.id
+          return Promise.resolve(result).then((r) => (r && typeof r === 'object' && (r as { filePath?: unknown }).filePath ? { ...r, runtimeId } : r))
         }
         return result
       })
@@ -598,7 +638,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (opts: QuitOptions = {}): Promise<void> => {
     shutdownPromise ??= (() => {
       const done = manager.shutdown(opts)
       approvals.dispose()

@@ -7,16 +7,30 @@
  */
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
+// A write that fails (EACCES) on every platform: a read-only mode does not stop the atomic rename over a file on POSIX.
+const blockedWrites = vi.hoisted(() => new Set<string>())
+vi.mock('../../src/main/utils/atomic-json', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/utils/atomic-json')>()
+  const { resolve } = await import('node:path')
+  return {
+    ...actual,
+    writeJsonAtomicAsync: async (path: string, data: unknown) => {
+      if (blockedWrites.has(resolve(path))) throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })
+      return actual.writeJsonAtomicAsync(path, data)
+    },
+  }
+})
 
 import { resolveBootBackend } from '../../src/main/backend/backend-config'
 import { AGENT_WINDOWS_KEY, AgentWindows, parseSavedAgentWindows, type AgentWindowHandle, type SavedAgentWindow } from '../../src/main/backend/agent-windows'
 import { CLIENT_SETTINGS_FILE } from '../../src/main/backend/daemon-mode/settings'
 import {
-  migrateRemoteMode, migrateRemoteModeClientFile, migrateRemoteModeClientKeys, migrationNotice, relinkSavedAgentWindows, remoteModeRuntime,
+  migrateRemoteMode, migrateRemoteModeClientFile, migrateRemoteModeClientKeys, migrateRemoteModeInstall, migrationNotice, relinkRuntimeKeys, relinkSavedAgentWindows,
+  remoteModeRuntime, renamedRuntimes, savedConnectionChanges, savedConnectionNames,
 } from '../../src/main/backend/runtime-migration'
 import type { SavedRemote } from '../../src/main/cli/remotes'
 
@@ -45,7 +59,7 @@ describe('studio-backend.json (§7.3)', () => {
     const boot = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
     expect(boot.mode).toBe('local')
     const migration = await migrateRemoteMode(boot, { 'host-2': HOST_2, 'host-1': HOST_1 }, quiet)
-    expect(migration).toEqual({ runtime: { id: 'remote:host-1', name: 'host-1', fingerprint: 'ABCD-EFGH', inSet: true }, written: true, notice: 'host-1 is now listed alongside This computer.' })
+    expect(migration).toEqual({ runtime: { id: 'remote:host-1', name: 'host-1', fingerprint: 'ABCD-EFGH', inSet: true }, written: true, notice: 'host-1 is in Settings → Connections.' })
     // Fixed order (§12 item 5): the connection in use first, then the others in the order paired.
     expect(read(dir, 'studio-backend.json')).toEqual({ v: 1, mode: 'local', keepDaemonRunning: true, remote: { url: null, token: null, allowInsecureHttp: false }, runtimeOrder: ['remote:host-1', 'remote:host-2'] })
     expect(boot.config).toEqual(read(dir, 'studio-backend.json'))
@@ -77,7 +91,7 @@ describe('studio-backend.json (§7.3)', () => {
     const before = readFileSync(path)
     const boot = { ...resolveBootBackend(path, {}, quiet), writeBlocked: `${path} could not be read (EACCES).` }
     const migration = await migrateRemoteMode(boot, { 'host-1': HOST_1 }, quiet)
-    expect(migration).toMatchObject({ written: false, notice: 'host-1 is now listed alongside This computer.' })
+    expect(migration).toMatchObject({ written: false, notice: 'host-1 is in Settings → Connections.' })
     expect(boot.config.mode).toBe('local')
     expect(boot.notices?.join(' ')).toMatch(/still says remote/)
     expect(readFileSync(path).equals(before)).toBe(true)
@@ -188,5 +202,146 @@ describe('agent windows of a renamed connection (§7.5)', () => {
     expect(relinkSavedAgentWindows({ runtime: 'local', windows: [list.windows[0]] }, { 'host-1': HOST_1 }, false)).toBeNull()
     expect(relinkSavedAgentWindows({ runtime: 'local', windows: [{ ...list.windows[1], runtimeId: 'remote:host-1' }] }, { 'host-1': HOST_1 }, false)).toBeNull()
     expect(relinkSavedAgentWindows(undefined, {}, false)).toBeNull()
+  })
+})
+
+describe('a migration that runs again (studio-backend.json still says remote)', () => {
+  const legacy = { remote: { url: null, token: null, allowInsecureHttp: false, name: 'host-1' } }
+  const runtime = { id: 'remote:host-1', name: 'host-1', fingerprint: 'ABCD-EFGH', inSet: true }
+  const saved = { 'host-1': HOST_1 }
+
+  it('leaves the fleet keys This computer wrote since the first run where they are', () => {
+    const data: Record<string, unknown> = { fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] }, remoteRecentFiles: ['/srv/agents/agent-2.adf'] }
+    migrateRemoteModeClientKeys(data, legacy, runtime, saved)
+    const fleet = structuredClone(data.runtimeFleet)
+    // That launch ran This computer: its fleet map wrote its own groups and stewards.
+    data.fleetGroups = { 'C:/agents': ['C:/agents/agent-1.adf'] }
+    data.fleetStewards = { 'C:/agents': 'did:key:z6Mk-local' }
+    migrateRemoteModeClientKeys(data, legacy, runtime, saved)
+    expect(data.fleetGroups).toEqual({ 'C:/agents': ['C:/agents/agent-1.adf'] })
+    expect(data.fleetStewards).toEqual({ 'C:/agents': 'did:key:z6Mk-local' })
+    expect(data.runtimeFleet).toEqual(fleet)
+  })
+
+  it('a runtimeFleet entry already there: the plain keys stay This computer\'s', () => {
+    const entry = { fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] } }
+    const data: Record<string, unknown> = { fleetStewards: { 'C:/agents': 'did:key:z6Mk-local' }, runtimeFleet: { 'remote:host-1': entry } }
+    migrateRemoteModeClientKeys(data, legacy, runtime, saved)
+    expect(data.fleetStewards).toEqual({ 'C:/agents': 'did:key:z6Mk-local' })
+    expect(data.runtimeFleet).toEqual({ 'remote:host-1': entry })
+  })
+
+  it("a client file migrated before (marked): its fleet keys are This computer's and stay; remote mode's recent files still move (R2B-6)", () => {
+    const data: Record<string, unknown> = { remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, remoteRecentFiles: ['/srv/x.adf'] }
+    expect(migrateRemoteModeClientKeys(data, legacy, runtime, saved)).toEqual(['remoteRecentFiles → runtimeRecentFiles'])
+    expect(data).toEqual({ remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, runtimeRecentFiles: { 'remote:host-1': ['/srv/x.adf'] } })
+    expect(migrateRemoteModeClientKeys(data, legacy, runtime, saved)).toEqual([])
+  })
+})
+
+describe('write order: the client keys first, then studio-backend.json', () => {
+  const REMOTE = { v: 1, mode: 'remote', keepDaemonRunning: false, remote: { url: null, token: null, allowInsecureHttp: false, name: 'host-1' } }
+  const CLIENT = {
+    theme: 'dark',
+    remoteRecentFiles: ['/srv/agents/agent-2.adf'],
+    fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] },
+    [AGENT_WINDOWS_KEY]: { runtime: 'remote:host-1', windows: [{ agentId: AGENT_2, filePath: '/srv/agents/agent-2.adf' }] },
+  }
+  const MIGRATED_CLIENT = {
+    theme: 'dark',
+    runtimeRecentFiles: { 'remote:host-1': ['/srv/agents/agent-2.adf'] },
+    runtimeFleet: { 'remote:host-1': { fleetGroups: { '/srv/agents': ['/srv/agents/agent-2.adf'] } } },
+    [AGENT_WINDOWS_KEY]: { runtime: 'local', windows: [{ agentId: AGENT_2, filePath: '/srv/agents/agent-2.adf', runtimeId: 'remote:host-1', fingerprint: 'ABCD-EFGH' }] },
+  }
+
+  it('the client keys cannot be written: studio-backend.json still says remote, Connections says so, the next launch migrates both', async () => {
+    const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: CLIENT })
+    const clientPath = join(dir, CLIENT_SETTINGS_FILE)
+    blockedWrites.add(resolve(clientPath))
+    const boot = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
+    const migration = await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)
+    blockedWrites.clear()
+    expect(migration).toMatchObject({ written: false, notice: 'host-1 is in Settings → Connections.' })
+    expect(boot.config.mode).toBe('local')
+    expect(boot.notices?.join(' ')).toMatch(/still says remote/)
+    expect(read(dir, 'studio-backend.json')).toEqual(REMOTE)
+    expect(read(dir, CLIENT_SETTINGS_FILE)).toEqual(CLIENT)
+
+    const next = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
+    expect(await migrateRemoteModeInstall(next, dir, { 'host-1': HOST_1 }, quiet)).toMatchObject({ written: true })
+    expect(read(dir, 'studio-backend.json')).toMatchObject({ mode: 'local', runtimeOrder: ['remote:host-1'] })
+    expect(read(dir, CLIENT_SETTINGS_FILE)).toEqual(MIGRATED_CLIENT)
+  })
+
+  it('studio-backend.json cannot be written after the client keys were: the next launch moves nothing of This computer\'s', async () => {
+    const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: { theme: 'dark' } })
+    const boot = { ...resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet), writeBlocked: 'studio-backend.json could not be read (EACCES).' }
+    expect(await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)).toMatchObject({ written: false })
+    // That launch ran This computer, whose fleet map wrote its own groups.
+    const client = read(dir, CLIENT_SETTINGS_FILE)
+    writeFileSync(join(dir, CLIENT_SETTINGS_FILE), JSON.stringify({ ...client, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] } }))
+
+    const next = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
+    expect(await migrateRemoteModeInstall(next, dir, { 'host-1': HOST_1 }, quiet)).toMatchObject({ written: true })
+    expect(read(dir, 'studio-backend.json')).toMatchObject({ mode: 'local' })
+    // The mark goes once studio-backend.json says local.
+    expect(read(dir, CLIENT_SETTINGS_FILE)).toEqual({ theme: 'dark', fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] } })
+  })
+
+  it('a launch Inside Studio (ADF_STUDIO_BACKEND=embedded) leaves both files for the next launch', async () => {
+    const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: CLIENT })
+    const before = [readFileSync(join(dir, 'studio-backend.json'), 'utf-8'), readFileSync(join(dir, CLIENT_SETTINGS_FILE), 'utf-8')]
+    const boot = resolveBootBackend(join(dir, 'studio-backend.json'), { ADF_STUDIO_BACKEND: 'embedded' }, quiet)
+    expect(boot.mode).toBe('embedded')
+    expect(await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)).toBeNull()
+    expect([readFileSync(join(dir, 'studio-backend.json'), 'utf-8'), readFileSync(join(dir, CLIENT_SETTINGS_FILE), 'utf-8')]).toEqual(before)
+  })
+})
+
+describe('the client keys of a runtime that went (§7.4)', () => {
+  const RECENTS = { 'remote:host-1': ['/srv/a.adf'], 'remote:old-name': ['/srv/b.adf'], 'remote:gone': ['/srv/c.adf'], remote: ['/srv/d.adf'] }
+  const FLEET = { 'remote:gone': { fleetGroups: { '/srv': ['/srv/c.adf'] } }, 'remote:old-name': { fleetStewards: { '/srv': 'did:key:z6Mk-steward' } } }
+
+  it('a runtime not in the set loses its keys; one renamed (same fingerprint) takes them to its new id; nothing else changes', () => {
+    const inSet = (id: string) => id === 'remote:host-1'
+    expect(relinkRuntimeKeys({ runtimeRecentFiles: RECENTS, runtimeFleet: FLEET }, inSet, new Map([['remote:old-name', 'remote:host-1']]))).toEqual({
+      // host-1 has its own recent files: they stay, the old name's go.
+      runtimeRecentFiles: { 'remote:host-1': ['/srv/a.adf'] },
+      runtimeFleet: { 'remote:host-1': { fleetStewards: { '/srv': 'did:key:z6Mk-steward' } } },
+    })
+    // Every id in the set, or no keys: null, never rewritten (a local-only file keeps its bytes).
+    expect(relinkRuntimeKeys({ runtimeRecentFiles: { 'remote:host-1': ['/srv/a.adf'] } }, inSet)).toBeNull()
+    expect(relinkRuntimeKeys({}, inSet)).toBeNull()
+  })
+
+  it('renamed at launch: an agent window of an id not in the set whose fingerprint is saved, and the slot whose pairing is now a saved connection', () => {
+    const windows = { runtime: 'local', windows: [
+      { agentId: AGENT_1, filePath: 'C:/agents/agent-1.adf' },
+      { agentId: AGENT_2, filePath: '/srv/b.adf', runtimeId: 'remote:old-name', fingerprint: 'ABCD-EFGH' },
+      { agentId: AGENT_2, filePath: '/srv/c.adf', runtimeId: 'remote:gone', fingerprint: 'NONE-2345' },
+    ] }
+    expect([...renamedRuntimes(windows, { 'host-1': HOST_1 }, { inSet: false, fingerprint: 'WXYZ-2345' })]).toEqual([['remote:old-name', 'remote:host-1']])
+    expect([...renamedRuntimes(undefined, { 'host-2': HOST_2 }, { inSet: false, fingerprint: 'WXYZ-2345' })]).toEqual([['remote', 'remote:host-2']])
+    expect([...renamedRuntimes(undefined, { 'host-2': HOST_2 }, { inSet: true, fingerprint: 'WXYZ-2345' })]).toEqual([])
+  })
+
+  it('while Studio runs: a name gone whose fingerprint is under another name moved; a name now another computer was replaced', () => {
+    const before = { 'old-name': HOST_1, 'host-2': HOST_2 }
+    const after = { 'host-1': HOST_1, 'host-2': { ...HOST_2, fingerprint: 'NEWW-2345' } }
+    expect(savedConnectionChanges(before, after)).toEqual({ moves: new Map([['remote:old-name', 'remote:host-1']]), replaced: new Set(['remote:host-2']) })
+    expect(savedConnectionChanges(before, before)).toEqual({ moves: new Map(), replaced: new Set() })
+  })
+
+  it('cli-remotes.json read strictly: missing is no connection; unreadable or not parsed is unknown, so nothing is forgotten', async () => {
+    const dir = userData({})
+    const env = { ADF_DAEMON_SETTINGS: join(dir, 'adf-settings.json') }
+    expect(await savedConnectionNames(env)).toEqual(new Set())
+    writeFileSync(join(dir, 'cli-remotes.json'), JSON.stringify({ v: 1, default: null, remotes: { 'host-1': HOST_1, broken: { url: 1 } } }))
+    // A malformed entry is still a name: its keys are not forgotten.
+    expect(await savedConnectionNames(env)).toEqual(new Set(['host-1', 'broken']))
+    writeFileSync(join(dir, 'cli-remotes.json'), '{"v":1,"remotes":')
+    expect(await savedConnectionNames(env)).toBeNull()
+    writeFileSync(join(dir, 'cli-remotes.json'), JSON.stringify({ v: 2, remotes: {} }))
+    expect(await savedConnectionNames(env)).toBeNull()
   })
 })

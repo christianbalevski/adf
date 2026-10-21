@@ -14,7 +14,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, realpathSync,
 import { homedir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { DEFAULT_DAEMON_PORT, DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, resolveDaemonToken } from './daemon-url'
+import { DEFAULT_DAEMON_PORT, DEFAULT_DAEMON_URL, isLocalDaemonUrl, localDaemonToken, localProofHeaders } from './daemon-url'
 import { defaultUserDataPath } from '../utils/user-data-path'
 import { leaseDir, listRuntimeHosts, listStudioClients } from '../runtime/agent-lease'
 
@@ -325,6 +325,24 @@ export async function ensureDaemon(url: string, options: EnsureOptions = {}): Pr
 
 // --- adf daemon status | stop | restart | logs ----------------------------------------
 
+/**
+ * The token `adf daemon status|stop|restart` sends: this machine's daemon's
+ * only, to a loopback address only: ADF_DAEMON_TOKEN (which that daemon
+ * also takes), else its token file (this machine's daemon only,
+ * isLocalDaemonUrl). Never a saved remote's device token: that goes only
+ * after the authenticated hello (remote-access.md §5.2.1), and host
+ * management is this machine's.
+ */
+export function hostControlToken(url: string, env: NodeJS.ProcessEnv = process.env): string | undefined {
+  if (!daemonTarget(url).loopback) return undefined
+  return env.ADF_DAEMON_TOKEN || localDaemonToken(url, env)
+}
+
+/** `adf daemon <sub>` manages this computer's daemon only: the sentence for any other target; null for a loopback one. */
+export function hostOnlyRefusal(sub: string, target: DaemonTarget): string | null {
+  return target.loopback ? null : `adf daemon ${sub} manages this computer's ADF daemon only; run it on ${target.host}.`
+}
+
 export interface StopResult { stopped: boolean; message: string }
 
 /** Graceful stop: POST /daemon/shutdown, then wait for /health to go quiet and the pid to exit. */
@@ -333,7 +351,7 @@ export async function stopDaemon(target: DaemonTarget, options: { env?: NodeJS.P
   const fetchImpl = options.fetch ?? fetch
   const paths = daemonPaths(target.port, env)
   const record = readPidFile(paths.pidFile)
-  const token = resolveDaemonToken(undefined, env, target.url)
+  const token = hostControlToken(target.url, env)
   if (!await isHealthy(target.url, fetchImpl)) {
     if (record && processAlive(record.pid)) {
       return { stopped: false, message: `No daemon answers ${target.url}, but pid ${record.pid} from ${paths.pidFile} is alive. It may be starting or stuck; see adf daemon logs.` }
@@ -377,7 +395,7 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
   const lines = [`url       ${target.url}`, `status    ${running ? 'running' : 'not running'}`]
   if (running) {
     try {
-      const token = resolveDaemonToken(undefined, env, target.url)
+      const token = hostControlToken(target.url, env)
       const res = await fetchImpl(`${target.url}/runtime`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(3000) })
       const body = await res.json() as { daemon?: { pid?: number; uptime?: number; version?: string | null }; agents?: unknown[] }
       if (body.daemon?.pid) lines.push(`pid       ${body.daemon.pid}`)
@@ -387,7 +405,7 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
     } catch { /* health is enough */ }
     try {
       // Who started this run (Studio stops only its own), and the local proof (W3-B: icacls can fail on Windows).
-      const token = resolveDaemonToken(undefined, env, target.url)
+      const token = hostControlToken(target.url, env)
       const res = await fetchImpl(`${target.url}/version`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(3000) })
       if (res.ok) {
         const info = await res.json() as { startedBy?: string; localProof?: { available?: boolean; problem?: string | null }; trust?: { state?: string; label?: string | null; message?: string }; keychainProblem?: string | null }

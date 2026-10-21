@@ -150,7 +150,7 @@ The status bar (`StatusBar.tsx`) groups the runtime with its mesh and Kill, righ
 
 Title "Connections". Help: "Runtimes on other computers." Last in the Studio group.
 
-With no remote saved and This computer in use, the page is one row, **Runtimes on other computers**, with **Add** (the Add connection flow, §5.3), and **Details** (a disclosure, closed) holding the daemon line, **Background**, and **Inside Studio (legacy)** with Connect. The network search does not run. Notices (§5.1) still show above it. Everything below applies once a remote is saved.
+With no remote saved and This computer in use, the page is one row, **Remotes** (tooltip "Runtimes on other computers."), with **Add** (the Add connection flow, §5.3), and **Details** (a disclosure, closed) holding the daemon line, **Background**, and **Inside Studio (legacy)** with Connect. The network search does not run. Notices (§5.1) still show above it. Everything below applies once a remote is saved.
 
 ### 5.1 Rows
 
@@ -181,7 +181,7 @@ With no remote saved and This computer in use, the page is one row, **Runtimes o
 
 ### 5.3 Flows
 
-**Connect.** `CONNECTION_USE {id}`, for `local` and `embedded` only: main saves the mode in `studio-backend.json` for the next launch and answers "Saved. Applies at the next launch." (or "Saved." for the mode this launch runs). There is no switch dialog and no restart; the page shows "Next launch: <name>." with **Restart**. A saved connection is refused with "A saved connection is connected while it is saved." (multi-runtime.md §7.1, §7.2).
+**Connect.** `CONNECTION_USE {id}`, for `local` and `embedded` only: main saves the mode in `studio-backend.json` for the next launch (and answers "Saved." for the mode this launch runs). There is no switch dialog and no restart; the page shows "Next launch: <name>." with **Restart**. A saved connection is refused with "Already connected." (multi-runtime.md §7.1, §7.2).
 
 **Add** (a typed address, or a Not paired row). One dialog, titled "Add" (multi-runtime.md §6.5):
 
@@ -259,7 +259,7 @@ The host-side panels of remote access (`RemoteAccessGroup`, `NetworkStatusLine`)
 - "Connected", the Runtime picker and the status-bar groups come from each runtime's state. An agent window shows one agent of one runtime. No renderer store holds a global "current connection", and no Studio key caches the runtime's name.
 - `CONNECTION_USE` no longer connects anything: it saves `local` or `embedded` for the next launch (§5.3). Add connects, Remove disconnects.
 - Studio pages edit C, B, K and L, which every window shares. Runtime pages talk to the picked runtime through the window's session on it.
-- Keyed by connection id (multi-runtime.md §7.4): `runtimeRecentFiles` (from `remoteRecentFiles`) and `runtimeFleet` (`fleetGroups`, `fleetStewards`, `fleetMapState` of each runtime other than This computer). `keepDaemonRunning` stays This computer's only (multi-runtime.md M10).
+- Keyed by connection id (multi-runtime.md §7.4): `runtimeRecentFiles` (from `remoteRecentFiles`), `runtimeFleet` (`fleetGroups`, `fleetStewards`, `fleetMapState` of each runtime other than This computer) and `runtimeFingerprints` (the fingerprint of each, as last seen saved). `keepDaemonRunning` stays This computer's only (multi-runtime.md M10).
 - This design adds no key that assumes one connection.
 
 ## 11. Work plan and difficulty (h)

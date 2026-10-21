@@ -191,6 +191,8 @@ export class AgentWindows {
   /** Windows closeAll closed while the runtime was unknown: carried once it is known. */
   private heldUntilKnown: SavedAgentWindow[] = []
   private frozen = false
+  /** save() skipped a list an older remote mode saved: said once. */
+  private pendingListLogged = false
   /** Bumped by closeAll and freeze: a restore in flight stops opening windows. */
   private restoreGeneration = 0
   private restoring: Promise<{ opened: number; skipped: number }> | null = null
@@ -266,6 +268,22 @@ export class AgentWindows {
     }
     this.log.log(`[AgentWindows] Closing the window of ${w.filePath}${w.runtimeId ? ` on ${w.runtimeId}` : ''}: its runtime is no longer connected`)
     w.handle.close()
+  }
+
+  /**
+   * A runtime moved (multi-runtime.md §20 item 1): the saved windows of `from`
+   * are now `to`'s, and reopen once it connects (`restore(to)`). One that `to`
+   * has saved or open already is kept once.
+   */
+  moveRuntime(from: string, to: string): void {
+    if (this.deps.runtime() === null || from === to) return
+    const moving = this.carried.filter((e) => e.runtimeId === from)
+    if (moving.length === 0) return
+    const rest = this.carried.filter((e) => e.runtimeId !== from)
+    const moved = moving.map((e) => ({ ...e, runtimeId: to })).filter((e) => !rest.some((r) => this.matches(r, e.filePath, e.agentId, e.runtimeId)))
+    this.carriedList = [...moved, ...rest]
+    this.log.log(`[AgentWindows] ${moving.length} saved agent window(s) of ${from} are now ${to}'s; they reopen once it connects`)
+    this.save()
   }
 
   /** Open in new window: focuses the agent's window when it has one. */
@@ -370,6 +388,13 @@ export class AgentWindows {
     const runtime = this.deps.runtime()
     // Never written for an unknown runtime: it would replace the saved list with one nobody can restore.
     if (runtime === null) return
+    // An older remote mode's list (`remote:<name>`) not migrated yet (multi-runtime.md §7.5): never written over from This computer.
+    const raw = this.deps.settings.get(AGENT_WINDOWS_KEY) as Partial<SavedAgentWindows> | null | undefined
+    if (runtime === 'local' && raw && typeof raw === 'object' && typeof raw.runtime === 'string' && raw.runtime.startsWith('remote:')) {
+      if (!this.pendingListLogged) this.log.warn(`[AgentWindows] Not saving the agent windows: the list an older Studio saved for ${raw.runtime} is migrated at a later launch`)
+      this.pendingListLogged = true
+      return
+    }
     const open = this.list()
     const carried = this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId, e.runtimeId)))
     this.deps.settings.set(AGENT_WINDOWS_KEY, { runtime, windows: [...open, ...carried] } satisfies SavedAgentWindows)

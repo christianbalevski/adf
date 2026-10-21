@@ -101,9 +101,10 @@ export default function App() {
       void openWindowAgent(openFile)
       return
     }
+    // Main answers for the runtime of the main window's open agent, and names it when it is not This computer.
     window.adfApi?.getCurrentFile?.().then((session) => {
       if (session?.filePath && !useDocumentStore.getState().filePath) {
-        openFile(session.filePath)
+        openFile(session.filePath, session.runtimeId || undefined)
       }
     }).catch(() => { /* older main without the handler */ })
     // Run once on mount — openFile's identity is stable enough for this purpose

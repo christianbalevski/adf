@@ -73,6 +73,26 @@ describe('preload factory IPC', () => {
     expect(f.sends).toEqual([{ channel: IPC.DOC_SET_DOCUMENT, args: ['x'] }])
   })
 
+  it('in a page of another runtime, local tags its calls local: untagged would be that runtime\'s (A6)', async () => {
+    const f = fakeIpc()
+    const local = createRuntimeIpc(f.ipc, 'local', scoped, new Set([IPC.WINDOW_OPEN_SETTINGS]), { explicitLocal: true })
+    await local.invoke(IPC.APPROVALS_RESOLVE, { filePath: 'a.adf', approvalId: 'n1', approved: true })
+    local.send(IPC.DOC_SET_DOCUMENT, 'x')
+    // A Studio call has no runtime: never tagged.
+    await local.invoke(IPC.WINDOW_OPEN_SETTINGS)
+    expect(f.invokes).toEqual([
+      { channel: IPC.APPROVALS_RESOLVE, args: [{ $runtime: 'local' }, { filePath: 'a.adf', approvalId: 'n1', approved: true }] },
+      { channel: IPC.WINDOW_OPEN_SETTINGS, args: [] },
+    ])
+    expect(f.sends).toEqual([{ channel: IPC.DOC_SET_DOCUMENT, args: [{ $runtime: 'local' }, 'x'] }])
+    // Its pushes are This computer's: untagged ones.
+    const got: unknown[][] = []
+    local.on(IPC.AGENT_EVENT, (_e, ...args) => got.push(args))
+    f.push(IPC.AGENT_EVENT, { type: 'a' })
+    f.push(IPC.AGENT_EVENT, { $runtime: HOST_1 }, { type: 'b' })
+    expect(got).toEqual([[{ type: 'a' }]])
+  })
+
   it('a bound surface puts its tag first on every call and send', async () => {
     const f = fakeIpc()
     const host = createRuntimeIpc(f.ipc, HOST_1, scoped)

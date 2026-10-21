@@ -48,7 +48,15 @@ async function leaveOtherRuntime(target: RuntimeId): Promise<boolean> {
 }
 
 /** W3-F: what an agent switch answers when the user kept unsaved text under a "changed elsewhere" notice. */
-const KEPT_UNSAVED = { success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
+/** What an open answers when a later open replaced it: nothing of it is shown, and nothing is to be said. */
+export const OVERTAKEN = { success: false, overtaken: true, error: 'A later open replaced this one.' } as const
+
+export interface OpenOptions {
+  /** The unsaved editors are already kept as recovery copies: no question before they go. */
+  kept?: boolean
+}
+
+const KEPT_UNSAVED ={ success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
 
 /**
  * Files opened in the editor when an agent has no saved tab set: its document,
@@ -208,6 +216,14 @@ export const openingFilePaths = new Set<string>()
  * Embedded never answers both: it stops such an agent before the prompt.
  */
 const reattachAfterUnlock = new Set<string>()
+
+/**
+ * The latest openFile of this page and its runtime. An open that a later one
+ * overtook applies nothing: what it opened on another runtime than the
+ * latest's is closed there (on the same runtime, the later open replaced it).
+ */
+let openGeneration = 0
+let latestOpenRuntime: RuntimeId | null = null
 
 /**
  * Hook for managing ADF file operations.
@@ -396,8 +412,11 @@ export function useAdfFile() {
   /**
    * `runtimeId`: the agent's runtime (docs/design/multi-runtime.md §5.2);
    * omitted, this window's own (This computer in the main window).
+   * `options.kept`: the caller already kept the unsaved editors as recovery
+   * copies (a reconnect's reopen): nothing is asked before they go.
+   * Answers OVERTAKEN when a later open replaced this one.
    */
-  const openFile = useCallback(async (filePath?: string, runtimeId: RuntimeId = windowRuntime) => {
+  const openFile = useCallback(async (filePath?: string, runtimeId: RuntimeId = windowRuntime, options: OpenOptions = {}) => {
     // An agent window keeps its agent (agent-windows.md): another agent opens in its own window.
     if (isAgentWindow) {
       const current = useDocumentStore.getState().filePath
@@ -410,7 +429,21 @@ export function useAdfFile() {
     const keyOf = (fp: string) => windowAgentKey(runtimeId, fp)
     const tTotal = performance.now()
     // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
-    if (!confirmDiscardConflicts()) return
+    if (!options.kept && !confirmDiscardConflicts()) return
+    const generation = ++openGeneration
+    latestOpenRuntime = runtimeId
+    /**
+     * A later open overtook this one: it applies nothing, and what it opened
+     * on another runtime than the later one's is closed there.
+     */
+    const overtaken = async (opened: boolean): Promise<boolean> => {
+      if (generation === openGeneration) return false
+      console.log(`[useAdfFile] The open of ${filePath} on ${runtimeId} was overtaken by a later open; nothing of it is shown`)
+      if (opened && latestOpenRuntime !== runtimeId) {
+        await api.closeFile().catch((err: unknown) => console.warn(`[useAdfFile] Closing the overtaken ${filePath} on ${runtimeId} failed:`, err))
+      }
+      return true
+    }
 
     // Loop history is persisted via the adf_loop table by AgentSession.
     // No need to send the UI log back — DOC_SET_CHAT is a no-op in v0.2.
@@ -450,6 +483,7 @@ export function useAdfFile() {
       const leftOther = await leaveOtherRuntime(runtimeId)
       const result = await api.openFile(filePath)
       console.log(`[PERF:renderer] openFile.openFile IPC: ${(performance.now() - t1).toFixed(1)}ms`)
+      if (await overtaken(!!result.success)) return { ...OVERTAKEN }
 
       if (result.success && result.filePath) {
         // Blank the previous agent's UI before parking on a gate dialog
@@ -496,6 +530,7 @@ export function useAdfFile() {
         t1 = performance.now()
         const contents = await fetchFileContents(result.filePath, api, runtimeId)
         console.log(`[PERF:renderer] openFile.fetchFileContents: ${(performance.now() - t1).toFixed(1)}ms`)
+        if (await overtaken(true)) return { ...OVERTAKEN }
 
         // Reset agent state and update filePath, then apply the contents, all
         // in this one synchronous stretch. filePath still changes before any
@@ -587,6 +622,14 @@ export function useAdfFile() {
     setStatusText('No file is open in the foreground after an incomplete file transition.')
   }, [resetDocument, resetAgent, setStatusText])
 
+  /** R3B-5: a create that failed after the open agent of another runtime was closed for it: that agent's view goes too, as in openFile. */
+  const clearLeftView = useCallback(() => {
+    resetDocument()
+    resetAgent()
+    useAppStore.getState().resetAgentReview()
+    useEditorTabsStore.getState().reset()
+  }, [resetDocument, resetAgent])
+
   /**
    * The home composer's create: a generated name in the agents folder, no
    * dialog. `firstMessage` is parked in the app store before the file
@@ -594,10 +637,13 @@ export function useAdfFile() {
    */
   const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; identityDraftId?: string; files?: File[] }) => {
     if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
+    // An open still on its way is overtaken by the new agent.
+    openGeneration++
+    latestOpenRuntime = windowRuntime
     beginAgentSwitch()
     try {
       const { files, ...createOptions } = options ?? {}
-      await leaveOtherRuntime(windowRuntime)
+      const leftOther = await leaveOtherRuntime(windowRuntime)
       const result = await window.adfApi.createQuickAgent(createOptions)
       if (result.success && result.filePath) {
         setShowSettings(false)
@@ -610,19 +656,25 @@ export function useAdfFile() {
       } else if (fileOperationDetachedForeground(result)) {
         // The composer shows result.error; the stale agent still has to go.
         clearDetachedForeground()
+      } else if (leftOther) {
+        // The composer shows result.error; the agent closed on its runtime for this create goes from view.
+        clearLeftView()
       }
       return result
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground])
+  }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground, clearLeftView])
 
   const createFile = useCallback(async (name: string) => {
     if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
+    // An open still on its way is overtaken by the new agent.
+    openGeneration++
+    latestOpenRuntime = windowRuntime
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
     try {
-      await leaveOtherRuntime(windowRuntime)
+      const leftOther = await leaveOtherRuntime(windowRuntime)
       const result = await window.adfApi.createFile(name)
       if (result.success && result.filePath) {
         // Close settings if it's open
@@ -639,7 +691,9 @@ export function useAdfFile() {
           reportFileOperationError('create', result, alert)
         } else {
           // Collision/I/O failures occur before old cleanup and preserve the
-          // current renderer state.
+          // current renderer state, unless the open agent was on another
+          // runtime and closed there for this create: its view goes too.
+          if (leftOther) clearLeftView()
           reportFileOperationError('create', result, alert)
         }
       }
@@ -647,7 +701,7 @@ export function useAdfFile() {
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, setFilePath, loadFileContents, clearDetachedForeground])
+  }, [setShowSettings, setFilePath, loadFileContents, clearDetachedForeground, clearLeftView])
 
   const saveFile = useCallback(async () => {
     const result = await openApi().saveFile()

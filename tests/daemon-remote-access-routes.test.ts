@@ -116,7 +116,7 @@ afterEach(async () => {
  * `allowed` (default true): the user already allowed the test LAN (remote-access.json).
  * `tailnet`: this computer is also on tailnet tail1234.ts.net at 100.101.102.103.
  */
-async function harness(opts: { allowed?: boolean; osCategory?: 'private' | 'public'; platform?: NodeJS.Platform; tailnet?: boolean; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown }; serve?: boolean } = {}): Promise<Harness> {
+async function harness(opts: { allowed?: boolean; osCategory?: 'private' | 'public'; platform?: NodeJS.Platform; tailnet?: boolean; startedBy?: 'studio' | 'cli'; behindProxy?: boolean; alias?: { value: unknown }; serve?: boolean; allowedHosts?: string[] } = {}): Promise<Harness> {
   const dir = mkdtempSync(join(tmpdir(), 'adf-remote-routes-'))
   dirs.push(dir)
   if (opts.allowed !== false) {
@@ -160,6 +160,8 @@ async function harness(opts: { allowed?: boolean; osCategory?: 'private' | 'publ
       command: null,
     },
     behindProxy: opts.behindProxy ?? false,
+    // Never the env of the machine running the tests.
+    allowedHosts: opts.allowedHosts ?? [],
     announcer,
     firewall: async () => ({ state: 'unknown', message: 'test', commands: [] }),
     bindAddress: () => { network.onBind?.(); return '127.0.0.1' },
@@ -233,7 +235,7 @@ describe('management routes (§11.2)', () => {
     expect(status.hostNames).toEqual(['host-1', 'host-1.local'])
     expect(h.events.map(e => e.type)).toContain('enabled')
     expect(h.announcer.announced.at(-1)).toMatchObject({ name: 'agent-1 host', port: h.port, txt: { v: '1', pair: '0', api: '2', fp: status.fingerprint } })
-    expect((await remote(h, 'GET', '/remote/hello')).json).toEqual({ v: 1, name: 'agent-1 host', fingerprint: status.fingerprint, pairingOpen: false, clientApiVersion: 2 })
+    expect((await remote(h, 'GET', '/remote/hello')).json).toEqual({ v: 1, name: 'agent-1 host', fingerprint: status.fingerprint, pairingOpen: false, clientApiVersion: 2, helloProof: 1 })
 
     const offAgain = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { enabled: false } })
     expect(offAgain.json().state).toBe('off')
@@ -318,6 +320,168 @@ describe('tokens on the remote listener (§4.4)', () => {
     const res = await h.server.inject({ method: 'POST', url: '/client/sessions', headers: { authorization: `Bearer ${device.token}` }, payload: { client: 'studio', version: '1', exitDaemonWhenClosed: true } })
     expect(res.statusCode).toBe(403)
     expect(res.json().code).toBe('device_token_refused')
+  })
+})
+
+describe('the authenticated hello (§5.2.1, R2A-2)', () => {
+  /** fetch over the remote listener (a real socket), for the client's verifyHello. */
+  const overRemote = (h: Harness) => (async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    const res = await remote(h, 'GET', `${url.pathname}${url.search}`)
+    return new Response(JSON.stringify(res.json), { status: res.status, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  it('the daemon proves it holds the device record: verified for its token; another nonce, origin or token fails; revoked and unknown say so', async () => {
+    const { verifyHello, helloProofMac, helloProofMessage } = await import('../src/main/services/remote-hello')
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const other = await addDevice(h, 'agent-3 laptop')
+    const origin = `http://${LAN}:${h.port}`
+    const check = await verifyHello(origin, device.token, { fetch: overRemote(h) })
+    expect(check.kind).toBe('verified')
+    const fingerprint = (check as { hello: { fingerprint: string } }).hello.fingerprint
+    expect(fingerprint).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/)
+
+    // The answer, its schema, and the MAC over exactly the documented message (SHA-256 of the secret as the key).
+    const nonce = 'n'.repeat(43)
+    const raw = await remote(h, 'GET', `/remote/hello?${new URLSearchParams({ nonce, device: device.id, origin })}`)
+    expect(raw.status).toBe(200)
+    expect(validate('RemoteHello', raw.json)).toEqual([])
+    // The secret is everything after `adfd_<id>_` (base64url: it may hold `_` itself).
+    const key = (await import('node:crypto')).createHash('sha256').update(device.token.slice(`adfd_${device.id}_`.length)).digest()
+    expect(raw.json).toEqual({ v: 1, name: 'host-1', fingerprint, pairingOpen: false, clientApiVersion: 2, helloProof: 1, device: 'known', proof: helloProofMac(key, helloProofMessage({ nonce, fingerprint, origin, device: device.id })) })
+    // Replayed to a client that asked with another nonce, or dialed another origin: not verified.
+    const replay = (async () => new Response(JSON.stringify(raw.json), { status: 200 })) as unknown as typeof fetch
+    expect((await verifyHello(origin, device.token, { fetch: replay, nonce })).kind).toBe('verified')
+    expect((await verifyHello(origin, device.token, { fetch: replay, nonce: 'm'.repeat(43) })).kind).toBe('forged')
+    expect((await verifyHello(`http://192.168.77.99:${h.port}`, device.token, { fetch: replay, nonce })).kind).toBe('forged')
+    // Another device's answer does not prove this one.
+    const otherRaw = await remote(h, 'GET', `/remote/hello?${new URLSearchParams({ nonce, device: other.id, origin })}`)
+    expect(otherRaw.json.proof).not.toBe(raw.json.proof)
+
+    // A token this daemon never issued: unknown. A revoked device: revoked. Neither carries a proof.
+    const stranger = `adfd_${'a'.repeat(10)}_${'b'.repeat(43)}`
+    expect((await verifyHello(origin, stranger, { fetch: overRemote(h) })).kind).toBe('unknown_device')
+    await h.server.inject({ method: 'DELETE', url: `/remote-access/devices/${device.id}`, headers: managed })
+    expect((await verifyHello(origin, device.token, { fetch: overRemote(h) })).kind).toBe('revoked')
+    const revokedRaw = await remote(h, 'GET', `/remote/hello?${new URLSearchParams({ nonce, device: device.id, origin })}`)
+    expect(revokedRaw.json).toMatchObject({ device: 'revoked', proof: null })
+  })
+
+  it('a partial or malformed proof query is a 400; the plain hello says the daemon can prove who it is', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const origin = `http://${LAN}:${h.port}`
+    for (const query of [{ nonce: 'n'.repeat(43) }, { nonce: 'short', device: device.id, origin }, { nonce: 'n'.repeat(43), device: 'NOT-AN-ID', origin }, { nonce: 'n'.repeat(43), device: device.id, origin: `${origin}/path` }]) {
+      const res = await remote(h, 'GET', `/remote/hello?${new URLSearchParams(query as Record<string, string>)}`)
+      expect(res.status, JSON.stringify(query)).toBe(400)
+      expect(res.json.code).toBe('bad_request')
+    }
+    expect((await remote(h, 'GET', '/remote/hello')).json.helloProof).toBe(1)
+  })
+
+  /** The query of an authenticated hello for `device` claiming the client dialed `origin`. */
+  const proveQuery = (device: string, origin: string) => `/remote/hello?${new URLSearchParams({ nonce: 'n'.repeat(43), device, origin })}`
+  /** A request as it reaches the service: the socket the daemon accepted it on and its headers. */
+  const rawOn = (socket: { listener?: string; localAddress?: string; localPort?: number }, headers: Record<string, string> = {}) => ({
+    socket: { remoteAddress: '192.168.77.31', localAddress: socket.localAddress, localPort: socket.localPort, ...(socket.listener ? { [Symbol.for('adf.remoteListenerAddress')]: socket.listener } : {}) },
+    headers,
+  }) as unknown as IncomingMessage
+  const prove = (device: string, origin: string) => ({ nonce: 'n'.repeat(43), device, origin })
+
+  // F1 (review round 3): the daemon proves only an origin it is reached at, judged by the request's socket.
+  it('a hello relayed from another address is not proved: the origin must be where the socket reached the daemon', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    // An impostor at 192.168.77.99 (a reused DHCP address) relays the client's hello to the real daemon by its own route.
+    const relayed = await remote(h, 'GET', proveQuery(device.id, `http://192.168.77.99:${h.port}`))
+    expect(relayed.status).toBe(200)
+    expect(relayed.json).toMatchObject({ device: 'known', proof: null })
+    expect(h.logs.some(l => l.includes(`no proof for http://192.168.77.99:${h.port}`))).toBe(true)
+    // Another port, or https, at the right address: not where it was reached either.
+    expect((await remote(h, 'GET', proveQuery(device.id, `http://${LAN}:${h.port + 1}`))).json.proof).toBeNull()
+    expect((await remote(h, 'GET', proveQuery(device.id, `https://${LAN}:${h.port}`))).json.proof).toBeNull()
+    // The client refuses: no token goes out.
+    const { verifyHello } = await import('../src/main/services/remote-hello')
+    const relay = (async (input: string | URL | Request) => {
+      const url = new URL(String(input))
+      const res = await remote(h, 'GET', `${url.pathname}${url.search}`)
+      return new Response(JSON.stringify(res.json), { status: res.status })
+    }) as typeof fetch
+    expect((await verifyHello(`http://192.168.77.99:${h.port}`, device.token, { fetch: relay })).kind).toBe('forged')
+    // The address dialed, on the listener it reached: proved.
+    expect((await verifyHello(`http://${LAN}:${h.port}`, device.token, { fetch: relay })).kind).toBe('verified')
+  })
+
+  it('legitimate dials are proved: LAN, IPv4-mapped IPv6, tailnet, its own names, loopback, tailscale serve, ADF_DAEMON_ALLOWED_HOSTS', async () => {
+    const h = await harness({ tailnet: true, serve: true, allowedHosts: ['adf.example.test', 'proxy.example.test:8443'] })
+    await turnOn(h)
+    const device = await addDevice(h)
+    const proof = async (raw: IncomingMessage, origin: string) => ((await h.service.hello(raw, prove(device.id, origin))) as { proof: string | null }).proof
+    // Remote listeners: the socket's local address and port.
+    expect(await proof(rawOn({ listener: LAN, localAddress: LAN, localPort: 7385 }), `http://${LAN}:7385`)).toEqual(expect.any(String))
+    expect(await proof(rawOn({ listener: LAN, localAddress: `::ffff:${LAN}`, localPort: 7385 }), `http://${LAN}:7385`)).toEqual(expect.any(String))
+    expect(await proof(rawOn({ listener: '100.101.102.103', localAddress: '100.101.102.103', localPort: 7385 }), 'http://100.101.102.103:7385')).toEqual(expect.any(String))
+    for (const name of ['host-1', 'host-1.local', 'host-1.tail1234.ts.net']) {
+      expect(await proof(rawOn({ listener: LAN, localAddress: LAN, localPort: 7385 }), `http://${name}:7385`), name).toEqual(expect.any(String))
+    }
+    // ...and nothing else: another address, another port, a name that is not this computer's.
+    expect(await proof(rawOn({ listener: '100.101.102.103', localAddress: '100.101.102.103', localPort: 7385 }), `http://${LAN}:7385`)).toBeNull()
+    expect(await proof(rawOn({ listener: LAN, localAddress: LAN, localPort: 7385 }), `http://${LAN}:80`)).toBeNull()
+    expect(await proof(rawOn({ listener: LAN, localAddress: LAN, localPort: 7385 }), 'http://elsewhere.local:7385')).toBeNull()
+    expect(await proof(rawOn({ listener: LAN, localAddress: LAN, localPort: 7385 }), 'http://127.0.0.1:7385')).toBeNull()
+
+    // The loopback listener (real requests, no remote socket): an SSH tunnel on any local port.
+    const local = async (origin: string, headers: Record<string, string> = {}) => (await h.server.inject({ method: 'GET', url: proveQuery(device.id, origin), headers: { host: '127.0.0.1:9000', ...headers } })).json().proof
+    expect(await local('http://127.0.0.1:9000')).toEqual(expect.any(String))
+    expect(await local('http://localhost:9000', { host: 'localhost:9000' })).toEqual(expect.any(String))
+    // A loopback origin through a proxy (a hijacked tunnel relayed into tailscale serve): never proved.
+    expect(await local('http://127.0.0.1:9000', { 'x-forwarded-for': '100.64.9.9' })).toBeNull()
+    expect(await local('http://127.0.0.1:9000', { 'tailscale-user-login': 'agent-2@example.test' })).toBeNull()
+    expect(await local('http://127.0.0.1:9000', { host: 'host-1.tail1234.ts.net' })).toBeNull()
+    // tailscale serve's https URL, and the names of ADF_DAEMON_ALLOWED_HOSTS (with their port when given).
+    expect(await local('https://host-1.tail1234.ts.net', { host: 'host-1.tail1234.ts.net', 'x-forwarded-for': '100.64.9.9' })).toEqual(expect.any(String))
+    expect(await local('https://adf.example.test', { host: 'adf.example.test' })).toEqual(expect.any(String))
+    expect(await local('https://proxy.example.test:8443', { host: 'proxy.example.test:8443' })).toEqual(expect.any(String))
+    expect(await local('https://proxy.example.test', { host: 'proxy.example.test' })).toBeNull()
+    // Any other origin on the loopback listener: a LAN address, a public name.
+    expect(await local(`http://${LAN}:${h.port}`)).toBeNull()
+    expect(await local('https://evil.example.test', { host: 'evil.example.test' })).toBeNull()
+  })
+
+  it('serve off, or proxy mode: the serve URL and loopback origins are not proved', async () => {
+    const h = await harness({ behindProxy: true })
+    await turnOn(h)
+    const device = await addDevice(h)
+    const local = async (origin: string, host: string) => (await h.server.inject({ method: 'GET', url: proveQuery(device.id, origin), headers: { host } })).json().proof
+    expect(await local('http://127.0.0.1:9000', '127.0.0.1:9000')).toBeNull()
+    expect(await local('https://host-1.tail1234.ts.net', 'host-1.tail1234.ts.net')).toBeNull()
+  })
+
+  // F4 (review round 3): every dial asks an authenticated hello; it must not share the plain hello's 30 a minute.
+  it('authenticated hellos of a known device have their own bucket per (source, device): plain hellos and other devices do not use it up', async () => {
+    const { HELLO_PER_MINUTE, HELLO_PROOF_PER_MINUTE } = await import('../src/main/daemon/remote-access/service')
+    expect(HELLO_PROOF_PER_MINUTE).toBeGreaterThan(HELLO_PER_MINUTE)
+    const h = await harness()
+    await turnOn(h)
+    const a = await addDevice(h)
+    const b = await addDevice(h, 'agent-3 laptop')
+    const origin = `http://127.0.0.1:${h.port}`
+    const hello = (query = '/remote/hello') => h.server.inject({ method: 'GET', url: query, headers: { host: `127.0.0.1:${h.port}` } })
+    // Plain hellos from this source use up their 30 (the mesh sweep, a local process behind serve)...
+    for (let i = 0; i < HELLO_PER_MINUTE; i++) expect((await hello()).statusCode).toBe(200)
+    expect((await hello()).statusCode).toBe(429)
+    // ...and device a still dials, HELLO_PROOF_PER_MINUTE times; then only a is limited, with Retry-After.
+    for (let i = 0; i < HELLO_PROOF_PER_MINUTE; i++) expect((await hello(proveQuery(a.id, origin))).json().proof, `dial ${i}`).toEqual(expect.any(String))
+    const limited = await hello(proveQuery(a.id, origin))
+    expect(limited.statusCode).toBe(429)
+    expect(Number(limited.headers['retry-after'])).toBeGreaterThan(0)
+    expect((await hello(proveQuery(b.id, origin))).json().proof).toEqual(expect.any(String))
+    // A device id this daemon does not know counts as a plain hello (no free bucket per made-up id).
+    expect((await hello(proveQuery('a'.repeat(10), origin))).statusCode).toBe(429)
   })
 })
 

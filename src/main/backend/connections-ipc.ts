@@ -4,13 +4,13 @@ import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus } from '../../shared/types/backend.types'
-import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimeView } from '../../shared/types/connection.types'
+import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimeView, RuntimesMoved } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
 import { buildConnectionsView, forgetConnection, SavedConnectionsCache, saveConnection } from './connections'
 import { KEYCHAIN_FILE_COPY } from '../cli/remotes'
 import { remoteHandshake } from './daemon-mode/remote/connector'
-import { PairingClient } from './remote-access/client'
+import { fetchHello, helloRefusal, verifyHello } from '../services/remote-hello'
 
 /**
  * Settings → Connections in Studio main (docs/design/settings-scopes.md §5,
@@ -46,6 +46,13 @@ export interface ConnectionsDeps {
   agentWindowsOn?: (id: string) => number
   /** The remote slot of studio-backend.json was added, replaced or removed: the runtime set follows it now. */
   slotChanged?: () => void
+  /**
+   * The runtime `id` was removed, or the remote slot replaced by another
+   * address: its Open Recent and Mesh view keys go (`runtimeRecentFiles`,
+   * `runtimeFleet`, multi-runtime.md §7.4), so a computer saved later under
+   * that id starts without them.
+   */
+  forgetRuntimeKeys?: (id: string) => void
   fetch?: typeof fetch
   log?: Pick<Console, 'log' | 'warn'>
 }
@@ -100,7 +107,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (typeof id !== 'string' || !id) return fail('invalid', 'No connection given.')
     if (id !== 'local' && id !== 'embedded') {
       if (id.startsWith('found:')) return fail('not_paired', 'Add it first.')
-      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'A saved connection is connected while it is saved.' : 'That connection is not saved.')
+      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'Already connected.' : 'That connection is not saved.')
     }
     log.log(`[Connection] ${id === 'local' ? 'This computer' : 'Inside Studio (legacy)'} chosen for the next launch`)
     const result = await deps.backend.set({ mode: id })
@@ -119,22 +126,37 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const origin = remoteUrlOrigin(check.url)!
     await fresh()
 
-    // Who answers there, before any token is sent (trust on first use, as Pair).
+    // Who answers there, before any token is sent (trust on first use, as Pair): the authenticated hello
+    // (remote-access.md §5.2.1) proves the computer there issued this device token.
     let hello: { name: string; fingerprint: string } | null = null
-    try {
-      const answer = await new PairingClient(check.url, deps.fetch).hello({ timeoutMs: 5_000 })
-      if (answer?.v === 1 && typeof answer.fingerprint === 'string' && typeof answer.name === 'string') hello = { name: answer.name, fingerprint: answer.fingerprint }
-    } catch { /* remote access off there, an older ADF, or a proxy: a connection without a fingerprint */ }
     const all = saved()
     // An address a saved computer was paired at: no token until it shows that fingerprint (trust on first use).
     const pinnedHere = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin)
       ?? (deps.backend.config().remote.paired && remoteUrlOrigin(deps.backend.config().remote.url) === origin
         ? [deps.backend.config().remote.paired!.name, { fingerprint: deps.backend.config().remote.paired!.fingerprint }] as const
         : undefined)
+    const proved = await verifyHello(check.url, token, { fetch: deps.fetch, timeoutMs: 5_000 })
+    if (proved.kind === 'not_device_token') {
+      // Not an `adfd_` token: nothing can prove who answers, so it is never saved pinned to a fingerprint.
+      const answer = await fetchHello(check.url, deps.fetch, 5_000)
+      if (answer) return fail('not_device_token', `${answer.name} takes a device token here; make one there with: adf daemon devices add <label>.`)
+    } else if (proved.kind === 'rate_limited') {
+      // Not down: the host limits hellos from here. Nothing was sent or saved; Add again shortly.
+      return fail('rate_limited', `${hostOf(check.url)} is rate-limiting connections; Studio sent nothing, so try again in ${Math.ceil(proved.retryAfterMs / 1000)} s.`)
+    } else if (proved.kind === 'none') {
+      // A device token goes only where the daemon that issued it proves it (§5.2.1): nothing answered, so nothing is sent or saved.
+      if (pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
+      return fail('unreachable', `${check.url} does not answer as an ADF computer with remote access on; Studio sent nothing.`)
+    } else {
+      hello = { name: proved.hello.name, fingerprint: proved.hello.fingerprint }
+    }
     if (!hello && pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
     if (hello) {
       const pinned = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin && s.fingerprint !== hello!.fingerprint)
       if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired; Studio sent nothing, and if it was set up again, remove ${pinned[0]} and pair again.`)
+      // No proof for this token: an older ADF, or not the computer that issued it. Never saved, never sent.
+      const refusal = helloRefusal(proved, hello.name, check.url)
+      if (refusal) return fail(proved.kind === 'unsigned' ? 'old_daemon' : 'not_proved', refusal)
       // The computer is saved under another address: never move it without asking, as Pair does.
       const moved = Object.entries(all).find(([, s]) => s.fingerprint === hello!.fingerprint && remoteUrlOrigin(s.url) !== origin)
       if (moved) {
@@ -171,9 +193,12 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const ok = await deps.confirm({ message: 'Replace connection', detail: `Replaces ${current}.`, ok: 'Replace' }).catch(() => false)
       if (!ok) return fail('cancelled', 'Nothing changed.')
     }
+    const replaced = !!slot.url && remoteUrlOrigin(slot.url) !== origin
     const result = await deps.backend.set({ remoteUrl: check.url, remoteToken: token, allowInsecureHttp: insecure, ...(insecure ? { insecureHttpOrigin: origin } : {}) })
     if (!result.ok) return fail(result.code, result.error)
     log.log(`[Connection] Added ${check.url} with a token, without a fingerprint`)
+    // Another computer in the slot: the previous one's keys are not its.
+    if (replaced) deps.forgetRuntimeKeys?.('remote')
     // Saving connects (§12 item 2).
     deps.slotChanged?.()
     changed()
@@ -193,6 +218,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const result = await deps.backend.set({ remoteUrl: null })
       if (!result.ok) return fail(result.code, result.error)
       log.log(`[Connection] Removed ${name}`)
+      deps.forgetRuntimeKeys?.('remote')
       // Removing disconnects (§12 item 2).
       deps.slotChanged?.()
       changed()
@@ -202,18 +228,45 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const name = id.slice('remote:'.length)
     if (!saved()[name]) return fail('not_found', 'That connection is not saved.')
     if (!await deps.confirm({ message: `Remove ${name}`, detail: `Removes the address and token from Studio and adf.${closesWindows(id)}\nStill listed on ${name}; revoke it there.`, ok: 'Remove' }).catch(() => false)) return fail('cancelled', 'Nothing changed.')
+    const fingerprint = saved()[name].fingerprint
     try {
       await forgetConnection(deps.env, name)
       await fresh()
     } catch (err) {
       return fail('save_failed', `Studio could not remove ${name}: ${err instanceof Error ? err.message : String(err)}`)
     }
+    // The remote slot paired with the same computer is this connection too (runtimeSlot hid it): it goes with it,
+    // token included, or it would join the set again and connect with that token.
+    const slot = deps.backend.config().remote
+    if (slot.url && slot.paired?.fingerprint === fingerprint && !Object.values(saved()).some((r) => r.fingerprint === fingerprint)) {
+      const result = await deps.backend.set({ remoteUrl: null })
+      if (!result.ok) return fail(result.code, result.error)
+      log.log(`[Connection] Removed the remote URL ${slot.url} of studio-backend.json too: it was paired with ${name}`)
+      deps.forgetRuntimeKeys?.('remote')
+      deps.slotChanged?.()
+    }
     log.log(`[Connection] Removed ${name}`)
+    deps.forgetRuntimeKeys?.(id)
     changed()
     return { ok: true, view: view(), notices: [`Removed ${name}.`] }
   }
 
   return { view, use, add, remove, changed }
+}
+
+/**
+ * Ids of the set that are the same computer under another id now, or another
+ * computer (RUNTIMES_MOVED, multi-runtime.md §17). Sent before the list that
+ * follows: a window keyed by the old id re-keys instead of dropping it. Nothing
+ * is sent when nothing moved.
+ */
+export function pushRuntimesMoved(changes: { moves: ReadonlyMap<string, string>; replaced: ReadonlySet<string> }, windows: () => BrowserWindow[] = () => BrowserWindow.getAllWindows()): void {
+  if (changes.moves.size === 0 && changes.replaced.size === 0) return
+  const payload: RuntimesMoved = { moves: Object.fromEntries(changes.moves), replaced: [...changes.replaced] }
+  for (const win of windows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+    try { win.webContents.send(IPC.RUNTIMES_MOVED, payload) } catch { /* window going away */ }
+  }
 }
 
 /** Every window gets the list (Settings and the status bar's runtime indicator). */

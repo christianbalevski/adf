@@ -9,7 +9,7 @@ type EmbeddedIpc = typeof import('./ipc')
 import { registerOrbitalCacheHandlers } from './ipc/orbital-cache'
 import { registerEditRecoveryHandlers } from './backend/edit-recovery'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
-import { withDeadline } from './utils/concurrency'
+import { MovableDeadline, withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
@@ -25,10 +25,11 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
-import { LINK_STATE, migratePairedSlot, remotesEnv, runtimeSlot, SavedConnectionsCache } from './backend/connections'
+import { clearTwinSlot, LINK_STATE, migratePairedSlot, remotesEnv, runtimeSlot, SavedConnectionsCache, slotTwin } from './backend/connections'
+import { savedRuntimeId, SLOT_RUNTIME } from './backend/daemon-mode/runtime-manager'
 import { notConnectedSentence } from '../shared/runtime-tag'
 import type { RuntimeView } from '../shared/types/connection.types'
-import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
+import { createConnections, pushConnections, pushRuntimesMoved, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
   askVersionMismatch,
@@ -39,7 +40,11 @@ import {
   syncRuntimeEntryAfterImport,
 } from './backend/boot-handover'
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
-import { migrateRemoteMode, migrateRemoteModeClientFile, relinkSavedAgentWindows, type RemoteModeMigration } from './backend/runtime-migration'
+import {
+  forgetGoneRuntimeKeys, forgetRuntimeKeysOf, launchRuntimeKeyChanges, migrateRemoteModeInstall, recordRuntimeFingerprintsOnWrite, relinkSavedAgentWindows, RUNTIME_FINGERPRINTS_KEY, savedConnectionChanges,
+  type RemoteModeMigration,
+} from './backend/runtime-migration'
+import { malformedRemoteSentence, remotesFilePath } from './cli/remotes'
 import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
@@ -161,6 +166,16 @@ let startupComplete = false
 // shutdowns shrink to a fast budget that still leaves room for app.exit.
 const SHUTDOWN_BUDGET_MS = 8_000
 const FAST_SHUTDOWN_BUDGET_MS = 3_000
+/**
+ * Restart with Inside Studio saved: the quit waits this long for This
+ * computer's daemon to exit, so embedded Studio can move the sign-ins back
+ * and start its agents (handover.ts toEmbedded refuses while it runs).
+ */
+const EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS = 22_000
+/** What the quit keeps after that wait (the rest of the cleanup, app.exit). */
+const EXIT_WAIT_MARGIN_MS = 3_000
+/** The mode studio-backend.json holds now (the next launch's), once the backend settings store exists. */
+let savedBackendMode: (() => string) | null = null
 let shutdownBudgetMs = SHUTDOWN_BUDGET_MS
 
 // Re-entrant-safe cleanup: the first caller starts cleanup and stores the
@@ -188,15 +203,20 @@ function runShutdownCleanup(): Promise<void> {
       // Daemon mode runs no agents here: quitting ends the client sessions and,
       // per keepDaemonRunning, stops the daemon Studio started (§8.3).
       remoteAccess?.dispose()
+      const toEmbedded = !!daemonMode && isRelaunching() && savedBackendMode?.() === 'embedded' && budget === SHUTDOWN_BUDGET_MS
+      // The quit's budget; a restart into Inside Studio moves it once the daemon answered that it stops (R2A-4), to
+      // the exit wait plus a margin, so the deadline never cuts that wait short.
+      const deadline = new MovableDeadline(budget, (ms) => {
+        console.error(`[App] Cleanup exceeded ${ms}ms budget — forcing exit`)
+      })
       const cleanup = daemonMode
         ? daemonMode.shutdown({
           // "Keep Running" in the question about connected computers: this quit only.
           ...(remoteAccess?.quitGate.keepDaemonForThisQuit ? { keepDaemonRunning: true } : {}),
+          ...(toEmbedded ? { waitForDaemonExitMs: EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS, onExitWait: (ms: number) => deadline.moveTo(ms + EXIT_WAIT_MARGIN_MS) } : {}),
         })
         : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
-      const { timedOut } = await withDeadline(cleanup, budget, () => {
-        console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
-      })
+      const { timedOut } = await deadline.race(cleanup)
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
     } catch (error) {
       console.error('[App] Cleanup error:', error)
@@ -734,31 +754,66 @@ app.whenReady().then(async () => {
   let backendStore: BackendSettingsStore | null = null
   // Saved connections: cli-remotes.json next to Studio's settings file, shared with adf (settings-scopes.md §5.2).
   const connectionsEnv = remotesEnv(getUserDataPath())
-  // A remote paired before the shared list moves into it, pinned like the others.
+  // A remote paired before the shared list moves into it, pinned like the others (its Open Recent and Mesh view keys follow, §7.4).
+  const slotFingerprint = backend.config.remote.url ? backend.config.remote.paired?.fingerprint ?? null : null
   await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
   // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
   let connections: Connections | null = null
   // Every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
   // Saving a connection connects it; forgetting it disconnects it (§12 item 2). Read from the caches: no disk access.
-  const syncRuntimes = (): void => {
+  // cli-remotes.json that cannot be read is not "nothing saved": the saved connections stay as they are, unknown (A11).
+  // `moves`: ids now saved under another id (§20 item 1): their agent windows follow instead of closing for good.
+  const syncRuntimes = (moves?: ReadonlyMap<string, string>): void => {
     const saved = savedCache.get()
-    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved))
+    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved), { savedUnknown: savedCache.unreadable !== null, ...(moves ? { moves } : {}) })
   }
+  // What Settings → Connections says about cli-remotes.json (the notices of this launch): replaced at each read, so a
+  // file fixed while Studio runs is no longer reported.
+  let savedNotices: string[] = []
+  // §7.4: the Open Recent and Mesh view keys of a connection forgotten, renamed or now another computer follow it.
+  // Set once the client settings exist (This computer's launch).
+  let runtimeKeysFollow: ((changes: ReturnType<typeof savedConnectionChanges>) => void) | null = null
+  let lastSaved: ReturnType<SavedConnectionsCache['get']> | null = null
   const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
+    const notices = savedCache.unreadable
+      ? [`Saved connections could not be read: ${savedCache.unreadable}. Fix or remove the file; nothing was changed.`]
+      : savedCache.malformed.map((name) => `${malformedRemoteSentence(remotesFilePath(connectionsEnv), name)}.`)
+    if (notices.join('\n') !== savedNotices.join('\n')) {
+      if (savedCache.unreadable) console.warn(`[Connection] ${savedCache.unreadable}: the saved connections are left as they are until it can be read`)
+      else if (savedNotices.length > 0 || notices.length > 0) console.log(`[Connection] ${remotesFilePath(connectionsEnv)} read${notices.length > 0 ? `; malformed entries: ${savedCache.malformed.join(', ')}` : ''}`)
+      backend.notices = [...(backend.notices ?? []).filter((n) => !savedNotices.includes(n)), ...notices]
+      savedNotices = notices
+    }
+    const before = lastSaved
+    lastSaved = savedCache.get()
+    const changes = before ? savedConnectionChanges(before, lastSaved) : null
+    // The remote slot's computer is now a saved connection (`adf pair`): the slot goes (URL and token), and its keys
+    // go to that connection, so `adf remotes forget` of it later brings no slot back (migratePairedSlot at launch).
+    const store = savedCache.unreadable ? null : backendStore
+    const twin = store ? slotTwin(store.config(), lastSaved) : null
+    if (twin && changes && !changes.moves.has(SLOT_RUNTIME)) changes.moves.set(SLOT_RUNTIME, savedRuntimeId(twin))
+    // §17: the windows learn the moves before the runtime set without the old ids, so they re-key, not remove.
+    if (changes) pushRuntimesMoved(changes)
     connections?.changed()
-    syncRuntimes()
+    syncRuntimes(changes?.moves)
+    if (changes) runtimeKeysFollow?.(changes)
+    if (twin && store) {
+      void clearTwinSlot(store, lastSaved, connectionsEnv).then((name) => {
+        if (!name) return
+        syncRuntimes()
+        connections?.changed()
+      })
+    }
   })
   await savedCache.refresh().catch(() => {})
+  lastSaved = savedCache.get()
   savedCache.watch()
   app.once('before-quit', () => savedCache.dispose())
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
-  // before any connector or client settings store exists. A launch Inside Studio leaves the file for the next one.
-  let migration: RemoteModeMigration | null = null
-  if (backend.mode === 'local' && backend.config.mode === 'remote') {
-    const legacy = backend.config
-    migration = await migrateRemoteMode(backend, savedCache.get())
-    await migrateRemoteModeClientFile(getUserDataPath(), legacy, migration?.runtime ?? null, savedCache.get())
-  }
+  // before any connector or client settings store exists: the client keys first, then studio-backend.json.
+  // A launch Inside Studio leaves the files for the next one; one that cannot read the saved connections migrates the
+  // client keys only, and studio-backend.json at a later launch (said in Settings → Connections).
+  const migration: RemoteModeMigration | null = await migrateRemoteModeInstall(backend, getUserDataPath(), savedCache.get(), console, { savedUnreadable: savedCache.unreadable })
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')
@@ -776,6 +831,8 @@ app.whenReady().then(async () => {
     daemonMode = registerDaemonModeHandlers({
       mode: 'local',
       userDataDir,
+      // The client keys of an older remote mode that could not be written at boot: migrated as the file loads.
+      ...(migration?.clientKeys ? { clientSettingsMigration: migration.clientKeys } : {}),
       connect: localDaemonConnector({
         userDataDir,
         execPath: process.execPath,
@@ -791,6 +848,11 @@ app.whenReady().then(async () => {
         runtimesChanged: () => connections?.changed(),
         // A remote's saved agent windows reopen once it connects, after the main window showed (§7.5).
         runtimeConnected: (id) => { void mainWindowFirstShown.then(() => agentWindows?.restore(id)) },
+        // A runtime renamed or cleared for its twin (§20 item 1): its windows wait for the new id, or reopen there now.
+        runtimeMoved: (from, to, connected) => {
+          agentWindows?.moveRuntime(from, to)
+          if (connected) void mainWindowFirstShown.then(() => agentWindows?.restore(to))
+        },
       },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
@@ -816,14 +878,23 @@ app.whenReady().then(async () => {
       afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase),
     })
     const handle = daemonMode
+    // §20 item 2: a saved connection's keys record its fingerprint when first written (Open Recent, the Mesh view), from the cache.
+    recordRuntimeFingerprintsOnWrite(handle.clientSettings, (id) => (savedCache.unreadable ? null : savedCache.get()[id.slice('remote:'.length)]?.fingerprint ?? null))
     syncRuntimes()
     // §7.5: a saved agent window of a runtime no longer in the set moves to the saved connection with its fingerprint.
     // Never rewritten when nothing moves (a list of This computer only keeps its bytes).
-    const relinked = relinkSavedAgentWindows(handle.clientSettings.get(AGENT_WINDOWS_KEY), savedCache.get(), !!runtimeSlot(backend.config, savedCache.get()))
+    const savedWindows = handle.clientSettings.get(AGENT_WINDOWS_KEY)
+    const slotInSet = (): boolean => !!runtimeSlot(backendStore?.config() ?? backend.config, savedCache.get())
+    // By fingerprint (§7.4): the one recorded with the keys, a saved agent window's, the slot's pairing.
+    const launchChanges = launchRuntimeKeyChanges(handle.clientSettings.get(RUNTIME_FINGERPRINTS_KEY), savedWindows, savedCache.get(), { inSet: slotInSet(), fingerprint: slotFingerprint })
+    const relinked = relinkSavedAgentWindows(savedWindows, savedCache.get(), slotInSet())
     if (relinked) {
       console.log('[AgentWindows] Saved agent windows of a renamed connection moved to it (same fingerprint)')
       handle.clientSettings.set(AGENT_WINDOWS_KEY, relinked)
     }
+    // §7.4: the same for Open Recent and the Mesh view; a runtime no longer saved loses them. Never rewritten when nothing goes.
+    runtimeKeysFollow = (changes) => { void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, changes) }
+    void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, launchChanges)
     agentWindows = new AgentWindows({
       create: createAgentWindow,
       current: (id) => handle.windows.current(id),
@@ -835,6 +906,8 @@ app.whenReady().then(async () => {
       // kept and not opened while it is not connected.
       check: async (entry) => {
         const runtime = handle.runtimes.get(entry.runtimeId)
+        // The saved connections cannot be read: another runtime's window is neither opened nor dropped.
+        if (!runtime && entry.runtimeId && entry.runtimeId !== 'local' && savedCache.unreadable) return 'unknown'
         if (!runtime) {
           console.log(`[AgentWindows] Not reopening the window of ${entry.filePath}: ${notConnectedSentence(entry.runtimeId ?? 'local')}`)
           return 'gone'
@@ -927,6 +1000,8 @@ app.whenReady().then(async () => {
     daemonStatus: () => daemonMode?.status() ?? null,
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
+  const settingsStore = backendStore
+  savedBackendMode = () => settingsStore.config().mode
   remoteAccess = registerRemoteAccessHandlers({
     mode: backend.mode,
     daemon: () => daemonMode,
@@ -963,7 +1038,9 @@ app.whenReady().then(async () => {
     // Remove says how many agent windows of that runtime it closes (§6.5).
     agentWindowsOn: (id) => daemonMode?.runtimes.get(id)?.windows.ids().length ?? 0,
     // The remote slot was added, replaced or removed: it joins or leaves the set at once.
-    slotChanged: syncRuntimes,
+    slotChanged: () => syncRuntimes(),
+    // Remove, or another computer in the remote slot: that runtime's Open Recent and Mesh view keys go (§7.4).
+    forgetRuntimeKeys: (id) => { if (daemonMode) forgetRuntimeKeysOf(daemonMode.clientSettings, id) },
   })
   registerConnectionHandlers(connections)
   daemonMode?.connection.onState(() => connections?.changed())

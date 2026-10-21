@@ -28,7 +28,7 @@ const versionInfo = (over: Partial<DaemonVersionInfo> = {}): DaemonVersionInfo =
   localProof: { available: false, problem: 'the local proof file could not be written or protected: icacls failed' }, ...over,
 })
 
-async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; pending?: unknown[]; onRemoteAccessEvent?: (payload: unknown) => void; proof?: string }) {
+async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => boolean); reloadCredentials?: boolean; answer?: ClientQuitAnswer; waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>; pending?: unknown[]; onRemoteAccessEvent?: (payload: unknown) => void; proof?: string }) {
   const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-mode-quit-'))
   dirs.push(dir)
   if (opts.proof) writeFileSync(localProofPath(dir, 47385), opts.proof)
@@ -57,6 +57,7 @@ async function boot(opts: { mode?: 'local' | 'remote'; keep?: boolean | (() => b
     createSession: () => session,
     keepDaemonRunning: opts.keep,
     reloadCredentials: opts.reloadCredentials,
+    waitForExit: opts.waitForExit,
     onRemoteAccessEvent: opts.onRemoteAccessEvent,
     log,
   })
@@ -99,6 +100,33 @@ describe('daemon-mode quit (§8.3)', () => {
     await handle.shutdown()
     expect(quits).toEqual([])
     expect(session.ended).toBe(true)
+  })
+
+  it('a restart into Inside Studio waits for the daemon process to exit (its pid, not /health, which closes first) (A10)', async () => {
+    const waits: Array<[number, number]> = []
+    const { handle, logs } = await boot({ keep: false, waitForExit: async (pid, budget) => { waits.push([pid, budget]); return true } })
+    await handle.shutdown({ waitForDaemonExitMs: 4_000 })
+    expect(waits).toEqual([[4242, 4_000]])
+    expect(logs).toContain('[Backend] The ADF daemon exited')
+  })
+
+  it('R2A-4: the wait is announced (onExitWait) only once the quit answered, right before it starts, so main moves its deadline', async () => {
+    const order: string[] = []
+    const { handle } = await boot({ keep: false, waitForExit: async (_pid, budget) => { order.push(`wait ${budget}`); return true } })
+    await handle.shutdown({ waitForDaemonExitMs: 4_000, onExitWait: (ms) => order.push(`moved ${ms}`) })
+    expect(order).toEqual(['moved 4000', 'wait 4000'])
+    // Kept running: no wait, nothing moves.
+    const kept: string[] = []
+    const other = await boot({ keep: true, waitForExit: async () => { kept.push('wait'); return true } })
+    await other.handle.shutdown({ waitForDaemonExitMs: 4_000, onExitWait: () => kept.push('moved') })
+    expect(kept).toEqual([])
+  })
+
+  it('a restart into Inside Studio with the daemon kept running does not wait for it', async () => {
+    const waits: number[] = []
+    const { handle } = await boot({ keep: true, waitForExit: async (pid) => { waits.push(pid); return true } })
+    await handle.shutdown({ waitForDaemonExitMs: 4_000 })
+    expect(waits).toEqual([])
   })
 
   it('keepDaemonRunning changed in Settings: the session follows it, for the crash path', async () => {

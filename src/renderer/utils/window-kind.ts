@@ -5,6 +5,8 @@
  * available (daemon mode). Read once: a reload keeps the query.
  */
 
+import { reportFailure } from '../stores/failure-notices.store'
+
 const params = typeof window !== 'undefined' && window.location ? new URLSearchParams(window.location.search) : new URLSearchParams()
 
 /** This window shows one agent: its chat and panels, no sidebar. */
@@ -27,9 +29,10 @@ export const agentWindowsAvailable = !isAgentWindow && params.get('agentWindows'
 export function openAgentWindow(request: { filePath: string; agentId?: string | null; name?: string; runtimeId?: string }): void {
   // This computer's agent: the request is the one sent before (multi-runtime.md §4.6).
   if (request.runtimeId === 'local') { const { runtimeId: _local, ...rest } = request; request = rest }
+  // A refusal is said where the user asked (bottom right), not only in the console.
   window.adfApi?.openAgentWindow(request).then((result) => {
-    if (!result.success) console.error('[AgentWindow] Open in new window failed:', result.error)
-  }).catch((err: unknown) => console.error('[AgentWindow] Open in new window failed:', err))
+    if (!result.success) reportFailure('Open in new window failed', result.error ?? undefined)
+  }).catch((err: unknown) => reportFailure('Open in new window failed', err))
 }
 
 /** Close this agent window (Close Agent, a cancelled open). */

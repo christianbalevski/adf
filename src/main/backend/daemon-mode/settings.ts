@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { CLIENT_SETTINGS_KEYS, settingsKeyClass, type ClientSettingsKey } from '../../../shared/constants/client-settings-keys'
 import { createSettingsDefaults } from '../../../shared/constants/settings-defaults'
 import { applyClientSettingsMigrations } from '../../../shared/utils/settings-migrations'
@@ -44,15 +45,23 @@ export function clientSettingsDefaults(): Readonly<Partial<Record<ClientSettings
 /**
  * `studio-client-settings.json`. Read once at boot (as SettingsService reads
  * its file), held in memory, written with an atomic async write on every
- * change. `get`/`set` are synchronous for the menu and the updater; the
- * write is not.
+ * change. A value equal to the one held is no change: the file keeps its
+ * bytes (a local-only install's quit, M11). `get`/`set` are synchronous
+ * for the menu and the updater; the write is not.
  */
 export class ClientSettingsStore {
   private data: Record<string, unknown>
   private writeBlocked: boolean
   private pending: Promise<void> = Promise.resolve()
+  private writeExtra: ((values: Record<string, unknown>) => Record<string, unknown> | null) | null = null
 
-  constructor(readonly filePath: string, private readonly log: Log = console) {
+  /**
+   * `migrate`: applied to the file's values as loaded, after the client
+   * settings migrations; a key it changed is written at once (the migration
+   * of an older remote mode whose client file could not be written at boot,
+   * runtime-migration.ts).
+   */
+  constructor(readonly filePath: string, private readonly log: Log = console, opts: { migrate?: ((data: Record<string, unknown>) => string[]) | null } = {}) {
     const { data, quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<Record<string, unknown>>(filePath)
     if (quarantinedTo) {
       this.log.error(`[Settings] ${filePath} could not be parsed; it was moved to ${quarantinedTo} (not deleted) and client defaults were loaded.`)
@@ -63,6 +72,11 @@ export class ClientSettingsStore {
     }
     this.data = { ...(data && typeof data === 'object' && !Array.isArray(data) ? data : {}) }
     const { changedKeys } = applyClientSettingsMigrations(this.data)
+    if (opts.migrate) {
+      const migrated = opts.migrate(this.data)
+      if (migrated.length > 0) this.log.log(`[Settings] Client keys of remote mode migrated in memory: ${migrated.join('; ')}`)
+      changedKeys.push(...migrated)
+    }
     if (changedKeys.length > 0) {
       this.log.log(`[Settings] Client settings migrated: ${changedKeys.join(', ')}`)
       this.persist()
@@ -78,16 +92,32 @@ export class ClientSettingsStore {
     this.patch({ [key]: value })
   }
 
+  /**
+   * `extra(values)`: more client keys a write of `values` brings along, written
+   * with it (main's `runtimeFingerprints` record, multi-runtime.md §20 item 2).
+   */
+  onWrite(extra: (values: Record<string, unknown>) => Record<string, unknown> | null): void {
+    this.writeExtra = extra
+  }
+
   /** Client keys only; anything else is refused (it belongs to the daemon). */
   patch(values: Record<string, unknown>): void {
+    let more: Record<string, unknown> | null = null
+    try { more = this.writeExtra?.(values) ?? null } catch (err) { this.log.warn('[Settings] The extra keys of a write could not be computed:', err) }
+    if (more) values = { ...values, ...more }
     let changed = false
     for (const [key, value] of Object.entries(values)) {
       if (!CLIENT_KEY_SET.has(key)) {
         this.log.warn(`[Settings] Not a client key, not written to ${this.filePath}: ${key}`)
         continue
       }
-      if (value === undefined) delete this.data[key]
-      else this.data[key] = value
+      if (value === undefined) {
+        if (!(key in this.data)) continue
+        delete this.data[key]
+      } else {
+        if (key in this.data && isDeepStrictEqual(this.data[key], value)) continue
+        this.data[key] = value
+      }
       changed = true
     }
     if (changed) this.persist()
@@ -128,6 +158,24 @@ export function splitSettingsPatch(patch: Record<string, unknown>): SplitSetting
       out.backend[key] = value
       if (cls === null) out.unclassified.push(key)
     }
+  }
+  return out
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * A runtimeFleet write (multi-runtime.md §17): each runtime's entry the patch
+ * names takes the fields it carries; every other entry and field stays as
+ * held (main's moves and Remove are the only other writers). A patch that is
+ * not an object leaves what is held.
+ */
+export function mergeRuntimeFleet(held: unknown, patch: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = isRecord(held) ? { ...held } : {}
+  if (!isRecord(patch)) return out
+  for (const [id, entry] of Object.entries(patch)) {
+    if (!isRecord(entry)) continue
+    out[id] = { ...(isRecord(out[id]) ? out[id] as Record<string, unknown> : {}), ...entry }
   }
   return out
 }

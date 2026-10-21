@@ -1,3 +1,4 @@
+import { helloBody } from '../helpers/hello-proof'
 import type { AllowedNetwork, NetworkView, PairingClaimView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../src/shared/types/remote-access.types'
 
 /**
@@ -33,6 +34,10 @@ export interface FakeRemoteDaemon {
     /** The networks the user allowed. */
     allowed: AllowedNetwork[]
     meshLan: boolean
+    /** The device tokens it issued (its hello proves each). */
+    tokens: string[]
+    /** An ADF from before the authenticated hello: its hello has no proof. */
+    unsigned: boolean
   }
   requests: Array<{ origin: string; method: string; path: string; body: unknown; headers: Record<string, string> }>
   /** Answer the pending claim as the host's owner would. */
@@ -43,6 +48,9 @@ const json = (status: number, body: unknown, headers: Record<string, string> = {
   new Response(body === undefined ? '' : JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } })
 
 const err = (status: number, code: string, error: string, extra: Record<string, unknown> = {}, headers: Record<string, string> = {}) => json(status, { error, code, ...extra }, headers)
+
+/** A device id of the daemon's shape (10 base32 characters) for the n-th device. */
+const deviceIdOf = (n: number): string => `dev${'abcdefghijklmnopqrstuvwxyz'[n % 26]}aaaaaa`
 
 export function device(over: Partial<RemoteDevice> = {}): RemoteDevice {
   return {
@@ -73,6 +81,8 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
     networks: [{ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', allowed: true, osCategory: 'private', ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }],
     allowed: [{ id: 'lan-0123456789abcdef', kind: 'lan', label: 'Wi-Fi (192.168.1.0/24)', addedAt: '2026-10-18T09:00:00Z' }],
     meshLan: false,
+    tokens: [],
+    unsigned: false,
     sourceWrong: 0,
   }
   const status = (): RemoteAccessStatus => ({
@@ -107,11 +117,12 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
       if (!claim) throw new Error('fake daemon: no pending claim')
       const record = state.claims.get(claim.claimId)!
       if (allow) {
-        const d = device({ id: `dev${++seq}`, label: record.deviceName })
+        const d = device({ id: deviceIdOf(++seq), label: record.deviceName })
         state.devices.push(d)
         record.state = 'approved'
         record.device = d
-        record.token = `adfd_${d.id}_${'s'.repeat(43)}`
+        record.token = `adfd_${d.id}_${'s'.repeat(42)}${String.fromCharCode(65 + seq)}`
+        state.tokens.push(record.token)
       } else {
         record.state = 'denied'
       }
@@ -159,7 +170,9 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
         if (method === 'POST' && path === '/remote-access/devices') {
           const d = device({ id: `tok${++seq}`, label: body.label, origin: 'token' })
           state.devices.push(d)
-          return json(201, { device: d, token: `adfd_${d.id}_${'t'.repeat(43)}` })
+          const token = `adfd_${d.id}_${'t'.repeat(43)}`
+          state.tokens.push(token)
+          return json(201, { device: d, token })
         }
         const del = /^\/remote-access\/devices\/([^/]+)$/.exec(path)
         if (method === 'DELETE' && del) {
@@ -194,7 +207,9 @@ export function createFakeRemoteDaemon(opts: { loopback?: string } = {}): FakeRe
       // Unauthenticated routes (§11.3).
       if (!state.enabled && (path === '/remote/hello' || path.startsWith('/pair/'))) return err(404, 'remote_access_off', 'Remote access is off.')
       if (method === 'GET' && path === '/remote/hello') {
-        return json(200, { v: 1, name: state.name, fingerprint: state.fingerprint, pairingOpen: state.pairing !== null && !state.pairing.claim, clientApiVersion: 1 })
+        // As the daemon answers it, with the proof for the tokens it issued (remote-access.md §5.2.1).
+        const hello = helloBody(new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url), { name: state.name, fingerprint: state.fingerprint, tokens: state.tokens, pairingOpen: state.pairing !== null && !state.pairing.claim, old: state.unsigned })
+        return json(200, { ...hello, clientApiVersion: 1 })
       }
       if (method === 'POST' && path === '/pair/claim') {
         const p = state.pairing

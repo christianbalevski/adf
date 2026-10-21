@@ -15,6 +15,7 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { createFixtureAgents, type FixtureAgent, type FixtureSpec } from './fixtures'
 import { waitForUsageOnDisk } from './usage-flush'
 import { waitForLeasesSettled } from './lease-settle'
+import { helloBody } from '../../helpers/hello-proof'
 
 /**
  * Multi-daemon backend (docs/design/multi-runtime.md §9.1; README
@@ -160,16 +161,26 @@ export interface RemoteProxy {
   upstream: number
   /** What /remote/hello answers; null: 404, remote access off. */
   hello: { name: string; fingerprint: string } | null
+  /**
+   * Without `forwardHello`: the device token this computer issued to Studio, as the proxy plays the other computer.
+   * Its hello proves it (remote-access.md §5.2.1), and a request with it reaches the daemon with `upstreamToken`
+   * (the remote's master token: remote access is off there). Null: it holds no token (another computer).
+   */
+  issued: { token: string; upstreamToken: string } | null
   /** Every request but /health and /remote/hello answers 401 (the device token was revoked). */
   refuse: boolean
   /** Requests are accepted and never answered (a computer that went away without closing its connections). */
   blackhole: boolean
+  /** Every new connection is closed at once (nothing listens there any more). */
+  refuseConnections: boolean
+  /** Every request but /health answers 502 (a proxy whose daemon behind it is down). */
+  gateway: boolean
   /** /remote/hello goes to the daemon, whose remote access is on (`deviceToken`); `hello` then records what it answered. */
   forwardHello: boolean
 }
 
-async function startProxy(upstream: number, hello: RemoteProxy['hello'], forwardHello = false): Promise<RemoteProxy> {
-  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, refuse: false, blackhole: false, forwardHello }
+async function startProxy(upstream: number, hello: RemoteProxy['hello'], forwardHello = false, issued: RemoteProxy['issued'] = null): Promise<RemoteProxy> {
+  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, issued, refuse: false, blackhole: false, refuseConnections: false, gateway: false, forwardHello }
   proxy.server = createHttpServer(async (req, res) => {
     const path = (req.url ?? '').split('?')[0]
     const headers = { ...req.headers }
@@ -179,6 +190,12 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
     }
     if (proxy.blackhole) { req.resume(); return }
     if (headers.authorization) proxy.authorized.push(`${proxy.upstream} ${req.method} ${path}`)
+    if (proxy.gateway && path !== '/health') {
+      req.resume()
+      res.writeHead(502, { 'Content-Type': 'text/plain' })
+      res.end('Bad Gateway')
+      return
+    }
     if (req.method === 'GET' && path === '/remote/hello' && !proxy.forwardHello) {
       req.resume()
       // The daemon that answers at the address shows the hello: nothing answers while it is down.
@@ -192,7 +209,7 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
       if (!alive || upstream !== proxy.upstream) { res.socket?.destroy(); return }
       if (!proxy.hello) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Remote access is off on this computer.', code: 'remote_access_off' })); return }
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ v: 1, name: proxy.hello.name, fingerprint: proxy.hello.fingerprint, pairingOpen: false, api: '2' }))
+      res.end(JSON.stringify(helloBody(new URL(req.url ?? '/', 'http://proxy'), { name: proxy.hello.name, fingerprint: proxy.hello.fingerprint, tokens: proxy.issued ? [proxy.issued.token] : [] })))
       return
     }
     if (proxy.refuse && path !== '/health') {
@@ -201,8 +218,14 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
       res.end(JSON.stringify({ error: 'Unauthorized' }))
       return
     }
-    headers.host = REMOTE_PROXY_HOST
-    headers['x-forwarded-for'] = '198.51.100.7'
+    // A forwarded hello reaches the remote daemon as through an SSH tunnel (a port forward: the Host dialed, no
+    // forwarding header): the daemon proves only an origin it is reached at (remote-access.md §5.2.1), and a loopback
+    // origin only when no proxy stands between. Every other request arrives as through a proxy, from another computer.
+    if (!(req.method === 'GET' && path === '/remote/hello' && proxy.forwardHello)) {
+      headers.host = REMOTE_PROXY_HOST
+      headers['x-forwarded-for'] = '198.51.100.7'
+    }
+    if (proxy.issued && headers.authorization === `Bearer ${proxy.issued.token}`) headers.authorization = `Bearer ${proxy.issued.upstreamToken}`
     const up = httpRequest({ host: '127.0.0.1', port: proxy.upstream, method: req.method, path: req.url, headers }, (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers)
       answer.pipe(res)
@@ -214,6 +237,7 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
     req.pipe(up)
     res.on('close', () => up.destroy())
   })
+  proxy.server.on('connection', (socket) => { if (proxy.refuseConnections) socket.destroy() })
   await new Promise<void>((done) => proxy.server.listen(0, '127.0.0.1', () => done()))
   const address = proxy.server.address()
   proxy.port = typeof address === 'object' && address ? address.port : 0
@@ -241,6 +265,14 @@ export interface BootedMultiBackend extends BootedBackend {
   readonly closedAgentWindows: Array<{ id: number; keep: boolean }>
   /** hooks.runtimeConnected calls, in order. */
   readonly connectedRuntimes: string[]
+  /** `thisComputerOnly`: the tagged pushes left out of the recording, as they arrived (their channel and tag). */
+  readonly droppedTagged: Array<{ channel: string; runtimeId: string }>
+  /**
+   * The remote stops answering mid-run: its open connections close and every
+   * new one is never answered (`blackhole`), closed at once
+   * (`refuseConnections`) or answered 502 (`gateway`).
+   */
+  stopRemote(how: 'blackhole' | 'refuseConnections' | 'gateway'): void
   /** Save the remote's connection (Studio's Add, `adf pair`): the cache follows the file. */
   saveRemote(): Promise<void>
   /** Forget it (Studio's Remove, `adf remotes forget`). */
@@ -356,8 +388,10 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
           throw err
         }
       }
-      const savedToken = device?.token ?? remoteToken
-      const proxy = await startProxy(remotePort, { name: remoteName, fingerprint }, !!options.deviceToken)
+      // Without remote access there, the proxy is the other computer: it issued Studio a device token of its own.
+      const proxyIssued = device ? null : { token: `adfd_${'p'.repeat(10)}_${randomBytes(32).toString('base64url')}`, upstreamToken: remoteToken }
+      const savedToken = device?.token ?? proxyIssued!.token
+      const proxy = await startProxy(remotePort, { name: remoteName, fingerprint }, !!options.deviceToken, proxyIssued)
       env.allowPort(proxy.port)
       const proxyUrl = `http://127.0.0.1:${proxy.port}`
 
@@ -373,6 +407,7 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
       const resources = createRunResources()
       const closedAgentWindows: Array<{ id: number; keep: boolean }> = []
       const connectedRuntimes: string[] = []
+      const droppedTagged: Array<{ channel: string; runtimeId: string }> = []
       let booted = false
       const killAll = async () => {
         for (const c of children) await killTree(c.child, c.exited)
@@ -424,6 +459,8 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         if (options.thisComputerOnly) {
           electron.onPush((record) => {
             if (!runtimeTag.isRuntimeTag(record.args[0])) return
+            // Counted before it leaves the recording: the test checks what was left out.
+            droppedTagged.push({ channel: record.channel, runtimeId: record.args[0].$runtime })
             const i = electron.pushes.lastIndexOf(record)
             if (i >= 0) electron.pushes.splice(i, 1)
           })
@@ -461,6 +498,11 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         remotesEnv,
         closedAgentWindows,
         connectedRuntimes,
+        droppedTagged,
+        stopRemote(how) {
+          proxy[how] = true
+          proxy.server.closeAllConnections()
+        },
         until: untilFn,
         async saveRemote() {
           await connections.saveConnection(remotesEnv, { url: proxyUrl, token: savedToken, fingerprint, hostName: remoteName, deviceId: device?.id ?? 'device-1', label: 'Studio' }, { confirmFile: async () => true })
@@ -487,6 +529,8 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
           children.push(impostor)
           if (impostor.pid !== undefined) pids.push({ value: impostor.pid, name: 'pid:impostor' })
           proxy.hello = { name: remoteName, fingerprint: fingerprintOf(randomBytes(16).toString('hex')) }
+          // Another computer holds no record of Studio's token.
+          proxy.issued = null
           proxy.upstream = port
         },
         openAgentWindow(runtimeId = remoteId) {

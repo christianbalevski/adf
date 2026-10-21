@@ -4,12 +4,13 @@ import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote
 import type { BackendDaemonStatus, StudioRunMode } from '../../shared/types/backend.types'
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
-import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
+import { forgetRemote, loadRemotes, readRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
+import { helloRefusal, rateLimitedSentence, verifyHello } from '../services/remote-hello'
 import { awaitKeychainAccess } from './daemon-secrets'
-import { PairingClient } from './remote-access/client'
-import { runMode, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
+import { runMode, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { PinMismatchError } from './daemon-mode/connection'
+import { runtimeOrder, SLOT_RUNTIME } from './daemon-mode/runtime-manager'
 
 /**
  * Saved connections (docs/design/settings-scopes.md §5.2): one list for
@@ -41,6 +42,15 @@ export function savedConnections(env: NodeJS.ProcessEnv): Record<string, SavedRe
  */
 export class SavedConnectionsCache {
   private value: Record<string, SavedRemote> = {}
+  /**
+   * Why cli-remotes.json could not be read at the last refresh; null when it
+   * was read (or is absent: nothing saved). While set, `get()` keeps the list
+   * last read (empty at launch) and it is not "every saved connection":
+   * nothing is dropped or reordered because of it.
+   */
+  unreadable: string | null = null
+  /** The names of malformed entries at the last read (cli/remotes.ts keeps them on every write). */
+  malformed: string[] = []
   private watcher: FSWatcher | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
 
@@ -57,8 +67,17 @@ export class SavedConnectionsCache {
   }
 
   async refresh(): Promise<Record<string, SavedRemote>> {
-    const next = (await loadRemotesAsync(this.env)).remotes
-    const changed = JSON.stringify(next) !== JSON.stringify(this.value)
+    const read = await readRemotesAsync(this.env)
+    if (read.unreadable) {
+      const first = this.unreadable === null
+      this.unreadable = read.unreadable
+      if (first) this.onChange?.()
+      return this.value
+    }
+    const next = read.file.remotes
+    const changed = JSON.stringify(next) !== JSON.stringify(this.value) || this.unreadable !== null || JSON.stringify(read.malformed) !== JSON.stringify(this.malformed)
+    this.unreadable = null
+    this.malformed = read.malformed
     this.value = next
     if (changed) this.onChange?.()
     return next
@@ -88,9 +107,13 @@ export class SavedConnectionsCache {
   }
 }
 
-/** Ends a connection attempt with a sentence the user can act on; never holds a token. */
+/**
+ * Ends a connection attempt with a sentence the user can act on; never holds
+ * a token. `rate_limited` (the host answered the hello 429) is waited out:
+ * `retryAfterMs` says how long.
+ */
 export class ConnectionError extends Error {
-  constructor(readonly code: 'not_configured' | 'transport' | 'no_token' | 'keychain' | 'pinned' | 'unreachable', message: string) {
+  constructor(readonly code: 'not_configured' | 'transport' | 'no_token' | 'keychain' | 'pinned' | 'unreachable' | 'unreadable' | 'rate_limited', message: string, readonly retryAfterMs: number | null = null) {
     super(message)
     this.name = 'ConnectionError'
   }
@@ -108,7 +131,10 @@ export function keychainSentence(name: string): string {
  * a silent fallback.
  */
 export async function savedConnectionTarget(config: Pick<StudioBackendConfig, 'insecureHttpOrigins'>, name: string, env: NodeJS.ProcessEnv, hooks: { log?: (line: string) => void; onSlow?: () => void } = {}): Promise<{ url: string; token: string; remote: SavedRemote }> {
-  const remote = (await loadRemotesAsync(env)).remotes[name]
+  // An unreadable list is not "no saved connection" (R2A-3): the file is named, and the connector retries it.
+  const read = await readRemotesAsync(env)
+  if (read.unreadable) throw new ConnectionError('unreadable', `${name} cannot be read from ${remotesFilePath(env)}: ${read.unreadable}; fix or remove it.`)
+  const remote = read.file.remotes[name]
   if (!remote) throw new ConnectionError('not_configured', `No saved connection named "${name}".`)
   const check = checkRemoteDaemonUrl(remote.url)
   if (!check.url) throw new ConnectionError('transport', `The address of ${name} is not valid: ${check.reason ?? remote.url}`)
@@ -133,28 +159,60 @@ export function pinMismatchSentence(name: string, url: string, shown: string | n
 
 /**
  * Before a saved token goes to `url` (trust on first use, as `adf`): the
- * daemon there MUST answer /remote/hello with the fingerprint saved when it
- * was paired. Throws with a sentence; the token is not sent.
+ * daemon there MUST answer the authenticated hello (remote-access.md
+ * §5.2.1) with the fingerprint saved when it was paired, AND prove it holds
+ * this token's device record. An older ADF, which cannot prove it, is
+ * refused, never downgraded. Throws with a sentence; the token is not sent.
  */
-export async function checkPinnedFingerprint(name: string, remote: Pick<SavedRemote, 'fingerprint'>, url: string, fetchImpl?: typeof fetch): Promise<void> {
-  let fingerprint: string | null = null
-  try {
-    const hello = await new PairingClient(url, fetchImpl).hello({ timeoutMs: 5_000 })
-    fingerprint = typeof hello?.fingerprint === 'string' ? hello.fingerprint : null
-  } catch {
-    // Down, or remote access off there: the token is not sent; the connector retries a host that is down.
-    throw new ConnectionError('unreachable', `${url} does not answer as ${name}; the token was not sent.`)
+export async function checkPinnedFingerprint(name: string, remote: Pick<SavedRemote, 'fingerprint'>, url: string, token: string, fetchImpl?: typeof fetch): Promise<void> {
+  const check = await verifyHello(url, token, { fetch: fetchImpl, timeoutMs: 5_000 })
+  // Down, or remote access off there: the token is not sent; the connector retries a host that is down.
+  if (check.kind === 'none') throw new ConnectionError('unreachable', `${url} does not answer as ${name}; the token was not sent.`)
+  // Too many hellos from here: not down, not refused; waited out, and the token is not sent meanwhile.
+  if (check.kind === 'rate_limited') throw new ConnectionError('rate_limited', rateLimitedSentence(name), check.retryAfterMs)
+  if (check.kind !== 'not_device_token' && check.hello.fingerprint !== remote.fingerprint) {
+    throw new ConnectionError('pinned', pinMismatchSentence(name, url, check.hello.fingerprint, remote.fingerprint))
   }
-  if (fingerprint !== remote.fingerprint) {
-    throw new ConnectionError('pinned', pinMismatchSentence(name, url, fingerprint, remote.fingerprint))
+  const refusal = helloRefusal(check, name, url)
+  if (refusal) throw new ConnectionError('pinned', refusal)
+}
+
+/**
+ * The connection's pinCheck (DaemonConnection): PinMismatchError for another
+ * computer, any other error while nothing answers (a 429 carries
+ * `retryAfterMs`: the check waits that long before it asks again).
+ */
+export function pinCheckFor(name: string, fingerprint: string, url: string, token: string, fetchImpl?: typeof fetch): () => Promise<void> {
+  return async () => {
+    try {
+      await checkPinnedFingerprint(name, { fingerprint }, url, token, fetchImpl)
+    } catch (err) {
+      if (err instanceof ConnectionError && err.code === 'pinned') throw new PinMismatchError(err.message)
+      throw err
+    }
   }
 }
 
-/** The connection's pinCheck (DaemonConnection): PinMismatchError for another computer, any other error while nothing answers. */
-export function pinCheckFor(name: string, fingerprint: string, url: string, fetchImpl?: typeof fetch): () => Promise<void> {
+/**
+ * Before an unpinned token of the remote slot goes to `url`: a device token
+ * (`adfd_…`) is sent only after the daemon there proved, by the
+ * authenticated hello (remote-access.md §5.2.1), that it issued it, as for a
+ * saved connection; there is no fingerprint to compare. Any other token is
+ * the user's own choice and is not checked. Throws as checkPinnedFingerprint.
+ */
+export async function checkSlotToken(name: string, url: string, token: string, fetchImpl?: typeof fetch): Promise<void> {
+  const check = await verifyHello(url, token, { fetch: fetchImpl, timeoutMs: 5_000 })
+  if (check.kind === 'not_device_token' || check.kind === 'verified') return
+  if (check.kind === 'none') throw new ConnectionError('unreachable', `${url} does not answer as ${name}; the token was not sent.`)
+  if (check.kind === 'rate_limited') throw new ConnectionError('rate_limited', rateLimitedSentence(name), check.retryAfterMs)
+  throw new ConnectionError('pinned', helloRefusal(check, name, url) ?? `${url} could not prove it is ${name}; the token was not sent.`)
+}
+
+/** checkSlotToken as the connection's pinCheck (every re-dial asks it again). */
+export function slotCheckFor(name: string, url: string, token: string, fetchImpl?: typeof fetch): () => Promise<void> {
   return async () => {
     try {
-      await checkPinnedFingerprint(name, { fingerprint }, url, fetchImpl)
+      await checkSlotToken(name, url, token, fetchImpl)
     } catch (err) {
       if (err instanceof ConnectionError && err.code === 'pinned') throw new PinMismatchError(err.message)
       throw err
@@ -179,12 +237,17 @@ export interface SaveConnectionInput {
  */
 export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnectionInput, opts: { confirmFile?: (why: string) => Promise<boolean>; now?: Date } = {}): Promise<{ name: string; store: TokenStoreChoice }> {
   const now = opts.now ?? new Date()
+  // R2A-1: an unreadable list refuses before the token is stored, so a token saved for this computer is never
+  // replaced by one the list then does not take (the host's new device would be removed, revoking it).
+  const read = await readRemotesAsync(env)
+  if (read.unreadable) throw new RemotesUnreadableError(remotesFilePath(env), read.unreadable)
   // The keychain, or the user-only file only after the user chose it (KEYCHAIN_FILE_COPY).
   const store = await storeRemoteToken(input.fingerprint, input.token, env, opts.confirmFile)
   // Under the lock adf takes too (updateRemotes): neither loses the other's change.
-  const name = await updateRemotes(env, (file) => {
+  const name = await updateRemotes(env, (file, malformed) => {
     const same = Object.entries(file.remotes).find(([, r]) => r.fingerprint === input.fingerprint)
-    const name = same?.[0] ?? remoteNameFor(input.hostName, file.remotes)
+    // A malformed entry's name is taken too: the user fixes or forgets it.
+    const name = same?.[0] ?? remoteNameFor(input.hostName, { ...malformed, ...file.remotes })
     // A token added by hand knows no device id or label: the pairing's stay.
     file.remotes[name] = {
       url: input.url,
@@ -206,19 +269,35 @@ export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnecti
  * remote URL slot is then empty; an older Studio's remote mode names the saved
  * connection, for the migration (runtime-migration.ts). Keychain only: when
  * it does not take the token the slot stays, and its pin is still checked
- * (remote/connector.ts). Returns the saved name, or null.
+ * (remote/connector.ts). A slot whose computer is already a saved connection
+ * (slotTwin) only goes: that connection keeps its own token, and forgetting
+ * it (`adf remotes forget`) leaves no slot to come back. Returns the saved
+ * name, or null. Nothing moves while cli-remotes.json cannot be read.
  */
 export async function migratePairedSlot(boot: Pick<BootBackend, 'config' | 'configPath' | 'writeBlocked'>, codec: SecretCodec, env: NodeJS.ProcessEnv, log: Pick<Console, 'log' | 'warn'> = console): Promise<string | null> {
   const slot = boot.config.remote
-  if (boot.writeBlocked || !slot.url || !slot.token || !slot.paired) return null
-  const token = codec.decrypt(slot.token)
-  if (!token) return null
-  let name: string
-  try {
-    name = (await saveConnection(env, { url: slot.url, token, fingerprint: slot.paired.fingerprint, hostName: slot.paired.name, deviceId: slot.paired.deviceId, label: slot.paired.label })).name
-  } catch (err) {
-    log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${err instanceof Error ? err.message : String(err)}`)
+  if (boot.writeBlocked || !slot.url || !slot.paired) return null
+  const read = await readRemotesAsync(env)
+  if (read.unreadable) {
+    log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${read.unreadable}`)
     return null
+  }
+  let name = slotTwin(boot.config, read.file.remotes)
+  const twin = name !== null
+  // The twin's own token must be readable before the slot's goes (a twin without one would leave no token at all).
+  if (name && !(await tokenReadable(env, slot.paired.fingerprint))) {
+    log.warn(`[Connection] Kept the paired remote URL ${slot.url} of studio-backend.json: the token of the saved connection "${name}" (same computer) cannot be read from the OS keychain`)
+    return null
+  }
+  if (!name) {
+    const token = slot.token ? codec.decrypt(slot.token) : null
+    if (!token) return null
+    try {
+      name = (await saveConnection(env, { url: slot.url, token, fingerprint: slot.paired.fingerprint, hostName: slot.paired.name, deviceId: slot.paired.deviceId, label: slot.paired.label })).name
+    } catch (err) {
+      log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
   }
   const origin = remoteUrlOrigin(slot.url)
   const next: StudioBackendConfig = {
@@ -228,22 +307,62 @@ export async function migratePairedSlot(boot: Pick<BootBackend, 'config' | 'conf
   }
   await writeJsonAtomicAsync(boot.configPath, next)
   boot.config = next
-  log.log(`[Connection] Moved the paired remote URL ${slot.url} to the saved connection "${name}" (pinned to ${slot.paired.fingerprint})`)
+  log.log(twin
+    ? `[Connection] Removed the paired remote URL ${slot.url} of studio-backend.json: it is the saved connection "${name}" (${slot.paired.fingerprint}), which keeps its own token`
+    : `[Connection] Moved the paired remote URL ${slot.url} to the saved connection "${name}" (pinned to ${slot.paired.fingerprint})`)
   return name
 }
 
-/** Forget a saved connection and its token (`adf remotes forget`). The host still lists the device. */
+/** Whether the saved token of `fingerprint` can be read (the keychain read off the main thread first). */
+async function tokenReadable(env: NodeJS.ProcessEnv, fingerprint: string): Promise<boolean> {
+  await awaitKeychainAccess(env, { log: () => {}, onSlow: () => {} })
+  try {
+    return !!readRemoteToken(fingerprint, env)
+  } catch {
+    return false
+  }
+}
+
+/**
+ * The saved connection the remote slot of studio-backend.json is (paired
+ * with its fingerprint; runtimeSlot hides the slot behind it), or null.
+ */
+export function slotTwin(config: Pick<StudioBackendConfig, 'remote'>, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>): string | null {
+  const fp = config.remote.url ? config.remote.paired?.fingerprint : undefined
+  return fp ? Object.entries(saved).find(([, r]) => r.fingerprint === fp)?.[0] ?? null : null
+}
+
+/**
+ * While Studio runs, cli-remotes.json gained the computer of the remote slot
+ * (`adf pair`, Studio's Add): the slot goes, URL and token, as at launch
+ * (migratePairedSlot). The saved connection was already the runtime; later
+ * `adf remotes forget` of it then forgets the computer, as Studio's Remove
+ * does. Returns the connection's name, or null (no twin, or the save failed:
+ * said in the log).
+ */
+export async function clearTwinSlot(store: Pick<BackendSettingsStore, 'config' | 'set'>, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>, env: NodeJS.ProcessEnv, log: Pick<Console, 'log' | 'warn'> = console): Promise<string | null> {
+  const name = slotTwin(store.config(), saved)
+  if (!name) return null
+  const url = store.config().remote.url
+  // The twin's own token must be readable before the slot's goes (a twin without one would leave no token at all).
+  if (!(await tokenReadable(env, saved[name].fingerprint))) {
+    log.warn(`[Connection] Kept the remote URL ${url} of studio-backend.json beside the saved connection "${name}" (same computer): its token cannot be read from the OS keychain`)
+    return null
+  }
+  const result = await store.set({ remoteUrl: null })
+  if (!result.ok) {
+    log.warn(`[Connection] Kept the remote URL ${url} of studio-backend.json beside the saved connection "${name}" (same computer): ${result.error}`)
+    return null
+  }
+  log.log(`[Connection] Removed the remote URL ${url} of studio-backend.json: it is the saved connection "${name}" (same fingerprint), which keeps its own token`)
+  return name
+}
+
+/** Forget a saved connection and its token, as `adf remotes forget` does (forgetRemote). The host still lists the device. */
 export async function forgetConnection(env: NodeJS.ProcessEnv, name: string): Promise<boolean> {
-  const removed = await updateRemotes(env, (file) => {
-    const remote = file.remotes[name]
-    if (!remote) return null
-    delete file.remotes[name]
-    if (file.default === name) file.default = null
-    // Another name may hold the same computer; its token stays.
-    return { remote, shared: Object.values(file.remotes).some((r) => r.fingerprint === remote.fingerprint) }
-  })
-  if (!removed) return false
-  if (!removed.shared) deleteRemoteToken(removed.remote.fingerprint, env)
+  const forgot = await forgetRemote(env, name)
+  if (!forgot) return false
+  if (forgot.tokenError) throw new Error(`${name} was removed, but its token could not be: ${forgot.tokenError}`)
   return true
 }
 
@@ -338,13 +457,15 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
     removable: true,
   })
-  for (const name of Object.keys(input.saved).sort((a, b) => a.localeCompare(b))) {
-    const remote = input.saved[name]
-    saved.push(savedRow(`remote:${name}`, name, remote.url, remote.fingerprint))
-  }
   // The remote URL of studio-backend.json: one row, unless its paired fingerprint is a saved connection (runtimeSlot).
   const slot = runtimeSlot(input.configured, input.saved)
-  if (slot) saved.push(savedRow('remote', slot.name, slot.url, input.configured.remote.paired?.fingerprint ?? null))
+  // In the runtime set's order (§3.1): the order added, as the status bar and the Settings picker.
+  for (const id of runtimeOrder(input.configured.runtimeOrder ?? [], input.saved, slot)) {
+    if (id === SLOT_RUNTIME && slot) { saved.push(savedRow(SLOT_RUNTIME, slot.name, slot.url, input.configured.remote.paired?.fingerprint ?? null)); continue }
+    const name = id.slice('remote:'.length)
+    const remote = input.saved[name]
+    if (remote) saved.push(savedRow(id, name, remote.url, remote.fingerprint))
+  }
 
   const found: ConnectionRow[] = []
   for (const entry of input.discovery?.entries ?? []) {
@@ -362,7 +483,7 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
   }
   return {
     current,
-    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? 'This computer' : 'Inside Studio' } : null,
+    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? 'This computer' : 'Inside Studio (legacy)' } : null,
     rows: [...rows, ...saved, ...found],
     discovery: input.discovery ? { browsing: input.discovery.browsing, problem: input.discovery.problem } : null,
   }

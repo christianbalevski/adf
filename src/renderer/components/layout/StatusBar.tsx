@@ -14,7 +14,7 @@ import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
 import { selectMeshSlice } from '../../stores/mesh.store'
 import { selectBackgroundAgents } from '../../stores/background-agents.store'
 import { requestSettingsRuntime } from '../../stores/settings-runtime.store'
-import { apiFor } from '../../utils/runtime-api'
+import { apiFor, openApi } from '../../utils/runtime-api'
 import { isAgentWindow, windowRuntime } from '../../utils/window-kind'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 
@@ -46,6 +46,44 @@ export interface RuntimeGroupsFold { folded: boolean; needed: number }
 export function foldRuntimeGroups(state: RuntimeGroupsFold, bar: { scrollWidth: number; clientWidth: number }): RuntimeGroupsFold {
   if (!state.folded) return bar.scrollWidth > bar.clientWidth + 1 ? { folded: true, needed: bar.scrollWidth } : state
   return bar.clientWidth >= state.needed ? { folded: false, needed: 0 } : state
+}
+
+/**
+ * Measure the fold again whenever the bar or what it holds changes size: the
+ * bar itself, every item in it (an agent opened, a runtime's state, a Kill
+ * result) and items added later. While folded, the width the inline groups
+ * need moves with the items beside them. Answers the teardown.
+ */
+export function watchRuntimeFold(
+  bar: HTMLElement,
+  groups: HTMLElement,
+  setFold: (update: (state: RuntimeGroupsFold) => RuntimeGroupsFold) => void,
+): () => void {
+  const beside = (): number => {
+    const items = Array.from(bar.children).filter((c) => c !== groups)
+    const gap = typeof getComputedStyle === 'function' ? parseFloat(getComputedStyle(bar).columnGap) || 0 : 0
+    return items.reduce((w, c) => w + c.getBoundingClientRect().width, 0) + gap * items.length
+  }
+  let besideWidth = beside()
+  const check = (): void => {
+    const now = beside()
+    const moved = now - besideWidth
+    besideWidth = now
+    setFold((state) => foldRuntimeGroups(state.folded && moved !== 0 ? { ...state, needed: state.needed + moved } : state, bar))
+  }
+  const resize = new ResizeObserver(check)
+  const observeAll = (): void => {
+    resize.observe(bar)
+    for (const item of Array.from(bar.children)) resize.observe(item)
+  }
+  observeAll()
+  const added = typeof MutationObserver === 'undefined' ? null : new MutationObserver(() => { observeAll(); check() })
+  added?.observe(bar, { childList: true })
+  check()
+  return () => {
+    resize.disconnect()
+    added?.disconnect()
+  }
 }
 
 function MeshIcon() {
@@ -116,7 +154,8 @@ export function StatusBar() {
     (viewedLoop !== MAIN_LOOP && config?.loops?.find((l) => l.name === viewedLoop)?.model) || config?.model
 
   const handleSave = async () => {
-    const result = await window.adfApi?.saveFile()
+    // The open agent's runtime: in the main window, the agent it has open.
+    const result = await openApi()?.saveFile()
     if (result?.success) {
       useDocumentStore.getState().setDirty(false)
     }
@@ -285,13 +324,10 @@ export function RuntimeGroups({ runtimes }: { runtimes: RuntimeView[] }) {
   // Another set is measured again, inline first.
   useLayoutEffect(() => { setFold({ folded: false, needed: 0 }) }, [ids])
   useLayoutEffect(() => {
-    const bar = ref.current?.parentElement
-    if (!bar || typeof ResizeObserver === 'undefined') return
-    const check = () => setFold((state) => foldRuntimeGroups(state, bar))
-    check()
-    const observer = new ResizeObserver(check)
-    observer.observe(bar)
-    return () => observer.disconnect()
+    const groups = ref.current
+    const bar = groups?.parentElement
+    if (!groups || !bar || typeof ResizeObserver === 'undefined') return
+    return watchRuntimeFold(bar, groups, setFold)
   }, [ids, fold.folded])
   useEffect(() => {
     if (!open) return

@@ -1,10 +1,12 @@
 import { useAgentWindowStore } from '../stores/agent-window.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP } from '../stores/agent.store'
-import { useBackgroundAgentsStore } from '../stores/background-agents.store'
+import { useBackgroundAgentsStore, selectBackgroundAgents } from '../stores/background-agents.store'
 import { useMessageQueueStore, sameAgentPath } from '../stores/message-queue.store'
 import { deliverQueuedMessages } from './queued-delivery'
-import { agentWindowFile } from './window-kind'
+import { agentWindowFile, isAgentWindow, windowRuntime } from './window-kind'
+import { openAgentKey, windowAgentKey } from './runtime-api'
+import { LOCAL_RUNTIME } from '../../shared/runtime-tag'
 import type { QueueHandoverEntry } from '../../shared/types/ipc.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 
@@ -47,14 +49,20 @@ function failOpen(error: string): void {
   void window.adfApi?.agentWindowOpenFailed?.().catch(() => {})
 }
 
-/** The window's queues as main keeps them: the open agent under its own path; image previews (blob URLs of this page) left out. */
-export function queueEntries(queues: Record<string, Record<string, Array<{ id: string; text: string; content?: ContentBlock[]; error?: string; failures?: number }>>>, openFile: string | null): QueueHandoverEntry[] {
+/**
+ * The window's queues as main keeps them: the open agent under its own path,
+ * each naming the window's runtime when it is not This computer (the main
+ * window queues them under that runtime's agent); image previews (blob URLs
+ * of this page) left out.
+ */
+export function queueEntries(queues: Record<string, Record<string, Array<{ id: string; text: string; content?: ContentBlock[]; error?: string; failures?: number }>>>, openFile: string | null, runtimeId: string = windowRuntime): QueueHandoverEntry[] {
   const out: QueueHandoverEntry[] = []
+  const runtime = runtimeId && runtimeId !== LOCAL_RUNTIME ? { runtimeId } : {}
   for (const [key, loops] of Object.entries(queues)) {
     const filePath = openFile && sameAgentPath(openFile, key) ? openFile : key
     for (const [loop, messages] of Object.entries(loops)) {
       if (messages.length === 0) continue
-      out.push({ filePath, loop, messages: messages.map((m) => ({ id: m.id, text: m.text, ...(m.content ? { content: m.content } : {}), ...(m.error ? { error: m.error } : {}), ...(m.failures ? { failures: m.failures } : {}) })) })
+      out.push({ filePath, ...runtime, loop, messages: messages.map((m) => ({ id: m.id, text: m.text, ...(m.content ? { content: m.content } : {}), ...(m.error ? { error: m.error } : {}), ...(m.failures ? { failures: m.failures } : {}) })) })
     }
   }
   return out
@@ -109,26 +117,30 @@ export function startQueueMirror(): () => void {
 export function adoptQueueHandover(entries: readonly QueueHandoverEntry[], opts: { deliver?: boolean } = {}): void {
   const queue = useMessageQueueStore.getState()
   for (const entry of entries) {
+    // The agent's key in this window: runtime and path in the main window, the path in its own agent window.
+    const key = windowAgentKey(entry.runtimeId, entry.filePath)
     for (const m of entry.messages) {
-      queue.enqueue(entry.filePath, entry.loop, {
+      queue.enqueue(key, entry.loop, {
         text: m.text,
         ...(m.content ? { content: m.content as ContentBlock[] } : {}),
         ...(m.error ? { error: m.error } : {}),
         ...(m.failures ? { failures: m.failures } : {}),
       })
     }
-    console.info(`[queue] ${entry.messages.length} queued message(s) of ${entry.filePath} (${entry.loop}) taken over`)
-    if (opts.deliver !== false && loopIdle(entry.filePath, entry.loop)) deliverQueuedMessages(entry.filePath, entry.loop, { automatic: true })
+    console.info(`[queue] ${entry.messages.length} queued message(s) of ${entry.filePath}${entry.runtimeId ? ` on ${entry.runtimeId}` : ''} (${entry.loop}) taken over`)
+    if (opts.deliver !== false && loopIdle(entry.runtimeId, key, entry.loop)) deliverQueuedMessages(key, entry.loop, { automatic: true })
   }
 }
 
-function loopIdle(filePath: string, loop: string): boolean {
-  if (sameAgentPath(useDocumentStore.getState().filePath, filePath)) {
+/** The loop of agent `key` (on `runtimeId`) is idle now: the open agent's view, else that runtime's running list. */
+function loopIdle(runtimeId: string | undefined, key: string, loop: string): boolean {
+  if (sameAgentPath(openAgentKey(), key)) {
     const agent = useAgentStore.getState()
     return agent.state !== 'off' && selectLoopSlice(agent, loop).state === 'idle'
   }
   if (loop !== MAIN_LOOP) return false
-  return useBackgroundAgentsStore.getState().agents.some((a) => sameAgentPath(a.filePath, filePath) && a.state === 'idle')
+  const running = selectBackgroundAgents(useBackgroundAgentsStore.getState(), isAgentWindow ? undefined : runtimeId)
+  return running.some((a) => sameAgentPath(windowAgentKey(runtimeId, a.filePath), key) && a.state === 'idle')
 }
 
 /** Main window: take handovers now (a window that closed while this page loaded) and on each later one. */

@@ -80,5 +80,5 @@ it('remote mode becomes This computer with that connection in the set; windows a
   // Nothing before the window; then one sentence over it.
   expect(h.calls.filter((c) => c.startsWith('dialog.'))).toEqual([])
   await fireReadyToShow()
-  expect(h.calls.filter((c) => c.startsWith('dialog.'))).toEqual(['dialog.showMessageBox(window: host-1 is now listed alongside This computer.)'])
+  expect(h.calls.filter((c) => c.startsWith('dialog.'))).toEqual(['dialog.showMessageBox(window: host-1 is in Settings → Connections.)'])
 })

@@ -143,8 +143,8 @@ describe('This computer and the next-launch notices', () => {
       configured: { mode: 'embedded', keepDaemonRunning: false, remoteUrl: null, remoteTokenSaved: false, allowInsecureHttp: false },
       encryptionAvailable: true, encryptionUnavailableReason: null,
     })
-    const next = { id: 'embedded', name: 'Inside Studio' }
-    expect(nextLaunchLine(backend('file'), next)).toBe('Next launch: Inside Studio.')
+    const next = { id: 'embedded', name: 'Inside Studio (legacy)' }
+    expect(nextLaunchLine(backend('file'), next)).toBe('Next launch: Inside Studio (legacy).')
     expect(nextLaunchLine(backend('file'), null)).toBeNull()
     expect(nextLaunchLine(backend('env'), next)).toBeNull()
   })
@@ -229,12 +229,47 @@ describe('local only: Connections is one line', () => {
 
   it('one line and Add; This computer and Inside Studio (legacy) under Details', () => {
     const html = renderToStaticMarkup(<SimpleConnections busy={false} message={null} onAdd={() => {}} onLegacy={() => {}} details={<span>daemon-row</span>} />)
-    expect(html).toContain('Runtimes on other computers')
+    // One word; "Runtimes on other computers." is its tooltip.
+    expect(html).toContain('>Remotes<')
+    expect(html).not.toContain('>Runtimes on other computers<')
     expect(html).toContain('>Add<')
     expect(html).toContain('<details')
     expect(html).toContain('>Details</summary>')
     expect(html).toContain('daemon-row')
     expect(html).toContain('Inside Studio (legacy)')
     expect(html).not.toContain('Runtime ·')
+  })
+})
+
+// F5 (review round 3): Studio's pairing asks before it replaces a saved connection, with the shared confirmation.
+describe('pairing a computer already saved', () => {
+  const asked = { step: 'failed', host: null, deviceName: 'agent-2', attemptsLeft: null, message: 'agent-1-pc is already saved; replace its address and token?', code: 'already_saved', savedUrl: null } as const
+  const started = { ...asked, step: 'need_code', message: null, code: null } as const
+
+  it('asks Replace with that one sentence; Cancel sends nothing more, Replace starts again with replace', async () => {
+    const { startPairing } = await import('../../../src/renderer/components/settings/ConnectionSettings')
+    for (const answer of [false, true]) {
+      const starts: unknown[] = []
+      const confirms: unknown[] = []
+      const result = await startPairing(async (request) => { starts.push(request); return starts.length === 1 ? asked : started }, async (options) => { confirms.push(options); return answer }, { url: 'http://100.101.102.103:7385', allowInsecureHttp: false })
+      expect(confirms).toEqual([{ title: 'Replace', body: 'agent-1-pc is already saved; replace its address and token?', confirmLabel: 'Replace', danger: true }])
+      if (!answer) {
+        expect(result).toBeNull()
+        expect(starts).toEqual([{ url: 'http://100.101.102.103:7385', allowInsecureHttp: false }])
+      } else {
+        expect(result).toEqual(started)
+        expect(starts).toEqual([{ url: 'http://100.101.102.103:7385', allowInsecureHttp: false }, { url: 'http://100.101.102.103:7385', allowInsecureHttp: false, replace: true }])
+      }
+    }
+    // Not saved: no question.
+    const confirms: unknown[] = []
+    expect(await startPairing(async () => started, async (o) => { confirms.push(o); return true }, { url: 'http://100.101.102.103:7385' })).toEqual(started)
+    expect(confirms).toEqual([])
+  })
+
+  it('the Add dialog uses the shared confirmation, never window.confirm', () => {
+    const source = readFileSync(join(__dirname, '../../../src/renderer/components/settings/ConnectionSettings.tsx'), 'utf8')
+    expect(source).toContain("useConfirm")
+    expect(source).not.toMatch(/window\.confirm|\bconfirm\(['"`]/)
   })
 })

@@ -205,7 +205,8 @@ describe('Settings → Connections store', () => {
 
   it('a mode chosen is saved for the next launch: no dialog, no restart (multi-runtime.md §7.2)', async () => {
     const { path, s } = store()
-    expect(await s.set({ mode: 'local' })).toMatchObject({ ok: true, notices: ['Saved. Applies at the next launch.'] })
+    // The page's "Next launch: <name>." with Restart says it; no notice.
+    expect(await s.set({ mode: 'local' })).toMatchObject({ ok: true, notices: [] })
     expect(resolveBootBackend(path, {}, recordingLog().log).mode).toBe('local')
     // The mode this launch runs, chosen again: saved, nothing to apply.
     expect(await s.set({ mode: 'embedded' })).toMatchObject({ ok: true, notices: ['Saved.'] })
@@ -214,10 +215,10 @@ describe('Settings → Connections store', () => {
     expect(await s.set({ mode: 'embedded' })).toMatchObject({ ok: true, notices: [] })
   })
 
-  it('there is no remote mode to choose: a saved connection is connected while it is saved (§7.1)', async () => {
+  it('there is no remote mode to choose (§7.1)', async () => {
     const { path, s } = store()
     await s.set({ remoteUrl: 'https://adf.example.com', remoteToken: TOKEN })
-    expect(await s.set({ mode: 'remote' as 'local' })).toEqual({ ok: false, code: 'invalid_mode', error: 'A saved connection is connected while it is saved.' })
+    expect(await s.set({ mode: 'remote' as 'local' })).toEqual({ ok: false, code: 'invalid_mode', error: 'Remote mode is gone; use Add in Settings → Connections.' })
     expect(resolveBootBackend(path, {}, recordingLog().log).config.mode).toBe('embedded')
   })
 

@@ -15,7 +15,7 @@ import { useConfirm } from '../common/ConfirmDialog'
 import { InfoHint } from '../common/DocsLink'
 import { Button, IconButton, Select, SettingsGroup, SettingsRow, TextInput, Textarea } from '../ui'
 import { useSettingsSave } from './settings-save'
-import { useSettingsApi } from './settings-runtime'
+import { useSettingsApi, useSettingsRuntimeId } from './settings-runtime'
 
 /**
  * Settings > Agent templates.
@@ -114,7 +114,9 @@ interface AgentTemplatesTabProps {
 export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProviders }: AgentTemplatesTabProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
-  const { templates, folder, defaultId, migrated, loaded } = useTemplates()
+  // The picked runtime's templates (multi-runtime.md §6.3).
+  const runtimeId = useSettingsRuntimeId()
+  const { templates, folder, defaultId, migrated, loaded } = useTemplates(runtimeId)
   const sorted = useMemo(() => sortTemplates(templates), [templates])
 
   const [selectedId, setSelectedId] = useState<string | null>(null)
@@ -354,7 +356,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
   }
 
   // --- list actions ---------------------------------------------------------
-  const refreshList = useCallback(() => useTemplatesStore.getState().refresh(), [])
+  const refreshList = useCallback(() => useTemplatesStore.getState().refresh(runtimeId), [runtimeId])
 
   const act = useCallback(async (op: () => Promise<{ success: boolean; error?: string } | void>) => {
     setListError(null)

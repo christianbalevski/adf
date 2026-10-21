@@ -11,9 +11,10 @@ import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/
 import { printable } from '../services/peer-text'
 import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
+import { olderAdfSentence, verifyHello, verifyHelloWaiting } from '../services/remote-hello'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
-  deleteRemoteToken, KEYCHAIN_FILE_COPY, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
+  deleteRemoteToken, forgetRemote, type ForgotRemote, KEYCHAIN_FILE_COPY, malformedRemoteSentence, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
 } from './remotes'
 
 export interface PairIo {
@@ -150,7 +151,7 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
  * fingerprint, and the user is asked first (`--yes` accepts). Any other URL
  * the host lists (a LAN or public name) is never followed.
  */
-async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string, yes: boolean): Promise<string> {
+async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string, token: string, yes: boolean): Promise<string> {
   if (transportOf(used) === 'https') return used
   // Re-review 3: only what this computer's own Tailscale vouches for (its tailnet's names, its peers),
   // checked before any question, so --yes never skips it; without Tailscale, nothing.
@@ -160,8 +161,10 @@ async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint:
     if (candidate.url === used || (candidate.kind !== 'tailscale-https' && candidate.kind !== 'tailnet')) continue
     view ??= await (io.tailnetView ?? (() => new TailscaleClient().tailnetView()))().catch(() => NO_TAILNET)
     if (!tailnetUrlAllowed(candidate.url, view)) continue
-    const hello = await fetchHello(candidate.url, io.fetch)
-    if (hello?.fingerprint !== fingerprint) continue
+    // The new token proves the computer there is the one that approved (remote-access.md §5.2.1).
+    const there = await verifyHello(candidate.url, token, { fetch: io.fetch })
+    if (there.kind !== 'verified' || there.hello.fingerprint !== fingerprint) continue
+    const hello = there.hello
     const answer = yes ? 'y' : await io.prompt(`"${hello.name}" is also reachable at ${candidate.url}, encrypted by Tailscale. Save that address instead of ${used}? [Y/n] `)
     if (answer !== null && /^\s*(y|yes)?\s*$/i.test(answer)) return candidate.url
     return used
@@ -214,6 +217,17 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     io.stderr('--name must be 1-64 characters without control or bidi characters.\n')
     return 2
   }
+  // Before any computer is asked: a pairing could not be saved into a list that cannot be read.
+  const remotes = readRemotes(env)
+  if (remotes.unreadable) {
+    io.stderr(`${new RemotesUnreadableError(remotesFilePath(env), remotes.unreadable).message}\n`)
+    return 1
+  }
+  // A malformed entry is the user's to fix or forget: never replaced by a pairing, and refused before any code is typed.
+  if (parsed.as !== undefined && remotes.malformed.includes(parsed.as)) {
+    io.stderr(`${malformedRemoteSentence(remotesFilePath(env), parsed.as)}; or pair under another name (--as <name>).\n`)
+    return 1
+  }
 
   let url: string
   let hello: RemoteHello
@@ -230,6 +244,11 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     if (!chosen) return 1
     url = chosen.url
     hello = chosen.hello
+  }
+  // A host that cannot prove who it is later (remote-access.md §5.2.1) is refused before the code is typed.
+  if (hello.helloProof !== 1) {
+    io.stderr(`${olderAdfSentence(`"${hello.name}"`)}\n`)
+    return 1
   }
   io.stderr(`Pairing with "${hello.name}" (fingerprint ${hello.fingerprint}) at ${url}. Check that it shows the same fingerprint.\n`)
 
@@ -299,15 +318,29 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
 
   // Trust on first use: a saved remote stays pinned to its fingerprint, and its address and token
   // are never replaced without asking.
-  const file = loadRemotes(env)
+  const read = readRemotes(env)
+  const file = read.file
   const sameHost = Object.entries(file.remotes).find(([, r]) => r.fingerprint === result.daemon.fingerprint)
-  const name = parsed.as ?? sameHost?.[0] ?? remoteNameFor(result.daemon.name, file.remotes)
+  // A malformed entry's name is taken too: the user fixes or forgets it.
+  const name = parsed.as ?? sameHost?.[0] ?? remoteNameFor(result.daemon.name, { ...Object.fromEntries(read.malformed.map((n) => [n, true])), ...file.remotes })
   const previous = file.remotes[name]
   if (previous && previous.fingerprint !== result.daemon.fingerprint) {
     io.stderr(`Refused: the saved remote "${name}" is ${previous.hostName ?? previous.url} with fingerprint ${previous.fingerprint}, not this computer (${result.daemon.fingerprint}). Nothing was saved. Pair under another name (--as <name>), or forget it first (adf remotes forget ${name}). ${revokeHint}\n`)
     return 1
   }
-  const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint, parsed.yes)
+  const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint, result.token, parsed.yes)
+  // A fresh pairing pins the fingerprint only after the computer at the saved address proved it issued this token.
+  // A 429 here is waited out (the host already made the device): said each time, the token not sent.
+  const proved = await verifyHelloWaiting(saveUrl, result.token, { fetch: io.fetch, sleep, onWait: (ms) => io.stderr(`"${result.daemon.name}" is rate-limiting connections; retrying in ${Math.ceil(ms / 1000)} s.\n`) })
+  if (proved.kind !== 'verified' || proved.hello.fingerprint !== result.daemon.fingerprint) {
+    const why = proved.kind === 'verified' ? `${saveUrl} answers with fingerprint ${proved.hello.fingerprint}, not ${result.daemon.fingerprint}`
+      : proved.kind === 'none' ? `${saveUrl} did not answer after "${result.daemon.name}" allowed this computer`
+        : proved.kind === 'rate_limited' ? `"${result.daemon.name}" kept rate-limiting connections`
+        : proved.kind === 'unsigned' ? `"${result.daemon.name}" runs an older ADF`
+          : `${saveUrl} could not prove it is "${result.daemon.name}"`
+    io.stderr(`Refused: ${why}. Nothing was saved. ${revokeHint}\n`)
+    return 1
+  }
   if (previous) {
     const changes = [previous.url !== saveUrl ? `its address (${previous.url} → ${saveUrl})` : null, 'its token'].filter(Boolean).join(' and ')
     const answer = parsed.yes ? 'y' : await io.prompt(`"${name}" (${previous.hostName ?? previous.url}) is already saved. Replace ${changes}? [y/N] `)
@@ -347,9 +380,10 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
   }
   try {
     // Under the lock Studio takes too: read again, so a change Studio made meanwhile is kept.
-    await updateRemotes(env, (latest) => {
+    await updateRemotes(env, (latest, malformed) => {
       const now = latest.remotes[name]
       if (now && now.fingerprint !== entry.fingerprint) throw new Error(`the saved remote "${name}" changed to another computer (${now.fingerprint}) meanwhile`)
+      if (!now && name in malformed) throw new Error(`"${name}" became a malformed entry meanwhile; fix or forget it first`)
       latest.remotes[name] = entry
       if (makeDefault) latest.default = name
     })
@@ -375,22 +409,30 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
   const io = terminalSafe(rawIo)
   const env = io.env ?? process.env
   const [action, name] = args
-  const file = loadRemotes(env)
+  // An unreadable list is not "no saved remotes", and is never written over.
+  const read = readRemotes(env)
+  if (read.unreadable) {
+    io.stderr(`${new RemotesUnreadableError(remotesFilePath(env), read.unreadable).message}\n`)
+    return 1
+  }
+  const file = read.file
   if (!action || action === 'list') {
     if (json) {
       io.stdout(`${JSON.stringify(file, null, 2)}\n`)
       return 0
     }
     const rows = Object.entries(file.remotes)
-    io.stdout(`${file.default === null ? '*' : ' '} local  this computer's daemon\n`)
+    // A default naming a malformed entry is not "local": adf refuses until it is fixed (selectedRemote).
+    io.stdout(`${file.default === null && !read.malformedDefault ? '*' : ' '} local  this computer's daemon\n`)
     for (const [n, r] of rows) io.stdout(`${file.default === n ? '*' : ' '} ${n}  ${r.url}  ${r.hostName ?? ''}  ${r.fingerprint}  as "${r.label}"\n`)
-    if (rows.length === 0) io.stderr('No saved remotes. Pair one with: adf pair\n')
+    for (const n of read.malformed) io.stderr(`${n === read.malformedDefault ? '* ' : ''}${malformedRemoteSentence(remotesFilePath(env), n)}\n`)
+    if (rows.length === 0 && read.malformed.length === 0) io.stderr('No saved remotes. Pair one with: adf pair\n')
     return 0
   }
   if (action === 'use') {
     if (!name) { io.stderr(`${REMOTES_USAGE}\n`); return 2 }
     if (name !== 'local' && !file.remotes[name]) {
-      io.stderr(`No saved remote named "${name}". List them with: adf remotes\n`)
+      io.stderr(read.malformed.includes(name) ? `${malformedRemoteSentence(remotesFilePath(env), name)}\n` : `No saved remote named "${name}". List them with: adf remotes\n`)
       return 1
     }
     await updateRemotes(env, (latest) => { latest.default = name === 'local' ? null : name })
@@ -398,17 +440,33 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
     return 0
   }
   if (action === 'forget') {
-    const remote = name ? file.remotes[name] : undefined
-    if (!name || !remote) {
+    if (!name || (!file.remotes[name] && !read.malformed.includes(name))) {
       io.stderr(name ? `No saved remote named "${name}".\n` : `${REMOTES_USAGE}\n`)
       return name ? 1 : 2
     }
-    deleteRemoteToken(remote.fingerprint, env)
-    await updateRemotes(env, (latest) => {
-      delete latest.remotes[name]
-      if (latest.default === name) latest.default = null
-    })
-    io.stdout(`Forgot "${name}" and its token. "${remote.hostName ?? remote.url}" still lists this computer: remove it there (adf daemon devices revoke ${remote.deviceId}).\n`)
+    // The list first, then the token, unless another name holds the same computer (forgetRemote).
+    let forgot: ForgotRemote | null
+    try {
+      forgot = await forgetRemote(env, name)
+    } catch (err) {
+      io.stderr(`"${name}" was not forgotten: ${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+    if (!forgot) {
+      io.stderr(`No saved remote named "${name}".\n`)
+      return 1
+    }
+    const remote = forgot.remote
+    if (!remote) {
+      io.stdout(`Forgot "${name}".\n`)
+      return 0
+    }
+    const what = forgot.sharedWith ? `"${name}"; its token stays for "${forgot.sharedWith}", the same computer` : `"${name}" and its token`
+    io.stdout(`Forgot ${what}. "${remote.hostName ?? remote.url}" still lists this computer: remove it there (adf daemon devices revoke ${remote.deviceId}).\n`)
+    if (forgot.tokenError) {
+      io.stderr(`The token could not be removed: ${forgot.tokenError}\n`)
+      return 1
+    }
     return 0
   }
   io.stderr(`${REMOTES_USAGE}\n`)

@@ -8,7 +8,7 @@ import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnap
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
-import type { ConnectionAddRequest, ConnectionsView } from '../shared/types/connection.types'
+import type { ConnectionAddRequest, ConnectionsView, RuntimesMoved } from '../shared/types/connection.types'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
 import type { NetworkNotice, RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
@@ -754,6 +754,11 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     ipcRenderer.on(IPC.CONNECTION_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.CONNECTION_CHANGED, handler)
   },
+  onRuntimesMoved: (callback: (change: RuntimesMoved) => void) => {
+    const handler = (_event: Electron.IpcRendererEvent, change: RuntimesMoved) => callback(change)
+    ipcRenderer.on(IPC.RUNTIMES_MOVED, handler)
+    return () => ipcRenderer.removeListener(IPC.RUNTIMES_MOVED, handler)
+  },
   startRemotePairing: (request: RemotePairStartRequest) => ipcRenderer.invoke(IPC.REMOTE_PAIR_START, request),
   submitRemotePairingCode: (code: string) => ipcRenderer.invoke(IPC.REMOTE_PAIR_SUBMIT_CODE, code),
   cancelRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_PAIR_CANCEL),
@@ -825,13 +830,20 @@ const runtimePushChannels = new Set(RUNTIME_PUSH_CHANNELS)
 const studioCallChannels = new Set(STUDIO_CALL_CHANNELS)
 const ipcChannels = new Set<string>(Object.values(IPC))
 const surfaces = new Map<RuntimeId, AdfApi>()
-/** The surface bound to `id`: `local` (This computer) sends no tag. One per runtime, made on first use. */
+// An agent window's page names its runtime (main sets `runtime=<id>` for a runtime other than This computer, §5.5).
+const windowRuntime = new URLSearchParams(globalThis.location?.search ?? '').get('runtime') || LOCAL_RUNTIME
+/**
+ * The surface bound to `id`, one per runtime, made on first use. `local`
+ * (This computer) sends no tag in This computer's pages; in a page of another
+ * runtime it tags its calls `local` (an untagged call from there is that
+ * runtime's, main §4.3).
+ */
 function apiFor(id: RuntimeId): AdfApi {
   const runtimeId = typeof id === 'string' && id ? id : LOCAL_RUNTIME
   let surface = surfaces.get(runtimeId)
   if (!surface) {
     surface = {
-      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels, studioCallChannels)),
+      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels, studioCallChannels, { explicitLocal: windowRuntime !== LOCAL_RUNTIME })),
       runtimeId,
       runtime: apiFor,
       onAnyRuntime: (channel: string, callback: (runtimeId: RuntimeId, ...args: unknown[]) => void) => {
@@ -845,6 +857,4 @@ function apiFor(id: RuntimeId): AdfApi {
   return surface
 }
 
-// An agent window's page names its runtime (main sets `runtime=<id>` for a runtime other than This computer, §5.5).
-const windowRuntime = new URLSearchParams(globalThis.location?.search ?? '').get('runtime')
-contextBridge.exposeInMainWorld('adfApi', apiFor(windowRuntime || LOCAL_RUNTIME))
+contextBridge.exposeInMainWorld('adfApi', apiFor(windowRuntime))

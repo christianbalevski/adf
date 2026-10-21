@@ -117,6 +117,8 @@ export interface RemotePairStartRequest {
   deviceName?: string
   /** The user ticked "I trust this network; the token is sent unencrypted." for this URL. */
   allowInsecureHttp?: boolean
+  /** The user answered Replace to `already_saved`: pairing replaces that saved connection's address and token. */
+  replace?: boolean
 }
 
 export type RemotePairStep =
@@ -145,12 +147,14 @@ export type RemotePairErrorCode =
   | 'expired'
   | 'insecure_unconfirmed'
   | 'remote_access_off'
-  /** The host's ADF predates remote access (its /remote/hello answers 401). */
+  /** The host's ADF predates remote access (its /remote/hello answers 401) or the authenticated hello (remote-access.md §5.2.1). */
   | 'old_daemon'
   /** The host's fingerprint is not the one pinned for this address, or the approval came with another. */
   | 'fingerprint_mismatch'
   /** The user kept the saved remote computer. */
   | 'kept'
+  /** This computer is already a saved connection: the dialog asks Replace, then starts again with `replace`. */
+  | 'already_saved'
   | 'encryption_unavailable'
   | 'save_failed'
   | 'bad_request'

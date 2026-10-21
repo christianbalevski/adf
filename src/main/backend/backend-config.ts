@@ -163,6 +163,14 @@ export interface BootBackend {
   /** A one-launch mode (source `session`): why, in words for Settings → Connections. */
   sessionReason?: string | null
   /**
+   * The file says remote (an older Studio) and this launch runs it as This
+   * computer, but the migration (multi-runtime.md §7.3, runtime-migration.ts)
+   * was not written. Every save of this launch writes `mode: remote` with
+   * this `remote.name`, so the next launch still migrates it; a save of
+   * another mode ends it.
+   */
+  remoteModePending?: { name: string | null } | null
+  /**
    * Set at boot (first-launch.ts) when an earlier launch switched this
    * install from Embedded to the new default; Settings → Connections shows it.
    */
@@ -457,7 +465,7 @@ export function applyBackendPatch(
 
   if (patch.mode !== undefined) {
     // multi-runtime.md §7.1: there is no remote mode; a saved connection is connected while it is saved.
-    if ((patch.mode as string) === 'remote') return fail('invalid_mode', 'A saved connection is connected while it is saved.')
+    if ((patch.mode as string) === 'remote') return fail('invalid_mode', 'Remote mode is gone; use Add in Settings → Connections.')
     if (!isMode(patch.mode)) return fail('invalid_mode', 'Unknown backend mode.')
     if (patch.mode !== current.mode) {
       next.mode = patch.mode
@@ -565,9 +573,6 @@ export function applyBackendPatch(
   return { ok: true, config: next, notices, changes }
 }
 
-/** A mode saved in Settings → Connections (multi-runtime.md §7.2): Studio does not restart. */
-export const SAVED_FOR_NEXT_LAUNCH = 'Saved. Applies at the next launch.'
-
 export interface BackendSettingsStore {
   get(): BackendSettingsView
   set(patch: BackendSettingsPatch): Promise<BackendSettingsSaveResult>
@@ -605,6 +610,16 @@ export function createBackendSettingsStore(deps: {
   let droppedUnwritten = [...(deps.boot.dropped ?? [])]
 
   const view = (): BackendSettingsView => toBackendSettingsView(current, deps.boot, deps.codec, deps.daemonStatus?.() ?? null)
+  /** The file as written: still remote mode while the migration of an older Studio's file is pending. */
+  const onDisk = (config: StudioBackendConfig): StudioBackendConfig => {
+    const pending = deps.boot.remoteModePending
+    if (!pending || config.mode !== 'local') return config
+    return { ...config, mode: 'remote', remote: { ...config.remote, name: pending.name } }
+  }
+  const written = (config: StudioBackendConfig): void => {
+    // Another mode chosen: the file no longer says remote.
+    if (deps.boot.remoteModePending && config.mode !== 'local') deps.boot.remoteModePending = null
+  }
 
   const save = async (patch: BackendSettingsPatch, paired?: RemotePairedComputer): Promise<BackendSettingsSaveResult> => {
     if (deps.boot.writeBlocked) return { ok: false, code: 'file_unreadable', error: deps.boot.writeBlocked }
@@ -618,18 +633,19 @@ export function createBackendSettingsStore(deps: {
       }
       try {
         await mkdir(dirname(deps.boot.configPath), { recursive: true })
-        await writeJsonAtomicAsync(deps.boot.configPath, result.config)
+        await writeJsonAtomicAsync(deps.boot.configPath, onDisk(result.config))
       } catch (err) {
         log.warn(`[Backend] Could not write ${deps.boot.configPath}: ${(err as Error)?.message ?? 'unknown error'}`)
         return { ok: false, code: 'write_failed', error: `Could not save ${deps.boot.configPath}.` }
       }
+      written(result.config)
       current = result.config
       droppedUnwritten = []
       log.log(`[Backend] Settings → Connections saved: ${result.changes.join(', ')} (applies at the next launch)`)
     }
     const notices = [...result.notices]
-    // A mode chosen (multi-runtime.md §7.2): saved for the next launch; the one this launch runs is just saved.
-    if (result.config.mode !== previous.mode) notices.push(result.config.mode === deps.boot.mode ? 'Saved.' : SAVED_FOR_NEXT_LAUNCH)
+    // A mode chosen (multi-runtime.md §7.2): the page's "Next launch: <name>." with Restart says it; the one this launch runs is just saved.
+    if (result.config.mode !== previous.mode && result.config.mode === deps.boot.mode) notices.push('Saved.')
     if (result.config.keepDaemonRunning !== previous.keepDaemonRunning) deps.onKeepDaemonRunningChange?.(result.config.keepDaemonRunning)
     return { ok: true, view: view(), notices }
   }
@@ -658,7 +674,7 @@ export function createBackendSettingsStore(deps: {
         const config: StudioBackendConfig = { ...current, runtimeOrder: next }
         try {
           await mkdir(dirname(deps.boot.configPath), { recursive: true })
-          await writeJsonAtomicAsync(deps.boot.configPath, config)
+          await writeJsonAtomicAsync(deps.boot.configPath, onDisk(config))
         } catch (err) {
           log.warn(`[Backend] Could not save the runtime order to ${deps.boot.configPath}: ${(err as Error)?.message ?? 'unknown error'}`)
           return false

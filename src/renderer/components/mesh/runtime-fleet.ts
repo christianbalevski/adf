@@ -7,6 +7,7 @@ import { agentKey, isRemoteAgentKey, parseAgentKey } from '../../../shared/types
 import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { selectMeshSlice, type MeshSlice } from '../../stores/mesh.store'
 import { apiFor, openAgentKey } from '../../utils/runtime-api'
+import { useFleetStore } from '../../stores/fleet.store'
 
 /**
  * The fleet map across runtimes (docs/design/multi-runtime.md §6.4).
@@ -184,11 +185,15 @@ export function mergePeers<P extends MapPeer>(polls: ReadonlyArray<readonly P[]>
 // are kept under runtimeFleet[<runtime id>], with that runtime's own paths:
 // the prefix comes off on save and goes back on load. With This computer only
 // no write names runtimeFleet.
+//
+// A save sends, per runtime of the set, only the fields it saves; main merges
+// them into what it holds per runtime and per field (mergeRuntimeFleet), so a
+// save never writes back an entry main moved or removed (§17).
 
 export type RuntimeFleetEntry = NonNullable<AppSettings['runtimeFleet']>[string]
 export type RuntimeFleetStore = Record<RuntimeId, RuntimeFleetEntry>
 
-/** runtimeFleet as last read or written: entries of runtimes not in the set now are kept. */
+/** runtimeFleet as main holds it: read when the Mesh view mounts and when the runtime set changes, and as written here. */
 let storedRuntimeFleet: RuntimeFleetStore = {}
 
 export function setStoredRuntimeFleet(value: unknown): void {
@@ -197,6 +202,75 @@ export function setStoredRuntimeFleet(value: unknown): void {
 
 export function storedRuntimeFleetOf(): RuntimeFleetStore {
   return storedRuntimeFleet
+}
+
+/**
+ * A runtime left the set (Remove, `adf remotes forget`): main deleted its
+ * runtimeFleet entry, so the copy here goes too, or the next save of
+ * another runtime's part would write it back.
+ */
+export function forgetRuntimeFleet(runtimeId: RuntimeId): void {
+  if (!(runtimeId in storedRuntimeFleet)) return
+  const { [runtimeId]: _gone, ...rest } = storedRuntimeFleet
+  storedRuntimeFleet = rest
+}
+
+/**
+ * The same computer under another id (a rename, the remote slot cleared,
+ * §17): its copy goes to the new id, as main moves it; an entry the new id
+ * already has wins.
+ */
+export function moveRuntimeFleet(from: RuntimeId, to: RuntimeId): void {
+  if (!(from in storedRuntimeFleet)) return
+  const { [from]: entry, ...rest } = storedRuntimeFleet
+  storedRuntimeFleet = to in rest ? rest : { ...rest, [to]: entry }
+}
+
+/**
+ * The runtime set changed (§17): runtimeFleet is read again from main, and a
+ * runtime the map has nothing of gets its saved groups, stewards and
+ * placement (once the Mesh view has loaded the map). A failed read keeps the
+ * copy, logged.
+ */
+export async function reloadRuntimeFleet(runtimes: readonly RuntimeView[], api: Pick<AdfApi, 'getSettings'> = window.adfApi): Promise<void> {
+  let settings: { runtimeFleet?: unknown } | null
+  try {
+    settings = await api.getSettings() as { runtimeFleet?: unknown } | null
+  } catch (err) {
+    console.warn('[Mesh] runtimeFleet was not read again after the runtime set changed:', err)
+    return
+  }
+  setStoredRuntimeFleet(settings?.runtimeFleet)
+  const fleet = useFleetStore.getState()
+  if (!fleet.placement) return
+  const placement = fleet.placement
+  const has = (id: RuntimeId): boolean => {
+    const prefix = runtimeRegionRoot(id)
+    const keys = [
+      ...Object.values(fleet.namedGroups).flat(),
+      ...Object.keys(fleet.stewards),
+      ...Object.keys(placement.regionOrigins),
+      ...Object.keys(placement.cellPins),
+      ...Object.keys(placement.districtAnchors ?? {}),
+    ]
+    return keys.some((k) => k.startsWith(prefix))
+  }
+  const joined = otherRuntimes(runtimes).filter((id) => storedRuntimeFleet[id] && !has(id))
+  if (joined.length === 0) return
+  const saved: RuntimeFleetStore = Object.fromEntries(joined.map((id) => [id, storedRuntimeFleet[id]]))
+  const pick = (field: 'regionOrigins' | 'cellPins' | 'districtAnchors') =>
+    Object.assign({}, ...joined.map((id) => prefixRecord(id, saved[id]?.fleetMapState?.placement?.[field] as Record<string, { q: number; r: number }> | undefined)))
+  console.log(`[Mesh] Saved groups, stewards and placement of ${joined.join(', ')} added to the map`)
+  useFleetStore.setState({
+    namedGroups: mergeGroups(fleet.namedGroups, saved),
+    stewards: mergeStewards(fleet.stewards, saved),
+    placement: {
+      ...placement,
+      regionOrigins: { ...placement.regionOrigins, ...pick('regionOrigins') },
+      cellPins: { ...placement.cellPins, ...pick('cellPins') },
+      districtAnchors: { ...(placement.districtAnchors ?? {}), ...pick('districtAnchors') },
+    },
+  })
 }
 
 /** The runtime of a map key (or region root, district anchor); null for This computer's. */
@@ -276,8 +350,11 @@ function otherRuntimes(runtimes: readonly RuntimeView[]): RuntimeId[] {
 
 /**
  * The settings patch of a fleet-map save: This computer's keys as before;
- * with more than one runtime, runtimeFleet with every other runtime's part
- * (`parts`), keeping the saved entries of runtimes not in the set.
+ * with more than one runtime, runtimeFleet with each other runtime's part
+ * (`parts`): only the fields saved (groups and stewards a runtime has none
+ * of are saved empty), only for runtimes of the set. Main merges it per
+ * runtime and per field, so the entries of runtimes not in the set, and the
+ * fields not saved, stay as main holds them.
  */
 export function fleetSettingsPatch(
   local: Partial<Pick<AppSettings, 'fleetGroups' | 'fleetStewards' | 'fleetMapState'>>,
@@ -286,19 +363,20 @@ export function fleetSettingsPatch(
 ): Record<string, unknown> {
   const ids = otherRuntimes(runtimes)
   if (ids.length === 0) return local
-  const next: RuntimeFleetStore = { ...storedRuntimeFleet }
   const fields = Object.keys(local) as Array<keyof RuntimeFleetEntry>
+  const runtimeFleet: Record<RuntimeId, Partial<RuntimeFleetEntry>> = {}
   for (const id of ids) {
-    const entry: RuntimeFleetEntry = { ...(next[id] ?? {}) }
+    const entry: Record<string, unknown> = {}
     for (const field of fields) {
       const value = parts[id]?.[field]
-      if (value !== undefined) (entry as Record<string, unknown>)[field] = value
-      else if (field === 'fleetGroups' || field === 'fleetStewards') delete (entry as Record<string, unknown>)[field]
+      if (value !== undefined) entry[field] = value
+      else if (field === 'fleetGroups' || field === 'fleetStewards') entry[field] = {}
     }
-    next[id] = entry
+    if (Object.keys(entry).length === 0) continue
+    runtimeFleet[id] = entry as Partial<RuntimeFleetEntry>
+    storedRuntimeFleet = { ...storedRuntimeFleet, [id]: { ...(storedRuntimeFleet[id] ?? {}), ...entry } }
   }
-  storedRuntimeFleet = next
-  return { ...local, runtimeFleet: next }
+  return Object.keys(runtimeFleet).length > 0 ? { ...local, runtimeFleet } : local
 }
 
 /** Save named groups and/or stewards (map keys) as their client keys. */

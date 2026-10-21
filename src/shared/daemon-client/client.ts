@@ -135,6 +135,15 @@ export interface DaemonCredentials {
   refresh?(): boolean
   /** Extra headers for a request to `path` (X-ADF-Local-Proof on local-only routes). */
   localProof?(path: string): Record<string, string>
+  /**
+   * Awaited before every request and stream (re)connect to the credentials'
+   * origin: rejects, with the sentence to show, while the token must not go
+   * there (a saved remote whose authenticated hello did not prove its pin,
+   * remote-access.md §5.2.1). Nothing is sent then.
+   */
+  ready?(): Promise<void>
+  /** A connection to the origin failed or dropped: the next `ready` checks again (a re-dial may reach another host). */
+  dropped?(): void
 }
 
 export interface DaemonClientOptions {
@@ -292,8 +301,13 @@ export class DaemonClient {
     const url = this.url(path, options.query)
     let response: Response
     let text: string
+    const own = this.ownsUrl(url)
     try {
       controller.signal.throwIfAborted()
+      if (own && this.credentials?.ready) {
+        // The proof check of a pinned remote: refused, nothing goes out (status null, as the daemon is not reached).
+        try { await this.credentials.ready() } catch (err) { throw new DaemonError(errorMessage(err), null) }
+      }
       response = await this.fetchImpl(url, {
         method,
         // Proxy-mode daemons (ADF_DAEMON_BEHIND_PROXY) need this machine's proof on local-only routes.
@@ -312,6 +326,7 @@ export class DaemonClient {
       text = await response.text()
     } catch (err) {
       if (err instanceof DaemonError) throw err
+      if (own) this.credentials?.dropped?.()
       const reason = controller.signal.aborted && !options.signal?.aborted ? `timed out after ${timeoutMs}ms` : errorMessage(err)
       throw new DaemonError(`Cannot reach daemon at ${this.baseUrl}: ${reason}`, null)
     } finally {
@@ -356,9 +371,17 @@ export class DaemonClient {
    * Live events (SSE) with auto-reconnect: `GET /events` (umbilical frames)
    * unless `path` names another stream. Call `.start()` on the result.
    */
-  events<F extends StreamFrame = DaemonEventFrame>(options: Omit<EventStreamOptions<F>, 'baseUrl' | 'headers' | 'fetch'>): EventStream<F> {
+  events<F extends StreamFrame = DaemonEventFrame>(options: Omit<EventStreamOptions<F>, 'baseUrl' | 'headers' | 'fetch' | 'beforeConnect' | 'onDrop'>): EventStream<F> {
     // A function: a reconnect sends the current token (refreshed after a 401), and only to this origin.
-    return new EventStream<F>({ ...options, baseUrl: this.baseUrl, headers: url => this.headersFor(url, { Accept: 'text/event-stream' }), fetch: this.fetchImpl })
+    // Each (re)connect to this origin passes the credentials' proof check first, and a drop re-arms it.
+    return new EventStream<F>({
+      ...options,
+      baseUrl: this.baseUrl,
+      headers: url => this.headersFor(url, { Accept: 'text/event-stream' }),
+      fetch: this.fetchImpl,
+      beforeConnect: async url => { if (this.ownsUrl(url)) await this.credentials?.ready?.() },
+      onDrop: () => this.credentials?.dropped?.(),
+    })
   }
 
   // --- client sessions (design D5; internal) ---------------------------------
@@ -378,7 +401,7 @@ export class DaemonClient {
    */
   clientSessionEvents(
     sessionId: string,
-    options: Omit<EventStreamOptions<ClientFrame>, 'baseUrl' | 'headers' | 'fetch' | 'path' | 'isFrame' | 'agentId'>,
+    options: Omit<EventStreamOptions<ClientFrame>, 'baseUrl' | 'headers' | 'fetch' | 'beforeConnect' | 'onDrop' | 'path' | 'isFrame' | 'agentId'>,
   ): EventStream<ClientFrame> {
     return this.events<ClientFrame>({
       replay: true,

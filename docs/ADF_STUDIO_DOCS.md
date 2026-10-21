@@ -134,11 +134,11 @@ The dock has five tabs:
 
 With an agent open, the left side shows **Saved** or **Unsaved changes** (click to save), the model of the loop on screen, and its context gauge (click for the breakdown), then **Logs** and **Tasks**. The right side shows an **Update** badge when a new version is available, the version, and the runtime group: **Mesh (N)** or **Mesh off** (click for Settings → Networking), and **Kill**, which stops every agent and the mesh.
 
-With a connection saved in [Connections](guides/settings.md#connection), there is one runtime group per runtime: This computer first, then the other computers in the order they were added. Each group shows the runtime's name (the address as tooltip; a click opens Settings → Connections), its state while it is not connected, its **Mesh** and its **Kill**. **Kill** stops the agents and the mesh of that runtime only, and is disabled while that runtime is not connected. When the groups do not fit, the groups of the other computers are one **Runtimes** button that lists them. An agent window shows the group of its own runtime.
+While This computer runs, with a connection saved in [Connections](guides/settings.md#connection), there is one runtime group per runtime: This computer first, then the other computers in the order they were added. Each group shows the runtime's name (the address as tooltip; a click opens Settings → Connections), its state while it is not connected, its **Mesh** and its **Kill**. **Kill** stops the agents and the mesh of that runtime only, and is disabled while that runtime is not connected. When the groups do not fit, the groups of the other computers are one **Runtimes** button that lists them. An agent window shows the group of its own runtime.
 
 ### More than one runtime
 
-With a connection saved in [Connections](guides/settings.md#connection), Studio connects to This computer and to each saved computer at the same time. Then:
+While This computer runs, with a connection saved in [Connections](guides/settings.md#connection), Studio connects to This computer and to each saved computer at the same time. Then:
 
 - the sidebar has one group per runtime, headed with its name and, while it is not connected, its state; that runtime's agents are greyed while it is not connected;
 - **Go to Agent…** shows the runtime's name after the agent's;

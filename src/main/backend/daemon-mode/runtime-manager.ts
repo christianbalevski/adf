@@ -7,7 +7,7 @@ import {
   type RuntimeId,
 } from '../../../shared/runtime-tag'
 import type { DaemonModeContext } from './context'
-import type { RuntimeConnection } from './runtime-connection'
+import type { QuitOptions, RuntimeConnection } from './runtime-connection'
 import type { WindowTarget } from './index'
 import type { WindowView } from './windows'
 
@@ -58,6 +58,12 @@ export interface RuntimeManagerOptions {
   closeWindow?: (windowId: number, keep: boolean) => void
   /** A runtime left the set or was replaced: its approvals and notices go. */
   onRemoved?: (id: RuntimeId) => void
+  /**
+   * A runtime left the set because it moved to `to` (the same computer under
+   * another id, §20 item 1): its agent windows closed as for Reconnect
+   * (`keep`), and stay saved under `to`, to reopen once it connects.
+   */
+  onMoved?: (from: RuntimeId, to: RuntimeId) => void
   /** The set or its order changed. */
   onChange?: () => void
   /** The order saved at the last launch (studio-backend.json `runtimeOrder`). Ids no longer saved are dropped at the first sync. */
@@ -90,12 +96,20 @@ export function runtimeOrder(previous: readonly RuntimeId[], saved: Record<strin
 export class RuntimeManager {
   private order: RuntimeId[] = []
   private readonly remotes = new Map<RuntimeId, RuntimeConnection>()
+  /**
+   * Connections ending (Remove, Reconnect, a slot at a new address): not in
+   * the set for a call, a window or an approvals snapshot, while their
+   * sessions end.
+   */
+  private readonly retiring = new Set<RuntimeConnection>()
   /** webContents id of an agent window → its runtime (main binds it at open, §5.5). */
   private readonly windowRuntime = new Map<number, RuntimeId>()
   /** The runtime of the main window's open file (§4.3). */
   private mainOpen: RuntimeId
   /** The address of the remote slot's runtime: another address is another runtime. */
   private slotUrl: string | null = null
+  /** Moves told by sync (old id → new id), applied when the old id leaves the set. */
+  private readonly moves = new Map<RuntimeId, RuntimeId>()
   /** The order as last saved, or read at launch; null: none saved (nothing is written while there is no remote). */
   private savedOrder: RuntimeId[] | null
   private disposed = false
@@ -112,28 +126,51 @@ export class RuntimeManager {
 
   /** Every runtime in the set, in order: the primary first. */
   runtimes(): RuntimeConnection[] {
-    return [this.opts.primary, ...this.order.map((id) => this.remotes.get(id)!).filter(Boolean)]
+    return [this.opts.primary, ...this.order.map((id) => this.get(id)).filter((rt): rt is RuntimeConnection => !!rt && !rt.primary)]
   }
 
-  /** The runtime `id`, or null when it is not in the set. `local` names the primary in local mode. */
+  /** The runtime `id`, or null when it is not in the set (or its connection is ending). `local` names the primary in local mode. */
   get(id: RuntimeId | null | undefined): RuntimeConnection | null {
     if (id === null || id === undefined || id === this.opts.primary.id) return this.opts.primary
-    return this.remotes.get(id) ?? null
+    const rt = this.remotes.get(id)
+    return rt && !this.retiring.has(rt) ? rt : null
   }
 
   /**
    * Follow the saved connections (cli-remotes.json) and the remote slot of
    * studio-backend.json: connect what appeared, disconnect what
    * disappeared. The slot at another address is replaced.
+   *
+   * `savedUnknown`: cli-remotes.json could not be read, so `saved` is not
+   * the list: the saved connections in the set stay as they are (none
+   * connects, none disconnects), and the order is not saved.
+   *
+   * `moves` (§20 item 1): ids whose computer is now saved under another id. When
+   * such an id leaves the set (now, or at a later sync: the remote slot cleared
+   * for its twin), its agent windows are kept for the new id instead of dropped.
    */
-  sync(saved: Record<string, SavedRemote>, slot: RuntimeSlot | null = null): void {
+  sync(saved: Record<string, SavedRemote>, slot: RuntimeSlot | null = null, opts: { savedUnknown?: boolean; moves?: ReadonlyMap<RuntimeId, RuntimeId> } = {}): void {
     if (this.disposed) return
+    for (const [from, to] of opts.moves ?? []) if (from !== to) this.moves.set(from, to)
+    if (opts.savedUnknown) {
+      // The saved connections stay as they are; the slot still follows studio-backend.json. The order keeps every id
+      // it had (the ones not connected yet included), for the sync once the file reads again.
+      const members = [...[...this.remotes.keys()].filter((id) => id !== SLOT_RUNTIME), ...(slot ? [SLOT_RUNTIME] : [])]
+      const order = [...this.order.filter((id) => id !== SLOT_RUNTIME || slot), ...(slot && !this.order.includes(SLOT_RUNTIME) ? [SLOT_RUNTIME] : [])]
+      this.apply(members, order, slot, false)
+      return
+    }
     const next = runtimeOrder(this.order, saved, slot).filter((id) => id !== this.opts.primary.id)
-    const gone = [...this.remotes.keys()].filter((id) => !next.includes(id))
-    const added = next.filter((id) => !this.remotes.has(id))
+    this.apply(next, next, slot, true)
+  }
+
+  /** `members`: the remotes of the set; `order`: their order (it may name ids not connected yet). */
+  private apply(members: RuntimeId[], order: RuntimeId[], slot: RuntimeSlot | null, saveOrder: boolean): void {
+    const gone = [...this.remotes.keys()].filter((id) => !members.includes(id))
+    const added = members.filter((id) => !this.remotes.has(id))
     const moved = !!slot && this.remotes.has(SLOT_RUNTIME) && this.slotUrl !== slot.url
-    const changed = gone.length > 0 || added.length > 0 || next.join('\n') !== this.order.join('\n')
-    this.order = next
+    const changed = gone.length > 0 || added.length > 0 || order.join('\n') !== this.order.join('\n')
+    this.order = order
     this.slotUrl = slot?.url ?? null
     for (const id of gone) void this.remove(id, 'it is no longer saved')
     for (const id of added) {
@@ -141,8 +178,8 @@ export class RuntimeManager {
       this.opts.log.log(`[Runtimes] ${name} is saved: connecting (${id})`)
       this.remotes.set(id, this.opts.create(id, name))
     }
-    if (moved) void this.replace(SLOT_RUNTIME, slot!.name, `its address is now ${slot!.url}`)
-    this.saveOrder()
+    if (moved) void this.replace(SLOT_RUNTIME, this.remotes.get(SLOT_RUNTIME)!, slot!.name, `its address is now ${slot!.url}`)
+    if (saveOrder) this.saveOrder()
     if (changed) {
       this.opts.log.log(`[Runtimes] Runtime set: ${[this.opts.primary.id, ...this.order].join(', ')}`)
       this.opts.onChange?.()
@@ -171,7 +208,7 @@ export class RuntimeManager {
    * with `runtimeId` (null: no tag). Throws RuntimeRouteError with the
    * refusal sentence.
    */
-  contextFor(windowId: number | undefined, runtimeId: RuntimeId | null): DaemonModeContext {
+  contextFor(windowId: number | undefined, runtimeId: RuntimeId | null, opts: { anyRuntime?: boolean } = {}): DaemonModeContext {
     if (windowId !== undefined && this.opts.closedWindows.has(windowId)) throw new RuntimeRouteError(CLOSED_WINDOW_SENTENCE)
     const target = runtimeId === null ? this.opts.primary : this.get(runtimeId)
     if (!target) throw new RuntimeRouteError(notConnectedSentence(runtimeId ?? LOCAL_RUNTIME))
@@ -179,6 +216,8 @@ export class RuntimeManager {
     if (bound === undefined) return target.ctx
     const own = this.get(bound)
     if (!own) throw new RuntimeRouteError(CLOSED_WINDOW_SENTENCE)
+    // `anyRuntime` (the approvals list, §6.1): a tag, `local` included, names the runtime that asked, whichever window answers.
+    if (runtimeId !== null && own !== target && opts.anyRuntime) return target.ctx
     if (runtimeId !== null && own !== target) throw new RuntimeRouteError(otherRuntimeSentence(own.name()))
     const ctx = own.windows.ctx(windowId!)
     if (!ctx) throw new RuntimeRouteError(CLOSED_WINDOW_SENTENCE)
@@ -240,9 +279,10 @@ export class RuntimeManager {
    * connection's reconnect); they close, stay saved, and reopen once the new
    * connection connects.
    */
-  async replace(id: RuntimeId, name?: string, why = 'Reconnect'): Promise<void> {
+  async replace(id: RuntimeId, expected: RuntimeConnection, name?: string, why = 'Reconnect'): Promise<void> {
     const old = this.remotes.get(id)
-    if (!old || this.disposed) return
+    // Only the connection the caller saw: a second Reconnect of the old one leaves the fresh one alone.
+    if (!old || old !== expected || this.retiring.has(old) || this.disposed) return
     this.opts.log.log(`[Runtimes] Replacing the connection of ${id}: ${why}`)
     await this.retire(old, true)
     if (this.disposed || !this.order.includes(id) || this.remotes.has(id)) return
@@ -256,21 +296,34 @@ export class RuntimeManager {
     if (!runtime) return
     this.opts.log.log(`[Runtimes] Disconnecting ${id}: ${why}`)
     this.order = this.order.filter((o) => o !== id)
-    await this.retire(runtime, false)
+    // Out of the set at once: saved again while it retires, the id gets a new connection (sync).
+    this.remotes.delete(id)
+    const to = this.moves.get(id)
+    this.moves.delete(id)
+    // Moved: the same computer under another id that is in the set; its windows wait for it there.
+    const movedTo = to && to !== this.opts.primary.id && this.order.includes(to) ? to : undefined
+    if (movedTo) this.opts.log.log(`[Runtimes] ${id} is now ${movedTo}: its agent windows reopen there`)
+    await this.retire(runtime, !!movedTo, movedTo)
     this.opts.onChange?.()
   }
 
-  private async retire(runtime: RuntimeConnection, keepWindows: boolean): Promise<void> {
+  private async retire(runtime: RuntimeConnection, keepWindows: boolean, movedTo?: RuntimeId): Promise<void> {
+    this.retiring.add(runtime)
+    // Its approvals and notices go now; snapshots it still receives are dropped (approvalsIn).
+    if (!this.get(runtime.id)) this.opts.onRemoved?.(runtime.id)
     const windows = runtime.windows.ids()
     for (const windowId of windows) {
       this.windowRuntime.delete(windowId)
       this.opts.closeWindow?.(windowId, keepWindows)
     }
+    if (movedTo) {
+      try { this.opts.onMoved?.(runtime.id, movedTo) } catch (err) { this.opts.log.warn(`[Runtimes] Moving the agent windows of ${runtime.id} to ${movedTo} failed:`, err) }
+    }
     if (this.mainOpen === runtime.id) this.mainOpen = this.opts.primary.id
     await runtime.shutdown().catch((err) => this.opts.log.warn(`[Runtimes] Ending the sessions of ${runtime.id} failed:`, err))
     if (this.remotes.get(runtime.id) === runtime) this.remotes.delete(runtime.id)
-    this.opts.onRemoved?.(runtime.id)
-    this.opts.log.log(`[Runtimes] ${runtime.id} disconnected${windows.length ? `; ${windows.length} agent window(s) closed${keepWindows ? ', to reopen once it connects again' : ''}` : ''}`)
+    this.retiring.delete(runtime)
+    this.opts.log.log(`[Runtimes] ${runtime.id} disconnected${windows.length ? `; ${windows.length} agent window(s) closed${movedTo ? `, to reopen on ${movedTo}` : keepWindows ? ', to reopen once it connects again' : ''}` : ''}`)
   }
 
   /**
@@ -278,9 +331,10 @@ export class RuntimeManager {
    * sessions first, then the main window's. The primary follows
    * keepDaemonRunning; a remote's daemon keeps running.
    */
-  async shutdown(opts: { keepDaemonRunning?: boolean } = {}): Promise<void> {
+  async shutdown(opts: QuitOptions = {}): Promise<void> {
     this.disposed = true
-    const others = [...this.remotes.values()]
+    // Ones still retiring too: their sessions end within the same quit.
+    const others = [...new Set([...this.remotes.values(), ...this.retiring])]
     await Promise.all([
       this.opts.primary.shutdown(opts),
       ...others.map((rt) => rt.shutdown().catch((err) => this.opts.log.warn(`[Runtimes] Quit: ending the sessions of ${rt.id} failed:`, err))),

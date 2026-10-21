@@ -138,7 +138,7 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 
 | Option | Description |
 |---|---|
-| `--url, -u <url>` | Daemon URL (default ADF_DAEMON_URL or http://127.0.0.1:7385) |
+| `--url, -u <url>` | Daemon URL (default ADF_DAEMON_URL, the default remote, or http://127.0.0.1:7385) |
 | `--token <token>` | Bearer token (default: ADF_DAEMON_TOKEN, else the local daemon's token file) |
 | `--view <id>` | Start view: chat \| files \| loops \| inspect \| fleet \| runtime |
 | `--agent <id\|handle>` | Preselect an agent |

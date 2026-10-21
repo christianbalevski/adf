@@ -15,9 +15,10 @@ import { resolveBootBackend, type SecretCodec, type StudioBackendConfig } from '
 import { migratePairedSlot, remotesEnv } from '../../src/main/backend/connections'
 import { remoteDaemonConnector, RemoteConnectError } from '../../src/main/backend/daemon-mode/remote/connector'
 import { loadRemotes, readRemoteToken } from '../../src/main/cli/remotes'
+import { deviceToken, helloResponse } from '../helpers/hello-proof'
 
 const URL_ = 'http://100.101.102.103:7385'
-const TOKEN = 'adfd_' + 'q'.repeat(40)
+const TOKEN = deviceToken('rawl-hub')
 const codec: SecretCodec = { available: () => true, encrypt: (p) => `safe:${p}`, decrypt: (s) => s.slice(5) }
 const quiet = { log: () => {}, warn: () => {} }
 const paired = { fingerprint: 'ABCD-EFGH', name: 'rawl-hub', deviceId: 'dev1', label: 'agent-2 laptop' }
@@ -42,7 +43,7 @@ function fakeServer(fingerprint: string) {
     const url = new URL(String(input))
     sent.push({ path: url.pathname, auth: new Headers(init?.headers).get('authorization') })
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
-    if (url.pathname === '/remote/hello') return json(200, { v: 1, name: 'x', fingerprint, pairingOpen: false, api: '2' })
+    if (url.pathname === '/remote/hello') return helloResponse(url, { name: 'x', fingerprint, tokens: [TOKEN] })
     if (url.pathname === '/health') return json(200, { ok: true })
     if (url.pathname === '/version') return json(200, { version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION, pid: 1, startedBy: 'cli' })
     return json(200, {})
@@ -85,11 +86,14 @@ describe('the paired remote URL of studio-backend.json', () => {
     expect((await remoteDaemonConnector(s.boot.config, codec, { env: s.env, fetch: real.fetch })(() => {})).baseUrl).toBe(URL_)
   })
 
-  it('a pasted token (no pairing) stays as it is', async () => {
+  it('a pasted token (no pairing) stays as it is; a device token there is still checked by the hello, a master token is not (F2, review round 3)', async () => {
     const s = setup('remote')
     s.boot.config = { ...s.boot.config, remote: { ...s.boot.config.remote, paired: null } }
     mkdirSync(join(s.env.ADF_DAEMON_SETTINGS!, '..'), { recursive: true })
     expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBeNull()
-    expect(remoteDaemonConnector(s.boot.config, codec).pinCheck).toBeUndefined()
+    // The pasted `adfd_` token: no fingerprint to pin, but every dial and re-dial asks the authenticated hello first.
+    expect(remoteDaemonConnector(s.boot.config, codec).pinCheck).toBeTypeOf('function')
+    const master = { ...s.boot.config, remote: { ...s.boot.config.remote, token: codec.encrypt('m'.repeat(43)) } }
+    expect(remoteDaemonConnector(master, codec).pinCheck).toBeUndefined()
   })
 })

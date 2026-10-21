@@ -1,66 +1,110 @@
 import { useEffect } from 'react'
 import { create } from 'zustand'
 import type { AgentTemplateListResult, AgentTemplateSummary } from '../../shared/types/ipc.types'
+import type { RuntimeId } from '../../shared/runtime-tag'
+import { apiFor } from '../utils/runtime-api'
+import { windowRuntime } from '../utils/window-kind'
 
 /**
  * The templates folder as the renderer sees it: one list shared by the
  * Settings tab and the home composer's chip, refreshed whenever main reports
  * the folder changed (drop-in, delete, edit) and after our own writes.
+ *
+ * The top-level list is this window's runtime's (This computer in the main
+ * window), as before. Settings showing another runtime (multi-runtime.md
+ * §6.3) reads that runtime's list into `byRuntime`.
  */
-interface TemplatesState {
+interface TemplatesSlice {
   templates: AgentTemplateSummary[]
   folder: string
   defaultId: string
   migrated: { id: string } | null
   loaded: boolean
-  refresh: () => Promise<void>
 }
 
-let inFlight: Promise<void> | null = null
+interface TemplatesState extends TemplatesSlice {
+  byRuntime: Record<RuntimeId, TemplatesSlice>
+  /** `runtimeId`: the runtime whose list is read; omitted, this window's. */
+  refresh: (runtimeId?: RuntimeId | null) => Promise<void>
+  /** The runtime left the set or is another computer now: its list goes (a read on its way is not kept). */
+  dropRuntime: (runtimeId: RuntimeId) => void
+}
 
-export const useTemplatesStore = create<TemplatesState>((set) => ({
-  templates: [],
-  folder: '',
-  defaultId: 'standard',
-  migrated: null,
-  loaded: false,
-  refresh: () => {
-    if (inFlight) return inFlight
-    const run: Promise<void> = window.adfApi
-      .listTemplates()
-      .then((result: AgentTemplateListResult) => {
-        set({
-          templates: result.templates,
-          folder: result.folder,
-          defaultId: result.defaultId,
-          migrated: result.migrated ?? null,
-          loaded: true
+const EMPTY_SLICE: TemplatesSlice = { templates: [], folder: '', defaultId: 'standard', migrated: null, loaded: false }
+
+/** The window's own runtime: its list is the top-level one. */
+const isTop = (runtimeId?: RuntimeId | null): boolean => !runtimeId || runtimeId === windowRuntime
+
+const inFlight = new Map<RuntimeId, Promise<void>>()
+
+export const useTemplatesStore = create<TemplatesState>((set) => {
+  const write = (runtimeId: RuntimeId | null | undefined, patch: Partial<TemplatesSlice>) =>
+    set((s) => (isTop(runtimeId) ? patch : { byRuntime: { ...s.byRuntime, [runtimeId!]: { ...(s.byRuntime[runtimeId!] ?? EMPTY_SLICE), ...patch } } }))
+  return {
+    ...EMPTY_SLICE,
+    byRuntime: {},
+    dropRuntime: (runtimeId) => {
+      inFlight.delete(runtimeId)
+      set((s) => {
+        if (!(runtimeId in s.byRuntime)) return s
+        const { [runtimeId]: _gone, ...rest } = s.byRuntime
+        return { byRuntime: rest }
+      })
+    },
+    refresh: (runtimeId) => {
+      const key = isTop(runtimeId) ? windowRuntime : runtimeId!
+      const pending = inFlight.get(key)
+      if (pending) return pending
+      const run: Promise<void> = (isTop(runtimeId) ? window.adfApi : apiFor(runtimeId))
+        .listTemplates()
+        .then((result: AgentTemplateListResult) => {
+          // Dropped meanwhile (its runtime left the set): not kept.
+          if (inFlight.get(key) !== run) return
+          write(runtimeId, {
+            templates: result.templates,
+            folder: result.folder,
+            defaultId: result.defaultId,
+            migrated: result.migrated ?? null,
+            loaded: true
+          })
         })
-      })
-      .catch((err: unknown) => {
-        console.error('[templates] list failed:', err)
-        set({ loaded: true })
-      })
-      .finally(() => {
-        inFlight = null
-      })
-    inFlight = run
-    return run
+        .catch((err: unknown) => {
+          console.error(`[templates] list failed${isTop(runtimeId) ? '' : ` on ${runtimeId}`}:`, err)
+          if (inFlight.get(key) === run) write(runtimeId, { loaded: true })
+        })
+        .finally(() => {
+          if (inFlight.get(key) === run) inFlight.delete(key)
+        })
+      inFlight.set(key, run)
+      return run
+    }
   }
-}))
+})
 
-/** Loads the list on first use and keeps it current while any subscriber is mounted. */
-export function useTemplates(): TemplatesState {
-  const state = useTemplatesStore()
+/** The list of `runtimeId` (omitted: this window's runtime). */
+export function selectTemplates(s: TemplatesState, runtimeId?: RuntimeId | null): TemplatesSlice {
+  return isTop(runtimeId) ? s : s.byRuntime[runtimeId!] ?? EMPTY_SLICE
+}
+
+/**
+ * Loads the list on first use and keeps it current while any subscriber is
+ * mounted. `runtimeId`: the runtime whose list it is (Settings' picked one);
+ * omitted, this window's.
+ */
+export function useTemplates(runtimeId?: RuntimeId | null): TemplatesSlice & { refresh: () => Promise<void> } {
+  const top = isTop(runtimeId)
+  const slice = useTemplatesStore((s) => selectTemplates(s, runtimeId))
   useEffect(() => {
-    void useTemplatesStore.getState().refresh()
-    const off = window.adfApi.onTemplatesChanged(() => {
-      void useTemplatesStore.getState().refresh()
+    const id = top ? undefined : runtimeId
+    void useTemplatesStore.getState().refresh(id)
+    const off = (top ? window.adfApi : apiFor(id)).onTemplatesChanged(() => {
+      void useTemplatesStore.getState().refresh(id)
     })
     return off
-  }, [])
-  return state
+  }, [top, runtimeId])
+  return { ...slice, refresh: () => useTemplatesStore.getState().refresh(top ? undefined : runtimeId) }
 }
+
 
 /** The template the composer will use: the picked one, else the default, else null while loading. */
 export function resolveTemplate(templates: AgentTemplateSummary[], defaultId: string, pickedId: string | null): AgentTemplateSummary | null {

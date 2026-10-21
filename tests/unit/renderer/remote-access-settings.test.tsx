@@ -195,7 +195,7 @@ describe('pairing dialog messages (client)', () => {
     expect(pairMessage(state({ step: 'need_code', code: 'wrong_code', message: 'Wrong code. 4 tries left.', attemptsLeft: 4 }), 'agent-1-pc')).toEqual({ kind: 'error', text: 'Wrong code. 4 tries left.' })
     expect(pairMessage(state({ step: 'failed', code: 'denied', message: 'agent-1-pc denied this device.' }), 'agent-1-pc')).toEqual({ kind: 'error', text: 'agent-1-pc denied this device.' })
     expect(pairMessage(state({ step: 'waiting' }), 'agent-1-pc')).toEqual({ kind: 'ok', text: 'Waiting for agent-1-pc to allow this device…' })
-    expect(pairMessage(state({ step: 'paired', message: 'Paired with agent-1-pc. Its address and token are saved.' }), 'agent-1-pc')?.kind).toBe('ok')
+    expect(pairMessage(state({ step: 'paired', message: 'Saved agent-1-pc.' }), 'agent-1-pc')?.kind).toBe('ok')
     expect(pairMessage(null, 'x')).toBeNull()
   })
 })

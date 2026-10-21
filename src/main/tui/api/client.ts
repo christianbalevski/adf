@@ -41,8 +41,9 @@ export class DaemonClient extends shared.DaemonClient {
   }
 
   private static resolve(options: DaemonClientOptions): SharedOptions {
-    const baseUrl = resolveDaemonUrl(options.baseUrl)
-    const lookup = { localToken: options.localToken, env: options.env }
+    const baseUrl = resolveDaemonUrl(options.baseUrl, options.env)
+    // fetch: the authenticated hello of a saved remote goes through the same transport (daemonCredentials).
+    const lookup = { localToken: options.localToken, env: options.env, fetch: options.fetch }
     return {
       baseUrl,
       // `--token` belongs to this URL; another daemon (withBaseUrl) gets its

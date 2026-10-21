@@ -48,3 +48,28 @@ it('registers on macOS with the menu bar on: the icon is made and titled before 
   expect(electronStub.calls.map((c) => c.api)).toEqual(expect.arrayContaining(['Tray.new', 'Tray.setTitle']))
   expect(await handle.ready).toBe(true)
 })
+
+it('a running agent of another runtime opens on that runtime, never as a path on This computer (A9)', async () => {
+  const { ApprovalsUi } = await import('../../src/main/backend/daemon-mode/approvals-ui')
+  const { buildMenuBarModel } = await import('../../src/main/tray/menu-bar-model')
+  const opened: string[] = []
+  const openedOn: Array<[string, string]> = []
+  const ui = new ApprovalsUi({
+    notificationsEnabled: () => false,
+    menuBarEnabled: () => false,
+    // The same path on two computers: two agents.
+    agents: () => [{ filePath: '/srv/agents/agent-1.adf', state: 'active', runtimeId: 'remote:host-1' }, { filePath: '/srv/agents/agent-1.adf', state: 'active' }],
+    foreground: () => null,
+    tokensToday: () => ({ input: 0, output: 0 }),
+    openFile: (filePath) => { opened.push(filePath) },
+    openFileOn: (runtimeId, filePath) => { openedOn.push([runtimeId, filePath]) },
+    log,
+  })
+  const ux = ui as unknown as { menuBarSnapshot(): Parameters<typeof buildMenuBarModel>[0]; onMenuBarAction(action: unknown): void }
+  const actions = buildMenuBarModel(ux.menuBarSnapshot()).items.flatMap((i) => (i.kind === 'action' && i.action.type === 'open-agent' ? [i.action] : []))
+  expect(actions).toEqual(expect.arrayContaining([{ type: 'open-agent', filePath: '/srv/agents/agent-1.adf', runtimeId: 'remote:host-1' }, { type: 'open-agent', filePath: '/srv/agents/agent-1.adf' }]))
+  for (const action of actions) ux.onMenuBarAction(action)
+  expect(openedOn).toEqual([['remote:host-1', '/srv/agents/agent-1.adf']])
+  expect(opened).toEqual(['/srv/agents/agent-1.adf'])
+  ui.dispose()
+})

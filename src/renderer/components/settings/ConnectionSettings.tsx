@@ -22,12 +22,14 @@ import { useEffect, useRef, useState } from 'react'
 import { Button, IconButton, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
 import { useSettingsSave } from './settings-save'
 import { Dialog } from '../common/Dialog'
+import { useConfirm, type ConfirmOptions } from '../common/ConfirmDialog'
+import { Tooltip } from '../common/Tooltip'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import { CONNECTION_STATE_LABELS, type ConnectionResult, type ConnectionRow, type ConnectionsView } from '../../../shared/types/connection.types'
 import type { BackendDaemonStatus, BackendSettingsView, StudioRunMode } from '../../../shared/types/backend.types'
-import type { RemotePairErrorCode, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
+import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { pairMessage } from './RemoteAccessSettings'
 import type { RemoteDiscoveryEntry } from '../../../shared/types/remote-access-ipc.types'
 import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
@@ -223,6 +225,18 @@ function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: strin
 /** Codes after which the host answered as a daemon without a fingerprint: a token is the only way. */
 const TOKEN_ONLY: ReadonlySet<RemotePairErrorCode> = new Set(['remote_access_off', 'old_daemon'])
 
+/**
+ * Start pairing; a computer already saved (`already_saved`) is paired again
+ * only after Replace in the shared confirmation, which replaces its address
+ * and token. Null when the user kept it (nothing was sent).
+ */
+export async function startPairing(start: (request: RemotePairStartRequest) => Promise<RemotePairState>, confirm: (options: ConfirmOptions) => Promise<boolean>, request: RemotePairStartRequest): Promise<RemotePairState | null> {
+  const state = await start(request)
+  if (state.code !== 'already_saved') return state
+  if (!await confirm({ title: 'Replace', body: state.message, confirmLabel: 'Replace', danger: true })) return null
+  return start({ ...request, replace: true })
+}
+
 /** A computer found on the network, as the Add dialog opens on it. */
 export type AddTarget = Pick<RemoteDiscoveryEntry, 'name' | 'url' | 'address' | 'fingerprint' | 'encrypted'>
 
@@ -248,6 +262,7 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [noFingerprint, setNoFingerprint] = useState(false)
+  const [confirmDialog, confirm] = useConfirm()
   const check = url.trim() ? checkRemoteDaemonUrl(url) : null
   const insecure = check?.kind === 'insecure-http'
 
@@ -263,7 +278,8 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
     setBusy(true)
     setMessage(null)
     try {
-      const state = await window.adfApi.startRemotePairing({ url: check.url, allowInsecureHttp: insecure && trusted })
+      const state = await startPairing((request) => window.adfApi.startRemotePairing(request), confirm, { url: check.url, allowInsecureHttp: insecure && trusted })
+      if (!state) return
       if (found && state.host && state.host.fingerprint !== found.fingerprint) {
         await window.adfApi.cancelRemotePairing()
         setMessage({ kind: 'error', text: foundMismatchMessage(found, state.host.fingerprint) })
@@ -307,6 +323,7 @@ export function AddConnectionDialog({ onClose, found = null }: { onClose: () => 
 
   return (
     <Dialog open title="Add" onClose={close} lightDismiss={false}>
+      {confirmDialog}
       <div className="space-y-3 text-[12px]">
         {step === 'address' && (
           <>
@@ -377,7 +394,7 @@ export function SimpleConnections({ busy, message, onAdd, onLegacy, details, ext
 }) {
   return (
     <SettingsGroup>
-      <SettingsRow label="Runtimes on other computers" error={message?.kind === 'error' ? message.text : undefined} help={message?.kind === 'ok' ? message.text : undefined}>
+      <SettingsRow label={<Tooltip tip="Runtimes on other computers."><span>Remotes</span></Tooltip>} error={message?.kind === 'error' ? message.text : undefined} help={message?.kind === 'ok' ? message.text : undefined}>
         <Button disabled={busy} onClick={onAdd}>Add</Button>
       </SettingsRow>
       {extra}

@@ -125,6 +125,24 @@ export interface RemoteHello {
   fingerprint: string
   pairingOpen: boolean
   clientApiVersion: number
+  /**
+   * 1: asked with a nonce and a device id, this daemon proves it holds that
+   * device's token (remote-access.md §5.2.1). Absent: an older ADF, which a
+   * client refuses before it sends a saved token or pairs.
+   */
+  helloProof?: 1
+}
+
+/**
+ * GET /remote/hello?nonce=&device=&origin= (remote-access.md §5.2.1): the
+ * hello, whether the daemon knows the device, and the proof
+ * base64url(HMAC-SHA256(SHA-256(device secret), message)); null unless
+ * `device` is `known`.
+ */
+export interface RemoteHelloProved extends RemoteHello {
+  helloProof: 1
+  device: 'known' | 'unknown' | 'revoked'
+  proof: string | null
 }
 
 export interface PairClaimRequest {

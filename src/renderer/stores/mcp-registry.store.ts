@@ -16,8 +16,8 @@ interface McpRegistryState {
   /** The registry document's own `updatedAt` stamp. */
   updatedAt?: string
 
-  /** Replace the bundled snapshot with the main process's remote-first view. */
-  refresh: () => Promise<void>
+  /** Replace the bundled snapshot with the remote-first view of `api`'s runtime (Settings: the picked one). */
+  refresh: (api?: { getMcpRegistry?: typeof window.adfApi.getMcpRegistry }) => Promise<void>
 }
 
 export const useMcpRegistryStore = create<McpRegistryState>((set) => ({
@@ -25,9 +25,9 @@ export const useMcpRegistryStore = create<McpRegistryState>((set) => ({
   source: 'bundled',
   updatedAt: BUNDLED_REGISTRY_UPDATED_AT,
 
-  refresh: async () => {
+  refresh: async (api = window.adfApi) => {
     try {
-      const result = await window.adfApi?.getMcpRegistry?.()
+      const result = await api?.getMcpRegistry?.()
       // An empty entry list never replaces a working one — the bundled copy
       // is always non-empty, so keep whatever we have on a degenerate result.
       if (result && result.entries.length > 0) {

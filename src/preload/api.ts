@@ -15,7 +15,7 @@ import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
 import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
-import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '../shared/types/connection.types'
+import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimesMoved } from '../shared/types/connection.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -58,7 +58,8 @@ export interface AdfApi {
   /** Fired when an .adf file was renamed on disk (including deferred renames applied after an agent stops). */
   onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => () => void
   /** Main's current session — what file (if any) is open in the main process and whether its foreground agent is running. Used by a fresh renderer to resync after a reload. */
-  getCurrentFile: () => Promise<{ filePath: string | null; agentRunning: boolean }>
+  /** `runtimeId`: the runtime of the main window's open file when it is not This computer (multi-runtime.md §4.3). */
+  getCurrentFile: () => Promise<{ filePath: string | null; agentRunning: boolean; runtimeId?: string }>
   /** Open the OS file manager with `filePath` selected (Explorer / Finder / xdg default). */
   revealInFolder: (filePath: string) => Promise<void>
 
@@ -767,6 +768,8 @@ export interface AdfApi {
   /** Remove a saved connection (confirmed first in a native dialog). */
   removeConnection: (id: string) => Promise<ConnectionResult>
   onConnectionChanged: (callback: (view: ConnectionsView) => void) => () => void
+  /** Ids of the set that are the same computer under another id now (`moves`), or another computer (`replaced`). */
+  onRuntimesMoved: (callback: (change: RuntimesMoved) => void) => () => void
   /** Look for ADF computers (mDNS, tailnet) while the Connection page is open. */
   startRemoteDiscovery: () => Promise<boolean>
   stopRemoteDiscovery: () => Promise<boolean>
@@ -825,9 +828,10 @@ export interface AdfApi {
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
-  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string }) => Promise<{ success: boolean }>
-  /** Copies left by a quit or crash with the notice up. */
-  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number }> }>
+  /** `kept`: a hand-off's stamp; the copy goes to that hand-off's own folder (multi-runtime.md §20 item 3). */
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string; kept?: string }) => Promise<{ success: boolean }>
+  /** Copies left by a quit or crash with the notice up, and those a hand-off kept (`kept`). */
+  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number; runtimeId?: string; kept?: boolean }> }>
   /** Dismiss: move them under recovered/archive/<time>/. */
   recoveryArchive: () => Promise<{ moved: number }>
   recoveryReveal: () => Promise<{ success: boolean }>

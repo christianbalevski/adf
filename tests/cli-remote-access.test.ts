@@ -5,7 +5,7 @@
  * listener (the private address bound on 127.0.0.1 through the test seam).
  * The client keeps its token in the user-only file (ADF_KEYCHAIN=0).
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -42,10 +42,11 @@ import { DAEMON_TOKEN_FILENAME } from '../src/main/daemon/daemon-token'
 import { runHostRemoteCommand, type HostCliIo } from '../src/main/cli/remote-access-cli'
 import { hostToUrl, runPair, runRemotes, transportOf } from '../src/main/cli/pair'
 import { mergeDiscovered } from '../src/main/cli/daemon-discovery'
-import { loadRemotes, readRemoteToken, REMOTE_TOKENS_FILENAME } from '../src/main/cli/remotes'
+import { loadRemotes, pinnedRemoteRefusal, readRemoteToken, REMOTE_TOKENS_FILENAME } from '../src/main/cli/remotes'
 import { resolveDaemonToken, resolveDaemonUrl } from '../src/main/cli/daemon-url'
 import { runCli } from '../src/main/cli/index'
 import { lanNetworkId } from '../src/main/daemon/remote-access/network-key'
+import { helloBody } from './helpers/hello-proof'
 
 /** The test LAN (gateway 00:00:5e:00:01:01, 192.168.77.0/24). */
 const HOME = lanNetworkId('00:00:5e:00:01:01', '192.168.77.0/24', null)
@@ -420,25 +421,33 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
   const FP_B = 'CCCC-DDDD'
   const TOKEN_A = `adfd_aaaaaaaaaa_${'a'.repeat(43)}`
 
-  /** A fake ADF host behind fetch: hello answers `helloFp` per origin; approval answers `approvalFp`. */
-  function fakeHost(opts: { helloFp: Record<string, string>; approvalFp: string; urls?: Array<{ url: string; kind: string; encrypted: boolean }> }) {
+  /**
+   * A fake ADF host behind fetch: hello answers `helloFp` per origin, with the proof for TOKEN_A where that is the
+   * approving computer's fingerprint (remote-access.md §5.2.1; `holds` overrides which tokens it issued, `old` is an
+   * older ADF without the proof); approval answers `approvalFp`.
+   */
+  function fakeHost(opts: { helloFp: Record<string, string>; approvalFp: string; urls?: Array<{ url: string; kind: string; encrypted: boolean }>; holds?: string[]; old?: boolean }) {
     const authSeen: string[] = []
+    /** Every request in order: its path, and whether it carried the device token. */
+    const requests: string[] = []
     const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
       const u = new URL(String(input))
       const headers = new Headers(init?.headers)
       if (headers.get('authorization')) authSeen.push(`${u.origin} ${headers.get('authorization')}`)
+      requests.push(`${u.pathname}${headers.get('authorization') === `Bearer ${TOKEN_A}` ? ' +token' : ''}`)
       const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
       if (u.pathname === '/remote/hello') {
         const fp = opts.helloFp[u.origin]
-        return fp ? json(200, { v: 1, name: 'host-1', fingerprint: fp, pairingOpen: true, clientApiVersion: 2 }) : json(404, { error: 'off', code: 'remote_access_off' })
+        return fp ? json(200, helloBody(u, { name: 'host-1', fingerprint: fp, pairingOpen: true, tokens: opts.holds ?? (fp === opts.approvalFp ? [TOKEN_A] : []), old: opts.old })) : json(404, { error: 'off', code: 'remote_access_off' })
       }
       if (u.pathname === '/pair/claim') return json(202, { claimId: 'c1', expiresAt: new Date(Date.now() + 60_000).toISOString(), collectSecret: 's'.repeat(43) })
       if (u.pathname === '/pair/claims/c1') {
         return json(200, { state: 'approved', token: TOKEN_A, device: { id: 'abcdefghij', label: 'agent-2 laptop' }, daemon: { name: 'host-1', fingerprint: opts.approvalFp, urls: opts.urls ?? [] } })
       }
+      if (u.pathname === '/agents') return headers.get('authorization') === `Bearer ${TOKEN_A}` ? json(200, []) : json(401, { error: 'Unauthorized' })
       return json(200, { ok: true })
     }) as typeof fetch
-    return { fetchImpl, authSeen }
+    return { fetchImpl, authSeen, requests }
   }
   function client(fetchImpl: typeof fetch, answers: Record<string, string>, extra: Partial<Parameters<typeof runPair>[1]> = {}) {
     const env = { ADF_DAEMON_SETTINGS: join(tempDir(), 'adf-settings.json'), ADF_KEYCHAIN: '0' }
@@ -569,5 +578,124 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     expect(code).toBe(1)
     expect(err.join('')).toMatch(/is not "host-1" .*fingerprint CCCC-DDDD, and AAAA-BBBB was saved .*The saved token was not sent/)
     expect(impostor.authSeen).toEqual([])
+  })
+
+  // R2A-2: the pin is not a string anything can echo.
+  it('later commands refuse an impostor that echoes the saved fingerprint, and an older ADF; the token is not sent', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    for (const [there, sentence] of [
+      [fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A, holds: [] }), '"host-1" (host-1) does not know this computer\'s token, which was not sent; pair it again.\n'],
+      [fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A, old: true }), '"host-1" (host-1) runs an older ADF; update it.\n'],
+    ] as const) {
+      const err: string[] = []
+      const code = await runCli(['--url', HOST, 'agents'], { fetch: there.fetchImpl, stdout: () => {}, stderr: (t) => err.push(t), env: c.env } as never)
+      expect(code).toBe(1)
+      expect(err.join('')).toBe(sentence)
+      expect(there.authSeen).toEqual([])
+    }
+    // The real host, which proves it holds the token's record: no refusal, the token may go.
+    expect(await pinnedRemoteRefusal(HOST, c.env, host.fetchImpl)).toBeNull()
+  })
+
+  // I-2: the CLI reads its saved token from the env it was given (io.env), and sends it only after the hello proof.
+  it('later commands send the saved token to the paired host, only after its hello proved the pin', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    for (const argv of [['--url', HOST, 'agents'], ['agents']]) {
+      const there = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+      const out: string[] = []
+      const err: string[] = []
+      const code = await runCli(argv, { fetch: there.fetchImpl, stdout: (t) => out.push(t), stderr: (t) => err.push(t), env: c.env } as never)
+      expect(code, `${argv.join(' ')}: ${err.join('')}`).toBe(0)
+      expect(out.join('')).toBe('No agents loaded.\n')
+      expect(there.authSeen).toEqual([`${HOST} Bearer ${TOKEN_A}`])
+      // The hello goes without the token; the token goes on the request after it.
+      expect(there.requests).toEqual(['/remote/hello', '/agents +token'])
+    }
+  })
+
+  it('adf pair refuses an older ADF before the code is typed; a host that cannot prove the token after approval saves nothing', async () => {
+    const old = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A, old: true })
+    const c = client(old.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(1)
+    expect(c.err.join('')).toBe('"host-1" runs an older ADF; update it.\n')
+    expect(c.asked.some((q) => q.includes('Code shown'))).toBe(false)
+    // Shows the fingerprint and approves, but holds no record of the token it handed over: not saved.
+    const impostor = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A, holds: [] })
+    const d = client(impostor.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], d.io)).toBe(1)
+    expect(d.err.join('')).toContain(`Refused: ${HOST} could not prove it is "host-1". Nothing was saved. "host-1" lists this computer as "agent-2 laptop": remove it there (adf daemon devices revoke abcdefghij).`)
+    expect(loadRemotes(d.env).remotes).toEqual({})
+    expect(readRemoteToken(FP_A, d.env)).toBeNull()
+  })
+
+  // F4 (review round 3): a host answering the hello 429 is rate-limiting, not down; waited out, said, the token never sent meanwhile.
+  it('later commands wait out a hello answered 429, saying so; the token goes only after the proof, and never while limited', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    const run = async (limitedFor: number) => {
+      const there = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+      let left = limitedFor
+      const slept: number[] = []
+      const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+        if (new URL(String(input)).pathname === '/remote/hello' && left-- > 0) return new Response('{"error":"Too many requests from this address. Wait a minute.","code":"rate_limited"}', { status: 429, headers: { 'Retry-After': '12' } })
+        return there.fetchImpl(input, init)
+      }) as typeof fetch
+      const err: string[] = []
+      const code = await runCli(['agents'], { fetch: fetchImpl, stdout: () => {}, stderr: (t) => err.push(t), env: c.env, sleep: async (ms: number) => { slept.push(ms); expect(there.authSeen).toEqual([]) } } as never)
+      return { code, err: err.join(''), slept, there }
+    }
+    const waited = await run(2)
+    expect(waited.code).toBe(0)
+    expect(waited.err).toBe('"host-1" (host-1) is rate-limiting connections; retrying.\n'.repeat(2))
+    expect(waited.slept).toEqual([12_000, 12_000])
+    expect(waited.there.authSeen).toEqual([`${HOST} Bearer ${TOKEN_A}`])
+    const stopped = await run(5)
+    expect(stopped.code).toBe(1)
+    expect(stopped.err).toBe(`${'"host-1" (host-1) is rate-limiting connections; retrying.\n'.repeat(2)}"host-1" (host-1) is rate-limiting connections; try again in 12 s.\n`)
+    expect(stopped.err).not.toMatch(/down|did not answer/)
+    expect(stopped.there.authSeen).toEqual([])
+  })
+
+  // F7 (review round 3): --as a malformed entry is refused before anything is asked, as for a valid entry of another computer.
+  it('adf pair --as <a malformed entry> is refused before the code; the entry stays as it was', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    const list = join(c.env.ADF_DAEMON_SETTINGS, '..', 'cli-remotes.json')
+    const text = JSON.stringify({ v: 1, default: null, remotes: { lab: { url: 42 } } })
+    writeFileSync(list, text)
+    expect(await runPair([HOST, '--as', 'lab'], c.io)).toBe(1)
+    expect(c.err.join('')).toBe(`"lab" in ${list} is malformed and is not used; fix it, or remove it with: adf remotes forget lab; or pair under another name (--as <name>).\n`)
+    expect(c.asked.some((q) => q.includes('Code shown'))).toBe(false)
+    expect(host.requests.filter((r) => r.startsWith('/pair/'))).toEqual([])
+    expect(readFileSync(list, 'utf8')).toBe(text)
+  })
+
+  // F3 (review round 3): host management is this computer's; a saved remote's token never goes without a hello.
+  it('adf daemon status|stop|restart|remote|devices|pair send no saved remote token, and refuse another computer', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    const control = await import('../src/main/cli/daemon-control')
+    const target = control.daemonTarget(HOST)
+    for (const sub of ['status', 'stop', 'restart', 'remote', 'devices', 'pair', 'start']) {
+      expect(control.hostOnlyRefusal(sub, target)).toBe(`adf daemon ${sub} manages this computer's ADF daemon only; run it on 192.168.77.10.`)
+    }
+    expect(control.hostOnlyRefusal('status', control.daemonTarget('http://127.0.0.1:7385'))).toBeNull()
+    // Even called directly: no saved device token, no master token, no proof to another computer.
+    const there = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    await control.daemonStatus(target, { env: c.env, fetch: there.fetchImpl })
+    await control.stopDaemon(target, { env: c.env, fetch: there.fetchImpl, timeoutMs: 50 })
+    expect(there.authSeen).toEqual([])
+    expect(control.hostControlToken(HOST, { ...c.env, ADF_DAEMON_TOKEN: 'q'.repeat(43) })).toBeUndefined()
+    const err: string[] = []
+    const io: HostCliIo = { fetch: there.fetchImpl, stdout: () => {}, stderr: (t) => err.push(t), prompt: async () => null }
+    expect(await runHostRemoteCommand('devices', [], io, { url: HOST, port: 7385, dataDir: tempDir() })).toBe(1)
+    expect(err.join('')).toBe(`adf daemon remote, devices and pair manage this computer's ADF daemon only; ${HOST} is not on this computer.\n`)
+    expect(there.requests).not.toContain('/remote-access/devices')
   })
 })

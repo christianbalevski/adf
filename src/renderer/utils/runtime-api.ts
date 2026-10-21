@@ -10,7 +10,10 @@ import { isAgentWindow } from './window-kind'
  * is the window's own runtime, else the surface bound to `runtimeId`. With
  * This computer only, every call goes through `window.adfApi` exactly as
  * before. An agent window of another runtime reaches This computer through
- * `apiFor('local')`, untagged.
+ * `apiFor('local')`, whose calls carry an explicit `local` tag (preload):
+ * an untagged call from that window is the window's own runtime's. Main
+ * honours a tag for another runtime from an agent window on the approvals
+ * channels only; elsewhere it refuses it.
  */
 export function apiFor(runtimeId?: RuntimeId | null): AdfApi {
   const api = window.adfApi
@@ -40,6 +43,25 @@ export function openApi(): AdfApi {
 /** The runtime of the open agent (main window: the agent it has open). */
 export function openRuntime(): RuntimeId {
   return useDocumentStore.getState().runtimeId
+}
+
+/**
+ * The runtime argument of a store slice action (tracked folders, running
+ * agents) for the open agent: its runtime in the main window; none in an
+ * agent window, whose top-level slice is its own runtime's.
+ */
+export function openSliceRuntime(): RuntimeId | undefined {
+  return isAgentWindow ? undefined : openRuntime()
+}
+
+/**
+ * The provider sheet (ProviderSetupDialog) sets up the providers of this
+ * window's own runtime: true when an agent of `runtimeId` is served by it.
+ * The main window's agent of another runtime is not: its refusal is shown
+ * as it is, and its runtime's Settings set it up.
+ */
+export function providerSheetReaches(runtimeId: RuntimeId | null | undefined): boolean {
+  return isAgentWindow || (runtimeId || LOCAL_RUNTIME) === LOCAL_RUNTIME
 }
 
 /**

@@ -7,14 +7,21 @@ import { join } from 'node:path'
  */
 function createBootHarness() {
   const calls: string[] = []
-  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void> }
+  /** `app.on`/`app.once` handlers: a test fires 'before-quit' (quitMain). */
+  /** `ipcMain.handle` handlers by channel: a test invokes one (invokeMain). */
+  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void>, appHandlers: new Map<string, Array<(...args: unknown[]) => void>>(), handlers: new Map<string, (...args: unknown[]) => unknown>(), sent: [] as Array<{ channel: string; payload: unknown }> }
+  const onApp = (event: string, fn: (...args: unknown[]) => void) => {
+    state.appHandlers.set(event, [...(state.appHandlers.get(event) ?? []), fn])
+    return electron.app
+  }
   const rec = (name: string) => (...args: unknown[]) => {
     calls.push(args.length && typeof args[0] === 'string' ? `${name}(${args[0]})` : name)
   }
   class FakeWebContents {
     on = () => this
     once = () => this
-    send = rec('webContents.send')
+    /** Recorded in calls, and with its payload in state.sent (the renderer-facing pushes, in order). */
+    send = (channel: string, payload?: unknown) => { calls.push(`webContents.send(${channel})`); state.sent.push({ channel, payload }) }
     setWindowOpenHandler = () => {}
     isDestroyed = () => false
     isLoading = () => false
@@ -47,8 +54,8 @@ function createBootHarness() {
       getVersion: () => '9.9.9',
       getName: () => 'ADF Studio',
       name: 'ADF Studio',
-      on: () => electron.app,
-      once: () => electron.app,
+      on: onApp,
+      once: onApp,
       whenReady: () => Promise.resolve(),
       requestSingleInstanceLock: () => true,
       exit: rec('app.exit'),
@@ -62,7 +69,10 @@ function createBootHarness() {
     BrowserWindow: FakeBrowserWindow,
     crashReporter: { start: rec('crashReporter.start') },
     ipcMain: {
-      handle: (channel: string) => { calls.push(`ipcMain.handle(${channel})`) },
+      handle: (channel: string, fn?: (...args: unknown[]) => unknown) => {
+        calls.push(`ipcMain.handle(${channel})`)
+        if (fn) state.handlers.set(channel, fn)
+      },
       on: (channel: string) => { calls.push(`ipcMain.on(${channel})`) },
     },
     nativeTheme: { shouldUseDarkColors: false, on: () => {}, off: () => {} },
@@ -107,10 +117,34 @@ export const h = createBootHarness()
 
 const EVENTS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK', 'unhandledRejection', 'uncaughtException', 'exit']
 
+/** Call main's handler of `channel` as the main window would. */
+export async function invokeMain(channel: string, ...args: unknown[]): Promise<unknown> {
+  const fn = h.state.handlers.get(channel)
+  if (!fn) throw new Error(`no handler for ${channel}`)
+  return await fn({ sender: { id: 1 } }, ...args)
+}
+
 /** Fire the main window's 'ready-to-show' handlers, then let their dialogs run. */
 export async function fireReadyToShow(): Promise<void> {
   for (const fn of h.state.readyToShow.splice(0)) fn()
   await new Promise((r) => setTimeout(r, 50))
+}
+
+/**
+ * Quit as Electron does: fire 'before-quit' (again at each app.quit, as a
+ * held quit resumes), then wait for the app.exit that ends cleanup.
+ */
+export async function quitMain(): Promise<void> {
+  const fire = () => { for (const fn of h.state.appHandlers.get('before-quit') ?? []) fn({ preventDefault: () => {} }) }
+  let quits = h.calls.filter((c) => c === 'app.quit').length
+  fire()
+  const deadline = Date.now() + 10_000
+  while (!h.calls.includes('app.exit')) {
+    const now = h.calls.filter((c) => c === 'app.quit').length
+    if (now > quits) { quits = now; fire() }
+    if (Date.now() > deadline) throw new Error(`quit did not finish: ${h.calls.join(' | ')}`)
+    await new Promise((r) => setTimeout(r, 5))
+  }
 }
 
 /** Import src/main/index.ts and wait until boot finished (the updater is its last step). Returns a listener cleanup. */

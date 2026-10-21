@@ -14,16 +14,19 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 import { SUPPORTED_CLIENT_API_VERSION } from '../../src/shared/daemon-client'
 import { createBackendSettingsStore, defaultBackendConfig, resolveBootBackend, type SecretCodec, type StudioBackendConfig } from '../../src/main/backend/backend-config'
 import { buildConnectionsView, ConnectionError, currentConnection, forgetConnection, keychainSentence, remotesEnv, saveConnection, savedConnections, savedConnectionTarget } from '../../src/main/backend/connections'
-import { createConnections } from '../../src/main/backend/connections-ipc'
+import { createConnections, pushRuntimesMoved } from '../../src/main/backend/connections-ipc'
 import { remoteDaemonConnector, RemoteConnectError } from '../../src/main/backend/daemon-mode/remote/connector'
-import { loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, savedRemoteToken, selectedRemote, storeRemoteToken } from '../../src/main/cli/remotes'
+import { loadRemotes, readRemoteToken, RemotesUnreadableError, remoteNameFor, saveRemotes, savedRemoteToken, selectedRemote, storeRemoteToken } from '../../src/main/cli/remotes'
 import type { BackendDaemonStatus } from '../../src/shared/types/backend.types'
 import type { RemoteDiscoveryEntry } from '../../src/shared/types/remote-access-ipc.types'
+import { deviceToken, helloResponse } from '../helpers/hello-proof'
 
 const quiet = { log: () => {}, warn: () => {} }
 const HUB = 'http://100.101.102.103:7385'
 const LAN = 'http://192.168.1.20:7385'
-const TOKEN = 'adfd_' + 'a'.repeat(40)
+const TOKEN = deviceToken('rawl-hub')
+/** A token that is not a device token (the host's master token, ADF_DAEMON_TOKEN): nothing can prove who answers for it. */
+const MASTER = 'm'.repeat(43)
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -48,8 +51,11 @@ const codec: SecretCodec = {
   decrypt: (stored) => Buffer.from(stored.slice(5), 'base64').toString(),
 }
 
-/** An ADF daemon stand-in: /health, /version behind the token, /remote/hello with its fingerprint (or none). */
-function fakeDaemon(opts: { fingerprint?: string | null; name?: string } = {}) {
+/**
+ * An ADF daemon stand-in: /health, /version behind the token (TOKEN, or MASTER), /remote/hello with its fingerprint
+ * (or none: 404) and the proof for TOKEN it issued; `hello` answers the hello with that instead (429, garbage).
+ */
+function fakeDaemon(opts: { fingerprint?: string | null; name?: string; old?: boolean; hello?: 429 | 'garbage' } = {}) {
   const requests: Array<{ url: string; auth: string | null }> = []
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -58,14 +64,16 @@ function fakeDaemon(opts: { fingerprint?: string | null; name?: string } = {}) {
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     if (url.pathname === '/health') return json(200, { ok: true })
     if (url.pathname === '/remote/hello') {
+      if (opts.hello === 429) return new Response(JSON.stringify({ error: 'Too many requests from this address. Wait a minute.', code: 'rate_limited' }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } })
+      if (opts.hello === 'garbage') return new Response('<html>hi</html>', { status: 200 })
       if (opts.fingerprint === null) return json(404, { error: 'Remote access is off on this computer.', code: 'remote_access_off' })
-      return json(200, { v: 1, name: opts.name ?? 'rawl-hub', fingerprint: opts.fingerprint ?? 'ABCD-EFGH', pairingOpen: false, api: '2' })
+      return helloResponse(url, { name: opts.name ?? 'rawl-hub', fingerprint: opts.fingerprint ?? 'ABCD-EFGH', tokens: [TOKEN], old: opts.old })
     }
-    if (auth !== `Bearer ${TOKEN}`) return json(401, { error: 'Unauthorized' })
+    if (auth !== `Bearer ${TOKEN}` && auth !== `Bearer ${MASTER}`) return json(401, { error: 'Unauthorized' })
     if (url.pathname === '/version') return json(200, { version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION, pid: 1, startedBy: 'cli' })
     return json(404, { error: 'not found' })
   }) as typeof fetch
-  return { fetch, requests, tokenSent: () => requests.some((r) => r.auth === `Bearer ${TOKEN}`) }
+  return { fetch, requests, tokenSent: () => requests.some((r) => r.auth !== null) }
 }
 
 const daemonStatus = (connection: BackendDaemonStatus['connection']): BackendDaemonStatus => ({
@@ -130,6 +138,43 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
     expect(await savedConnectionTarget(defaultBackendConfig(), 'hub', env).catch((e) => e)).toMatchObject({ code: 'transport', message: `${LAN} is plain http to an address that is not loopback or a tailnet address; pair hub in Studio to confirm the network, or use https://.` })
     expect((await savedConnectionTarget({ insecureHttpOrigins: ['http://192.168.1.20:7385'] }, 'hub', env)).url).toBe(LAN)
   })
+
+  // R2A-1: an unreadable list refuses before the token is stored, so the saved token is never replaced.
+  it('a list that cannot be read: saveConnection rejects and the saved token stays the old one', async () => {
+    const env = sharedEnv()
+    const OLD = deviceToken('old'), NEW = deviceToken('new')
+    await saveConnection(env, { url: HUB, token: OLD, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd1', label: 'l' })
+    const list = join(env.ADF_DAEMON_SETTINGS!, '..', 'cli-remotes.json')
+    writeFileSync(list, '{ not json')
+    const err = await saveConnection(env, { url: HUB, token: NEW, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd2', label: 'l' }).catch((e) => e)
+    expect(err).toBeInstanceOf(RemotesUnreadableError)
+    expect(err.message).toMatch(/Fix or remove it; nothing was changed\.$/)
+    expect(readRemoteToken('ABCD-EFGH', env)).toBe(OLD)
+    expect(readFileSync(list, 'utf8')).toBe('{ not json')
+  })
+
+  // R2A-3: an unreadable list is not "no saved connection": the error names the file, and the connector waits for it.
+  it('a list that cannot be read: savedConnectionTarget names the file; the connector retries and connects once it is fixed', async () => {
+    const env = sharedEnv()
+    await saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd', label: 'l' })
+    const list = join(env.ADF_DAEMON_SETTINGS!, '..', 'cli-remotes.json')
+    const good = readFileSync(list, 'utf8')
+    writeFileSync(list, '{ not json')
+    const err = await savedConnectionTarget(defaultBackendConfig(), 'hub', env).catch((e) => e)
+    expect(err).toBeInstanceOf(ConnectionError)
+    expect(err.code).toBe('unreadable')
+    expect(err.message).toContain(list)
+    expect(err.message).not.toContain('No saved connection')
+    const daemon = fakeDaemon()
+    const progress: string[] = []
+    const config: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'hub' } }
+    let sleeps = 0
+    const connector = remoteDaemonConnector(config, codec, { env, fetch: daemon.fetch, retry: { initialMs: 1, maxMs: 2 }, sleep: async () => { if (++sleeps === 2) writeFileSync(list, good) } })
+    const endpoint = await connector((t) => progress.push(t))
+    expect(endpoint.baseUrl).toBe(HUB)
+    expect(progress.filter((p) => p.startsWith('Waiting for the list of saved connections'))).toHaveLength(2)
+    expect(progress.find((p) => p.startsWith('Waiting for the list'))).toContain(list)
+  })
 })
 
 describe('the rows of the Connection page', () => {
@@ -172,7 +217,7 @@ describe('the rows of the Connection page', () => {
   })
 
   it('the mode saved for the next launch is `next`; a remote is never the next one (multi-runtime.md §7.2)', () => {
-    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
     // An older remote-mode file not migrated yet (a launch Inside Studio): the next launch runs This computer.
     const legacy: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
@@ -186,7 +231,7 @@ describe('the rows of the Connection page', () => {
 })
 
 describe('Connect, Add connection and Remove (Studio main)', () => {
-  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void } = {}) {
+  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void; forgetRuntimeKeys?: (id: string) => void } = {}) {
     const dir = tempDir()
     const env = sharedEnv(dir)
     const path = join(dir, 'studio-backend.json')
@@ -206,6 +251,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
       log: quiet,
       ...(opts.agentWindowsOn ? { agentWindowsOn: opts.agentWindowsOn } : {}),
       ...(opts.slotChanged ? { slotChanged: opts.slotChanged } : {}),
+      ...(opts.forgetRuntimeKeys ? { forgetRuntimeKeys: opts.forgetRuntimeKeys } : {}),
     })
     return { env, path, store, connections, confirms, pushes, daemon }
   }
@@ -214,7 +260,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     for (const mode of ['local', 'embedded'] as const) {
       const s = setup({ studioBackend: { v: 1, mode } })
       await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'A saved connection is connected while it is saved.' })
+      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'Already connected.' })
       expect(await s.connections.use('remote')).toMatchObject({ ok: false, code: 'not_found' })
       expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe(mode)
     }
@@ -227,8 +273,8 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.use(42)).toMatchObject({ ok: false, code: 'invalid' })
     expect(await s.connections.use('local')).toMatchObject({ ok: true, notices: [] })
     const legacy = await s.connections.use('embedded')
-    expect(legacy).toMatchObject({ ok: true, notices: ['Saved. Applies at the next launch.'] })
-    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(legacy).toMatchObject({ ok: true, notices: [] })
+    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('embedded')
     const back = await s.connections.use('local')
     expect(back).toMatchObject({ ok: true, notices: ['Saved.'] })
@@ -243,7 +289,8 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBe(TOKEN)
     expect(JSON.parse(readFileSync(s.path, 'utf8')).insecureHttpOrigins).toEqual(['http://192.168.1.20:7385'])
     // The hello came first, without the token.
-    expect(s.daemon.requests[0]).toMatchObject({ url: `${LAN}/remote/hello`, auth: null })
+    // The authenticated hello for this token's device (remote-access.md §5.2.1).
+    expect(s.daemon.requests[0]).toMatchObject({ url: expect.stringMatching(new RegExp(`^${LAN}/remote/hello\\?nonce=[A-Za-z0-9_-]{43}&device=${TOKEN.slice(5, 15)}&origin=`)), auth: null })
   })
 
   it('Add connection: an address a saved connection was paired at, now answering with another fingerprint, is refused; the token is not sent', async () => {
@@ -292,15 +339,33 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(prompts).toEqual([{ title: 'Keychain unavailable', message: 'The token can be saved in a file only you can read.', detail: 'the OS keychain is turned off (ADF_KEYCHAIN=0)', ok: 'Save to file' }])
   })
 
-  it('Add connection where nothing answers hello (remote access off): the remote URL of studio-backend.json, after asking before it replaces another', async () => {
+  // F2 (review round 3): a device token goes only where the daemon that issued it proves it; a hello that answers nothing proves nothing.
+  it('Add connection with a device token where hello answers nothing (404, 429, garbage): refused; nothing is sent or saved', async () => {
+    const old = { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } }
+    for (const daemon of [fakeDaemon({ fingerprint: null }), fakeDaemon({ hello: 'garbage' })]) {
+      const s = setup({ daemon, studioBackend: old })
+      expect(await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toEqual({ ok: false, code: 'unreachable', error: 'https://adf.example.com does not answer as an ADF computer with remote access on; Studio sent nothing.' })
+      expect(s.daemon.tokenSent()).toBe(false)
+      expect(s.confirms).toEqual([])
+      expect(s.store.config().remote).toMatchObject({ url: 'https://old.example.com' })
+      expect(loadRemotes(s.env).remotes).toEqual({})
+    }
+    // 429: not down; said as such, and nothing is sent or saved either.
+    const limited = setup({ daemon: fakeDaemon({ hello: 429 }) })
+    expect(await limited.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toEqual({ ok: false, code: 'rate_limited', error: 'adf.example.com is rate-limiting connections; Studio sent nothing, so try again in 7 s.' })
+    expect(limited.daemon.tokenSent()).toBe(false)
+    expect(limited.store.config().remote.url).toBeNull()
+  })
+
+  it('Add connection with a token that is not a device token where nothing answers hello: the remote URL of studio-backend.json, after asking before it replaces another', async () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
-    const result = await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })
+    const result = await s.connections.add({ url: 'https://adf.example.com', token: MASTER })
     expect(s.confirms).toEqual([{ message: 'Replace connection', detail: 'Replaces old.example.com.', ok: 'Replace' }])
     expect(result).toMatchObject({ ok: true, id: 'remote', notices: ['Saved without a fingerprint; identity not checked.'] })
     expect(s.store.config().remote).toMatchObject({ url: 'https://adf.example.com' })
     expect(loadRemotes(s.env).remotes).toEqual({})
     const declined = setup({ daemon: fakeDaemon({ fingerprint: null }), confirm: false, studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
-    expect(await declined.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
+    expect(await declined.connections.add({ url: 'https://adf.example.com', token: MASTER })).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
   })
 
   it('Add connection refuses a bad address, unconfirmed plain http, a bad token and a token the daemon refuses', async () => {
@@ -308,7 +373,11 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.add({ url: 'ftp://x', token: TOKEN })).toMatchObject({ ok: false, code: 'invalid_url' })
     expect(await s.connections.add({ url: LAN, token: TOKEN })).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
     expect(await s.connections.add({ url: HUB, token: 'has space' })).toMatchObject({ ok: false, code: 'invalid_token' })
-    expect(await s.connections.add({ url: HUB, token: 'adfd_wrong' })).toMatchObject({ ok: false, code: 'unreachable' })
+    // A token the daemon did not issue: its hello cannot prove it, so the token is never sent (R2A-2).
+    expect(await s.connections.add({ url: HUB, token: deviceToken('another-device') })).toEqual({ ok: false, code: 'not_proved', error: 'rawl-hub does not know this computer\'s token, which was not sent; pair it again.' })
+    // Not a device token where an ADF daemon answers: nothing could prove who answers, so it is not saved.
+    expect(await s.connections.add({ url: HUB, token: 'adfd_wrong' })).toEqual({ ok: false, code: 'not_device_token', error: 'rawl-hub takes a device token here; make one there with: adf daemon devices add <label>.' })
+    expect(s.daemon.requests.some((r) => r.auth !== null)).toBe(false)
     expect(loadRemotes(s.env).remotes).toEqual({})
   })
 
@@ -345,17 +414,74 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     // No /remote/hello there: a connection without a fingerprint, in studio-backend.json.
     const daemon = fakeDaemon({ fingerprint: null })
     const s = setup({ daemon, slotChanged: () => { changes++ } })
-    const added = await s.connections.add({ url: HUB, token: TOKEN })
+    const added = await s.connections.add({ url: HUB, token: MASTER })
     expect(added).toMatchObject({ ok: true, id: 'remote' })
     expect(changes).toBe(1)
     expect(s.store.config().remote.url).toBe(HUB)
     expect(await s.connections.remove('remote')).toMatchObject({ ok: true })
     expect(changes).toBe(2)
     expect(s.store.config().remote.url).toBeNull()
+    // Its token goes with it: nothing is left to connect with.
+    expect(s.store.config().remote.token).toBeNull()
+  })
+
+  it('Remove of a saved connection also clears its twin in studio-backend.json (same paired fingerprint): it does not come back with its token (A7)', async () => {
+    let changes = 0
+    const studioBackend = { v: 1, mode: 'local', remote: { url: HUB, token: codec.encrypt(TOKEN), allowInsecureHttp: false, paired: { fingerprint: 'ABCD-EFGH', name: 'rawl-hub', deviceId: 'd', label: 'l' } } }
+    const s = setup({ studioBackend, slotChanged: () => { changes++ } })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    expect(await s.connections.remove('remote:rawl-hub')).toMatchObject({ ok: true, notices: ['Removed rawl-hub.'] })
+    expect(s.store.config().remote.url).toBeNull()
+    expect(s.store.config().remote.token).toBeNull()
+    expect(changes).toBe(1)
+    expect(s.connections.view().rows.map((r) => r.id)).toEqual(['local'])
+    // Another computer in the slot stays.
+    const other = setup({ studioBackend: { ...studioBackend, remote: { ...studioBackend.remote, paired: { ...studioBackend.remote.paired, fingerprint: 'OTHR-2345' } } } })
+    await saveConnection(other.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await other.connections.remove('remote:rawl-hub')
+    expect(other.store.config().remote.url).toBe(HUB)
+  })
+
+  it('multi-runtime.md §7.4: Remove of a saved connection, Remove of the remote slot and a slot replaced by another address forget the keys of that runtime', async () => {
+    const forgotten: string[] = []
+    const s = setup({ forgetRuntimeKeys: (id) => { forgotten.push(id) } })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    expect(await s.connections.remove('remote:rawl-hub')).toMatchObject({ ok: true })
+    expect(forgotten).toEqual(['remote:rawl-hub'])
+
+    const slot: string[] = []
+    const old = { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } }
+    const replaced = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: old, forgetRuntimeKeys: (id) => { slot.push(id) } })
+    expect(await replaced.connections.add({ url: 'https://adf.example.com', token: MASTER })).toMatchObject({ ok: true, id: 'remote' })
+    expect(slot).toEqual(['remote'])
+    expect(await replaced.connections.remove('remote')).toMatchObject({ ok: true })
+    expect(slot).toEqual(['remote', 'remote'])
+
+    // Cancelled or refused: nothing is forgotten.
+    const kept: string[] = []
+    const declined = setup({ confirm: false, forgetRuntimeKeys: (id) => { kept.push(id) } })
+    await saveConnection(declined.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await declined.connections.remove('remote:rawl-hub')
+    await declined.connections.remove('local')
+    expect(kept).toEqual([])
   })
 })
 
 describe('the runtime set on the Connection page (multi-runtime.md §6.5)', () => {
+  it('saved rows are in the order added (runtimeOrder), not by name; the slot in its place', () => {
+    const saved = {
+      'zeta-hub': { url: HUB, fingerprint: 'ZZZZ-2345', deviceId: 'd', label: 'l', pairedAt: '2026-10-01T10:00:00Z' },
+      'alpha-hub': { url: 'https://alpha.example.com', fingerprint: 'AAAA-2345', deviceId: 'd', label: 'l', pairedAt: '2026-10-02T10:00:00Z' },
+    }
+    const configured: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: 'https://adf.example.com', token: 'safe:x', allowInsecureHttp: false }, runtimeOrder: ['remote', 'remote:zeta-hub', 'remote:alpha-hub'] }
+    const view = buildConnectionsView({ active: { mode: 'local' }, configured, daemon: null, saved, discovery: null })
+    expect(view.rows.map((r) => r.id)).toEqual(['local', 'remote', 'remote:zeta-hub', 'remote:alpha-hub'])
+    // No order saved yet: in the order paired, as the runtime set (runtimeOrder()).
+    const fresh = buildConnectionsView({ active: { mode: 'local' }, configured: { ...defaultBackendConfig() }, daemon: null, saved, discovery: null })
+    expect(fresh.rows.map((r) => r.id)).toEqual(['local', 'remote:zeta-hub', 'remote:alpha-hub'])
+  })
+
+
   const saved = { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: 'd', label: 'l', pairedAt: '' } }
   it('local mode: a saved connection shows its runtime state and no Connect; one not in the set yet is connecting', () => {
     const config = defaultBackendConfig()
@@ -405,4 +531,22 @@ describe('the remote connector on a saved connection', () => {
     const error = await remoteDaemonConnector(config('hub'), codec, { env, fetch: fakeDaemon().fetch })(() => {}).catch((e) => e)
     expect(error).toMatchObject({ problem: 'keychain', message: keychainSentence('hub') })
   })
+})
+
+describe('RUNTIMES_MOVED (multi-runtime.md §17)', () => {
+  function windows() {
+    const sent: Array<[string, unknown]> = []
+    const win = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send: (channel: string, payload: unknown) => { sent.push([channel, payload]) } } }
+    return { sent, list: () => [win] as never }
+  }
+
+  it('every window gets the moves and the replaced ids; nothing is sent when nothing moved', () => {
+    const w = windows()
+    pushRuntimesMoved({ moves: new Map([['remote:host-1', 'remote:host-2']]), replaced: new Set(['remote:host-3']) }, w.list)
+    expect(w.sent).toEqual([['adf:connection:runtimes-moved', { moves: { 'remote:host-1': 'remote:host-2' }, replaced: ['remote:host-3'] }]])
+    pushRuntimesMoved({ moves: new Map(), replaced: new Set() }, w.list)
+    expect(w.sent).toHaveLength(1)
+  })
+
+  // Their order against the runtime set, and the keys that follow a rename: main-boot-runtimes-moved.test.ts.
 })
