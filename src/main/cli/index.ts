@@ -5,7 +5,7 @@ import { createInterface } from 'readline'
 import { readFileSync } from 'fs'
 import { basename } from 'path'
 import { runPair, runRemotes, type PairIo } from './pair'
-import { pinnedRemoteRefusal, RemotesUnreadableError } from './remotes'
+import { pinnedRemoteRefusal, RemoteMalformedError, RemotesUnreadableError } from './remotes'
 import { stdinPrompt, type LinePrompt } from './prompt'
 import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
@@ -143,7 +143,8 @@ async function daemonReady(io: CliIo, url: string): Promise<{ ok: boolean; start
 async function pinnedRemoteOk(io: CliIo, url: string, explicitToken: boolean): Promise<boolean> {
   const env = io.env ?? process.env
   if (explicitToken || env.ADF_DAEMON_TOKEN) return true
-  const refusal = await pinnedRemoteRefusal(url, env, io.fetch)
+  // A host rate-limiting hellos (429) is waited out twice, said each time; then the command stops (the token never sent).
+  const refusal = await pinnedRemoteRefusal(url, env, io.fetch, { retries: 2, onWait: (sentence) => io.stderr(`${sentence}\n`), ...(io.sleep ? { sleep: io.sleep } : {}) })
   if (refusal) io.stderr(`${refusal}\n`)
   return refusal === null
 }
@@ -190,7 +191,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
     options = { ...parsed.options, env, daemonUrl: talksToDaemon ? resolveDaemonUrl(parsed.explicitUrl ?? undefined, env) : '' }
   } catch (err) {
     // Not a usage mistake: the saved remotes file needs fixing.
-    if (err instanceof RemotesUnreadableError) {
+    if (err instanceof RemotesUnreadableError || err instanceof RemoteMalformedError) {
       io.stderr(`${err.message}\n`)
       return 1
     }

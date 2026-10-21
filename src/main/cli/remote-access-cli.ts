@@ -8,7 +8,7 @@
 import type { PairingWindowView, RemoteAccessStatus, RemoteDevice } from '../../shared/types/remote-access.types'
 import { readDaemonToken } from '../daemon/daemon-token'
 import { readLocalProof } from '../daemon/local-access'
-import { DEFAULT_DAEMON_PORT } from './daemon-url'
+import { DEFAULT_DAEMON_PORT, loopbackPort } from './daemon-url'
 
 export interface HostCliIo {
   fetch: typeof fetch
@@ -46,6 +46,8 @@ class ManageError extends Error {
 }
 
 async function call<T>(io: HostCliIo, target: HostTarget, method: string, path: string, body?: unknown): Promise<T> {
+  // This machine's token and local proof go to a loopback address only, never to another computer's --url.
+  if (loopbackPort(target.url) === null) throw new ManageError(`adf daemon remote, devices and pair manage this computer's ADF daemon only; ${target.url} is not on this computer.`, 0, 'not_local')
   const token = readDaemonToken(target.dataDir)
   const proof = readLocalProof(target.dataDir, target.port)
   const res = await io.fetch(`${target.url}${path}`, {

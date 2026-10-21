@@ -75,6 +75,12 @@ async function daemonSubcommand(sub: string, args: string[]): Promise<number> {
   const { url, rest } = control.daemonUrlFrom(args)
   const target = control.daemonTarget(url)
   const force = rest.includes('--force')
+  // Host management is this computer's (F3): no other computer gets this machine's token, its proof or a saved device token.
+  const refusal = sub === 'logs' || sub === 'token' ? null : control.hostOnlyRefusal(sub, target)
+  if (refusal) {
+    process.stderr.write(`${refusal}\n`)
+    return 2
+  }
   const start = async (): Promise<number> => {
     if (await control.isHealthy(target.url)) { out(`The ADF daemon is already running at ${target.url}.\n`); return 0 }
     try {

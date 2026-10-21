@@ -11,7 +11,7 @@ import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/
 import { printable } from '../services/peer-text'
 import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
-import { olderAdfSentence, verifyHello } from '../services/remote-hello'
+import { olderAdfSentence, verifyHello, verifyHelloWaiting } from '../services/remote-hello'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
   deleteRemoteToken, forgetRemote, type ForgotRemote, KEYCHAIN_FILE_COPY, malformedRemoteSentence, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
@@ -223,6 +223,11 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     io.stderr(`${new RemotesUnreadableError(remotesFilePath(env), remotes.unreadable).message}\n`)
     return 1
   }
+  // A malformed entry is the user's to fix or forget: never replaced by a pairing, and refused before any code is typed.
+  if (parsed.as !== undefined && remotes.malformed.includes(parsed.as)) {
+    io.stderr(`${malformedRemoteSentence(remotesFilePath(env), parsed.as)}; or pair under another name (--as <name>).\n`)
+    return 1
+  }
 
   let url: string
   let hello: RemoteHello
@@ -325,10 +330,12 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
   }
   const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint, result.token, parsed.yes)
   // A fresh pairing pins the fingerprint only after the computer at the saved address proved it issued this token.
-  const proved = await verifyHello(saveUrl, result.token, { fetch: io.fetch })
+  // A 429 here is waited out (the host already made the device): said each time, the token not sent.
+  const proved = await verifyHelloWaiting(saveUrl, result.token, { fetch: io.fetch, sleep, onWait: (ms) => io.stderr(`"${result.daemon.name}" is rate-limiting connections; retrying in ${Math.ceil(ms / 1000)} s.\n`) })
   if (proved.kind !== 'verified' || proved.hello.fingerprint !== result.daemon.fingerprint) {
     const why = proved.kind === 'verified' ? `${saveUrl} answers with fingerprint ${proved.hello.fingerprint}, not ${result.daemon.fingerprint}`
       : proved.kind === 'none' ? `${saveUrl} did not answer after "${result.daemon.name}" allowed this computer`
+        : proved.kind === 'rate_limited' ? `"${result.daemon.name}" kept rate-limiting connections`
         : proved.kind === 'unsigned' ? `"${result.daemon.name}" runs an older ADF`
           : `${saveUrl} could not prove it is "${result.daemon.name}"`
     io.stderr(`Refused: ${why}. Nothing was saved. ${revokeHint}\n`)
@@ -373,9 +380,10 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
   }
   try {
     // Under the lock Studio takes too: read again, so a change Studio made meanwhile is kept.
-    await updateRemotes(env, (latest) => {
+    await updateRemotes(env, (latest, malformed) => {
       const now = latest.remotes[name]
       if (now && now.fingerprint !== entry.fingerprint) throw new Error(`the saved remote "${name}" changed to another computer (${now.fingerprint}) meanwhile`)
+      if (!now && name in malformed) throw new Error(`"${name}" became a malformed entry meanwhile; fix or forget it first`)
       latest.remotes[name] = entry
       if (makeDefault) latest.default = name
     })
@@ -414,16 +422,17 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
       return 0
     }
     const rows = Object.entries(file.remotes)
-    io.stdout(`${file.default === null ? '*' : ' '} local  this computer's daemon\n`)
+    // A default naming a malformed entry is not "local": adf refuses until it is fixed (selectedRemote).
+    io.stdout(`${file.default === null && !read.malformedDefault ? '*' : ' '} local  this computer's daemon\n`)
     for (const [n, r] of rows) io.stdout(`${file.default === n ? '*' : ' '} ${n}  ${r.url}  ${r.hostName ?? ''}  ${r.fingerprint}  as "${r.label}"\n`)
-    for (const n of read.malformed) io.stderr(`${malformedRemoteSentence(remotesFilePath(env), n)}\n`)
+    for (const n of read.malformed) io.stderr(`${n === read.malformedDefault ? '* ' : ''}${malformedRemoteSentence(remotesFilePath(env), n)}\n`)
     if (rows.length === 0 && read.malformed.length === 0) io.stderr('No saved remotes. Pair one with: adf pair\n')
     return 0
   }
   if (action === 'use') {
     if (!name) { io.stderr(`${REMOTES_USAGE}\n`); return 2 }
     if (name !== 'local' && !file.remotes[name]) {
-      io.stderr(`No saved remote named "${name}". List them with: adf remotes\n`)
+      io.stderr(read.malformed.includes(name) ? `${malformedRemoteSentence(remotesFilePath(env), name)}\n` : `No saved remote named "${name}". List them with: adf remotes\n`)
       return 1
     }
     await updateRemotes(env, (latest) => { latest.default = name === 'local' ? null : name })

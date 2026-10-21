@@ -129,6 +129,53 @@ describe('an unreadable cli-remotes.json', () => {
     expect(await savedConnectionNames(s.env)).toBeNull()
   })
 
+  // F6 (review round 3): a default that names a malformed entry is not "no default".
+  it('a default naming a malformed entry: adf refuses with its sentence instead of using this computer; adf remotes does not mark local', async () => {
+    const text = JSON.stringify({ v: 1, default: 'lab', remotes: { lab: { url: 42 }, 'agent-1': entry } })
+    const s = setup(text)
+    const sentence = `"lab" in ${s.path} is malformed and is not used; fix it, or remove it with: adf remotes forget lab`
+    expect(readRemotes(s.env)).toMatchObject({ malformed: ['lab'], malformedDefault: 'lab', file: { default: null } })
+    expect(() => selectedRemote(s.env)).toThrow(sentence)
+    expect(() => selectedRemote({ ...s.env, ADF_REMOTE: 'lab' })).toThrow(sentence)
+    expect(selectedRemote({ ...s.env, ADF_REMOTE: 'agent-1' })?.remote.url).toBe(entry.url)
+    expect(selectedRemote({ ...s.env, ADF_REMOTE: 'local' })).toBeNull()
+    const { resolveDaemonUrl } = await import('../../src/main/cli/daemon-url')
+    expect(() => resolveDaemonUrl(undefined, s.env)).toThrow(sentence)
+
+    const list = io(s.env)
+    expect(await runRemotes([], list.io)).toBe(0)
+    expect(list.out.join('')).toContain('  local  this computer\'s daemon\n')
+    expect(list.out.join('')).not.toContain('* local')
+    expect(list.err.join('')).toBe(`* ${sentence}\n`)
+
+    // adf and the terminal app: the sentence, no usage text, no daemon.
+    const saved = { settings: process.env.ADF_DAEMON_SETTINGS, url: process.env.ADF_DAEMON_URL, remote: process.env.ADF_REMOTE }
+    process.env.ADF_DAEMON_SETTINGS = s.env.ADF_DAEMON_SETTINGS
+    delete process.env.ADF_DAEMON_URL
+    delete process.env.ADF_REMOTE
+    try {
+      const { runCli } = await import('../../src/main/cli/index')
+      const fetchSpy = vi.fn(async () => new Response('{}'))
+      const launchTui = vi.fn(async () => 0)
+      for (const argv of [['status'], []]) {
+        const c = io(s.env)
+        expect(await runCli(argv, { ...c.io, fetch: fetchSpy as unknown as typeof fetch, launchTui, ensureDaemon: async () => null }), argv.join(' ')).toBe(1)
+        expect(c.err.join(''), argv.join(' ')).toBe(`${sentence}\n`)
+      }
+      expect(fetchSpy).not.toHaveBeenCalled()
+      expect(launchTui).not.toHaveBeenCalled()
+    } finally {
+      for (const [key, value] of [['ADF_DAEMON_SETTINGS', saved.settings], ['ADF_DAEMON_URL', saved.url], ['ADF_REMOTE', saved.remote]] as const) {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      }
+    }
+    // Choosing another default (or local) clears it; nothing else in the file changes.
+    expect(await runRemotes(['use', 'local'], io(s.env).io)).toBe(0)
+    expect(readRemotes(s.env).malformedDefault).toBeNull()
+    expect(JSON.parse(s.bytes()).remotes.lab).toEqual({ url: 42 })
+  })
+
   it('a byte-order mark is read, by every reader', async () => {
     const s = setup(`${String.fromCharCode(0xfeff)}${JSON.stringify({ v: 1, default: null, remotes: { 'agent-1': entry } })}`)
     expect(readRemotes(s.env).unreadable).toBeNull()

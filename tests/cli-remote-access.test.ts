@@ -5,7 +5,7 @@
  * listener (the private address bound on 127.0.0.1 through the test seam).
  * The client keeps its token in the user-only file (ADF_KEYCHAIN=0).
  */
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -630,5 +630,72 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     expect(d.err.join('')).toContain(`Refused: ${HOST} could not prove it is "host-1". Nothing was saved. "host-1" lists this computer as "agent-2 laptop": remove it there (adf daemon devices revoke abcdefghij).`)
     expect(loadRemotes(d.env).remotes).toEqual({})
     expect(readRemoteToken(FP_A, d.env)).toBeNull()
+  })
+
+  // F4 (review round 3): a host answering the hello 429 is rate-limiting, not down; waited out, said, the token never sent meanwhile.
+  it('later commands wait out a hello answered 429, saying so; the token goes only after the proof, and never while limited', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    const run = async (limitedFor: number) => {
+      const there = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+      let left = limitedFor
+      const slept: number[] = []
+      const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
+        if (new URL(String(input)).pathname === '/remote/hello' && left-- > 0) return new Response('{"error":"Too many requests from this address. Wait a minute.","code":"rate_limited"}', { status: 429, headers: { 'Retry-After': '12' } })
+        return there.fetchImpl(input, init)
+      }) as typeof fetch
+      const err: string[] = []
+      const code = await runCli(['agents'], { fetch: fetchImpl, stdout: () => {}, stderr: (t) => err.push(t), env: c.env, sleep: async (ms: number) => { slept.push(ms); expect(there.authSeen).toEqual([]) } } as never)
+      return { code, err: err.join(''), slept, there }
+    }
+    const waited = await run(2)
+    expect(waited.code).toBe(0)
+    expect(waited.err).toBe('"host-1" (host-1) is rate-limiting connections; retrying.\n'.repeat(2))
+    expect(waited.slept).toEqual([12_000, 12_000])
+    expect(waited.there.authSeen).toEqual([`${HOST} Bearer ${TOKEN_A}`])
+    const stopped = await run(5)
+    expect(stopped.code).toBe(1)
+    expect(stopped.err).toBe(`${'"host-1" (host-1) is rate-limiting connections; retrying.\n'.repeat(2)}"host-1" (host-1) is rate-limiting connections; try again in 12 s.\n`)
+    expect(stopped.err).not.toMatch(/down|did not answer/)
+    expect(stopped.there.authSeen).toEqual([])
+  })
+
+  // F7 (review round 3): --as a malformed entry is refused before anything is asked, as for a valid entry of another computer.
+  it('adf pair --as <a malformed entry> is refused before the code; the entry stays as it was', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    const list = join(c.env.ADF_DAEMON_SETTINGS, '..', 'cli-remotes.json')
+    const text = JSON.stringify({ v: 1, default: null, remotes: { lab: { url: 42 } } })
+    writeFileSync(list, text)
+    expect(await runPair([HOST, '--as', 'lab'], c.io)).toBe(1)
+    expect(c.err.join('')).toBe(`"lab" in ${list} is malformed and is not used; fix it, or remove it with: adf remotes forget lab; or pair under another name (--as <name>).\n`)
+    expect(c.asked.some((q) => q.includes('Code shown'))).toBe(false)
+    expect(host.requests.filter((r) => r.startsWith('/pair/'))).toEqual([])
+    expect(readFileSync(list, 'utf8')).toBe(text)
+  })
+
+  // F3 (review round 3): host management is this computer's; a saved remote's token never goes without a hello.
+  it('adf daemon status|stop|restart|remote|devices|pair send no saved remote token, and refuse another computer', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    const control = await import('../src/main/cli/daemon-control')
+    const target = control.daemonTarget(HOST)
+    for (const sub of ['status', 'stop', 'restart', 'remote', 'devices', 'pair', 'start']) {
+      expect(control.hostOnlyRefusal(sub, target)).toBe(`adf daemon ${sub} manages this computer's ADF daemon only; run it on 192.168.77.10.`)
+    }
+    expect(control.hostOnlyRefusal('status', control.daemonTarget('http://127.0.0.1:7385'))).toBeNull()
+    // Even called directly: no saved device token, no master token, no proof to another computer.
+    const there = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    await control.daemonStatus(target, { env: c.env, fetch: there.fetchImpl })
+    await control.stopDaemon(target, { env: c.env, fetch: there.fetchImpl, timeoutMs: 50 })
+    expect(there.authSeen).toEqual([])
+    expect(control.hostControlToken(HOST, { ...c.env, ADF_DAEMON_TOKEN: 'q'.repeat(43) })).toBeUndefined()
+    const err: string[] = []
+    const io: HostCliIo = { fetch: there.fetchImpl, stdout: () => {}, stderr: (t) => err.push(t), prompt: async () => null }
+    expect(await runHostRemoteCommand('devices', [], io, { url: HOST, port: 7385, dataDir: tempDir() })).toBe(1)
+    expect(err.join('')).toBe(`adf daemon remote, devices and pair manage this computer's ADF daemon only; ${HOST} is not on this computer.\n`)
+    expect(there.requests).not.toContain('/remote-access/devices')
   })
 })
