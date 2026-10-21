@@ -37,13 +37,13 @@ describe('updateRemotes: one lock for Studio and adf', () => {
     await updateRemotes(e, (file) => { file.remotes.desk = remote('DESK-2345') })
     const out: string[] = []
     await Promise.all([
-      saveConnection(e, { url: 'http://100.101.102.103:7385', token: 'adfd_x', fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' }),
+      saveConnection(e, { url: 'http://100.101.102.103:7385', token: 'adfd_x', fingerprint: 'ABCD-EFGH', hostName: 'box-1', deviceId: 'd', label: 'l' }),
       runRemotes(['use', 'desk'], { stdout: (t) => out.push(t), stderr: (t) => out.push(t), env: e }),
     ])
     const file = loadRemotes(e)
-    expect(Object.keys(file.remotes).sort()).toEqual(['desk', 'rawl-hub'])
+    expect(Object.keys(file.remotes).sort()).toEqual(['box-1', 'desk'])
     expect(file.default).toBe('desk')
-    await Promise.all([forgetConnection(e, 'rawl-hub'), runRemotes(['use', 'local'], { stdout: () => {}, stderr: () => {}, env: e })])
+    await Promise.all([forgetConnection(e, 'box-1'), runRemotes(['use', 'local'], { stdout: () => {}, stderr: () => {}, env: e })])
     expect(loadRemotes(e)).toMatchObject({ default: null, remotes: { desk: { fingerprint: 'DESK-2345' } } })
   })
 

@@ -112,7 +112,7 @@ Studio
   About
   Connections      runtimes on other computers
   (Settings opens on Appearance.)
-Runtime · rawl-hub         (no heading until a remote is saved)
+Runtime · box-1         (no heading until a remote is saved)
   Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels
   Files            agents folder
   Identity         owner, runtime, agent identities
@@ -121,9 +121,9 @@ Runtime · rawl-hub         (no heading until a remote is saved)
   Usage
 ```
 
-- Group label: "Studio"; "Runtime · <name>". <name> is "<runtime name> (Local)" for the local daemon (multi-runtime.md §1.3), "Inside Studio" for the legacy mode, the saved remote's name for a remote (the `adf remotes` name, e.g. `rawl-hub`), else the URL's host.
+- Group label: "Studio"; "Runtime · <name>". <name> is "<runtime name> (Local)" for the local daemon (multi-runtime.md §1.3), "Inside Studio" for the legacy mode, the saved remote's name for a remote (the `adf remotes` name, e.g. `box-1`), else the URL's host.
 - Remote runtimes are an opt-in. Until one is saved (a `saved` row, or a remote in use; `remoteConnectionsSaved`), the runtime group has no heading and no runtime name shows anywhere in Settings or the status bar.
-- While the runtime is not connected, the label adds the state: "Runtime · rawl-hub · Not connected". Runtime pages show one line, "Not connected to rawl-hub.", and their controls are disabled. With no remote saved the line is the state alone, e.g. "Not connected, retrying."
+- While the runtime is not connected, the label adds the state: "Runtime · box-1 · Not connected". Runtime pages show one line, "Not connected to box-1.", and their controls are disabled. With no remote saved the line is the state alone, e.g. "Not connected, retrying."
 - Search covers both groups. Results show the group label.
 - Page ids: `connection` (old `backend` still opens it), `appearance` (old `general` opens it), `notifications`, `updates`, `privacy`, `files`, `usage` (old `general#usage` opens it). The other ids stay.
 - Each page keeps at most one short sentence under its title. Longer text goes to `docs/guides/settings.md`.
@@ -137,13 +137,13 @@ The status bar (`StatusBar.tsx`) groups the runtime with its mesh and Kill, righ
 | This computer, Inside Studio | Connected | Nothing |
 | This computer, no remote saved | Connecting / Not connected, retrying / Not connected | "Not connected, retrying" |
 | This computer, a remote saved | Connecting / Not connected, retrying / Not connected | "<runtime name> (Local) · Not connected, retrying" |
-| Remote | Connected | Remote icon, "rawl-hub" |
-| Remote | Connecting / Not connected, retrying / Not connected | Remote icon, "rawl-hub · Not connected, retrying" |
+| Remote | Connected | Remote icon, "box-1" |
+| Remote | Connecting / Not connected, retrying / Not connected | Remote icon, "box-1 · Not connected, retrying" |
 
 - Local shows nothing while connected: it is the default, and the status bar stays as it is for most users. A problem always shows.
 - Kill's tooltip is "Stops all agents and mesh", and adds "on <name>" only once a remote is saved.
 - State words are those of the connection state (`CONNECTION_LABELS`, `BackendSettings.tsx`), so the indicator, the Help menu status line and the Connection page agree.
-- Tooltip: the address, e.g. `https://rawl-hub.tail1234.ts.net:7385`. Nothing else.
+- Tooltip: the address, e.g. `https://box-1.tail1234.ts.net:7385`. Nothing else.
 - Click: opens Settings → Connections.
 - Source: `CONNECTION_LIST`'s `current` and push `CONNECTION_CHANGED` (§5.4), answered for the sender window.
 
@@ -187,11 +187,11 @@ With no remote saved and This computer in use, the page is one row, **Remotes** 
 **Add** (a typed address, or a Not paired row). One dialog, titled "Add" (multi-runtime.md §6.5):
 
 1. **Address**, the plain-HTTP confirmation ("I trust this network; the token is sent unencrypted.") when the address needs it, **Next**. Opened on a found row, the address is that host's.
-2. Main calls `GET /remote/hello`. It answers: the dialog shows "Check that <name> shows fingerprint <fingerprint>." and **Code** with **Use a token instead**. On a found row the hello must show the found fingerprint. On success main saves the remote to K under `remoteNameFor(host name)` (the name `adf pair` gives). A fingerprint that is already saved under another address updates that remote's URL only after the user confirms "rawl-hub is now at 192.168.1.44." with **Use new address** / **Cancel**. A token is saved to K like a pairing.
+2. Main calls `GET /remote/hello`. It answers: the dialog shows "Check that <name> shows fingerprint <fingerprint>." and **Code** with **Use a token instead**. On a found row the hello must show the found fingerprint. On success main saves the remote to K under `remoteNameFor(host name)` (the name `adf pair` gives). A fingerprint that is already saved under another address updates that remote's URL only after the user confirms "box-1 is now at 192.168.1.44." with **Use new address** / **Cancel**. A token is saved to K like a pairing.
 3. No answer (remote access off, an `ADF_DAEMON_TOKEN` daemon, a proxy): the dialog shows **Token** only, with "No fingerprint; identity not checked." The token goes to the `remote` slot. If the slot holds a connection, **Replace connection** asks first ("Replaces <name>.").
 4. On success the connection is saved and connects at once: **Done**.
 
-**Remove.** More menu → Remove. Dialog "Remove rawl-hub": "Removes the address and token from Studio and adf.", "Closes <N> agent windows." when that runtime has agent windows open, and on its own line "Still listed on rawl-hub; revoke it there." Buttons **Remove**, **Cancel**. Main closes the runtime's agent windows, ends its sessions, and deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot ("Removes the address and token from Studio."). This computer cannot be removed ("In use.").
+**Remove.** More menu → Remove. Dialog "Remove box-1": "Removes the address and token from Studio and adf.", "Closes <N> agent windows." when that runtime has agent windows open, and on its own line "Still listed on box-1; revoke it there." Buttons **Remove**, **Cancel**. Main closes the runtime's agent windows, ends its sessions, and deletes the entry and its token (`adf remotes forget` semantics), or clears the `remote` slot ("Removes the address and token from Studio."). This computer cannot be removed ("In use.").
 
 ### 5.4 IPC
 

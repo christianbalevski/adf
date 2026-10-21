@@ -20,7 +20,7 @@ import { remotesEnv, saveConnection } from '../../src/main/backend/connections'
 import { deviceToken, helloResponse, type FakeHelloHost } from '../helpers/hello-proof'
 
 const URL_ = 'http://100.101.102.103:7385'
-const TOKEN = deviceToken('rawl-hub')
+const TOKEN = deviceToken('box-1')
 const quiet = { log: () => {}, warn: () => {}, error: () => {} }
 const codec: SecretCodec = { available: () => true, encrypt: (p) => `safe:${p}`, decrypt: (s) => s.slice(5) }
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms))
@@ -49,7 +49,7 @@ function fakeServer(fingerprint: () => string | null, hello: () => Partial<FakeH
     if (url.pathname === '/remote/hello') {
       const fp = fingerprint()
       if (fp === null) throw new TypeError('fetch failed')
-      return helloResponse(url, { name: 'rawl-hub', fingerprint: fp, tokens: [TOKEN], ...hello() })
+      return helloResponse(url, { name: 'box-1', fingerprint: fp, tokens: [TOKEN], ...hello() })
     }
     if (url.pathname === '/health') return json(200, { ok: true })
     if (auth !== `Bearer ${TOKEN}`) return json(401, { error: 'Unauthorized' })
@@ -62,7 +62,7 @@ function fakeServer(fingerprint: () => string | null, hello: () => Partial<FakeH
 describe('DaemonConnection with a pinned connector', () => {
   function setup(pinCheck: () => Promise<void>) {
     const server = fakeServer(() => 'ABCD-EFGH')
-    const connect = Object.assign(async () => ({ baseUrl: URL_, source: { token: () => TOKEN }, logFile: null, description: 'rawl-hub' }), { logFile: null, pinCheck }) as DaemonConnector
+    const connect = Object.assign(async () => ({ baseUrl: URL_, source: { token: () => TOKEN }, logFile: null, description: 'box-1' }), { logFile: null, pinCheck }) as DaemonConnector
     const connection = new DaemonConnection(connect, quiet, server.fetch)
     return { server, connection }
   }
@@ -86,13 +86,13 @@ describe('DaemonConnection with a pinned connector', () => {
   })
 
   it('another fingerprint: the connection fails with the sentence and sends nothing, then or later', async () => {
-    const { server, connection } = setup(async () => { throw new PinMismatchError('http://x is not rawl-hub (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.') })
+    const { server, connection } = setup(async () => { throw new PinMismatchError('http://x is not box-1 (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.') })
     const client = await connection.client()
     connection.markConnected()
     connection.markDisconnected('the stream dropped')
     await until(() => connection.state.state === 'failed')
-    expect(connection.state).toEqual({ state: 'failed', message: 'http://x is not rawl-hub (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.' })
-    await expect(client.request('GET', '/agents')).rejects.toThrow(/not rawl-hub/)
+    expect(connection.state).toEqual({ state: 'failed', message: 'http://x is not box-1 (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.' })
+    await expect(client.request('GET', '/agents')).rejects.toThrow(/not box-1/)
     expect(server.sent).toEqual([])
   })
 
@@ -127,11 +127,11 @@ describe('the remote connector of a saved connection gives the connection its pi
     delete env.ADF_KEYCHAIN
     return env
   }
-  const config: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
+  const config: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'box-1' } }
 
   it('pinCheck passes for the paired fingerprint, rejects PinMismatchError for another, and a plain error while nothing answers', async () => {
     const env = savedEnv()
-    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'box-1', deviceId: 'd', label: 'l' })
     let fp: string | null = 'ABCD-EFGH'
     const server = fakeServer(() => fp)
     const connector = remoteDaemonConnector(config, codec, { env, fetch: server.fetch })
@@ -141,24 +141,24 @@ describe('the remote connector of a saved connection gives the connection its pi
     fp = 'EVIL-2345'
     const mismatch = await connector.pinCheck!().catch((e) => e)
     expect(mismatch).toBeInstanceOf(PinMismatchError)
-    expect(mismatch.message).toBe(`${URL_} is not rawl-hub (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.`)
+    expect(mismatch.message).toBe(`${URL_} is not box-1 (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.`)
     fp = null
     const down = await connector.pinCheck!().catch((e) => e)
     expect(down).not.toBeInstanceOf(PinMismatchError)
-    expect(down.message).toBe(`${URL_} does not answer as rawl-hub; the token was not sent.`)
+    expect(down.message).toBe(`${URL_} does not answer as box-1; the token was not sent.`)
   })
 
   // R2A-2: the pin is not a string anything can echo. The daemon proves it holds this token's device record.
   it('an impostor that echoes the pinned fingerprint gets no token: at launch, and on a re-dial', async () => {
     const env = savedEnv()
-    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'box-1', deviceId: 'd', label: 'l' })
     // Shows the real fingerprint and claims to know the device, without its record: no proof it can make.
     const impostor = fakeServer(() => 'ABCD-EFGH', () => ({ tokens: [deviceToken('another-device')] }))
     const forging = fakeServer(() => 'ABCD-EFGH', () => ({ tokens: [] }))
     for (const server of [impostor, forging]) {
       const connector = remoteDaemonConnector(config, codec, { env, fetch: server.fetch, retry: { maxAttempts: 1 } })
       const err = await connector(() => {}).catch((e) => e)
-      expect(err.message).toMatch(/^rawl-hub does not know this computer's token, which was not sent; pair it again\.$/)
+      expect(err.message).toMatch(/^box-1 does not know this computer's token, which was not sent; pair it again\.$/)
       expect(server.withToken()).toEqual([])
       expect(server.sent.every((s) => s.auth === null)).toBe(true)
     }
@@ -177,7 +177,7 @@ describe('the remote connector of a saved connection gives the connection its pi
     lie = true
     const forged = await connector.pinCheck!().catch((e) => e)
     expect(forged).toBeInstanceOf(PinMismatchError)
-    expect(forged.message).toBe(`${URL_} could not prove it is rawl-hub; the token was not sent.`)
+    expect(forged.message).toBe(`${URL_} could not prove it is box-1; the token was not sent.`)
     expect(real.withToken()).toHaveLength(sentBefore)
   })
 
@@ -197,11 +197,11 @@ describe('the remote connector of a saved connection gives the connection its pi
 
   it('an older ADF, which cannot prove who it is, is refused with one sentence, never downgraded; no token goes out', async () => {
     const env = savedEnv()
-    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'box-1', deviceId: 'd', label: 'l' })
     const server = fakeServer(() => 'ABCD-EFGH', () => ({ old: true }))
     const connector = remoteDaemonConnector(config, codec, { env, fetch: server.fetch })
     const err = await connector(() => {}).catch((e) => e)
-    expect(err.message).toBe('rawl-hub runs an older ADF; update it.')
+    expect(err.message).toBe('box-1 runs an older ADF; update it.')
     expect(err.problem).toBe('fingerprint')
     expect(server.withToken()).toEqual([])
   })
@@ -242,7 +242,7 @@ describe('the remote connector of a saved connection gives the connection its pi
   // F4 (review round 3): a 429 to the hello is "rate-limiting", waited out with its Retry-After; never "down", never a token.
   it('a hello answered 429: said as rate-limiting, waited out for its Retry-After, the token not sent meanwhile', async () => {
     const env = savedEnv()
-    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'box-1', deviceId: 'd', label: 'l' })
     const real = fakeServer(() => 'ABCD-EFGH')
     let limited = 2
     const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
@@ -256,7 +256,7 @@ describe('the remote connector of a saved connection gives the connection its pi
     const slept: number[] = []
     const connector = remoteDaemonConnector(config, codec, { env, fetch: fetchImpl, retry: { initialMs: 10, maxMs: 20 }, sleep: async (ms) => { slept.push(ms); expect(real.withToken()).toEqual([]) } })
     await connector((line) => progress.push(line))
-    expect(progress.filter((l) => l.includes('rate-limiting'))).toEqual(['rawl-hub is rate-limiting connections; retrying.', 'rawl-hub is rate-limiting connections; retrying.'])
+    expect(progress.filter((l) => l.includes('rate-limiting'))).toEqual(['box-1 is rate-limiting connections; retrying.', 'box-1 is rate-limiting connections; retrying.'])
     expect(progress.some((l) => /Waiting for the remote ADF daemon|does not answer/.test(l))).toBe(false)
     expect(slept).toEqual([9_000, 9_000])
     expect(real.withToken()).toEqual(['/version'])
@@ -264,7 +264,7 @@ describe('the remote connector of a saved connection gives the connection its pi
     limited = 1
     const again = await connector.pinCheck!().catch((e) => e)
     expect(again).not.toBeInstanceOf(PinMismatchError)
-    expect(again).toMatchObject({ message: 'rawl-hub is rate-limiting connections; retrying.', retryAfterMs: 9_000 })
+    expect(again).toMatchObject({ message: 'box-1 is rate-limiting connections; retrying.', retryAfterMs: 9_000 })
   })
 })
 
@@ -275,7 +275,7 @@ describe('a re-dial check answered 429 (F4)', () => {
       logFile: null,
       pinCheck: async () => {
         calls.push(Date.now())
-        if (calls.length === 1) throw Object.assign(new Error('rawl-hub is rate-limiting connections; retrying.'), { retryAfterMs: 1_600 })
+        if (calls.length === 1) throw Object.assign(new Error('box-1 is rate-limiting connections; retrying.'), { retryAfterMs: 1_600 })
       },
     }) as unknown as DaemonConnector
     const c = new DaemonConnection(connector, quiet, (async () => new Response('{}')) as typeof fetch)

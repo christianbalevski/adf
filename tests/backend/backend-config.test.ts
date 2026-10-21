@@ -485,8 +485,8 @@ describe('review fixes', () => {
 
 describe('the saved connection in use (settings-scopes.md §5.2)', () => {
   it('remote.name (an older remote-mode file, for the migration) and insecureHttpOrigins are read back; a bad name or origin is dropped and said so', () => {
-    const ok = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'rawl-hub' }, insecureHttpOrigins: ['http://192.168.1.20:7385', 'not a url', 'http://192.168.1.20:7385/path'] })
-    expect(ok.config.remote.name).toBe('rawl-hub')
+    const ok = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'box-1' }, insecureHttpOrigins: ['http://192.168.1.20:7385', 'not a url', 'http://192.168.1.20:7385/path'] })
+    expect(ok.config.remote.name).toBe('box-1')
     expect(ok.config.insecureHttpOrigins).toEqual(['http://192.168.1.20:7385'])
     expect(ok.warnings).toEqual([])
     const bad = normalizeBackendConfig({ v: 1, mode: 'remote', remote: { name: 'a\nb' } })
