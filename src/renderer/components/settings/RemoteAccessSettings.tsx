@@ -98,7 +98,7 @@ export function groupedUrls(status: Pick<RemoteAccessStatus, 'urls' | 'networks'
 }
 
 /** Under the address table when an address is plain http. */
-export const NOT_ENCRYPTED_WARNING = 'Not encrypted: anyone on that network can read the token.'
+export const NOT_ENCRYPTED_WARNING = 'Some addresses use http. Anyone on those networks can read the token.'
 
 /** "Last seen" in the devices list. */
 export function lastSeenText(device: RemoteDevice, now = Date.now()): string {
@@ -157,13 +157,13 @@ export function shareConsent(status: RemoteAccessStatus, runtime: string | null 
   return {
     enable,
     networks,
-    text: `Devices that you pair${where} get full control of ${sharedRuntime(runtime)}, as powerful as your seed phrase.`,
+    text: `Devices that you pair${where} get full control of ${sharedRuntime(runtime)}. This control is equal to your seed phrase.`,
     warning: plan.exposed ? PUBLIC_NETWORK_WARNING : null,
   }
 }
 
 /** Shown in Share when leaving keeps remote access on (review A5). */
-export const STAYS_ON_LINE = 'Remote access stays on; turn it off in Devices.'
+export const STAYS_ON_LINE = 'Remote access stays on. To turn it off, use Devices.'
 
 /**
  * Leaving Share (Back, Cancel, closing the dialog) after its Allow: `off`
@@ -301,7 +301,7 @@ export function PairingCodePanel({ pairing, fingerprint, now }: { pairing: Pairi
   const print = pairing.fingerprint || fingerprint
   return (
     <div className="space-y-1.5 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-4 py-4 text-center" data-pairing-code="">
-      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the other computer.</p>
+      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the other device.</p>
       <p className="font-mono text-[40px] font-semibold leading-tight tracking-[0.15em] text-[var(--adf-ui-text)]" aria-label="Pairing code">{formatCode(pairing.code)}</p>
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
         Expires in <span className="font-mono tabular-nums text-[var(--adf-ui-text)]">{pairingCountdown(pairing.expiresAt, now)}</span> · {pairing.attemptsLeft} {pairing.attemptsLeft === 1 ? 'try' : 'tries'} left
@@ -357,7 +357,24 @@ export const SHARE_AS_LABEL = 'Share this server as'
 /** Under the name field. The name is the runtime alias: one name everywhere. */
 export const SHARE_AS_HELP = 'Devices see this server by this name. It is also the alias in Settings → Identity.'
 
-/** Share's name field (static in tests): saved on Enter or when the field loses focus. */
+/** Under the name field while it is blank (D5). */
+export const NAME_BLANK = 'Enter a name.'
+
+/** The daemon refused the name (1 to 63 characters, no control or bidi characters): in plain words (D5). */
+export const NAME_RULE = 'Use 1 to 63 characters. Do not use control characters.'
+
+/** The note for a refused rename: the daemon's name rule in plain words, any other error as it is. */
+export function nameError(error: string): string {
+  return /1-63 characters|control or bidi/i.test(error) ? NAME_RULE : error
+}
+
+/** Focus moved to Back or Cancel: leaving, so the name is not saved (D5). */
+export function leavingFocus(target: EventTarget | null): boolean {
+  const el = target as { dataset?: Record<string, string | undefined> } | null
+  return el?.dataset?.shareLeave !== undefined
+}
+
+/** Share's name field (static in tests): saved on Enter or when the field loses focus, but not to Back or Cancel. */
 export function ShareNameField({ name, draft, busy, note, onDraft, onSave }: {
   name: string
   draft: string | null
@@ -374,7 +391,7 @@ export function ShareNameField({ name, draft, busy, note, onDraft, onSave }: {
         <TextInput
           value={value}
           onChange={(e) => onDraft(e.target.value)}
-          onBlur={onSave}
+          onBlur={(e) => { if (!leavingFocus(e.relatedTarget)) onSave() }}
           onKeyDown={(e) => { if (e.key === 'Enter') onSave() }}
           disabled={busy}
           maxLength={63}
@@ -497,13 +514,15 @@ export function SharePanel({ runtime = null, onBack, onDone }: { runtime?: strin
   /** The name devices see (the runtime alias): saved when changed, "Saved." or the refusal under the field. */
   const saveName = async () => {
     const next = nameDraft?.trim() ?? ''
-    if (!status || nameDraft === null || !next || next === status.name) { setNameDraft(null); return }
+    if (!status || nameDraft === null) return
+    if (!next) { setNameNote({ kind: 'error', text: NAME_BLANK }); return }
+    if (next === status.name) { setNameDraft(null); setNameNote(null); return }
     setBusy(true)
     setNameNote(null)
     try {
       const result = await window.adfApi.setRemoteAccess({ name: next })
       if (result.ok) { setView(result.view); setNameDraft(null); setNameNote({ kind: 'ok', text: 'Saved.' }) }
-      else if (result.code !== 'cancelled') setNameNote({ kind: 'error', text: result.error })
+      else if (result.code !== 'cancelled') setNameNote({ kind: 'error', text: nameError(result.error) })
     } catch {
       setNameNote({ kind: 'error', text: 'Studio could not reach the server.' })
     } finally {
@@ -613,7 +632,7 @@ export function SharePanelView({ view, runtime = null, busy, error, now, opened 
               <div className="mt-2 space-y-2">
                 {created ? <NewTokenPanel label={created.label} token={created.token} onDone={onDone} /> : (
                   <>
-                    <p className="text-[var(--adf-ui-text-muted)]">A token connects a device without a code, for example a script or the ADF CLI.</p>
+                    <p className="text-[var(--adf-ui-text-muted)]">A token connects without a code. Scripts and the ADF CLI use tokens.</p>
                     <div className="flex items-end gap-2">
                       <label className="block flex-1 space-y-1">
                         <span className="font-medium text-[var(--adf-ui-text)]">Device</span>
@@ -631,8 +650,8 @@ export function SharePanelView({ view, runtime = null, busy, error, now, opened 
       {error && <p role="status" className="text-[var(--adf-ui-danger)]">{error}</p>}
       {leave === 'stays' && <p className="text-[var(--adf-ui-text-muted)]">{STAYS_ON_LINE}</p>}
       <div className="flex justify-end gap-2 border-t border-[var(--adf-ui-separator)] pt-3">
-        <Button onClick={onBack} disabled={busy}>Back</Button>
-        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone} disabled={busy}>Cancel</Button>}
+        <Button onClick={onBack} disabled={busy} data-share-leave="">Back</Button>
+        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone} disabled={busy} data-share-leave="">Cancel</Button>}
       </div>
     </div>
   )

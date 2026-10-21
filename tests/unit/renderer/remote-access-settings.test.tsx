@@ -165,7 +165,7 @@ describe('Share (host): the code view', () => {
     expect(pairingCountdown('2026-10-18T11:00:00Z', now)).toBe('0:00')
     expect(formatCode('012345')).toBe('012 345')
     const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 20, lockedSources: 1, claim: null }} fingerprint="ABCD-EFGH" now={now} />)
-    expect(html).toContain('Enter this code on the other computer.')
+    expect(html).toContain('Enter this code on the other device.')
     expect(html).toContain('012 345')
     expect(html).toMatch(/Expires in <span[^>]*>2:00<\/span> · 20 tries left/)
     expect(html).toContain('Fingerprint <span class="font-mono">ABCD-EFGH</span>')
@@ -188,7 +188,7 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     const consent = shareConsent(status({ enabled: false, state: 'off', networks: [home] }))
     expect(consent).toMatchObject({ enable: true, networks: [], warning: null })
     // Review A2: the network it will listen on is named, already allowed or not.
-    expect(consent!.text).toBe('Devices that you pair on Home (192.168.1.0/24) get full control of this server, as powerful as your seed phrase.')
+    expect(consent!.text).toBe('Devices that you pair on Home (192.168.1.0/24) get full control of this server. This control is equal to your seed phrase.')
     const html = render(view(status({ enabled: false, state: 'off', networks: [home] })))
     expect(html).toContain(consent!.text)
     expect(html.match(/>Allow</g)).toHaveLength(1)
@@ -203,7 +203,7 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(consent).toMatchObject({ enable: false, warning: PUBLIC_NETWORK_WARNING })
     expect(consent!.networks.map((n) => n.id)).toEqual([cafe.id])
     // Review A2: every network it will listen on, the one already allowed too.
-    expect(consent!.text).toBe('Devices that you pair on Home (192.168.1.0/24) and Cafe (10.0.0.0/24) get full control of this server, as powerful as your seed phrase.')
+    expect(consent!.text).toBe('Devices that you pair on Home (192.168.1.0/24) and Cafe (10.0.0.0/24) get full control of this server. This control is equal to your seed phrase.')
     expect(render(view(status({ networks: [cafe] })))).toContain(PUBLIC_NETWORK_WARNING)
     // An unidentified network cannot be allowed: it is not asked for.
     expect(shareConsent(status({ networks: [home, { ...cafe, id: null, label: 'Unidentified network' }] }))).toBeNull()
@@ -263,7 +263,7 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
   })
 
   it('review A6: the sentence names the local server Share shares; Devices names it in its help sentence', () => {
-    expect(shareConsent(status({ enabled: false, state: 'off', networks: [home] }), 'box-1 (Local)')!.text).toBe('Devices that you pair on Home (192.168.1.0/24) get full control of box-1 (Local), as powerful as your seed phrase.')
+    expect(shareConsent(status({ enabled: false, state: 'off', networks: [home] }), 'box-1 (Local)')!.text).toBe('Devices that you pair on Home (192.168.1.0/24) get full control of box-1 (Local). This control is equal to your seed phrase.')
     expect(devicesHint('box-1 (Local)')).toBe('Devices that can access box-1 (Local).')
     expect(devicesHint(null)).toBe('Devices that can access this server.')
     const html = renderToStaticMarkup(<DevicesGroupView view={view(status())} runtime="box-1 (Local)" busy={false} message={null} onSwitch={noop} onRevoke={noop} />)
@@ -300,8 +300,8 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(shareLeave({ turnedOn: true, allowed: true, added: true })).toBe('stays')
     expect(shareLeave({ turnedOn: false, allowed: true, added: false })).toBe('stays')
     expect(shareLeave({ turnedOn: false, allowed: false, added: false })).toBeNull()
-    expect(STAYS_ON_LINE).toBe('Remote access stays on; turn it off in Devices.')
-    expect(STAYS_ON_LINE.split(/[.!?]\s/)).toHaveLength(1)
+    expect(STAYS_ON_LINE).toBe('Remote access stays on. To turn it off, use Devices.')
+    expect(NOT_ENCRYPTED_WARNING).toBe('Some addresses use http. Anyone on those networks can read the token.')
     expect(render(view(status({ networks: [home], pairing })), { leave: 'stays' })).toContain(STAYS_ON_LINE)
     expect(render(view(status({ networks: [home], pairing })), { leave: 'off' })).not.toContain(STAYS_ON_LINE)
     // S1: leaving (Back, Cancel, the dialog closing) asks main, which decides; the renderer never turns it off itself.
@@ -325,6 +325,24 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(html).toContain('>Copy<')
     expect(html).toContain('>Done<')
     expect(html).toContain('On the other computer, click Add, then Connect, and enter the token.')
+  })
+})
+
+describe('D5: the name field', () => {
+  it('blank says "Enter a name."; the daemon\'s rule in plain words; focus to Back or Cancel does not save', async () => {
+    const { NAME_BLANK, NAME_RULE, nameError, leavingFocus, ShareNameField } = await import('../../../src/renderer/components/settings/RemoteAccessSettings')
+    expect(NAME_BLANK).toBe('Enter a name.')
+    expect(nameError('name must be 1-63 characters without control or bidi characters')).toBe(NAME_RULE)
+    expect(NAME_RULE).toBe('Use 1 to 63 characters. Do not use control characters.')
+    expect(nameError('Studio could not reach the server.')).toBe('Studio could not reach the server.')
+    expect(leavingFocus({ dataset: { shareLeave: '' } } as never)).toBe(true)
+    expect(leavingFocus({ dataset: {} } as never)).toBe(false)
+    expect(leavingFocus(null)).toBe(false)
+    expect(renderToStaticMarkup(<ShareNameField name="laptop-1" draft="" busy={false} note={{ kind: 'error', text: NAME_BLANK }} onDraft={() => {}} onSave={() => {}} />)).toContain(NAME_BLANK)
+    const src = readFileSync(join(__dirname, '../../../src/renderer/components/settings/RemoteAccessSettings.tsx'), 'utf-8')
+    expect(src).toContain('onBlur={(e) => { if (!leavingFocus(e.relatedTarget)) onSave() }}')
+    expect(src.match(/data-share-leave=""/g)).toHaveLength(2)
+    expect(src).toContain("if (!next) { setNameNote({ kind: 'error', text: NAME_BLANK }); return }")
   })
 })
 

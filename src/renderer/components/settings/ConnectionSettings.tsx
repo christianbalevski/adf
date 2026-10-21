@@ -101,8 +101,26 @@ export function startedByText(daemon: Pick<BackendDaemonStatus, 'startedBy' | 'h
  * the owner does not trust stays on the line (it needs an action); the rest
  * is under Details (daemonDetails).
  */
+/**
+ * The daemon's progress sentences in server words (D2), without the pid
+ * (Details has it): "Starting the server…", "Waiting for the server…",
+ * "Stopping the server…". Any other sentence stays as it is.
+ */
+export function progressText(progress: string): string {
+  if (/^Starting the ADF daemon/.test(progress)) return 'Starting the server…'
+  if (/^Waiting for the ADF daemon/.test(progress)) return 'Waiting for the server…'
+  if (/^Stopping the ADF daemon/.test(progress)) return 'Stopping the server…'
+  return progress
+}
+
+/** The pid a progress sentence names ("… (pid 7)…"), or null. */
+function progressPid(progress: string | null): number | null {
+  const m = progress ? /\(pid (\d+)\)/.exec(progress) : null
+  return m ? Number(m[1]) : null
+}
+
 export function daemonLine(daemon: BackendDaemonStatus): string {
-  const parts = [daemon.progress ?? DAEMON_LABELS[daemon.connection]]
+  const parts = [daemon.progress ? progressText(daemon.progress) : DAEMON_LABELS[daemon.connection]]
   // K12 (no OS keychain): the owner's trust in the server's key, set with adf identity trust-daemon.
   if (daemon.trust?.state === 'not-trusted') parts.push('Key not trusted')
   return parts.join(' · ')
@@ -111,7 +129,8 @@ export function daemonLine(daemon: BackendDaemonStatus): string {
 /** The local server's Details: pid, who started it, URL, version, the key's trust and how to set it, a missing local proof. */
 export function daemonDetails(daemon: BackendDaemonStatus): string[] {
   const lines: string[] = []
-  if (daemon.pid) lines.push(`PID: ${daemon.pid}`)
+  const pid = daemon.pid ?? progressPid(daemon.progress)
+  if (pid) lines.push(`PID: ${pid}`)
   const by = startedByText(daemon)
   if (by) lines.push(`Started by: ${by}`)
   if (daemon.url) lines.push(`URL: ${daemon.url}`)
@@ -137,8 +156,8 @@ function stateTone(state: ConnectionState | BackendDaemonStatus['connection'] | 
  */
 export function keepRunningText(keep: boolean, daemon: Pick<BackendDaemonStatus, 'startedBy' | 'how'> | null): string {
   if (keep) return 'When you quit Studio, the server and its agents keep running.'
-  if (daemon?.startedBy === 'cli') return 'Studio does not stop this server when you quit Studio, because the ADF CLI started it.'
-  if (daemon?.startedBy === 'service') return 'Studio does not stop this server when you quit Studio, because a service started it.'
+  if (daemon?.startedBy === 'cli') return 'The ADF CLI started this server. Studio does not stop it when you quit Studio.'
+  if (daemon?.startedBy === 'service') return 'A service started this server. Studio does not stop it when you quit Studio.'
   return 'When you quit Studio, Studio stops the server and its agents.'
 }
 
@@ -296,7 +315,7 @@ export function LocalServerSection({ rows, backend, busy, onConnect, onKeepRunni
         const daemonHere = row.kind === 'local' && inUse && daemon
         const errors = daemonHere ? [
           daemon.localProof && !daemon.localProof.available
-            ? 'Studio refuses reveal and identity import. Fix the permissions of the server\'s data folder, then restart the server.'
+            ? 'Studio cannot show stored values or import an identity. Fix the permissions of the server\'s data folder. Then restart the server.'
             : null,
           daemon.keychainProblem,
         ].filter(Boolean).join(' ') : ''
@@ -358,8 +377,8 @@ function MessageLine({ message }: { message: { kind: 'ok' | 'error'; text: strin
   )
 }
 
-/** Codes after which the host answered as a daemon without a fingerprint: a token is the only way. */
-const TOKEN_ONLY: ReadonlySet<RemotePairErrorCode> = new Set(['remote_access_off', 'old_daemon'])
+/** Codes after which a code cannot pair: remote access off there, or an older ADF (helloRefusal). */
+const HELLO_REFUSED: ReadonlySet<RemotePairErrorCode> = new Set(['remote_access_off', 'old_daemon'])
 
 /**
  * Start pairing; a computer already saved (`already_saved`) is paired again
@@ -378,7 +397,7 @@ export type AddTarget = Pick<RemoteDiscoveryEntry, 'name' | 'url' | 'address' | 
 
 /** The found computer answered as another one: nothing is sent to it. */
 export function foundMismatchMessage(found: AddTarget, shown: string): string {
-  return `${found.address} now answers as another server (${shown}). Select it in the list again.`
+  return `The server at ${found.address} has a different fingerprint (${shown}). Studio sent nothing. Select the server in the list again.`
 }
 
 /** Connect's list: the Not paired rows of this computer's network search. */
@@ -416,7 +435,25 @@ export function FoundList({ targets, selected, disabled, onPick }: { targets: Ad
 }
 
 /** The one sentence under Connect's fields. */
-export const CONNECT_FIELDS_HELP = 'Enter a code or a token. To get a code, click Add, then Share on the other server.'
+export const CONNECT_FIELDS_HELP = 'Enter a code or a token. To get a code, click Add, then Share, on the other computer.'
+
+/** Under Code while it is not 6 digits (D9). */
+export const CODE_DIGITS_HELP = 'Enter the 6-digit code.'
+
+/** A code is 6 digits; spaces do not count. */
+export function codeReady(code: string): boolean {
+  return /^\d{6}$/.test(code.replace(/\s/g, ''))
+}
+
+/**
+ * The hello answered, but a code cannot pair (D1): remote access is off
+ * there, or the server runs an older ADF. Main's sentence says which. A
+ * token is offered only when the hello had no fingerprint.
+ */
+export function helloRefusal(state: Pick<RemotePairState, 'message' | 'host'>): string {
+  const text = state.message ?? 'This server cannot pair with a code.'
+  return state.host?.fingerprint ? text : `${text} To connect without a fingerprint, enter a token.`
+}
 
 /** What Connect sends with the fields as filled: a token is saved, a code pairs. Both or neither: nothing. */
 export function connectMethod(code: string, token: string): 'code' | 'token' | 'both' | null {
@@ -474,13 +511,14 @@ export function ConnectForm({ targets, searching = false, found, url, code, toke
       {invalid && <p className="text-[12px] text-[var(--adf-ui-danger)]">{invalid}</p>}
       {insecure && (
         <label className="flex items-start gap-2 text-[12px] text-[var(--adf-ui-text-muted)]">
-          <input type="checkbox" checked={trusted} onChange={(e) => onTrusted(e.target.checked)} className="mt-0.5 rounded text-blue-500" aria-label="Send without encryption" />
-          <span><span className="font-medium text-[var(--adf-ui-text)]">Send without encryption</span><span className="block">This address uses http. Anyone on this network can read the code and the token.</span></span>
+          <input type="checkbox" checked={trusted} onChange={(e) => onTrusted(e.target.checked)} className="mt-0.5 rounded text-blue-500" aria-label="Unencrypted" />
+          <span><span className="font-medium text-[var(--adf-ui-text)]">Unencrypted</span><span className="block">This address uses http. Anyone on this network can read the code and the token.</span></span>
         </label>
       )}
       <div className="grid grid-cols-1 gap-3 min-[560px]:grid-cols-2">
         <Field label="Code">
-          <TextInput value={code} onChange={(e) => onCode(e.target.value)} inputMode="numeric" maxLength={7} placeholder="123 456" spellCheck={false} autoComplete="off" aria-label="Code" className="font-mono tracking-[0.15em]" />
+          <TextInput value={code} onChange={(e) => onCode(e.target.value)} inputMode="numeric" maxLength={7} placeholder="123 456" spellCheck={false} autoComplete="off" aria-label="Code" aria-invalid={!!code.trim() && !codeReady(code)} className="font-mono tracking-[0.15em]" />
+          {code.trim() && !codeReady(code) && <span className="block text-[11px] text-[var(--adf-ui-danger)]" data-code-help="">{CODE_DIGITS_HELP}</span>}
         </Field>
         <Field label="Token">
           <TextInput type="password" value={token} onChange={(e) => onToken(e.target.value)} spellCheck={false} autoComplete="off" aria-label="Token" className="font-mono" />
@@ -554,7 +592,7 @@ export function AddConnectionDialog({ onClose, onBack, found: initialFound = nul
       }
       setPair(state)
       if (state.step === 'need_code' && !state.code) { setStep('check'); setMessage(state.message ? { kind: 'ok', text: state.message } : null); return }
-      if (state.code && TOKEN_ONLY.has(state.code)) { setMessage({ kind: 'error', text: 'This server has no fingerprint, so it cannot pair with a code. Enter a token.' }); return }
+      if (state.code && HELLO_REFUSED.has(state.code)) { setMessage({ kind: 'error', text: helloRefusal(state) }); return }
       setMessage(pairMessage(state, state.host?.name ?? ''))
     } finally {
       setBusy(false)
@@ -596,7 +634,7 @@ export function AddConnectionDialog({ onClose, onBack, found: initialFound = nul
   }
   const waiting = pair?.step === 'claiming' || pair?.step === 'waiting'
   const addressReady = !!check?.url && (!insecure || trusted)
-  const codeReady = code.replace(/\s/g, '').length === 6
+  const codeOk = codeReady(code)
 
   return (
     <Dialog open title="Connect" onClose={close} lightDismiss={false} wide>
@@ -647,8 +685,8 @@ export function AddConnectionDialog({ onClose, onBack, found: initialFound = nul
             <>
               {(onBack || step === 'check') && <Button onClick={back}>Back</Button>}
               <Button onClick={close}>Cancel</Button>
-              {step === 'form' && <Button variant="primary" disabled={!addressReady || (method !== 'code' && method !== 'token')} loading={busy} onClick={connect}>Connect</Button>}
-              {step === 'check' && <Button variant="primary" disabled={!codeReady} loading={busy || waiting} onClick={() => void sendCode()}>Pair</Button>}
+              {step === 'form' && <Button variant="primary" disabled={!addressReady || (method === 'code' ? !codeOk : method !== 'token')} loading={busy} onClick={connect}>Connect</Button>}
+              {step === 'check' && <Button variant="primary" disabled={!codeOk} loading={busy || waiting} onClick={() => void sendCode()}>Pair</Button>}
             </>
           )}
         </div>

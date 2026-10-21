@@ -208,7 +208,7 @@ describe('Connections: Add (§6.5)', () => {
     expect(html).toContain('laptop-1 at 192.168.1.44, fingerprint NEWW-2345.')
     expect(html).toContain('value="http://192.168.1.44:7385"')
     expect(html).not.toContain('Add connection')
-    expect(foundMismatchMessage(found, 'EVIL-0001')).toBe('192.168.1.44 now answers as another server (EVIL-0001). Select it in the list again.')
+    expect(foundMismatchMessage(found, 'EVIL-0001')).toBe('The server at 192.168.1.44 has a different fingerprint (EVIL-0001). Studio sent nothing. Select the server in the list again.')
   })
 })
 

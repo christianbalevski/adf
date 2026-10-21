@@ -14,7 +14,7 @@ import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 import {
-  AddBar, AddChoice, ConnectForm, ConnectionRows, ConnectionsPage, CONNECT_FIELDS_HELP, CONNECT_HELP, LocalServerSection, REMOTES_HELP, RemoteServersSection, SHARE_HELP,
+  AddBar, AddChoice, CODE_DIGITS_HELP, ConnectForm, codeReady, helloRefusal, progressText, ConnectionRows, ConnectionsPage, CONNECT_FIELDS_HELP, CONNECT_HELP, LocalServerSection, REMOTES_HELP, RemoteServersSection, SHARE_HELP,
   connectMethod, connectionDetail, daemonDetails, daemonLine, defaultSwitchDetails, defaultSwitchLine, emptyDiscoveryLine, keepRunningText, nextLaunchLine, overrideLine, serverCount, shareHelp, splitRows,
 } from '../../../src/renderer/components/settings/ConnectionSettings'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor } from '../../../src/renderer/components/settings/settings-nav'
@@ -129,11 +129,17 @@ describe('Local server', () => {
     const noProof = { ...daemon, localProof: { available: false, problem: 'icacls failed' } }
     expect(daemonLine(noProof)).not.toMatch(/proof/)
     expect(daemonDetails(noProof)).toContain('Local proof: not available (icacls failed)')
-    expect(localSection([LOCAL], backend({ daemon: noProof }))).toContain('Studio refuses reveal and identity import.')
+    expect(localSection([LOCAL], backend({ daemon: noProof }))).toContain('Studio cannot show stored values or import an identity. Fix the permissions of the server&#x27;s data folder. Then restart the server.')
   })
 
   it('the progress line while it connects', () => {
-    expect(daemonLine({ ...daemon, connection: 'connecting', progress: 'Waiting for the ADF daemon (pid 7)…', pid: null, startedBy: null })).toBe('Waiting for the ADF daemon (pid 7)…')
+    // D2: in server words; the pid goes to Details.
+    const waiting = { ...daemon, connection: 'connecting' as const, progress: 'Waiting for the ADF daemon (pid 7)…', pid: null, startedBy: null }
+    expect(daemonLine(waiting)).toBe('Waiting for the server…')
+    expect(daemonDetails(waiting)).toContain('PID: 7')
+    expect(progressText('Starting the ADF daemon…')).toBe('Starting the server…')
+    expect(progressText('Stopping the ADF daemon (pid 9)…')).toBe('Stopping the server…')
+    expect(progressText('Something else.')).toBe('Something else.')
   })
 
   it('"On quit / Keep running" and "Background" were one setting (keepDaemonRunning): one switch, "Keep running after Studio quits", one exact sentence', () => {
@@ -142,8 +148,8 @@ describe('Local server', () => {
     expect(html).toContain('aria-label="Keep running after Studio quits"')
     expect(html).toContain('When you quit Studio, Studio stops the server and its agents.')
     expect(keepRunningText(true, daemon)).toBe('When you quit Studio, the server and its agents keep running.')
-    expect(keepRunningText(false, { startedBy: 'cli', how: 'attached' })).toBe('Studio does not stop this server when you quit Studio, because the ADF CLI started it.')
-    expect(keepRunningText(false, { startedBy: 'service', how: 'attached' })).toBe('Studio does not stop this server when you quit Studio, because a service started it.')
+    expect(keepRunningText(false, { startedBy: 'cli', how: 'attached' })).toBe('The ADF CLI started this server. Studio does not stop it when you quit Studio.')
+    expect(keepRunningText(false, { startedBy: 'service', how: 'attached' })).toBe('A service started this server. Studio does not stop it when you quit Studio.')
     for (const text of [keepRunningText(true, null), keepRunningText(false, null)]) expect(text.split(/[.!?]\s/)).toHaveLength(1)
     // The setting both old controls wrote; nothing else on the page writes it.
     expect(SOURCE).toContain('setBackendSettings({ keepDaemonRunning: next })')
@@ -268,6 +274,17 @@ describe('the Add dialog', () => {
     expect(html).not.toContain('<details')
     expect(html).not.toContain('>Details</summary>')
     expect(html).toContain(CONNECT_FIELDS_HELP)
+    expect(CONNECT_FIELDS_HELP).toBe('Enter a code or a token. To get a code, click Add, then Share, on the other computer.')
+    // D9: a code is 6 digits; anything else says so, and Connect stays disabled for it.
+    expect([codeReady('123 456'), codeReady('12345'), codeReady('12a456'), codeReady('1234567')]).toEqual([true, false, false, false])
+    const short = renderToStaticMarkup(<ConnectForm targets={[]} found={null} url="http://100.101.102.103:7385" code="123" token="" insecure={false} trusted={false} invalid={null} empty={null} problem={null} busy={false} onPick={noop} onUrl={noop} onCode={noop} onToken={noop} onTrusted={noop} />)
+    expect(short).toContain(CODE_DIGITS_HELP)
+    expect(CODE_DIGITS_HELP).toBe('Enter the 6-digit code.')
+    expect(SOURCE).toContain("method === 'code' ? !codeOk : method !== 'token'")
+    // D11: the plain-http checkbox is one word; the sentence stays below it.
+    const http = renderToStaticMarkup(<ConnectForm targets={[]} found={null} url="http://192.168.1.44:7385" code="" token="" insecure trusted={false} invalid={null} empty={null} problem={null} busy={false} onPick={noop} onUrl={noop} onCode={noop} onToken={noop} onTrusted={noop} />)
+    expect(http).toContain('aria-label="Unencrypted"')
+    expect(http).toContain('This address uses http. Anyone on this network can read the code and the token.')
     for (const sentence of CONNECT_FIELDS_HELP.split(/(?<=\.)\s/)) expect(sentence.split(' ').length, sentence).toBeLessThanOrEqual(20)
   })
 
@@ -288,7 +305,11 @@ describe('the Add dialog', () => {
 
   it('the fingerprint is checked before the code is sent; a server without one takes a token only', () => {
     expect(SOURCE).toContain('Check that {pair.host.name} shows fingerprint {pair.host.fingerprint}.')
-    expect(SOURCE).toContain('This server has no fingerprint, so it cannot pair with a code. Enter a token.')
+    // D1: main's sentence for remote access off or an older ADF; a token is offered only without a fingerprint.
+    expect(helloRefusal({ message: 'box-1 turned remote access off.', host: { name: 'box-1', fingerprint: 'ABCD-EFGH', url: 'http://100.101.102.103:7385', encrypted: true } })).toBe('box-1 turned remote access off.')
+    expect(helloRefusal({ message: 'http://100.101.102.103:7385 has remote access off. Turn it on there: Settings → Connections → Add → Share.', host: null })).toBe('http://100.101.102.103:7385 has remote access off. Turn it on there: Settings → Connections → Add → Share. To connect without a fingerprint, enter a token.')
+    expect(SOURCE).not.toContain('This server has no fingerprint, so it cannot pair with a code.')
+    expect(SOURCE).toContain('helloRefusal(state)')
     // Pair (the code) is only on the check step, after the hello.
     expect(SOURCE).toMatch(/step === 'check' && <Button variant="primary"[^\n]*>Pair<\/Button>/)
   })
