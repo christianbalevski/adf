@@ -17,6 +17,8 @@ import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
 import { ACCELERATORS, formatKey } from '../../../shared/constants/keyboard-shortcuts'
 import { IS_MAC } from '../../utils/platform'
 import { openApi } from '../../utils/runtime-api'
+import { useRuntime } from '../../stores/runtimes.store'
+import { RemoteIcon } from '../common/RemoteMark'
 
 /** An icon-only nav control: its label shows as a tooltip (a native title never renders here). */
 function NavButton({
@@ -107,6 +109,9 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
   const agentState = useAgentStore((s) => s.state)
   const statusText = useAgentStore((s) => s.statusText)
   const orbitalSeed = useOpenAgentOrbitalSeed()
+  // The open agent's server: another computer's gets the remote icon after the name (an agent window's too).
+  const runtime = useRuntime(useDocumentStore((s) => s.runtimeId))
+  const remoteTip = runtime?.kind === 'remote' ? `On ${runtime.name}` : null
   // In-flight start for this file — the store still says 'off' until it returns.
   const starting = useAppStore((s) => (filePath ? s.startingFilePaths.has(filePath) : false))
 
@@ -141,6 +146,13 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       >
         {config.name}{isDirty ? ' •' : ''}
       </span>
+      {remoteTip && (
+        <Tooltip tip={remoteTip} className="flex shrink-0 text-[var(--adf-ui-text-subtle)]">
+          <span role="img" aria-label={remoteTip} tabIndex={0} data-title-remote="" className="flex rounded outline-none focus-visible:ring-1 focus-visible:ring-[var(--adf-ui-focus)]">
+            <RemoteIcon size={11} />
+          </span>
+        </Tooltip>
+      )}
       <span className="shrink-0 flex items-center">
         {starting ? (
           <span className="relative w-2 h-2" title="Starting…">

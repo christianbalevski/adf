@@ -182,6 +182,35 @@ describe('Not reviewed', () => {
   })
 })
 
+describe('title bar', () => {
+  const BOX_1: RuntimeView = { id: 'remote:box-1', kind: 'remote', name: 'box-1', url: 'https://box-1.example:7386', state: 'connected' }
+
+  /** The open agent's cluster, with agent-1 open on `runtimeId`. */
+  async function cluster(runtimeId: string): Promise<string> {
+    await page([LOCAL, BOX_1])
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    useDocumentStore.getState().setFilePath(AGENT_1, runtimeId)
+    useAgentStore.getState().setConfig({ id: ID_1, name: 'agent-1' } as never)
+    const { AgentTitleCluster } = await import('../../../src/renderer/components/layout/TitleBar')
+    return renderToStaticMarkup(<AgentTitleCluster />)
+  }
+
+  it('a remote agent shows the remote icon after its name, "On box-1"', async () => {
+    const html = await cluster(BOX_1.id)
+    expect(html).toContain('role="img" aria-label="On box-1"')
+    expect(html).toContain('data-remote-mark')
+    expect(html.indexOf('data-title-remote')).toBeGreaterThan(html.indexOf('agent-1'))
+  })
+
+  it('a local agent has no icon', async () => {
+    const html = await cluster('local')
+    expect(html).toContain('agent-1')
+    expect(html).not.toContain('data-remote-mark')
+    expect(html).not.toContain('On ')
+  })
+})
+
 describe('bell rows', () => {
   const approval = (runtimeId?: string): PendingNotification => ({
     id: 'n1', kind: 'approval', filePath: AGENT_1, agentName: 'agent-1', loop: 'main', requestId: 'n1', toolName: 'fs_write', preview: 'a.md', requestedAt: 1,

@@ -64,7 +64,7 @@ Left to right, the navigation group lines up with the sidebar:
 | **Notifications** (bell) | Every pending approval and question across all agents and loops. A badge counts the pending ones; protection requests carry an **override** badge. An approval can be approved or rejected in place, and each item jumps to its agent. |
 | Open agent's avatar | Shown while an agent is open, after a divider. Lit while the agent's views are on screen; from Home, the Mesh view or Settings it returns to the agent. |
 
-The middle shows the open agent's avatar, its name (with `•` while it has unsaved changes), its state dot, and what its main loop is doing: the reason of the current tool call while it is active, or the agent's own status text once it settles. With no agent open, or on Home, it shows the ADF wordmark and **Studio**.
+The middle shows the open agent's avatar, its name (with `•` while it has unsaved changes), the remote icon when the agent is on another server (tooltip "On *name*"; also in an agent window), its state dot, and what its main loop is doing: the reason of the current tool call while it is active, or the agent's own status text once it settles. With no agent open, or on Home, it shows the ADF wordmark and **Studio**.
 
 The right end holds:
 
