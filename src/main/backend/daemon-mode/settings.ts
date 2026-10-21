@@ -1,4 +1,5 @@
 import { join } from 'node:path'
+import { isDeepStrictEqual } from 'node:util'
 import { CLIENT_SETTINGS_KEYS, settingsKeyClass, type ClientSettingsKey } from '../../../shared/constants/client-settings-keys'
 import { createSettingsDefaults } from '../../../shared/constants/settings-defaults'
 import { applyClientSettingsMigrations } from '../../../shared/utils/settings-migrations'
@@ -44,8 +45,9 @@ export function clientSettingsDefaults(): Readonly<Partial<Record<ClientSettings
 /**
  * `studio-client-settings.json`. Read once at boot (as SettingsService reads
  * its file), held in memory, written with an atomic async write on every
- * change. `get`/`set` are synchronous for the menu and the updater; the
- * write is not.
+ * change. A value equal to the one held is no change: the file keeps its
+ * bytes (a local-only install's quit, M11). `get`/`set` are synchronous
+ * for the menu and the updater; the write is not.
  */
 export class ClientSettingsStore {
   private data: Record<string, unknown>
@@ -86,8 +88,13 @@ export class ClientSettingsStore {
         this.log.warn(`[Settings] Not a client key, not written to ${this.filePath}: ${key}`)
         continue
       }
-      if (value === undefined) delete this.data[key]
-      else this.data[key] = value
+      if (value === undefined) {
+        if (!(key in this.data)) continue
+        delete this.data[key]
+      } else {
+        if (key in this.data && isDeepStrictEqual(this.data[key], value)) continue
+        this.data[key] = value
+      }
       changed = true
     }
     if (changed) this.persist()

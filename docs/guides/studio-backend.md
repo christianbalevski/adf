@@ -69,14 +69,15 @@ and its pages show "Not connected to *name*." with their controls disabled.
 
 | Row | State | Action |
 |---|---|---|
-| This computer | Connected (or Connecting, Not connected, retrying, Not connected) | None |
+| This computer | Connected (or Connecting, Not connected, retrying, Not connected); none while Inside Studio runs | None; **Connect** while Inside Studio runs |
 | A saved connection | Connected, Connecting, Not connected, retrying, or Not connected | None |
 | A computer found on this network or the tailnet, not saved | Not paired | **Add** ([Pair with a computer](#pair-with-a-computer)) |
 | Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
 
 **Connect** on This computer (while Inside Studio runs) or on Inside Studio
-(legacy) saves that mode for the next launch: "Saved. Applies at the next
-launch." Nothing restarts ([Switch the backend](#switch-the-backend)).
+(legacy) saves that mode for the next launch, and the page shows "Next
+launch: *name*." with **Restart**. Nothing restarts until then ([Switch the
+backend](#switch-the-backend)).
 
 Each row shows its address and fingerprint. A computer found on the network
 whose fingerprint is saved is its saved row. A saved connection is connected
@@ -103,9 +104,8 @@ While This computer is in use, **This computer** under the list shows the
 ([Quit Studio](#quit-studio)).
 
 The status bar shows the runtime right of the version, grouped with its
-mesh and Kill. With This computer only: nothing for This computer while it
-is connected, and its state in the same spot while it is not ("This
-computer · Connecting"). With a connection saved: one group per runtime,
+mesh and Kill. With This computer only: nothing while it is connected, and
+its state without a name while it is not ("Connecting"). With a connection saved: one group per runtime,
 This computer first, then the other computers in the order they were added
 (`runtimeOrder` in `studio-backend.json`). Each group shows the runtime's
 name (a remote icon for another computer, its address in the tooltip), its
@@ -152,8 +152,8 @@ daemon set up by hand, remote access off there) is kept in
 
 ### Add
 
-**Add** below the list, **Add** on a found computer's row and **Add** under
-**Runtimes on other computers** open one dialog, titled **Add**:
+**Add** below the list, **Add** on a found computer's row and **Add** on
+**Remotes** open one dialog, titled **Add**:
 
 1. **Address**: `https://…`, `http://127.0.0.1:<port>` (an SSH tunnel) or
    `http://100.x.y.z:7385` (a tailnet address). Any other `http://` address
@@ -225,9 +225,9 @@ Two cases stop the first launch from moving anything:
 | "Studio cannot use its backend settings file." with **Run on This Computer (Recommended)** and **Run Inside Studio (Legacy)** | `studio-backend.json` could not be parsed (Studio moved it aside as `studio-backend.json.corrupt-*`) or names an unknown mode | Choose one. Studio saves it, then moves your sign-ins to that side |
 | "Studio cannot use or replace its backend settings file." with **… for This Launch** | The file cannot be read (for example `EACCES`); the dialog names the path and the error | Fix its permissions or delete it, then restart Studio. Until then the choice applies to one launch, and no sign-in moves |
 
-To keep running agents in Studio for this release, choose **Connect** on
-**Settings → Connections → Inside Studio (legacy)** (under **Details**, or in
-This computer's **More** menu), then **Restart**. The next launch moves your
+To keep running agents in Studio for this release, open **Settings →
+Connections**, choose **Inside Studio (legacy)** in This computer's **More**
+menu (or **Connect** under **Details**), then **Restart**. The next launch moves your
 sign-ins back into Studio. Do not use `ADF_STUDIO_BACKEND=embedded` for this;
 it runs agents inside Studio for one launch without moving anything back.
 
@@ -247,28 +247,34 @@ restart). This release has no remote mode: every saved connection is
 connected while it is saved. At the first launch of this release on such an
 install, before it connects to anything, Studio:
 
-1. writes `"mode": "local"` to `studio-backend.json`, removes `remote.name`,
-   and writes `runtimeOrder` with the connection that was in use first, then
-   the other saved connections in the order they were paired;
-2. in `studio-client-settings.json`, moves that computer's Open Recent
+1. in `studio-client-settings.json`, moves that computer's Open Recent
    (`remoteRecentFiles`) to `runtimeRecentFiles`, its Mesh view groups,
    stewards and layout (`fleetGroups`, `fleetStewards`, `fleetMapState`) to
    `runtimeFleet`, and its saved agent windows (`agentWindows`) to its
    runtime, each with the fingerprint it was paired with;
+2. writes `"mode": "local"` to `studio-backend.json`, removes `remote.name`,
+   and writes `runtimeOrder` with the connection that was in use first, then
+   the other saved connections in the order they were paired;
 3. starts This computer's daemon, which starts the agents set to start
    automatically, as at any launch, and connects to every saved connection.
 
 Agents on the other computer keep running there; nothing restarts them.
-Once the window is open, one dialog says "*name* is now listed alongside
-This computer." Its agent windows reopen once it connects. If that
-connection is no longer saved (`adf remotes forget`), the dialog says
-"*name* is no longer saved; add it again in Settings → Connections." and
-Studio runs This computer only.
+Once the window is open, one dialog says "*name* is in Settings →
+Connections." Its agent windows reopen once it connects. If that connection
+is no longer saved (`adf remotes forget`), the dialog says "*name* is no
+longer saved; add it again in Settings → Connections." and Studio runs This
+computer only.
 
-If `studio-backend.json` cannot be rewritten, this launch runs the same way,
-Settings → Connections says "studio-backend.json still says remote …", and
-the next launch migrates it again. A launch Inside Studio
-(`ADF_STUDIO_BACKEND=embedded`) leaves the file for the next launch.
+If either file cannot be written, this launch runs the same way, Settings →
+Connections says "studio-backend.json still says remote …", and the next
+launch migrates it again. If `studio-client-settings.json` cannot be
+written, `studio-backend.json` is not rewritten either. While
+`studio-backend.json` still says remote after the client keys moved,
+`studio-client-settings.json` holds `"remoteModeMigrated": true`: the next
+launch does not move them again, so the Mesh view keys This computer wrote
+meanwhile stay This computer's. It is removed once `studio-backend.json`
+says local. A launch Inside Studio (`ADF_STUDIO_BACKEND=embedded`) leaves
+both files for the next launch.
 `ADF_STUDIO_BACKEND=remote` is read as `local`. An older Studio that reads
 the migrated file runs This computer only; the connections stay saved in
 `cli-remotes.json`.
@@ -319,13 +325,13 @@ For the week of daily use on a pre-release build of this branch
 
 ## Switch the backend
 
-1. Open **Settings → Connections** and choose **Connect** on **Inside Studio
-   (legacy)** (under **Details**, or in This computer's **More** menu), or on
-   **This computer** while Inside Studio runs. A saved connection has no
-   Connect: it is connected while it is saved ([Connection](#connection)).
-2. Studio saves the mode: "Saved. Applies at the next launch." Nothing
-   restarts and no agent stops. The page shows "Next launch: *name*." with
-   **Restart**.
+1. Open **Settings → Connections** and choose **Inside Studio (legacy)** in
+   This computer's **More** menu (or **Connect** under **Details**), or
+   **Connect** on **This computer** while Inside Studio runs. A saved
+   connection has no Connect: it is connected while it is saved
+   ([Connection](#connection)).
+2. Studio saves the mode. Nothing restarts and no agent stops. The page
+   shows "Next launch: *name*." with **Restart**.
 3. At the next launch (**Restart**, or quit and start Studio), Studio moves
    what belongs to that mode's side before it starts anything (see [What
    moves](#what-moves-during-a-switch)). If something moved or is not done, a
@@ -351,13 +357,14 @@ set.").
 
 | Message | Meaning |
 |---|---|
-| "Saved. Applies at the next launch." | The mode is stored in `studio-backend.json`; the next launch runs it |
 | "Saved." | You chose the mode this launch already runs |
-| "Next launch: *name*." with **Restart** | The mode saved for the next launch differs from the one this launch runs |
+| "Next launch: *name*." with **Restart** | The mode is stored in `studio-backend.json` and differs from the one this launch runs; the next launch runs it |
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "In use." | Remove on This computer |
 | "Add it first." | Connect on a computer that is not saved |
-| "A saved connection is connected while it is saved." | Connect on a saved connection; there is nothing to choose |
+| "Already connected." | Connect on a saved connection; it is connected while it is saved |
+| "Remote mode is gone; use Add in Settings → Connections." | A `mode: remote` save; this release has no remote mode |
+| "Saved *name*." | Add saved the connection (with a code or a token); it connects |
 | "Could not save *path*." / "Could not save the backend settings." / "Could not read the backend settings." | `studio-backend.json` could not be written or read; check the user data folder |
 | "studio-backend.json: …" / "studio-backend.json: ignored …" | The file has a problem or fields this Studio does not use; Studio says what it ignored |
 | "studio-backend.json still says remote …" | The migration of an earlier release's remote mode could not be saved; see [Upgrading from remote mode](#upgrading-from-remote-mode) |
@@ -986,8 +993,8 @@ Every message the backend features show, and where it is explained. Text in
 
 | Message (start) | Section |
 |---|---|
-| "Saved. Applies at the next launch." / "Next launch: *name*." / Restart | [Switch the backend](#switch-the-backend) |
-| "*name* is now listed alongside This computer." / "*name* is no longer saved; …" | [Upgrading from remote mode](#upgrading-from-remote-mode) |
+| "Next launch: *name*." / Restart | [Switch the backend](#switch-the-backend) |
+| "*name* is in Settings → Connections." / "*name* is no longer saved; …" | [Upgrading from remote mode](#upgrading-from-remote-mode) |
 | "macOS asks once whether the ADF daemon may read Studio's runtime key from the keychain." | [Upgrading from 0.7.x](#upgrading-from-07x), [Troubleshooting](../cli/troubleshooting.md#macos-keeps-asking-for-keychain-access) |
 | "Agents now run *on B*." / "… part of the handover is not done." | [What moves](#what-moves-during-a-switch), [When a move is not done](#when-a-move-is-not-done) |
 | "Agents now run in a background service on this computer (the ADF daemon)." / Open the Guide | [Upgrading from 0.7.x](#upgrading-from-07x) |

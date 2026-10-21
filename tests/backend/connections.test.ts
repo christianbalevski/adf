@@ -172,7 +172,7 @@ describe('the rows of the Connection page', () => {
   })
 
   it('the mode saved for the next launch is `next`; a remote is never the next one (multi-runtime.md §7.2)', () => {
-    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
     // An older remote-mode file not migrated yet (a launch Inside Studio): the next launch runs This computer.
     const legacy: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
@@ -186,7 +186,7 @@ describe('the rows of the Connection page', () => {
 })
 
 describe('Connect, Add connection and Remove (Studio main)', () => {
-  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void } = {}) {
+  function setup(opts: { daemon?: ReturnType<typeof fakeDaemon>; confirm?: boolean; studioBackend?: Record<string, unknown>; agentWindowsOn?: (id: string) => number; slotChanged?: () => void; forgetRuntimeKeys?: (id: string) => void } = {}) {
     const dir = tempDir()
     const env = sharedEnv(dir)
     const path = join(dir, 'studio-backend.json')
@@ -206,6 +206,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
       log: quiet,
       ...(opts.agentWindowsOn ? { agentWindowsOn: opts.agentWindowsOn } : {}),
       ...(opts.slotChanged ? { slotChanged: opts.slotChanged } : {}),
+      ...(opts.forgetRuntimeKeys ? { forgetRuntimeKeys: opts.forgetRuntimeKeys } : {}),
     })
     return { env, path, store, connections, confirms, pushes, daemon }
   }
@@ -214,7 +215,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     for (const mode of ['local', 'embedded'] as const) {
       const s = setup({ studioBackend: { v: 1, mode } })
       await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
-      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'A saved connection is connected while it is saved.' })
+      expect(await s.connections.use('remote:rawl-hub')).toEqual({ ok: false, code: 'not_found', error: 'Already connected.' })
       expect(await s.connections.use('remote')).toMatchObject({ ok: false, code: 'not_found' })
       expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe(mode)
     }
@@ -227,8 +228,8 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.use(42)).toMatchObject({ ok: false, code: 'invalid' })
     expect(await s.connections.use('local')).toMatchObject({ ok: true, notices: [] })
     const legacy = await s.connections.use('embedded')
-    expect(legacy).toMatchObject({ ok: true, notices: ['Saved. Applies at the next launch.'] })
-    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio' })
+    expect(legacy).toMatchObject({ ok: true, notices: [] })
+    expect(legacy.ok && legacy.view.next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(JSON.parse(readFileSync(s.path, 'utf8')).mode).toBe('embedded')
     const back = await s.connections.use('local')
     expect(back).toMatchObject({ ok: true, notices: ['Saved.'] })
@@ -372,9 +373,47 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     await other.connections.remove('remote:rawl-hub')
     expect(other.store.config().remote.url).toBe(HUB)
   })
+
+  it('multi-runtime.md §7.4: Remove of a saved connection, Remove of the remote slot and a slot replaced by another address forget the keys of that runtime', async () => {
+    const forgotten: string[] = []
+    const s = setup({ forgetRuntimeKeys: (id) => { forgotten.push(id) } })
+    await saveConnection(s.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    expect(await s.connections.remove('remote:rawl-hub')).toMatchObject({ ok: true })
+    expect(forgotten).toEqual(['remote:rawl-hub'])
+
+    const slot: string[] = []
+    const old = { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } }
+    const replaced = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: old, forgetRuntimeKeys: (id) => { slot.push(id) } })
+    expect(await replaced.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toMatchObject({ ok: true, id: 'remote' })
+    expect(slot).toEqual(['remote'])
+    expect(await replaced.connections.remove('remote')).toMatchObject({ ok: true })
+    expect(slot).toEqual(['remote', 'remote'])
+
+    // Cancelled or refused: nothing is forgotten.
+    const kept: string[] = []
+    const declined = setup({ confirm: false, forgetRuntimeKeys: (id) => { kept.push(id) } })
+    await saveConnection(declined.env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: '', label: '' })
+    await declined.connections.remove('remote:rawl-hub')
+    await declined.connections.remove('local')
+    expect(kept).toEqual([])
+  })
 })
 
 describe('the runtime set on the Connection page (multi-runtime.md §6.5)', () => {
+  it('saved rows are in the order added (runtimeOrder), not by name; the slot in its place', () => {
+    const saved = {
+      'zeta-hub': { url: HUB, fingerprint: 'ZZZZ-2345', deviceId: 'd', label: 'l', pairedAt: '2026-10-01T10:00:00Z' },
+      'alpha-hub': { url: 'https://alpha.example.com', fingerprint: 'AAAA-2345', deviceId: 'd', label: 'l', pairedAt: '2026-10-02T10:00:00Z' },
+    }
+    const configured: StudioBackendConfig = { ...defaultBackendConfig(), remote: { url: 'https://adf.example.com', token: 'safe:x', allowInsecureHttp: false }, runtimeOrder: ['remote', 'remote:zeta-hub', 'remote:alpha-hub'] }
+    const view = buildConnectionsView({ active: { mode: 'local' }, configured, daemon: null, saved, discovery: null })
+    expect(view.rows.map((r) => r.id)).toEqual(['local', 'remote', 'remote:zeta-hub', 'remote:alpha-hub'])
+    // No order saved yet: in the order paired, as the runtime set (runtimeOrder()).
+    const fresh = buildConnectionsView({ active: { mode: 'local' }, configured: { ...defaultBackendConfig() }, daemon: null, saved, discovery: null })
+    expect(fresh.rows.map((r) => r.id)).toEqual(['local', 'remote:zeta-hub', 'remote:alpha-hub'])
+  })
+
+
   const saved = { 'rawl-hub': { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: 'd', label: 'l', pairedAt: '' } }
   it('local mode: a saved connection shows its runtime state and no Connect; one not in the set yet is connecting', () => {
     const config = defaultBackendConfig()

@@ -336,7 +336,7 @@ describe('pairing from Settings → Connections', () => {
     expect(p.saved).toHaveLength(1)
     expect(p.saved[0]).toMatchObject({ url: TAILNET, allowInsecureHttp: false, fingerprint: 'ABCD-EFGH', name: 'agent-1-pc', label: 'agent-2-laptop' })
     expect(p.saved[0].token).toMatch(/^adfd_/)
-    expect(p.last()).toMatchObject({ savedUrl: TAILNET, savedId: 'remote:agent-1-pc', message: 'Paired with agent-1-pc. Its address and token are saved.' })
+    expect(p.last()).toMatchObject({ savedUrl: TAILNET, savedId: 'remote:agent-1-pc', message: 'Saved agent-1-pc.' })
     const token = p.saved[0].token
     expect(JSON.stringify(p.states)).not.toContain(token)
     expect(JSON.stringify(p.states)).not.toContain('654321')

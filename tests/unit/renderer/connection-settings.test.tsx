@@ -143,8 +143,8 @@ describe('This computer and the next-launch notices', () => {
       configured: { mode: 'embedded', keepDaemonRunning: false, remoteUrl: null, remoteTokenSaved: false, allowInsecureHttp: false },
       encryptionAvailable: true, encryptionUnavailableReason: null,
     })
-    const next = { id: 'embedded', name: 'Inside Studio' }
-    expect(nextLaunchLine(backend('file'), next)).toBe('Next launch: Inside Studio.')
+    const next = { id: 'embedded', name: 'Inside Studio (legacy)' }
+    expect(nextLaunchLine(backend('file'), next)).toBe('Next launch: Inside Studio (legacy).')
     expect(nextLaunchLine(backend('file'), null)).toBeNull()
     expect(nextLaunchLine(backend('env'), next)).toBeNull()
   })
@@ -229,7 +229,9 @@ describe('local only: Connections is one line', () => {
 
   it('one line and Add; This computer and Inside Studio (legacy) under Details', () => {
     const html = renderToStaticMarkup(<SimpleConnections busy={false} message={null} onAdd={() => {}} onLegacy={() => {}} details={<span>daemon-row</span>} />)
-    expect(html).toContain('Runtimes on other computers')
+    // One word; "Runtimes on other computers." is its tooltip.
+    expect(html).toContain('>Remotes<')
+    expect(html).not.toContain('>Runtimes on other computers<')
     expect(html).toContain('>Add<')
     expect(html).toContain('<details')
     expect(html).toContain('>Details</summary>')

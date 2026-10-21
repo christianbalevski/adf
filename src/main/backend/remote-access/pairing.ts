@@ -278,7 +278,9 @@ export class PairingFlow {
       return
     }
     this.log.log(`[Remote access] Paired with ${host.name} (${host.fingerprint}) as "${result.device?.label ?? this.deviceName}"; saved ${url} and its token`)
-    this.set({ step: 'paired', savedUrl: url, savedId: saved.id ?? null, message: `Paired with ${host.name}. Its address and token are saved.` })
+    // As Add with a token says it (connections-ipc.ts): the name it is saved under.
+    const savedName = saved.id?.startsWith('remote:') ? saved.id.slice('remote:'.length) : result.daemon?.name || host.name
+    this.set({ step: 'paired', savedUrl: url, savedId: saved.id ?? null, message: `Saved ${savedName}.` })
   }
 
   private claimFailure(err: unknown, host: NonNullable<RemotePairState['host']>): RemotePairState {

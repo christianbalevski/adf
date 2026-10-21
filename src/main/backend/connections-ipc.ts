@@ -46,6 +46,13 @@ export interface ConnectionsDeps {
   agentWindowsOn?: (id: string) => number
   /** The remote slot of studio-backend.json was added, replaced or removed: the runtime set follows it now. */
   slotChanged?: () => void
+  /**
+   * The runtime `id` was removed, or the remote slot replaced by another
+   * address: its Open Recent and Mesh view keys go (`runtimeRecentFiles`,
+   * `runtimeFleet`, multi-runtime.md §7.4), so a computer saved later under
+   * that id starts without them.
+   */
+  forgetRuntimeKeys?: (id: string) => void
   fetch?: typeof fetch
   log?: Pick<Console, 'log' | 'warn'>
 }
@@ -100,7 +107,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (typeof id !== 'string' || !id) return fail('invalid', 'No connection given.')
     if (id !== 'local' && id !== 'embedded') {
       if (id.startsWith('found:')) return fail('not_paired', 'Add it first.')
-      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'A saved connection is connected while it is saved.' : 'That connection is not saved.')
+      return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'Already connected.' : 'That connection is not saved.')
     }
     log.log(`[Connection] ${id === 'local' ? 'This computer' : 'Inside Studio (legacy)'} chosen for the next launch`)
     const result = await deps.backend.set({ mode: id })
@@ -171,9 +178,12 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const ok = await deps.confirm({ message: 'Replace connection', detail: `Replaces ${current}.`, ok: 'Replace' }).catch(() => false)
       if (!ok) return fail('cancelled', 'Nothing changed.')
     }
+    const replaced = !!slot.url && remoteUrlOrigin(slot.url) !== origin
     const result = await deps.backend.set({ remoteUrl: check.url, remoteToken: token, allowInsecureHttp: insecure, ...(insecure ? { insecureHttpOrigin: origin } : {}) })
     if (!result.ok) return fail(result.code, result.error)
     log.log(`[Connection] Added ${check.url} with a token, without a fingerprint`)
+    // Another computer in the slot: the previous one's keys are not its.
+    if (replaced) deps.forgetRuntimeKeys?.('remote')
     // Saving connects (§12 item 2).
     deps.slotChanged?.()
     changed()
@@ -193,6 +203,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const result = await deps.backend.set({ remoteUrl: null })
       if (!result.ok) return fail(result.code, result.error)
       log.log(`[Connection] Removed ${name}`)
+      deps.forgetRuntimeKeys?.('remote')
       // Removing disconnects (§12 item 2).
       deps.slotChanged?.()
       changed()
@@ -216,9 +227,11 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       const result = await deps.backend.set({ remoteUrl: null })
       if (!result.ok) return fail(result.code, result.error)
       log.log(`[Connection] Removed the remote URL ${slot.url} of studio-backend.json too: it was paired with ${name}`)
+      deps.forgetRuntimeKeys?.('remote')
       deps.slotChanged?.()
     }
     log.log(`[Connection] Removed ${name}`)
+    deps.forgetRuntimeKeys?.(id)
     changed()
     return { ok: true, view: view(), notices: [`Removed ${name}.`] }
   }

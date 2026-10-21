@@ -556,13 +556,13 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Connection
 
-**Studio → Connections** is last in the Studio group. Until a runtime on another computer is saved, it is one line, **Runtimes on other computers**, with **Add**, which opens the [Add](studio-backend.md#add) dialog. **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
+**Studio → Connections** is last in the Studio group. Until a runtime on another computer is saved, it is one line, **Remotes** (tooltip "Runtimes on other computers."), with **Add**, which opens the [Add](studio-backend.md#add) dialog. **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
 
 Once a connection is saved, the page lists the runtimes Studio connects to:
 
 | Row | State | Action |
 |---|---|---|
-| This computer | Connected, or its state while it is not connected | None; **Inside Studio (legacy)** in its **More** menu (⋯) |
+| This computer | Connected, or its state while it is not connected; none while Inside Studio runs | None; **Inside Studio (legacy)** in its **More** menu (⋯); **Connect** while Inside Studio runs |
 | Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
 | A saved connection (shared with `adf`) | Connected, Connecting, Not connected, retrying, or Not connected | None; **Remove** in its **More** menu |
 | A computer found on this network or the tailnet, not saved | Not paired | **Add** |
@@ -574,9 +574,9 @@ Once a connection is saved, the page lists the runtimes Studio connects to:
 | This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. Each saved connection is connected too. |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
 
-**Connect** on This computer (while Inside Studio runs) or on Inside Studio (legacy) saves the mode for the next launch: "Saved. Applies at the next launch." Studio does not restart; the page shows "Next launch: *name*." with **Restart**. While Inside Studio runs, saved connections are listed with no state and connect at the next launch with This computer.
+**Connect** on This computer (while Inside Studio runs) or on Inside Studio (legacy) saves the mode for the next launch. Studio does not restart; the page shows "Next launch: *name*." with **Restart**. While Inside Studio runs, saved connections are listed with no state and connect at the next launch with This computer.
 
-A `studio-backend.json` saved by an earlier release with `"mode": "remote"` is migrated at the first launch of this release: it becomes `"mode": "local"`, and that connection is listed with This computer (see [Upgrading from remote mode](studio-backend.md#upgrading-from-remote-mode)).
+A `studio-backend.json` saved by an earlier release with `"mode": "remote"` is migrated at the first launch of this release: it becomes `"mode": "local"`, and that connection stays saved and connects (see [Upgrading from remote mode](studio-backend.md#upgrading-from-remote-mode)).
 
 Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies at the next launch. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as any first launch with This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
@@ -588,7 +588,7 @@ While This computer is in use, the page also shows **This computer**: the daemon
 
 ### Go back to running agents inside Studio
 
-Choose **Connect** on **Settings → Connections → Inside Studio (legacy)** (under **Details** while no remote is saved, else in This computer's More menu), then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+In **Settings → Connections**, choose **Inside Studio (legacy)** in This computer's **More** menu (or **Connect** under **Details**), then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 
