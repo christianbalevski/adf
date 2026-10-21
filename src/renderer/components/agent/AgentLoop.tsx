@@ -56,7 +56,7 @@ import {
 } from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 import type { ApprovalEndedBy } from '../../../shared/types/ipc.types'
-import { openApi, useOpenAgentKey, useOpenRuntime } from '../../utils/runtime-api'
+import { openApi, providerSheetReaches, useOpenAgentKey, useOpenRuntime } from '../../utils/runtime-api'
 
 const MAX_INPUT_ROWS = 10
 /** What an error row's Retry now sends: a message of the owner's, shown like any other. */
@@ -1072,8 +1072,9 @@ function LoopStream({ loop }: { loop: string }) {
   const isMainLoop = loop === MAIN_LOOP
   const filePath = useDocumentStore((s) => s.filePath)
   const setDraftInput = useDocumentStore((s) => s.setDraftInput)
-  // Each loop tab keeps its own composer draft.
-  const draftKey = filePath ? (isMainLoop ? filePath : `${filePath}#loop:${loop}`) : null
+  // Each loop tab keeps its own composer draft, under the agent's key: an agent of another runtime with the same path has its own.
+  const draftAgentKey = useOpenAgentKey()
+  const draftKey = draftAgentKey ? (isMainLoop ? draftAgentKey : `${draftAgentKey}#loop:${loop}`) : null
   // Select the draft STRING, not the record: the writer rebuilds the record on
   // every keystroke, so selecting it would re-render this whole stream for a
   // draft belonging to another tab.
@@ -1914,7 +1915,8 @@ function LoopStream({ loop }: { loop: string }) {
   const errorActionRef = useRef<(action: LoopErrorAction, entry: AgentLogEntry) => void>(() => {})
   errorActionRef.current = (action, entry) => {
     if (action === 'provider') {
-      if (isMissingProvider(entry.content)) void useAppStore.getState().requestProviderSetup('provider_missing', filePath)
+      // The sheet sets up this window's runtime; another runtime's agent gets its runtime's Providers page.
+      if (isMissingProvider(entry.content) && providerSheetReaches(openRuntime)) void useAppStore.getState().requestProviderSetup('provider_missing', filePath)
       else useAppStore.getState().openSettingsAt('providers')
     } else if (action === 'compact') {
       void runCompact()

@@ -47,6 +47,9 @@ type RowRuntime = RuntimeId | undefined
 /** The key of an agent of `runtimeId` in the spinner sets, queues and maps: its path on This computer. */
 const rowKey = (runtimeId: RowRuntime, filePath: string): string => agentKey({ runtimeId, filePath })
 
+/** Why another runtime's row does not drag out (multi-runtime.md §8.3): a drag-out is a file of this computer. */
+export const REMOTE_DRAG_TIP = 'Drag out: This computer only'
+
 /**
  * Keep only entries whose name (file name, agent display name, or path
  * relative to the tracked directory) contains `query`. Directories survive
@@ -1689,8 +1692,9 @@ const AgentFileRow = memo(function AgentFileRow({
       />
 
       {/* The full path is the hint; a native title never renders in this
-          window, so the portal tooltip carries it instead. */}
-      <Tooltip tip={file.filePath} delay={1000} className="flex min-w-0 shrink">
+          window, so the portal tooltip carries it instead. Another
+          runtime's row does not drag out of the app: the hint says so. */}
+      <Tooltip tip={runtimeId ? `${file.filePath} · ${REMOTE_DRAG_TIP}` : file.filePath} delay={1000} className="flex min-w-0 shrink">
         {/* No handler of its own: the click bubbles to the row. It stays a
             button so the row is reachable and openable from the keyboard. */}
         <button className="block w-full min-w-0 text-left truncate">

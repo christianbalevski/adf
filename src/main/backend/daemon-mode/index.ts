@@ -517,7 +517,10 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[IPC] ${channelKey(channel)} was called with a runtime tag (${runtimeId}); it is a Studio call and has no runtime`)
       throw new RuntimeRouteError(NO_RUNTIME_SENTENCE)
     }
-    return { ctx: manager.contextFor(event?.sender?.id, runtimeId, { anyRuntime: ANY_RUNTIME_CHANNELS.has(channel) }), args }
+    const ctx = manager.contextFor(event?.sender?.id, runtimeId, { anyRuntime: ANY_RUNTIME_CHANNELS.has(channel) })
+    // The main window's session resync (a reload) asks the runtime of its open agent (§4.3); the answer names it.
+    if (channel === IPC.FILE_GET_CURRENT && runtimeId === null && !isAgentWindow(event)) return { ctx: manager.mainOpenRuntime().ctx, args }
+    return { ctx, args }
   }
   const isAgentWindow = (event: { sender?: { id?: number } } | undefined): boolean => {
     const id = event?.sender?.id
@@ -575,6 +578,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         if (MAIN_OPEN_CHANNELS.has(channel) && ctx.runtime && ctx.runtime.id !== manager.mainOpenRuntime().id && !isAgentWindow(event)) {
           const id = ctx.runtime.id
           void Promise.resolve(result).then(() => manager.setMainOpenRuntime(id), () => {})
+        }
+        // The file is on a runtime other than This computer: the renderer reopens it there.
+        if (channel === IPC.FILE_GET_CURRENT && ctx.runtime && !ctx.runtime.primary) {
+          const runtimeId = ctx.runtime.id
+          return Promise.resolve(result).then((r) => (r && typeof r === 'object' && (r as { filePath?: unknown }).filePath ? { ...r, runtimeId } : r))
         }
         return result
       })

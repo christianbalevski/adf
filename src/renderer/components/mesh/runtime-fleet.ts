@@ -199,6 +199,17 @@ export function storedRuntimeFleetOf(): RuntimeFleetStore {
   return storedRuntimeFleet
 }
 
+/**
+ * A runtime left the set (Remove, `adf remotes forget`): main deleted its
+ * runtimeFleet entry, so the copy here goes too, or the next save of
+ * another runtime's part would write it back.
+ */
+export function forgetRuntimeFleet(runtimeId: RuntimeId): void {
+  if (!(runtimeId in storedRuntimeFleet)) return
+  const { [runtimeId]: _gone, ...rest } = storedRuntimeFleet
+  storedRuntimeFleet = rest
+}
+
 /** The runtime of a map key (or region root, district anchor); null for This computer's. */
 export function keyRuntime(key: string): RuntimeId | null {
   const at = key.indexOf(REGION_SEPARATOR)

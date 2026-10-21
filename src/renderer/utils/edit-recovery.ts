@@ -115,6 +115,8 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
 export async function stashUnsavedEditors(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined): Promise<number> {
   const agentFilePath = useDocumentStore.getState().filePath
   if (!api?.recoveryStash || !agentFilePath) return 0
+  // Read now, with everything else: a caller may close the agent while the copies are written.
+  const rt = runtimeField()
   const copies = new Map<string, string>()
   for (const tab of useEditorTabsStore.getState().tabs) {
     if (tab.kind === 'file' && !tab.isBinary && tab.isDirty) copies.set(tab.path, tab.content)
@@ -126,7 +128,7 @@ export async function stashUnsavedEditors(api: Api | undefined = typeof window !
   let written = 0
   for (const [path, content] of copies) {
     try {
-      await api.recoveryStash({ agentFilePath, path, content, ...runtimeField() })
+      await api.recoveryStash({ agentFilePath, path, content, ...rt })
       written++
     } catch (err) {
       console.error(`[Recovery] Could not keep a copy of unsaved ${path}:`, err)

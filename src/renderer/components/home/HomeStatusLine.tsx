@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useAgentStore } from '../../stores/agent.store'
-import { useDocumentStore } from '../../stores/document.store'
+import { openAgentKey, useOpenAgentKey } from '../../utils/runtime-api'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
@@ -40,7 +40,8 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
   const backgroundAgents = useBackgroundAgentsStore((s) => s.agents)
   const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
   const directories = useTrackedDirsStore((s) => s.directories)
-  const filePath = useDocumentStore((s) => s.filePath)
+  // The open agent's key: this window's agents are keyed by path, another runtime's open agent is none of them.
+  const filePath = useOpenAgentKey()
   const foregroundState = useAgentStore((s) => s.state)
   const [detail, setDetail] = useState<Detail | null>(null)
 
@@ -140,7 +141,7 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
           Mesh
         </button>
       </div>
-      {detail && <AgentList rows={rows} kind={detail} currentFilePath={filePath} />}
+      {detail && <AgentList rows={rows} kind={detail} />}
     </div>
   )
 }
@@ -150,14 +151,15 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
  * the agent, Stop on the right. Empty rows mean the count and the tree
  * disagree for a moment (an agent stopping, a folder just untracked).
  */
-function AgentList({ rows, kind, currentFilePath }: { rows: RunningAgentRow[]; kind: Detail; currentFilePath: string | null }) {
+export function AgentList({ rows, kind }: { rows: RunningAgentRow[]; kind: Detail }) {
   const { openFile } = useAdfFile()
   const [stopping, setStopping] = useState<Set<string>>(new Set())
 
   const stop = async (fp: string, name: string) => {
     setStopping((s) => new Set(s).add(fp))
     try {
-      if (fp === currentFilePath) {
+      // The open agent now, by runtime and path: a row of this window's runtime is it only when the open agent is too.
+      if (fp === openAgentKey()) {
         await window.adfApi.stopAgent()
         useAgentStore.getState().setState('off')
       } else {

@@ -238,19 +238,34 @@ import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
 import { invalidateProviderModels } from '../../hooks/useProviderModels'
 import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
-import { openApi, useOpenRuntime } from '../../utils/runtime-api'
+import { openApi, openSliceRuntime, useOpenRuntime } from '../../utils/runtime-api'
 
-// Module-level caches to avoid redundant IPC calls on every tab switch
-let _cachedProviders: ProviderConfig[] | null = null
-let _cachedMcpRegistrations: McpServerRegistration[] | null = null
-let _cachedAdapterRegistrations: AdapterRegistration[] | null = null
-let _cachedToolDefs: Record<string, unknown> | null = null
+// Module-level caches to avoid redundant IPC calls on every tab switch, one
+// set per runtime: an agent of another runtime sees that runtime's settings.
+interface ConfigCaches {
+  providers: ProviderConfig[] | null
+  mcpRegistrations: McpServerRegistration[] | null
+  adapterRegistrations: AdapterRegistration[] | null
+  toolDefs: Record<string, unknown> | null
+}
+const _caches = new Map<string, ConfigCaches>()
+
+function cachesOf(runtimeId: string): ConfigCaches {
+  let caches = _caches.get(runtimeId)
+  if (!caches) {
+    caches = { providers: null, mcpRegistrations: null, adapterRegistrations: null, toolDefs: null }
+    _caches.set(runtimeId, caches)
+  }
+  return caches
+}
 
 /** Call this when settings change (e.g. from SettingsPage) to bust stale caches */
 export function invalidateConfigCaches(): void {
-  _cachedProviders = null
-  _cachedMcpRegistrations = null
-  _cachedAdapterRegistrations = null
+  for (const caches of _caches.values()) {
+    caches.providers = null
+    caches.mcpRegistrations = null
+    caches.adapterRegistrations = null
+  }
   invalidateProviderModels()
 }
 
@@ -730,36 +745,41 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     setPreLlmHookErrors([])
   }, [filePath, config?.id])
 
-  // Fetch custom providers from settings (cached — invalidated on settings save)
+  // Fetch custom providers from settings (cached per runtime — invalidated on settings save)
   useEffect(() => {
     const t0 = performance.now()
+    const caches = cachesOf(openRuntime)
+    let live = true
     // Always fetch runtime host setting (it can change between Settings visits)
     openApi()?.getSettings().then((s) => {
+      if (!live) return
       setRuntimeHostEnabled(s?.compute?.hostAccessEnabled ?? false)
       setRuntimeHostApproved((s?.compute?.hostApproved as string[] | undefined) ?? [])
       setRuntimeHostApprovedSources((s?.compute?.hostApprovedSources as Record<string, string> | undefined) ?? {})
       setExecutionTargets(s.compute?.executionTargets ?? [])
       setRuntimeDefaultProviderId((s?.defaultProviderId as string | undefined) || undefined)
     })
-    if (_cachedProviders && _cachedMcpRegistrations && _cachedAdapterRegistrations) {
-      setProviders(_cachedProviders)
-      setMcpRegistrations(_cachedMcpRegistrations)
-      setAdapterRegistrations(_cachedAdapterRegistrations)
+    if (caches.providers && caches.mcpRegistrations && caches.adapterRegistrations) {
+      setProviders(caches.providers)
+      setMcpRegistrations(caches.mcpRegistrations)
+      setAdapterRegistrations(caches.adapterRegistrations)
       // console.log(`[PERF:renderer] AgentConfig.getSettings: ${(performance.now() - t0).toFixed(1)}ms (cached)`)
     } else {
       openApi()?.getSettings().then((settings) => {
-        _cachedProviders = (settings.providers as ProviderConfig[]) ?? []
-        _cachedMcpRegistrations = (settings.mcpServers as McpServerRegistration[]) ?? []
-        _cachedAdapterRegistrations = (settings.adapters as AdapterRegistration[]) ?? []
-        setProviders(_cachedProviders)
-        setMcpRegistrations(_cachedMcpRegistrations)
-        setAdapterRegistrations(_cachedAdapterRegistrations)
+        caches.providers = (settings.providers as ProviderConfig[]) ?? []
+        caches.mcpRegistrations = (settings.mcpServers as McpServerRegistration[]) ?? []
+        caches.adapterRegistrations = (settings.adapters as AdapterRegistration[]) ?? []
+        if (!live) return
+        setProviders(caches.providers)
+        setMcpRegistrations(caches.mcpRegistrations)
+        setAdapterRegistrations(caches.adapterRegistrations)
         setRuntimeHostEnabled(settings.compute?.hostAccessEnabled ?? false)
         setExecutionTargets(settings.compute?.executionTargets ?? [])
         // console.log(`[PERF:renderer] AgentConfig.getSettings: ${(performance.now() - t0).toFixed(1)}ms (fetched)`)
       })
     }
-  }, [])
+    return () => { live = false }
+  }, [openRuntime])
 
   // Check for missing sandbox packages on config load
   useEffect(() => {
@@ -900,20 +920,23 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     return () => window.removeEventListener('focus', check)
   }, [filePath])
 
-  // Fetch tool definitions (cached — tool registry doesn't change at runtime)
+  // Fetch tool definitions (cached per runtime — a runtime's tool registry doesn't change while it runs)
   useEffect(() => {
     const t0 = performance.now()
-    if (_cachedToolDefs) {
-      setToolDefs(_cachedToolDefs)
+    const caches = cachesOf(openRuntime)
+    let live = true
+    if (caches.toolDefs) {
+      setToolDefs(caches.toolDefs)
       // console.log(`[PERF:renderer] AgentConfig.getToolDefs: ${(performance.now() - t0).toFixed(1)}ms (cached)`)
     } else {
       openApi()?.getToolDescriptions().then((defs) => {
-        _cachedToolDefs = defs
-        setToolDefs(defs)
+        caches.toolDefs = defs
+        if (live) setToolDefs(defs)
         // console.log(`[PERF:renderer] AgentConfig.getToolDefs: ${(performance.now() - t0).toFixed(1)}ms (fetched)`)
       })
     }
-  }, [])
+    return () => { live = false }
+  }, [openRuntime])
 
   const updateFileEntry = useTrackedDirsStore((s) => s.updateFileEntry)
 
@@ -969,12 +992,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
       // Sync sidebar-visible fields to tracked dirs store so they
       // persist when this file is no longer the foreground agent
+      // (the open agent's runtime's slice: an agent of another runtime with the same path is not it).
       if (owner) {
         updateFileEntry(owner, {
           autonomous: updated.autonomous ?? false,
           canReceive: updated.triggers?.on_inbox?.enabled ?? false,
           sendMode: updated.messaging?.mode
-        })
+        }, openSliceRuntime())
       }
     },
     [setConfig, updateFileEntry]
@@ -1231,7 +1255,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       // Deferred rename (agent running): the file keeps its old name until
       // the agent stops, so the sidebar row keeps it too and shows the new
       // name as pending.
-      if (result.renameDeferred) updateFileEntry(result.filePath, { pendingName: trimmed })
+      if (result.renameDeferred) updateFileEntry(result.filePath, { pendingName: trimmed }, openSliceRuntime())
       setEditingName(null)
       setNameError(null)
     } else {
@@ -1489,10 +1513,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }
 
                 // Re-fetch settings to get the latest defaults (invalidate cache)
-                _cachedProviders = null
+                const caches = cachesOf(useDocumentStore.getState().runtimeId)
+                caches.providers = null
                 const settings = await openApi()?.getSettings()
                 const freshProviders = (settings?.providers as ProviderConfig[]) ?? []
-                _cachedProviders = freshProviders
+                caches.providers = freshProviders
                 setProviders(freshProviders)
 
                 const selected = freshProviders.find((p) => p.id === newProvider)
@@ -2969,8 +2994,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               mcpServers: [...existingServers, reg],
             })
             invalidateConfigCaches()
-            _cachedMcpRegistrations = [...existingServers, reg]
-            setMcpRegistrations(_cachedMcpRegistrations)
+            const registrations = [...existingServers, reg]
+            cachesOf(useDocumentStore.getState().runtimeId).mcpRegistrations = registrations
+            setMcpRegistrations(registrations)
           }
 
           // Remove a server and its tools

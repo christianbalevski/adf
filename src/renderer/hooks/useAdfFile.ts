@@ -210,6 +210,14 @@ export const openingFilePaths = new Set<string>()
 const reattachAfterUnlock = new Set<string>()
 
 /**
+ * The latest openFile of this page and its runtime. An open that a later one
+ * overtook applies nothing: what it opened on another runtime than the
+ * latest's is closed there (on the same runtime, the later open replaced it).
+ */
+let openGeneration = 0
+let latestOpenRuntime: RuntimeId | null = null
+
+/**
  * Hook for managing ADF file operations.
  */
 export function useAdfFile() {
@@ -411,6 +419,20 @@ export function useAdfFile() {
     const tTotal = performance.now()
     // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
     if (!confirmDiscardConflicts()) return
+    const generation = ++openGeneration
+    latestOpenRuntime = runtimeId
+    /**
+     * A later open overtook this one: it applies nothing, and what it opened
+     * on another runtime than the later one's is closed there.
+     */
+    const overtaken = async (opened: boolean): Promise<boolean> => {
+      if (generation === openGeneration) return false
+      console.log(`[useAdfFile] The open of ${filePath} on ${runtimeId} was overtaken by a later open; nothing of it is shown`)
+      if (opened && latestOpenRuntime !== runtimeId) {
+        await api.closeFile().catch((err: unknown) => console.warn(`[useAdfFile] Closing the overtaken ${filePath} on ${runtimeId} failed:`, err))
+      }
+      return true
+    }
 
     // Loop history is persisted via the adf_loop table by AgentSession.
     // No need to send the UI log back — DOC_SET_CHAT is a no-op in v0.2.
@@ -450,6 +472,7 @@ export function useAdfFile() {
       const leftOther = await leaveOtherRuntime(runtimeId)
       const result = await api.openFile(filePath)
       console.log(`[PERF:renderer] openFile.openFile IPC: ${(performance.now() - t1).toFixed(1)}ms`)
+      if (await overtaken(!!result.success)) return result
 
       if (result.success && result.filePath) {
         // Blank the previous agent's UI before parking on a gate dialog
@@ -496,6 +519,7 @@ export function useAdfFile() {
         t1 = performance.now()
         const contents = await fetchFileContents(result.filePath, api, runtimeId)
         console.log(`[PERF:renderer] openFile.fetchFileContents: ${(performance.now() - t1).toFixed(1)}ms`)
+        if (await overtaken(true)) return result
 
         // Reset agent state and update filePath, then apply the contents, all
         // in this one synchronous stretch. filePath still changes before any
@@ -594,6 +618,9 @@ export function useAdfFile() {
    */
   const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; identityDraftId?: string; files?: File[] }) => {
     if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
+    // An open still on its way is overtaken by the new agent.
+    openGeneration++
+    latestOpenRuntime = windowRuntime
     beginAgentSwitch()
     try {
       const { files, ...createOptions } = options ?? {}
@@ -619,6 +646,9 @@ export function useAdfFile() {
 
   const createFile = useCallback(async (name: string) => {
     if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
+    // An open still on its way is overtaken by the new agent.
+    openGeneration++
+    latestOpenRuntime = windowRuntime
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
     try {

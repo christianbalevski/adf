@@ -21,16 +21,17 @@ export function flattenAdfFiles(entries: TrackedDirEntry[]): TrackedAdfFile[] {
 }
 
 /**
- * Every .adf file under the tracked directories, deduplicated by path.
+ * Every .adf file under the tracked directories of `api`'s runtime (a
+ * Settings page passes the picked runtime's surface), deduplicated by path.
  * Settings panels use this to offer "connect an agent" pickers; agents
  * outside tracked directories are not listed.
  */
-export async function loadTrackedAdfFiles(): Promise<TrackedAdfFile[]> {
-  const dirsResult = await window.adfApi?.getTrackedDirectories()
+export async function loadTrackedAdfFiles(api: Pick<typeof window.adfApi, 'getTrackedDirectories' | 'scanTrackedDirectory'> | undefined = window.adfApi): Promise<TrackedAdfFile[]> {
+  const dirsResult = await api?.getTrackedDirectories()
   const dirs = dirsResult?.directories ?? []
   const scans = await Promise.all(dirs.map(async (dir) => {
     try {
-      const scanResult = await window.adfApi?.scanTrackedDirectory(dir)
+      const scanResult = await api?.scanTrackedDirectory(dir)
       return scanResult?.files ? flattenAdfFiles(scanResult.files) : []
     } catch {
       // A missing or unreadable directory just contributes nothing.

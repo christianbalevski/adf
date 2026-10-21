@@ -138,8 +138,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   // Pull the live registry (remote-first with cached/bundled fallback) when
   // the MCP settings surface opens — quick-add cards and entry lookups follow.
   useEffect(() => {
-    void refreshRegistry()
-  }, [refreshRegistry])
+    void refreshRegistry(api)
+  }, [refreshRegistry, api])
 
   // Listen for status change events
   useEffect(() => {
