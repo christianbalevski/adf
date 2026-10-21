@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-09-17",
+  "updated_at": "2026-10-21",
   "agents": [
     {
       "id": "ash",
@@ -9,9 +9,9 @@
       "icon": "🗒️",
       "blurb": "A personal assistant that lives in this file: writes, organizes, reads files, tracks open threads, and automates what you repeat.",
       "tags": [],
-      "sha256": "6af05d76f39616d5a94916ef18c0850ba2b8b0ef2ecd94cd30c95952ea913128",
+      "sha256": "399914f16e3b029e087af56a39a4859cf9d502dfd041ba5e5afa73f849de9145",
       "size": 167936,
-      "version": 1,
+      "version": 2,
       "capabilities": {
         "tools": 32,
         "code": true,
@@ -28,9 +28,9 @@
       "icon": "🎯",
       "blurb": "A personal-development agent: goals into milestones and a next action, a scoreboard, and check-ins on your schedule.",
       "tags": [],
-      "sha256": "18dc261a74e37860ffa2cb4fd1297eecd3eb60e7b72ddb0fd39a6b27b2aca5f2",
+      "sha256": "d64e1e8cfa4dbf0510a11818691179c681e2acbad8b91de432b37a59655b4b1c",
       "size": 176128,
-      "version": 1,
+      "version": 2,
       "capabilities": {
         "tools": 32,
         "code": true,
@@ -47,9 +47,9 @@
       "icon": "📊",
       "blurb": "A business-operations agent that triages work, keeps a verified ledger, and staffs itself with specialist agents you approve.",
       "tags": [],
-      "sha256": "0a4b6e8792d40e3a0c5f868d30bfdfc5d199b1c5168459b01c4d2d23141f5474",
+      "sha256": "12569350a79b452bde38eb01f2117d1bcd9a0c99c966d62a555d90a21e210a42",
       "size": 184320,
-      "version": 1,
+      "version": 2,
       "capabilities": {
         "tools": 33,
         "code": true,
@@ -66,9 +66,9 @@
       "icon": "🔭",
       "blurb": "A research agent that watches your sources and delivers briefings where every claim carries its source.",
       "tags": [],
-      "sha256": "6a3df0b6fa55e929b822b9525e12f560eae8596e7f3515366412a610a8f413da",
+      "sha256": "8a8b59f62ff610f1a47ba180d2f6e4c772a6394e7d0dfd7e1c93ed63155993d1",
       "size": 176128,
-      "version": 1,
+      "version": 2,
       "capabilities": {
         "tools": 32,
         "code": true,
@@ -85,9 +85,9 @@
       "icon": "🏋️",
       "blurb": "A training coach that runs an intake, writes your program, logs your sessions, and adjusts from the log.",
       "tags": [],
-      "sha256": "bfa2f13bbb47b7716031746bc1f3f1cce13c0a03d73690fcd6fb09b699bd92fc",
+      "sha256": "cd7beffd806884fb7141ae79737ed889ecb570419ca43ea6217543aca942bc3c",
       "size": 180224,
-      "version": 1,
+      "version": 2,
       "capabilities": {
         "tools": 32,
         "code": true,
@@ -104,9 +104,9 @@
       "icon": "🧙",
       "blurb": "A guide to ADF and ADF Studio. Ask how anything works and it answers from the cached public docs, with the path it read.",
       "tags": [],
-      "sha256": "0b3873c6f06b65529b39a02fc0693d70b354457a2abe5c6f0b5f2775c5942424",
+      "sha256": "bdb788082bd18b6d18cf4c8c9785e558e5e0e8cc5146ad4c2bd2cd4c428c7f42",
       "size": 1044480,
-      "version": 1,
+      "version": 2,
       "capabilities": {
         "tools": 31,
         "code": true,
