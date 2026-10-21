@@ -146,7 +146,15 @@ saved in a file only you can read.", **Save to file** / **Cancel**) and
 in Studio is in `adf remotes`. One saved with `adf pair` or `adf remotes
 add`, also while Studio runs, is a row in Studio and connects at once;
 `adf remotes forget` disconnects it and closes its agent windows. Remove in
-Studio is `adf remotes forget`. A connection without a fingerprint (a
+Studio is `adf remotes forget`: the list is written first, and the token is
+deleted only when no other saved name holds the same computer (`adf pair
+<host> --as lab`). An entry of `cli-remotes.json` that is not a valid saved
+remote is kept as it is by every change to the list, named by `adf remotes`
+and in Settings → Connections, and removed with `adf remotes forget <name>`.
+Open Recent and the Mesh view of a computer follow its fingerprint: when its
+name is no longer saved and another name holds that computer, they move
+there (unless that name has its own); otherwise they are removed. Studio
+applies this when it sees the list change, or at the next launch. A connection without a fingerprint (a
 daemon set up by hand, remote access off there) is kept in
 `studio-backend.json` as before, one at a time, and is connected too.
 
@@ -272,13 +280,21 @@ computer only.
 If either file cannot be written, this launch runs the same way, Settings →
 Connections says "studio-backend.json still says remote …", and the next
 launch migrates it again. If `studio-client-settings.json` cannot be
-written, `studio-backend.json` is not rewritten either. While
-`studio-backend.json` still says remote after the client keys moved,
-`studio-client-settings.json` holds `"remoteModeMigrated": true`: the next
-launch does not move them again, so the Mesh view keys This computer wrote
-meanwhile stay This computer's. It is removed once `studio-backend.json`
-says local. A launch Inside Studio (`ADF_STUDIO_BACKEND=embedded`) leaves
-both files for the next launch.
+written, `studio-backend.json` is not rewritten either; this launch moves
+the client keys in memory and writes them with the next change to that
+file. Until `studio-backend.json` is migrated, every save of it in that
+launch (the runtime order, Settings → Connections) keeps `"mode": "remote"`
+and `remote.name`. While `studio-backend.json` still says remote after the
+client keys moved, `studio-client-settings.json` holds
+`"remoteModeMigrated": true`: the next launch does not move the Mesh view
+keys again, so the ones This computer wrote meanwhile stay This computer's.
+Any launch that reads a `studio-backend.json` that does not say remote
+removes it. A launch that cannot read `cli-remotes.json` moves the client
+keys, leaves `studio-backend.json` for the first launch that can read it,
+and Settings → Connections says "studio-backend.json still says remote; it
+is migrated at the first launch that can read the saved connections." A
+launch Inside Studio (`ADF_STUDIO_BACKEND=embedded`) leaves both files for
+the next launch.
 `ADF_STUDIO_BACKEND=remote` is read as `local`. An older Studio that reads
 the migrated file runs This computer only; the connections stay saved in
 `cli-remotes.json`.

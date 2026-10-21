@@ -14,7 +14,7 @@ import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-dis
 import { olderAdfSentence, verifyHello } from '../services/remote-hello'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
-  deleteRemoteToken, KEYCHAIN_FILE_COPY, loadRemotes, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
+  deleteRemoteToken, forgetRemote, type ForgotRemote, KEYCHAIN_FILE_COPY, malformedRemoteSentence, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
 } from './remotes'
 
 export interface PairIo {
@@ -313,9 +313,11 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
 
   // Trust on first use: a saved remote stays pinned to its fingerprint, and its address and token
   // are never replaced without asking.
-  const file = loadRemotes(env)
+  const read = readRemotes(env)
+  const file = read.file
   const sameHost = Object.entries(file.remotes).find(([, r]) => r.fingerprint === result.daemon.fingerprint)
-  const name = parsed.as ?? sameHost?.[0] ?? remoteNameFor(result.daemon.name, file.remotes)
+  // A malformed entry's name is taken too: the user fixes or forgets it.
+  const name = parsed.as ?? sameHost?.[0] ?? remoteNameFor(result.daemon.name, { ...Object.fromEntries(read.malformed.map((n) => [n, true])), ...file.remotes })
   const previous = file.remotes[name]
   if (previous && previous.fingerprint !== result.daemon.fingerprint) {
     io.stderr(`Refused: the saved remote "${name}" is ${previous.hostName ?? previous.url} with fingerprint ${previous.fingerprint}, not this computer (${result.daemon.fingerprint}). Nothing was saved. Pair under another name (--as <name>), or forget it first (adf remotes forget ${name}). ${revokeHint}\n`)
@@ -414,7 +416,8 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
     const rows = Object.entries(file.remotes)
     io.stdout(`${file.default === null ? '*' : ' '} local  this computer's daemon\n`)
     for (const [n, r] of rows) io.stdout(`${file.default === n ? '*' : ' '} ${n}  ${r.url}  ${r.hostName ?? ''}  ${r.fingerprint}  as "${r.label}"\n`)
-    if (rows.length === 0) io.stderr('No saved remotes. Pair one with: adf pair\n')
+    for (const n of read.malformed) io.stderr(`${malformedRemoteSentence(remotesFilePath(env), n)}\n`)
+    if (rows.length === 0 && read.malformed.length === 0) io.stderr('No saved remotes. Pair one with: adf pair\n')
     return 0
   }
   if (action === 'use') {
@@ -428,17 +431,33 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
     return 0
   }
   if (action === 'forget') {
-    const remote = name ? file.remotes[name] : undefined
-    if (!name || !remote) {
+    if (!name || (!file.remotes[name] && !read.malformed.includes(name))) {
       io.stderr(name ? `No saved remote named "${name}".\n` : `${REMOTES_USAGE}\n`)
       return name ? 1 : 2
     }
-    deleteRemoteToken(remote.fingerprint, env)
-    await updateRemotes(env, (latest) => {
-      delete latest.remotes[name]
-      if (latest.default === name) latest.default = null
-    })
-    io.stdout(`Forgot "${name}" and its token. "${remote.hostName ?? remote.url}" still lists this computer: remove it there (adf daemon devices revoke ${remote.deviceId}).\n`)
+    // The list first, then the token, unless another name holds the same computer (forgetRemote).
+    let forgot: ForgotRemote | null
+    try {
+      forgot = await forgetRemote(env, name)
+    } catch (err) {
+      io.stderr(`"${name}" was not forgotten: ${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+    if (!forgot) {
+      io.stderr(`No saved remote named "${name}".\n`)
+      return 1
+    }
+    const remote = forgot.remote
+    if (!remote) {
+      io.stdout(`Forgot "${name}".\n`)
+      return 0
+    }
+    const what = forgot.sharedWith ? `"${name}"; its token stays for "${forgot.sharedWith}", the same computer` : `"${name}" and its token`
+    io.stdout(`Forgot ${what}. "${remote.hostName ?? remote.url}" still lists this computer: remove it there (adf daemon devices revoke ${remote.deviceId}).\n`)
+    if (forgot.tokenError) {
+      io.stderr(`The token could not be removed: ${forgot.tokenError}\n`)
+      return 1
+    }
     return 0
   }
   io.stderr(`${REMOTES_USAGE}\n`)

@@ -191,6 +191,8 @@ export class AgentWindows {
   /** Windows closeAll closed while the runtime was unknown: carried once it is known. */
   private heldUntilKnown: SavedAgentWindow[] = []
   private frozen = false
+  /** save() skipped a list an older remote mode saved: said once. */
+  private pendingListLogged = false
   /** Bumped by closeAll and freeze: a restore in flight stops opening windows. */
   private restoreGeneration = 0
   private restoring: Promise<{ opened: number; skipped: number }> | null = null
@@ -370,6 +372,13 @@ export class AgentWindows {
     const runtime = this.deps.runtime()
     // Never written for an unknown runtime: it would replace the saved list with one nobody can restore.
     if (runtime === null) return
+    // An older remote mode's list (`remote:<name>`) not migrated yet (multi-runtime.md §7.5): never written over from This computer.
+    const raw = this.deps.settings.get(AGENT_WINDOWS_KEY) as Partial<SavedAgentWindows> | null | undefined
+    if (runtime === 'local' && raw && typeof raw === 'object' && typeof raw.runtime === 'string' && raw.runtime.startsWith('remote:')) {
+      if (!this.pendingListLogged) this.log.warn(`[AgentWindows] Not saving the agent windows: the list an older Studio saved for ${raw.runtime} is migrated at a later launch`)
+      this.pendingListLogged = true
+      return
+    }
     const open = this.list()
     const carried = this.carried.filter((e) => !open.some((o) => this.matches(o, e.filePath, e.agentId, e.runtimeId)))
     this.deps.settings.set(AGENT_WINDOWS_KEY, { runtime, windows: [...open, ...carried] } satisfies SavedAgentWindows)

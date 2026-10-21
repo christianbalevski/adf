@@ -72,6 +72,15 @@ export interface RemotesRead {
   file: RemotesFile
   names: Set<string>
   unreadable: string | null
+  /** The names whose entry parses but is not a saved remote (left out of `file`, kept by every write). */
+  malformed: string[]
+}
+
+/** What a write keeps of the file as read: its malformed entries, its order of names, and its default. */
+interface RemotesRaw {
+  malformed: Record<string, unknown>
+  order: string[]
+  default: unknown
 }
 
 /** cli-remotes.json cannot be read: nothing was written over it. */
@@ -94,20 +103,46 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
+/** What a write keeps, by the read it came from (updateRemotes); not part of the read itself. */
+const rawOfRead = new WeakMap<RemotesRead, RemotesRaw>()
+
 /** The one reading of the file's text (or of why it could not be read). */
 function readOf(path: string, text: string | null, readError?: unknown): RemotesRead {
+  const none = (unreadable: string | null): RemotesRead => ({ file: emptyRemotes(), names: new Set(), unreadable, malformed: [] })
   if (text === null) {
-    if ((readError as NodeJS.ErrnoException)?.code === 'ENOENT') return { file: emptyRemotes(), names: new Set(), unreadable: null }
-    return { file: emptyRemotes(), names: new Set(), unreadable: `${path} cannot be read (${errorText(readError)})` }
+    if ((readError as NodeJS.ErrnoException)?.code === 'ENOENT') return none(null)
+    return none(`${path} cannot be read (${errorText(readError)})`)
   }
   let raw: unknown
   try {
     raw = JSON.parse(stripBom(text))
   } catch (err) {
-    return { file: emptyRemotes(), names: new Set(), unreadable: `${path} is not valid JSON (${errorText(err)})` }
+    return none(`${path} is not valid JSON (${errorText(err)})`)
   }
-  if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return { file: emptyRemotes(), names: new Set(), unreadable: `${path} is not a saved-connections file (v 1)` }
-  return { file: parseRemotes(text), names: new Set(Object.keys(raw.remotes)), unreadable: null }
+  if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return none(`${path} is not a saved-connections file (v 1)`)
+  const file = parseRemotes(text)
+  const order = Object.keys(raw.remotes)
+  const malformed = Object.fromEntries(Object.entries(raw.remotes).filter(([name]) => !file.remotes[name]))
+  const read: RemotesRead = { file, names: new Set(order), unreadable: null, malformed: Object.keys(malformed) }
+  rawOfRead.set(read, { malformed, order, default: raw.default ?? null })
+  return read
+}
+
+/**
+ * The file a write of `file` makes: the names in the order read, then the
+ * new ones; each malformed entry still in `malformed` as it was read; the
+ * default as read while `file` kept the one parsed (it may name a malformed
+ * entry still there).
+ */
+function rawOf(file: RemotesFile, raw: RemotesRaw, malformed: Record<string, unknown>, parsedDefault: string | null): Record<string, unknown> {
+  const remotes: Record<string, unknown> = {}
+  for (const name of raw.order) {
+    if (file.remotes[name]) remotes[name] = file.remotes[name]
+    else if (name in malformed) remotes[name] = malformed[name]
+  }
+  for (const [name, remote] of Object.entries(file.remotes)) if (!(name in remotes)) remotes[name] = remote
+  const keepRawDefault = file.default === parsedDefault && typeof raw.default === 'string' && raw.default in malformed && raw.default in remotes
+  return { ...file, default: keepRawDefault ? raw.default : file.default, remotes }
 }
 
 /** The list, read with blocking IO (adf). */
@@ -209,7 +244,7 @@ export function remotesFilePath(env: NodeJS.ProcessEnv = process.env): string {
  * its own. A file that cannot be read or parsed is never written over
  * (RemotesUnreadableError).
  */
-export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: {
+export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile, malformed: Record<string, unknown>) => T | Promise<T>, opts: {
   staleMs?: number
   waitMs?: number
   /** Tests: the platform whose busy-file errors are retried, and the lock's open. */
@@ -287,13 +322,18 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
     const read = await readRemotesAsync(env)
     if (read.unreadable) throw new RemotesUnreadableError(path, read.unreadable)
     const file = read.file
-    const before = JSON.stringify(file)
-    const result = await mutate(file)
-    if (JSON.stringify(file) !== before) {
+    // A malformed entry is the user's to fix: kept by the write unless `mutate` removes it (adf remotes forget).
+    const raw = rawOfRead.get(read) ?? { malformed: {}, order: [], default: null }
+    const malformed = { ...raw.malformed }
+    const parsedDefault = file.default
+    const before = JSON.stringify([file, malformed])
+    const result = await mutate(file, malformed)
+    if (JSON.stringify([file, malformed]) !== before) {
+      const out = rawOf(file, raw, malformed, parsedDefault)
       // Windows: the rename over the file fails while a reader has it open (EPERM, EBUSY): retried until the deadline.
       for (;;) {
         try {
-          writeJson(path, file)
+          writeJson(path, out)
           break
         } catch (err) {
           const code = (err as NodeJS.ErrnoException)?.code
@@ -394,6 +434,55 @@ export function deleteRemoteToken(fingerprint: string, env: NodeJS.ProcessEnv = 
     delete tokens[account(fingerprint)]
     writeJson(tokensPath(env), tokens)
   }
+}
+
+/** A malformed entry, said by adf remotes and Studio's Settings → Connections. */
+export function malformedRemoteSentence(path: string, name: string): string {
+  return `"${name}" in ${path} is malformed and is not used; fix it, or remove it with: adf remotes forget ${name}`
+}
+
+/** What `forgetRemote` did. */
+export interface ForgotRemote {
+  /** The entry that was forgotten; null for a malformed one. */
+  remote: SavedRemote | null
+  /** Another saved name holds the same computer: its token stays. */
+  sharedWith: string | null
+  /** The token could not be removed (the list was already written). */
+  tokenError: string | null
+}
+
+/**
+ * Forget a saved remote, adf and Studio alike: the list is written first
+ * (under its lock), then the token is deleted, only when no other name holds
+ * that computer (`adf pair <host> --as lab`). Null when no such name. A list
+ * that cannot be written throws, and the token stays.
+ */
+export async function forgetRemote(env: NodeJS.ProcessEnv, name: string): Promise<ForgotRemote | null> {
+  const removed = await updateRemotes(env, (file, malformed) => {
+    const remote = file.remotes[name]
+    if (!remote) {
+      if (!(name in malformed)) return null
+      delete malformed[name]
+      if (file.default === name) file.default = null
+      return { remote: null, sharedWith: null }
+    }
+    delete file.remotes[name]
+    if (file.default === name) file.default = null
+    const sharedWith = Object.entries(file.remotes).find(([, r]) => r.fingerprint === remote.fingerprint)?.[0]
+      ?? Object.entries(malformed).find(([, r]) => isRecord(r) && r.fingerprint === remote.fingerprint)?.[0]
+      ?? null
+    return { remote, sharedWith }
+  })
+  if (!removed) return null
+  let tokenError: string | null = null
+  if (removed.remote && !removed.sharedWith) {
+    try {
+      deleteRemoteToken(removed.remote.fingerprint, env)
+    } catch (err) {
+      tokenError = errorText(err)
+    }
+  }
+  return { ...removed, tokenError }
 }
 
 // --- resolution -----------------------------------------------------------------

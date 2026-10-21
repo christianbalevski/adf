@@ -41,8 +41,10 @@ import {
 } from './backend/boot-handover'
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
 import {
-  forgetGoneRuntimeKeys, forgetRuntimeKeysOf, migrateRemoteModeInstall, relinkSavedAgentWindows, renamedRuntimes, savedConnectionChanges, type RemoteModeMigration,
+  forgetGoneRuntimeKeys, forgetRuntimeKeysOf, launchRuntimeKeyChanges, migrateRemoteModeInstall, relinkSavedAgentWindows, RUNTIME_FINGERPRINTS_KEY, savedConnectionChanges,
+  type RemoteModeMigration,
 } from './backend/runtime-migration'
+import { malformedRemoteSentence, remotesFilePath } from './cli/remotes'
 import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, type AgentWindowHandle, type WindowBounds } from './backend/agent-windows'
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
@@ -764,17 +766,22 @@ app.whenReady().then(async () => {
     const saved = savedCache.get()
     daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved), { savedUnknown: savedCache.unreadable !== null })
   }
-  let unreadableNoticed = false
+  // What Settings → Connections says about cli-remotes.json (the notices of this launch): replaced at each read, so a
+  // file fixed while Studio runs is no longer reported.
+  let savedNotices: string[] = []
   // §7.4: the Open Recent and Mesh view keys of a connection forgotten, renamed or now another computer follow it.
   // Set once the client settings exist (This computer's launch).
   let runtimeKeysFollow: ((changes: ReturnType<typeof savedConnectionChanges>) => void) | null = null
   let lastSaved: ReturnType<SavedConnectionsCache['get']> | null = null
   const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
-    if (savedCache.unreadable && !unreadableNoticed) {
-      unreadableNoticed = true
-      console.warn(`[Connection] ${savedCache.unreadable}: the saved connections are left as they are until it can be read`)
-      // Settings → Connections shows it (the notices of this launch).
-      backend.notices = [...(backend.notices ?? []), `Saved connections could not be read: ${savedCache.unreadable}. Fix or remove the file; nothing was changed.`]
+    const notices = savedCache.unreadable
+      ? [`Saved connections could not be read: ${savedCache.unreadable}. Fix or remove the file; nothing was changed.`]
+      : savedCache.malformed.map((name) => `${malformedRemoteSentence(remotesFilePath(connectionsEnv), name)}.`)
+    if (notices.join('\n') !== savedNotices.join('\n')) {
+      if (savedCache.unreadable) console.warn(`[Connection] ${savedCache.unreadable}: the saved connections are left as they are until it can be read`)
+      else if (savedNotices.length > 0 || notices.length > 0) console.log(`[Connection] ${remotesFilePath(connectionsEnv)} read${notices.length > 0 ? `; malformed entries: ${savedCache.malformed.join(', ')}` : ''}`)
+      backend.notices = [...(backend.notices ?? []).filter((n) => !savedNotices.includes(n)), ...notices]
+      savedNotices = notices
     }
     connections?.changed()
     syncRuntimes()
@@ -801,13 +808,9 @@ app.whenReady().then(async () => {
   app.once('before-quit', () => savedCache.dispose())
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
   // before any connector or client settings store exists: the client keys first, then studio-backend.json.
-  // A launch Inside Studio leaves the files for the next one; so does one that cannot read the saved connections.
-  let migration: RemoteModeMigration | null = null
-  if (backend.mode === 'local' && backend.config.mode === 'remote' && savedCache.unreadable) {
-    console.warn('[Backend] studio-backend.json is in remote mode; it migrates once the saved connections can be read')
-  } else {
-    migration = await migrateRemoteModeInstall(backend, getUserDataPath(), savedCache.get())
-  }
+  // A launch Inside Studio leaves the files for the next one; one that cannot read the saved connections migrates the
+  // client keys only, and studio-backend.json at a later launch (said in Settings → Connections).
+  const migration: RemoteModeMigration | null = await migrateRemoteModeInstall(backend, getUserDataPath(), savedCache.get(), console, { savedUnreadable: savedCache.unreadable })
   if (backend.mode === 'embedded') {
     try {
       embeddedIpc = await import('./ipc')
@@ -825,6 +828,8 @@ app.whenReady().then(async () => {
     daemonMode = registerDaemonModeHandlers({
       mode: 'local',
       userDataDir,
+      // The client keys of an older remote mode that could not be written at boot: migrated as the file loads.
+      ...(migration?.clientKeys ? { clientSettingsMigration: migration.clientKeys } : {}),
       connect: localDaemonConnector({
         userDataDir,
         execPath: process.execPath,
@@ -870,7 +875,8 @@ app.whenReady().then(async () => {
     // Never rewritten when nothing moves (a list of This computer only keeps its bytes).
     const savedWindows = handle.clientSettings.get(AGENT_WINDOWS_KEY)
     const slotInSet = (): boolean => !!runtimeSlot(backendStore?.config() ?? backend.config, savedCache.get())
-    const renamed = renamedRuntimes(savedWindows, savedCache.get(), { inSet: slotInSet(), fingerprint: slotFingerprint })
+    // By fingerprint (§7.4): the one recorded with the keys, a saved agent window's, the slot's pairing.
+    const launchChanges = launchRuntimeKeyChanges(handle.clientSettings.get(RUNTIME_FINGERPRINTS_KEY), savedWindows, savedCache.get(), { inSet: slotInSet(), fingerprint: slotFingerprint })
     const relinked = relinkSavedAgentWindows(savedWindows, savedCache.get(), slotInSet())
     if (relinked) {
       console.log('[AgentWindows] Saved agent windows of a renamed connection moved to it (same fingerprint)')
@@ -878,7 +884,7 @@ app.whenReady().then(async () => {
     }
     // §7.4: the same for Open Recent and the Mesh view; a runtime no longer saved loses them. Never rewritten when nothing goes.
     runtimeKeysFollow = (changes) => { void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, changes) }
-    void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, { moves: renamed })
+    void forgetGoneRuntimeKeys(handle.clientSettings, connectionsEnv, slotInSet, launchChanges)
     agentWindows = new AgentWindows({
       create: createAgentWindow,
       current: (id) => handle.windows.current(id),

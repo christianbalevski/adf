@@ -397,7 +397,7 @@ IPC (new, Studio main): `REMOTE_DISCOVERY_START`, `REMOTE_DISCOVERY_STOP`, push 
 adf pair [<host>[:<port>]] [--name <device name>] [--as <remote name>]
 adf remotes                       list saved remotes; * marks the default
 adf remotes use <name> | local    choose the default for adf commands and the terminal app
-adf remotes forget <name>         delete the saved URL and token (the host still lists the device: remove it there)
+adf remotes forget <name>         delete the saved URL, then the token unless another name holds that computer (the host still lists the device: remove it there)
 ```
 
 - Without `<host>`, `adf pair` browses mDNS for 3 s and probes tailnet peers, prints a numbered list (name, fingerprint, address, ready to pair) and asks which. With `<host>` it calls `/remote/hello` first and shows name and fingerprint.
