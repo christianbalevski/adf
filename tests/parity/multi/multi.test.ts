@@ -223,7 +223,6 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
   }, 180_000)
 
   it('a device token: remote access on at the host, Studio connects and chats with the token it issued; revoked there, that runtime fails alone', async () => {
-    const { refusedTokenSentence } = await import('../../../src/main/backend/daemon-mode/remote/connector')
     for (let run = 0; run < RUNS; run++) {
       const t = capture({ deviceToken: true })
       const scenario: ParityScenario = {
@@ -243,11 +242,16 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
           await chat(ctx, b, true, b.remoteAgents['agent-2'].filePath, 'Hello from remote.')
           expect(JSON.stringify(await ctx.invoke(IPC.DOC_GET_CHAT, TAG, {}))).toContain('Reply to host-1.')
           await ctx.invoke(IPC.AGENT_STOP, TAG)
-          // Revoked on the host: its requests answer 401, the runtime fails with the refused-token sentence, no dialog.
+          // Revoked on the host: its streams close, and before the token goes out again the authenticated hello
+          // (remote-access.md §5.2.1) says the device was removed. The runtime fails with that sentence, no dialog,
+          // and the token is not sent there again.
           await b.revokeDevice()
           await ctx.invoke(IPC.FILE_GET_CURRENT, TAG).catch(() => null)
           await b.until(() => rt.connection.state.state === 'failed', 'the remote failed after the revocation', 30_000)
-          expect(rt.connection.state).toEqual({ state: 'failed', message: refusedTokenSentence(`http://127.0.0.1:${b.proxy.port}`) })
+          expect(rt.connection.state).toEqual({ state: 'failed', message: 'host-1 removed this computer\'s access; pair it again.' })
+          const sent = b.proxy.authorized.length
+          await ctx.invoke(IPC.FILE_GET_CURRENT, TAG).catch(() => null)
+          expect(b.proxy.authorized.length).toBe(sent)
           expect(b.handle.connection.state.state).toBe('connected')
           expect(b.electron.localCalls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
           await ctx.invoke(IPC.FILE_OPEN, { filePath: ctx.agent('agent-1').filePath })

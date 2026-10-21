@@ -11,6 +11,7 @@ import { cleanDisplayName, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/
 import { printable } from '../services/peer-text'
 import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
+import { olderAdfSentence, verifyHello } from '../services/remote-hello'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
   deleteRemoteToken, KEYCHAIN_FILE_COPY, loadRemotes, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
@@ -150,7 +151,7 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
  * fingerprint, and the user is asked first (`--yes` accepts). Any other URL
  * the host lists (a LAN or public name) is never followed.
  */
-async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string, yes: boolean): Promise<string> {
+async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint: string, token: string, yes: boolean): Promise<string> {
   if (transportOf(used) === 'https') return used
   // Re-review 3: only what this computer's own Tailscale vouches for (its tailnet's names, its peers),
   // checked before any question, so --yes never skips it; without Tailscale, nothing.
@@ -160,8 +161,10 @@ async function bestUrl(io: PairIo, used: string, urls: RemoteUrl[], fingerprint:
     if (candidate.url === used || (candidate.kind !== 'tailscale-https' && candidate.kind !== 'tailnet')) continue
     view ??= await (io.tailnetView ?? (() => new TailscaleClient().tailnetView()))().catch(() => NO_TAILNET)
     if (!tailnetUrlAllowed(candidate.url, view)) continue
-    const hello = await fetchHello(candidate.url, io.fetch)
-    if (hello?.fingerprint !== fingerprint) continue
+    // The new token proves the computer there is the one that approved (remote-access.md §5.2.1).
+    const there = await verifyHello(candidate.url, token, { fetch: io.fetch })
+    if (there.kind !== 'verified' || there.hello.fingerprint !== fingerprint) continue
+    const hello = there.hello
     const answer = yes ? 'y' : await io.prompt(`"${hello.name}" is also reachable at ${candidate.url}, encrypted by Tailscale. Save that address instead of ${used}? [Y/n] `)
     if (answer !== null && /^\s*(y|yes)?\s*$/i.test(answer)) return candidate.url
     return used
@@ -236,6 +239,11 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     if (!chosen) return 1
     url = chosen.url
     hello = chosen.hello
+  }
+  // A host that cannot prove who it is later (remote-access.md §5.2.1) is refused before the code is typed.
+  if (hello.helloProof !== 1) {
+    io.stderr(`${olderAdfSentence(`"${hello.name}"`)}\n`)
+    return 1
   }
   io.stderr(`Pairing with "${hello.name}" (fingerprint ${hello.fingerprint}) at ${url}. Check that it shows the same fingerprint.\n`)
 
@@ -313,7 +321,17 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     io.stderr(`Refused: the saved remote "${name}" is ${previous.hostName ?? previous.url} with fingerprint ${previous.fingerprint}, not this computer (${result.daemon.fingerprint}). Nothing was saved. Pair under another name (--as <name>), or forget it first (adf remotes forget ${name}). ${revokeHint}\n`)
     return 1
   }
-  const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint, parsed.yes)
+  const saveUrl = await bestUrl(io, url, result.daemon.urls, result.daemon.fingerprint, result.token, parsed.yes)
+  // A fresh pairing pins the fingerprint only after the computer at the saved address proved it issued this token.
+  const proved = await verifyHello(saveUrl, result.token, { fetch: io.fetch })
+  if (proved.kind !== 'verified' || proved.hello.fingerprint !== result.daemon.fingerprint) {
+    const why = proved.kind === 'verified' ? `${saveUrl} answers with fingerprint ${proved.hello.fingerprint}, not ${result.daemon.fingerprint}`
+      : proved.kind === 'none' ? `${saveUrl} did not answer after "${result.daemon.name}" allowed this computer`
+        : proved.kind === 'unsigned' ? `"${result.daemon.name}" runs an older ADF`
+          : `${saveUrl} could not prove it is "${result.daemon.name}"`
+    io.stderr(`Refused: ${why}. Nothing was saved. ${revokeHint}\n`)
+    return 1
+  }
   if (previous) {
     const changes = [previous.url !== saveUrl ? `its address (${previous.url} → ${saveUrl})` : null, 'its token'].filter(Boolean).join(' and ')
     const answer = parsed.yes ? 'y' : await io.prompt(`"${name}" (${previous.hostName ?? previous.url}) is already saved. Replace ${changes}? [y/N] `)

@@ -32,14 +32,14 @@ import { NoticeOwners } from '../../src/main/backend/daemon-mode/windows'
 import { defaultBackendConfig } from '../../src/main/backend/backend-config'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import type { NotificationsSnapshot } from '../../src/shared/types/ipc.types'
-import { AGENT_2, FILE_1, REMOTE_FILE_2, TOKEN, WINDOW, boot, cleanup, codec, fakeHost, pending, tick, until } from './multi-runtime-harness'
+import { AGENT_2, FILE_1, REMOTE_FILE_2, TOKEN, WINDOW, tokenOf, boot, cleanup, codec, fakeHost, pending, tick, until } from './multi-runtime-harness'
 
 afterEach(cleanup)
 
 describe('RuntimeManager lifecycle', () => {
   it('saved connections join the set in pairedAt order and connect; This computer stays first', async () => {
-    const host2 = fakeHost('host-2', 47392, 'FP-HOST-2')
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host2 = fakeHost('host-2', 47392, 'HOST-AAAC')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     // host-2 was paired first.
     const t = await boot({ hosts: [host1, host2], save: [host2, host1] })
     await t.sync()
@@ -50,8 +50,8 @@ describe('RuntimeManager lifecycle', () => {
     expect(await r2.ready).toBe(true)
     expect(r1.connection.state.state).toBe('connected')
     // Each remote got its own token, to its own origin only.
-    expect(host1.daemon.requests.find((r) => r.path === '/agents')?.auth).toBe(`Bearer ${TOKEN}-host-1`)
-    expect(host2.daemon.requests.find((r) => r.path === '/agents')?.auth).toBe(`Bearer ${TOKEN}-host-2`)
+    expect(host1.daemon.requests.find((r) => r.path === '/agents')?.auth).toBe(`Bearer ${tokenOf('host-1')}`)
+    expect(host2.daemon.requests.find((r) => r.path === '/agents')?.auth).toBe(`Bearer ${tokenOf('host-2')}`)
     // The primary's id did not change, and a second sync with the same list changes nothing.
     const before = t.handle.runtimes.runtimes()
     await t.sync()
@@ -59,7 +59,7 @@ describe('RuntimeManager lifecycle', () => {
   })
 
   it('a connection forgotten while Studio runs disconnects: its agent windows close and its sessions end', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const r1 = t.handle.runtimes.get('remote:host-1')!
@@ -76,7 +76,7 @@ describe('RuntimeManager lifecycle', () => {
   })
 
   it('quit ends every runtime in parallel; a remote daemon is never asked to stop', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     await t.handle.runtimes.get('remote:host-1')!.ready
@@ -92,7 +92,7 @@ describe('RuntimeManager lifecycle', () => {
 
 describe('RuntimeManager recovery and bounds', () => {
   it('Reconnect on a failed remote replaces its connection; Studio does not restart', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const failed = t.handle.runtimes.get('remote:host-1')!
@@ -111,7 +111,7 @@ describe('RuntimeManager recovery and bounds', () => {
   })
 
   it('quit with a remote that does not answer stays within the session-end budget', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     await t.handle.runtimes.get('remote:host-1')!.ready
@@ -125,8 +125,8 @@ describe('RuntimeManager recovery and bounds', () => {
 
 describe('one runtime\'s trouble stays its own', () => {
   it('an unreachable remote retries on its own backoff; the others connect and answer', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
-    const host2 = fakeHost('host-2', 47392, 'FP-HOST-2')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
+    const host2 = fakeHost('host-2', 47392, 'HOST-AAAC')
     host2.reachable = false
     const t = await boot({ hosts: [host1, host2] })
     await t.sync()
@@ -149,8 +149,8 @@ describe('one runtime\'s trouble stays its own', () => {
   })
 
   it('a 401 fails that runtime only, with the refused-token sentence', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
-    const host2 = fakeHost('host-2', 47392, 'FP-HOST-2')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
+    const host2 = fakeHost('host-2', 47392, 'HOST-AAAC')
     const t = await boot({ hosts: [host1, host2] })
     await t.sync()
     const r1 = t.handle.runtimes.get('remote:host-1')!
@@ -169,20 +169,20 @@ describe('one runtime\'s trouble stays its own', () => {
   })
 
   it('another computer at a remote\'s address fails that runtime only; nothing is sent to it', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
-    const host2 = fakeHost('host-2', 47392, 'FP-HOST-2')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
+    const host2 = fakeHost('host-2', 47392, 'HOST-AAAC')
     const t = await boot({ hosts: [host1, host2] })
     await t.sync()
     const r1 = t.handle.runtimes.get('remote:host-1')!
     const r2 = t.handle.runtimes.get('remote:host-2')!
     await r1.ready
     await r2.ready
-    host1.shows = 'FP-EVIL-1'
+    host1.shows = 'EVIL-AAAB'
     const sentBefore = host1.daemon.requests.length
     // The stream drops: before the token goes out again, the fingerprint is checked.
     host1.sessions[0].listener!.onConnection({ state: 'reconnecting', error: 'the stream dropped' })
     await until(() => r1.connection.state.state === 'failed')
-    expect(r1.connection.state).toEqual({ state: 'failed', message: `${host1.url} is not host-1 (fingerprint FP-EVIL-1, paired as FP-HOST-1); the token was not sent.` })
+    expect(r1.connection.state).toEqual({ state: 'failed', message: `${host1.url} is not host-1 (fingerprint EVIL-AAAB, paired as HOST-AAAB); the token was not sent.` })
     expect(host1.daemon.requests.slice(sentBefore).filter((r) => r.auth)).toEqual([])
     expect(r2.connection.state.state).toBe('connected')
     expect(t.handle.connection.state.state).toBe('connected')
@@ -190,18 +190,18 @@ describe('one runtime\'s trouble stays its own', () => {
 
   it('a pin mismatch from a connector fails that runtime (PinMismatchError)', async () => {
     // The connector half: a mismatch is a PinMismatchError, which DaemonConnection turns into "failed".
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     const connector = remoteDaemonConnector({ ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'host-1' } }, codec, { env: t.env, fetch: host1.fetch }) as DaemonConnector
     await connector(() => {})
-    host1.shows = 'FP-EVIL-1'
+    host1.shows = 'EVIL-AAAB'
     await expect(connector.pinCheck!()).rejects.toBeInstanceOf(PinMismatchError)
   })
 })
 
 describe('runtime-aware IPC routing (§4.3)', () => {
   async function connected() {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     host1.daemon.routes.set('GET /files/agent', (req) => ({ agentId: req.query.path === REMOTE_FILE_2 ? AGENT_2 : null, loaded: req.query.path === REMOTE_FILE_2 }))
     const t = await boot({ hosts: [host1] })
     await t.sync()
@@ -344,7 +344,7 @@ describe('phase 1 pieces', () => {
 describe('phase 3: saving connects, Reconnect reopens, the slot, recent files (multi-runtime.md §3, §6.6, §7.5)', () => {
   it('a remote that connects for the first time asks for its saved agent windows once (runtimeConnected)', async () => {
     const connected: string[] = []
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1], hooks: { runtimeConnected: (id: string) => { connected.push(id) } } })
     await t.sync()
     await t.handle.runtimes.get('remote:host-1')!.ready
@@ -358,7 +358,7 @@ describe('phase 3: saving connects, Reconnect reopens, the slot, recent files (m
 
   it('Reconnect on a failed remote closes its agent windows to reopen (keep); the new connection asks for them again', async () => {
     const connected: string[] = []
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1], hooks: { runtimeConnected: (id: string) => { connected.push(id) } } })
     await t.sync()
     const failed = t.handle.runtimes.get('remote:host-1')!
@@ -380,7 +380,7 @@ describe('phase 3: saving connects, Reconnect reopens, the slot, recent files (m
   })
 
   it('the remote slot of studio-backend.json is a runtime: it connects with its own token, untagged calls stay This computer\'s', async () => {
-    const office = fakeHost('office', 47393, 'FP-OFFICE')
+    const office = fakeHost('office', 47393, 'OFFC-AAAB')
     const t = await boot({ hosts: [], save: [], slot: office })
     t.handle.runtimes.sync({}, { name: 'office', url: office.url })
     const slot = t.handle.runtimes.get('remote')!
@@ -391,7 +391,7 @@ describe('phase 3: saving connects, Reconnect reopens, the slot, recent files (m
   })
 
   it('a remote\'s recent files go to runtimeRecentFiles under its id, never to recentFiles', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const rt = t.handle.runtimes.get('remote:host-1')!

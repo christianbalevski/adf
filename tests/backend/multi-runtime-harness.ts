@@ -20,9 +20,12 @@ import { loadRemotesAsync } from '../../src/main/cli/remotes'
 import { remotesEnv, saveConnection } from '../../src/main/backend/connections'
 import { SUPPORTED_CLIENT_API_VERSION } from '../../src/shared/daemon-client'
 import type { PendingNotification } from '../../src/shared/types/ipc.types'
+import { deviceToken, helloResponse } from '../helpers/hello-proof'
 
 export const LOCAL_BASE = 'http://127.0.0.1:47380'
 export const TOKEN = 'a'.repeat(43)
+/** The device token host `name` issued to this Studio (a real `adfd_` token: its hello proves it holds it). */
+export const tokenOf = (name: string): string => deviceToken(name)
 export const AGENT_1 = '6f1c2a4e-1b3d-4c5e-8f70-9a1b2c3d4e5f'
 export const AGENT_2 = '0d9e8f7a-6b5c-4d3e-9f21-0a9b8c7d6e5f'
 export const FILE_1 = join(tmpdir(), 'agents', 'agent-1.adf')
@@ -73,7 +76,9 @@ export function fakeHost(name: string, port: number, fingerprint: string): FakeH
       const gate = host.gates.get(path)
       if (gate) await gate
       if (!host.reachable) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
-      if (path === '/remote/hello') return new Response(JSON.stringify({ v: 1, name, fingerprint: host.shows, pairingOpen: false, api: '2' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+      // The authenticated hello (remote-access.md §5.2.1): another computer at the address (`shows` another
+      // fingerprint) holds no record of this Studio's token.
+      if (path === '/remote/hello') return helloResponse(new URL(String(input instanceof Request ? input.url : input)), { name, fingerprint: host.shows, tokens: host.shows === host.fingerprint ? [tokenOf(name)] : [] })
       return daemon.fetch(input, init)
     }) as typeof fetch,
   }
@@ -97,7 +102,7 @@ export async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[]; hooks?:
   delete (env as Record<string, string | undefined>).ADF_TEST_KEYCHAIN_FILE
   let pairedAt = 0
   const save = async (host: FakeHost) => {
-    await saveConnection(env, { url: host.url, token: `${TOKEN}-${host.name}`, fingerprint: host.fingerprint, hostName: host.name, deviceId: `device-${host.name}`, label: 'Studio' }, { confirmFile: async () => true, now: new Date(Date.UTC(2026, 9, 20, 12, 0, pairedAt++)) })
+    await saveConnection(env, { url: host.url, token: tokenOf(host.name), fingerprint: host.fingerprint, hostName: host.name, deviceId: `device-${host.name}`, label: 'Studio' }, { confirmFile: async () => true, now: new Date(Date.UTC(2026, 9, 20, 12, 0, pairedAt++)) })
   }
   for (const host of opts.save ?? opts.hosts) await save(host)
 

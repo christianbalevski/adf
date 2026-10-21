@@ -233,7 +233,7 @@ describe('management routes (§11.2)', () => {
     expect(status.hostNames).toEqual(['host-1', 'host-1.local'])
     expect(h.events.map(e => e.type)).toContain('enabled')
     expect(h.announcer.announced.at(-1)).toMatchObject({ name: 'agent-1 host', port: h.port, txt: { v: '1', pair: '0', api: '2', fp: status.fingerprint } })
-    expect((await remote(h, 'GET', '/remote/hello')).json).toEqual({ v: 1, name: 'agent-1 host', fingerprint: status.fingerprint, pairingOpen: false, clientApiVersion: 2 })
+    expect((await remote(h, 'GET', '/remote/hello')).json).toEqual({ v: 1, name: 'agent-1 host', fingerprint: status.fingerprint, pairingOpen: false, clientApiVersion: 2, helloProof: 1 })
 
     const offAgain = await h.server.inject({ method: 'PUT', url: '/remote-access', headers: managed, payload: { enabled: false } })
     expect(offAgain.json().state).toBe('off')
@@ -318,6 +318,66 @@ describe('tokens on the remote listener (§4.4)', () => {
     const res = await h.server.inject({ method: 'POST', url: '/client/sessions', headers: { authorization: `Bearer ${device.token}` }, payload: { client: 'studio', version: '1', exitDaemonWhenClosed: true } })
     expect(res.statusCode).toBe(403)
     expect(res.json().code).toBe('device_token_refused')
+  })
+})
+
+describe('the authenticated hello (§5.2.1, R2A-2)', () => {
+  /** fetch over the remote listener (a real socket), for the client's verifyHello. */
+  const overRemote = (h: Harness) => (async (input: string | URL | Request) => {
+    const url = new URL(String(input))
+    const res = await remote(h, 'GET', `${url.pathname}${url.search}`)
+    return new Response(JSON.stringify(res.json), { status: res.status, headers: { 'Content-Type': 'application/json' } })
+  }) as typeof fetch
+
+  it('the daemon proves it holds the device record: verified for its token; another nonce, origin or token fails; revoked and unknown say so', async () => {
+    const { verifyHello, helloProofMac, helloProofMessage } = await import('../src/main/services/remote-hello')
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const other = await addDevice(h, 'agent-3 laptop')
+    const origin = `http://${LAN}:${h.port}`
+    const check = await verifyHello(origin, device.token, { fetch: overRemote(h) })
+    expect(check.kind).toBe('verified')
+    const fingerprint = (check as { hello: { fingerprint: string } }).hello.fingerprint
+    expect(fingerprint).toMatch(/^[A-Z2-7]{4}-[A-Z2-7]{4}$/)
+
+    // The answer, its schema, and the MAC over exactly the documented message (SHA-256 of the secret as the key).
+    const nonce = 'n'.repeat(43)
+    const raw = await remote(h, 'GET', `/remote/hello?${new URLSearchParams({ nonce, device: device.id, origin })}`)
+    expect(raw.status).toBe(200)
+    expect(validate('RemoteHello', raw.json)).toEqual([])
+    // The secret is everything after `adfd_<id>_` (base64url: it may hold `_` itself).
+    const key = (await import('node:crypto')).createHash('sha256').update(device.token.slice(`adfd_${device.id}_`.length)).digest()
+    expect(raw.json).toEqual({ v: 1, name: 'host-1', fingerprint, pairingOpen: false, clientApiVersion: 2, helloProof: 1, device: 'known', proof: helloProofMac(key, helloProofMessage({ nonce, fingerprint, origin, device: device.id })) })
+    // Replayed to a client that asked with another nonce, or dialed another origin: not verified.
+    const replay = (async () => new Response(JSON.stringify(raw.json), { status: 200 })) as unknown as typeof fetch
+    expect((await verifyHello(origin, device.token, { fetch: replay, nonce })).kind).toBe('verified')
+    expect((await verifyHello(origin, device.token, { fetch: replay, nonce: 'm'.repeat(43) })).kind).toBe('forged')
+    expect((await verifyHello(`http://192.168.77.99:${h.port}`, device.token, { fetch: replay, nonce })).kind).toBe('forged')
+    // Another device's answer does not prove this one.
+    const otherRaw = await remote(h, 'GET', `/remote/hello?${new URLSearchParams({ nonce, device: other.id, origin })}`)
+    expect(otherRaw.json.proof).not.toBe(raw.json.proof)
+
+    // A token this daemon never issued: unknown. A revoked device: revoked. Neither carries a proof.
+    const stranger = `adfd_${'a'.repeat(10)}_${'b'.repeat(43)}`
+    expect((await verifyHello(origin, stranger, { fetch: overRemote(h) })).kind).toBe('unknown_device')
+    await h.server.inject({ method: 'DELETE', url: `/remote-access/devices/${device.id}`, headers: managed })
+    expect((await verifyHello(origin, device.token, { fetch: overRemote(h) })).kind).toBe('revoked')
+    const revokedRaw = await remote(h, 'GET', `/remote/hello?${new URLSearchParams({ nonce, device: device.id, origin })}`)
+    expect(revokedRaw.json).toMatchObject({ device: 'revoked', proof: null })
+  })
+
+  it('a partial or malformed proof query is a 400; the plain hello says the daemon can prove who it is', async () => {
+    const h = await harness()
+    await turnOn(h)
+    const device = await addDevice(h)
+    const origin = `http://${LAN}:${h.port}`
+    for (const query of [{ nonce: 'n'.repeat(43) }, { nonce: 'short', device: device.id, origin }, { nonce: 'n'.repeat(43), device: 'NOT-AN-ID', origin }, { nonce: 'n'.repeat(43), device: device.id, origin: `${origin}/path` }]) {
+      const res = await remote(h, 'GET', `/remote/hello?${new URLSearchParams(query as Record<string, string>)}`)
+      expect(res.status, JSON.stringify(query)).toBe(400)
+      expect(res.json.code).toBe('bad_request')
+    }
+    expect((await remote(h, 'GET', '/remote/hello')).json.helloProof).toBe(1)
   })
 })
 

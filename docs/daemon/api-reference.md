@@ -18111,15 +18111,24 @@ Example 200 (`application/json`):
 
 **Who is this daemon (no token)**
 
-The mDNS announcement's content, for clients that cannot hear mDNS (tailnet peers, a typed address). No secret. 30 per minute per source address.
+The mDNS announcement's content, for clients that cannot hear mDNS (tailnet peers, a typed address). No secret. 30 per minute per source address. With `nonce`, `device` and `origin` (all three, or none) it is the authenticated hello (docs/design/remote-access.md §5.2.1): the answer proves this daemon holds that device's record, and a client sends a saved device token, or saves a pairing, only after checking the proof.
 
 Operation `remoteHello` · no authentication
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `nonce` | query | string |  | 32 random bytes, base64url (43 characters), new for each hello. |
+| `device` | query | string |  | The device id of the token the client holds (`adfd_<id>_…`). |
+| `origin` | query | string |  | The origin the client dialed (scheme, host, port), as it goes into the proof. |
 
 **Responses**
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [RemoteHello](#schema-remotehello) | Name, fingerprint, pairing open |
+| 200 | [RemoteHello](#schema-remotehello) | Name, fingerprint, pairing open; with the proof query, whether the device is known and the proof |
+| 400 | [ErrorResponse](#schema-errorresponse) | nonce, device and origin are not all present and well formed (`bad_request`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Remote access is off (`remote_access_off`) |
 | 429 | [ErrorResponse](#schema-errorresponse) | Rate limited (`rate_limited`, Retry-After) |
@@ -18132,7 +18141,10 @@ Example 200 (`application/json`):
   "name": "string",
   "fingerprint": "string",
   "pairingOpen": true,
-  "clientApiVersion": 0
+  "clientApiVersion": 0,
+  "helloProof": 1,
+  "device": "known",
+  "proof": "string"
 }
 ```
 
@@ -23130,6 +23142,9 @@ Type: object \| object
 | `fingerprint` | string | yes |  |
 | `pairingOpen` | boolean | yes |  |
 | `clientApiVersion` | integer | yes |  |
+| `helloProof` | `1` |  | This daemon answers the authenticated hello. Absent: an older ADF, which clients refuse before they send a saved token or pair. |
+| `device` | `"known"` \| `"unknown"` \| `"revoked"` |  | Only with nonce, device and origin: whether this daemon holds the device's record (revoked: removed in the last 30 days). |
+| `proof` | string \| null |  | Only with nonce, device and origin: base64url(HMAC-SHA256(key = SHA-256 of the device secret, message = "adf-remote-hello-v1", nonce, fingerprint, origin and device joined by newlines)); null unless device is known. |
 
 <a id="schema-pairclaimrequest"></a>
 

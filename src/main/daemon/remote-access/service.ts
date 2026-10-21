@@ -22,7 +22,7 @@ import type { Socket } from 'node:net'
 import type { IncomingMessage } from 'node:http'
 import type {
   NetworkView, PairClaimAccepted, PairClaimResult, PairingWindowView, RemoteAccessEvent, RemoteAccessPatch,
-  RemoteAccessStatus, RemoteAddress, RemoteDevice, RemoteHello, RemoteUrl,
+  RemoteAccessStatus, RemoteAddress, RemoteDevice, RemoteHello, RemoteHelloProved, RemoteUrl,
 } from '../../../shared/types/remote-access.types'
 import type { DeviceTokenAuthority } from '../request-guard'
 import type { ClientSessionRegistry } from '../client-sessions'
@@ -42,6 +42,7 @@ import { readGatewayIdentities, readOsCategories, readWifiNames } from './networ
 import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
 import { TailscaleClient, tailnetNameOf, type TailscaleSelf, type TailscaleServe } from './tailscale'
+import { helloProofMac, helloProofMessage } from '../../services/remote-hello'
 
 export const ADDRESS_CHECK_MS = 10_000
 export const SLOW_CHECK_MS = 60_000
@@ -822,7 +823,14 @@ export class RemoteAccessService {
     if (!this.enabled || !this.config.daemonId) throw new RemoteAccessError('Remote access is off on this computer.', 404, 'remote_access_off')
   }
 
-  async hello(raw: IncomingMessage): Promise<RemoteHello> {
+  /**
+   * GET /remote/hello. With `prove` (a nonce, a device id and the origin the
+   * client dialed; remote-access.md §5.2.1) the answer also says whether the
+   * device is known and, when it is, proves this daemon holds its record:
+   * the MAC of the message keyed by the SHA-256 of the device secret it
+   * keeps. The client checks it before its token goes out.
+   */
+  async hello(raw: IncomingMessage, prove?: { nonce: string; device: string; origin: string }): Promise<RemoteHello | RemoteHelloProved> {
     this.requireOn()
     const { key } = await this.caller(raw, { whois: false })
     const now = this.now()
@@ -830,7 +838,13 @@ export class RemoteAccessService {
     if (hits.length >= HELLO_PER_MINUTE) throw new RemoteAccessError('Too many requests from this address. Wait a minute.', 429, 'rate_limited', { retryAfter: Math.ceil((60_000 - (now - hits[0])) / 1000) })
     hits.push(now)
     this.helloHits.set(key, hits)
-    return { v: 1, name: this.computerName, fingerprint: this.fingerprint as string, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion }
+    const fingerprint = this.fingerprint as string
+    const hello: RemoteHello = { v: 1, name: this.computerName, fingerprint, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion, helloProof: 1 }
+    if (!prove) return hello
+    const found = this.store.lookup(prove.device)
+    if (found.kind !== 'device') return { ...hello, helloProof: 1, device: found.kind, proof: null }
+    const proof = helloProofMac(Buffer.from(found.device.secretSha256, 'hex'), helloProofMessage({ nonce: prove.nonce, fingerprint, origin: prove.origin, device: prove.device }))
+    return { ...hello, helloProof: 1, device: 'known', proof }
   }
 
   async claim(raw: IncomingMessage, body: { code: string; deviceName: string; clientKind: 'studio' | 'cli' }): Promise<PairClaimAccepted> {

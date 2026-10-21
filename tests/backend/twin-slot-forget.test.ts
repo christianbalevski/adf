@@ -15,7 +15,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 
 import { createBackendSettingsStore, resolveBootBackend, type SecretCodec, type StudioBackendConfig } from '../../src/main/backend/backend-config'
 import { clearTwinSlot, migratePairedSlot, remotesEnv, runtimeSlot, saveConnection, slotTwin } from '../../src/main/backend/connections'
-import { loadRemotes, readRemoteToken } from '../../src/main/cli/remotes'
+import { loadRemotes, readRemoteToken, saveRemotes } from '../../src/main/cli/remotes'
 import { runRemotes } from '../../src/main/cli/pair'
 
 const URL_ = 'http://100.101.102.103:7385'
@@ -63,7 +63,7 @@ describe('adf remotes forget of a connection with a twin remote slot (G1)', () =
     expect(slotTwin(store.config(), saved)).toBe('agent-1')
     expect(runtimeSlot(store.config(), saved)).toBeNull()
     // Studio's watcher saw cli-remotes.json change.
-    expect(await clearTwinSlot(store, saved, quiet)).toBe('agent-1')
+    expect(await clearTwinSlot(store, saved, s.env, quiet)).toBe('agent-1')
     expect(store.config().remote).toMatchObject({ url: null, token: null })
     expect(JSON.parse(readFileSync(s.path, 'utf8')).remote).toMatchObject({ url: null, token: null })
     // The saved connection keeps its own token.
@@ -109,7 +109,26 @@ describe('adf remotes forget of a connection with a twin remote slot (G1)', () =
     await saveConnection(s.env, { url: 'http://100.64.0.9:7385', token: CLI_TOKEN, fingerprint: 'OTHR-6789', hostName: 'agent-3', deviceId: 'dev-3', label: 'agent-2 laptop' })
     const saved = loadRemotes(s.env).remotes
     expect(slotTwin(store.config(), saved)).toBeNull()
-    expect(await clearTwinSlot(store, saved, quiet)).toBeNull()
+    expect(await clearTwinSlot(store, saved, s.env, quiet)).toBeNull()
     expect(store.config().remote.url).toBe(URL_)
+  })
+
+  it('a twin whose own token cannot be read keeps the slot and its token, and says so (while Studio runs and at launch)', async () => {
+    const s = setup(true)
+    // The computer is a saved connection, but no token for it can be read (none stored here).
+    saveRemotes({ v: 1, default: null, remotes: { 'agent-1': { url: URL_, fingerprint: FP, deviceId: 'dev-2', label: 'agent-2 laptop', pairedAt: '2026-10-20T10:00:00Z', hostName: 'agent-1' } } }, s.env)
+    const saved = loadRemotes(s.env).remotes
+    const logs: string[] = []
+    const log = { log: (m: string) => logs.push(m), warn: (m: string) => logs.push(m) }
+    const store = createBackendSettingsStore({ boot: s.launch(), codec, log: quiet })
+    expect(slotTwin(store.config(), saved)).toBe('agent-1')
+    expect(await clearTwinSlot(store, saved, s.env, log)).toBeNull()
+    expect(store.config().remote).toMatchObject({ url: URL_, token: codec.encrypt(SLOT_TOKEN) })
+    expect(logs).toEqual([`[Connection] Kept the remote URL ${URL_} of studio-backend.json beside the saved connection "agent-1" (same computer): its token cannot be read from the OS keychain`])
+    const boot = s.launch()
+    expect(await migratePairedSlot(boot, codec, s.env, log)).toBeNull()
+    expect(boot.config.remote).toMatchObject({ url: URL_, token: codec.encrypt(SLOT_TOKEN) })
+    expect(JSON.parse(readFileSync(s.path, 'utf8')).remote).toMatchObject({ url: URL_ })
+    expect(logs[1]).toBe(`[Connection] Kept the paired remote URL ${URL_} of studio-backend.json: the token of the saved connection "agent-1" (same computer) cannot be read from the OS keychain`)
   })
 })

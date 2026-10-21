@@ -2,6 +2,7 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import type { RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { PairingClient, RemoteAccessApiError } from './client'
+import { olderAdfSentence, verifyHello } from '../../services/remote-hello'
 import { UNSAFE_DISPLAY_CHARS } from '../../daemon/remote-access/config'
 import { TailscaleClient, tailnetUrlAllowed, type TailnetView } from '../../daemon/remote-access/tailscale'
 
@@ -51,6 +52,12 @@ export interface PairingFlowDeps {
   savedConnections?: () => Array<{ name: string; url: string; fingerprint: string | null }>
   /** The host's fingerprint is saved under another address: save this one instead? Absent: refuse. */
   confirmReplace?: (prompt: { name: string; from: string; to: string }) => Promise<boolean>
+  /**
+   * Why the list of saved connections cannot be read (cli-remotes.json), or
+   * null. Asked before the code is sent, as `adf pair` does (R2A-1): an
+   * approval the list could not take would leave a device on the host.
+   */
+  savedListProblem?: () => Promise<string | null>
 }
 
 function originOf(url: string | null): string | null {
@@ -132,6 +139,8 @@ export class PairingFlow {
       const hello = await new PairingClient(check.url, this.deps.fetch).hello({ signal: abort.signal })
       if (abort.signal.aborted) return this.current
       if (hello?.v !== 1 || typeof hello.fingerprint !== 'string') return this.fail('unreachable', `${check.url} does not answer as an ADF computer with remote access on.`)
+      // A host that cannot prove who it is later (remote-access.md §5.2.1) is refused before the code is sent.
+      if (hello.helloProof !== 1) return this.fail('old_daemon', olderAdfSentence(typeof hello.name === 'string' && hello.name ? hello.name : new URL(check.url).hostname))
       // Security review 4: the fingerprint pinned when a saved connection at this address was paired (trust on first use).
       const saved = this.deps.savedConnections?.() ?? []
       const pinned = saved.find((s) => s.fingerprint && originOf(s.url) === originOf(check.url) && s.fingerprint !== hello.fingerprint)
@@ -166,6 +175,10 @@ export class PairingFlow {
       return this.set({ step: 'need_code', code: 'bad_request', message: `Enter the 6-digit code shown on ${host.name}.` })
     }
     const abort = this.abort
+    // R2A-1: a list that cannot be read could not take the pairing; nothing is sent.
+    const listProblem = await this.deps.savedListProblem?.()
+    if (abort.signal.aborted) return this.current
+    if (listProblem) return this.fail('save_failed', listProblem, true)
     this.set({ step: 'claiming' })
     const client = new PairingClient(host.url, this.deps.fetch)
     let claim: { claimId: string; expiresAt: string; collectSecret: string }
@@ -254,14 +267,24 @@ export class PairingFlow {
       .sort((a, b) => ENCRYPTED_ORDER[a.kind] - ENCRYPTED_ORDER[b.kind])
     for (const candidate of candidates) {
       const target = switchableUrl(candidate.url, view!)!
-      try {
-        const hello = await new PairingClient(target, this.deps.fetch).hello({ timeoutMs: 3_000 })
-        if (hello?.fingerprint !== host.fingerprint) continue
-      } catch { continue /* not reachable from here; try the next */ }
+      // The new token proves the computer there is the one that approved (remote-access.md §5.2.1).
+      const there = await verifyHello(target, result.token, { fetch: this.deps.fetch, timeoutMs: 3_000 })
+      if (there.kind !== 'verified' || there.hello.fingerprint !== host.fingerprint) continue
       const use = await this.deps.confirmSwitch!({ hostName: host.name, from: host.url, to: target }).catch(() => false)
       this.log.log(`[Remote access] ${host.name} also answers at ${target}: ${use ? 'saving that address' : 'kept ' + host.url}`)
       if (use) url = target
       break
+    }
+    // A fresh pairing pins the fingerprint only after the computer at the saved address proved it issued this token.
+    const proved = await verifyHello(url, result.token, { fetch: this.deps.fetch, timeoutMs: 5_000 })
+    const label = result.device?.label ?? this.deviceName
+    if (proved.kind !== 'verified' || proved.hello.fingerprint !== host.fingerprint) {
+      const why = proved.kind === 'verified' ? `${url} answers with fingerprint ${proved.hello.fingerprint}, not ${host.fingerprint}`
+        : proved.kind === 'none' ? `${url} did not answer after ${host.name} allowed this device`
+          : proved.kind === 'unsigned' ? `${host.name} runs an older ADF`
+            : `${url} could not prove it is ${host.name}`
+      this.fail(proved.kind === 'unsigned' ? 'old_daemon' : proved.kind === 'none' ? 'unreachable' : 'fingerprint_mismatch', `${why}; Studio saved nothing, so remove "${label}" on ${host.name}.`)
+      return
     }
     const insecure = checkRemoteDaemonUrl(url).kind === 'insecure-http'
     const saved = await this.deps.save({

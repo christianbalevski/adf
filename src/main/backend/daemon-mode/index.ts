@@ -20,7 +20,7 @@ import { channelKey, pendingWorkstream } from './pending'
 import { samePath, type DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
 import { REMOTE_MODE_HANDLERS } from './remote/handlers'
-import { createRuntimeConnection, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
+import { createRuntimeConnection, type QuitOptions, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
 import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manager'
 import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
@@ -257,7 +257,7 @@ export interface DaemonModeHandle {
    * (remote-access.md §3.6). Every other runtime ends its sessions in
    * parallel; its daemon keeps running (multi-runtime.md §3.3).
    */
-  shutdown(opts?: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number }): Promise<void>
+  shutdown(opts?: QuitOptions): Promise<void>
   /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
   windows: DaemonWindows
   /** The runtime set (multi-runtime.md §3.2). */
@@ -522,6 +522,11 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     if (channel === IPC.FILE_GET_CURRENT && runtimeId === null && !isAgentWindow(event)) return { ctx: manager.mainOpenRuntime().ctx, args }
     return { ctx, args }
   }
+  /**
+   * The number of the latest main-window open (FILE_OPEN, FILE_CREATE, FILE_CREATE_QUICK), on any runtime. FILE_CLOSE
+   * does not count: the renderer closes an overtaken open on its runtime after the later open was called.
+   */
+  let mainOpenSeq = 0
   const isAgentWindow = (event: { sender?: { id?: number } } | undefined): boolean => {
     const id = event?.sender?.id
     return id !== undefined && manager.runtimeOfWindow(id) !== null
@@ -573,11 +578,16 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           }
           throw new DaemonModeUnavailableError(channelKey(channel), workstream)
         }
+        // The main window's open agent is on the runtime of its latest open (§4.3; R2A-5): each main-window open is
+        // numbered when it is called, on any runtime, and applied when it resolves only while it is still the latest.
+        // One on the runtime the window is on already applies too, so an overtaken open elsewhere cannot move it.
+        const mainOpen = MAIN_OPEN_CHANNELS.has(channel) && ctx.runtime && !isAgentWindow(event) ? { id: ctx.runtime.id, seq: ++mainOpenSeq } : null
         const result = handler(ctx, event, ...args)
-        // The main window's open agent moves to another runtime once a file opens there (§4.3).
-        if (MAIN_OPEN_CHANNELS.has(channel) && ctx.runtime && ctx.runtime.id !== manager.mainOpenRuntime().id && !isAgentWindow(event)) {
-          const id = ctx.runtime.id
-          void Promise.resolve(result).then(() => manager.setMainOpenRuntime(id), () => {})
+        if (mainOpen) {
+          void Promise.resolve(result).then(() => {
+            if (mainOpen.seq === mainOpenSeq) manager.setMainOpenRuntime(mainOpen.id)
+            else log.log(`[Runtimes] A main-window open on ${mainOpen.id} was overtaken by a later one; the main window stays on ${manager.mainOpenRuntime().id}`)
+          }, () => {})
         }
         // The file is on a runtime other than This computer: the renderer reopens it there.
         if (channel === IPC.FILE_GET_CURRENT && ctx.runtime && !ctx.runtime.primary) {
@@ -621,7 +631,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> => {
+  const shutdown = (opts: QuitOptions = {}): Promise<void> => {
     shutdownPromise ??= (() => {
       const done = manager.shutdown(opts)
       approvals.dispose()

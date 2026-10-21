@@ -110,6 +110,18 @@ describe('daemon-mode quit (§8.3)', () => {
     expect(logs).toContain('[Backend] The ADF daemon exited')
   })
 
+  it('R2A-4: the wait is announced (onExitWait) only once the quit answered, right before it starts, so main moves its deadline', async () => {
+    const order: string[] = []
+    const { handle } = await boot({ keep: false, waitForExit: async (_pid, budget) => { order.push(`wait ${budget}`); return true } })
+    await handle.shutdown({ waitForDaemonExitMs: 4_000, onExitWait: (ms) => order.push(`moved ${ms}`) })
+    expect(order).toEqual(['moved 4000', 'wait 4000'])
+    // Kept running: no wait, nothing moves.
+    const kept: string[] = []
+    const other = await boot({ keep: true, waitForExit: async () => { kept.push('wait'); return true } })
+    await other.handle.shutdown({ waitForDaemonExitMs: 4_000, onExitWait: () => kept.push('moved') })
+    expect(kept).toEqual([])
+  })
+
   it('a restart into Inside Studio with the daemon kept running does not wait for it', async () => {
     const waits: number[] = []
     const { handle } = await boot({ keep: true, waitForExit: async (pid) => { waits.push(pid); return true } })

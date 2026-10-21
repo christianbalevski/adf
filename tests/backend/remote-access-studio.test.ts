@@ -344,6 +344,44 @@ describe('pairing from Settings → Connections', () => {
     expect(p.logs.join('\n')).not.toContain('654321')
   })
 
+  // R2A-2: a fresh pairing pins the fingerprint only after the computer at the saved address proves it issued the token.
+  it('an older ADF is refused before the code is sent, with one sentence', async () => {
+    const p = pairSetup()
+    p.daemon.state.unsigned = true
+    const started = await p.flow.start({ url: LAN, allowInsecureHttp: true })
+    expect(started).toMatchObject({ step: 'failed', code: 'old_daemon', message: 'agent-1-pc runs an older ADF; update it.' })
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+  })
+
+  it('an approval whose address cannot prove it issued the token saves nothing and names the device to remove', async () => {
+    const p = pairSetup({ useEncrypted: false })
+    await p.flow.start({ url: LAN, allowInsecureHttp: true })
+    await p.flow.submitCode('654321')
+    // An impostor answers at the address after the approval: it shows the fingerprint, but holds no record of the token.
+    p.daemon.decide(true)
+    p.daemon.state.tokens = []
+    await until(() => p.last().step === 'failed')
+    expect(p.last()).toMatchObject({ code: 'fingerprint_mismatch', message: `${LAN} could not prove it is agent-1-pc; Studio saved nothing, so remove "agent-2-laptop" on agent-1-pc.` })
+    expect(p.saved).toEqual([])
+  })
+
+  // R2A-1: as `adf pair`, a list that cannot be read is found before the code is sent.
+  it('a list of saved connections that cannot be read stops the pairing before the code is sent', async () => {
+    const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
+    daemon.state.enabled = true
+    daemon.state.pairing = { code: '654321', openedAt: new Date().toISOString(), expiresAt: new Date(Date.now() + 120_000).toISOString(), attemptsLeft: 5, claim: null }
+    const states: RemotePairState[] = []
+    const flow = new PairingFlow({
+      onState: (s) => states.push(s), save: async () => ({ ok: true }), saveBlocked: () => null, defaultDeviceName: () => 'agent-2-laptop',
+      savedListProblem: async () => '/x/cli-remotes.json is not valid JSON. Fix or remove it; nothing was changed.',
+      fetch: daemon.fetch, log: quiet, retryMs: 5,
+    })
+    await flow.start({ url: LAN, allowInsecureHttp: true })
+    const after = await flow.submitCode('654321')
+    expect(after).toMatchObject({ step: 'need_code', code: 'save_failed', message: '/x/cli-remotes.json is not valid JSON. Fix or remove it; nothing was changed.' })
+    expect(daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+  })
+
   it('switches only to a tailnet address or a *.ts.net https name, and only after asking (security review 2)', async () => {
     // A host-supplied "encrypted" URL elsewhere is ignored, even when it answers with the same fingerprint.
     const p = pairSetup()

@@ -57,7 +57,7 @@ describe('adf pair never prints raw peer text', () => {
     const prompts: string[] = []
     const fetchImpl = (async (input: string | URL) => {
       const u = new URL(String(input))
-      if (u.pathname === '/remote/hello') return json(200, { v: 1, name: `evil${ESCAPES}`, fingerprint: 'ABCD-EFGH', pairingOpen: true, clientApiVersion: 2 })
+      if (u.pathname === '/remote/hello') return json(200, { v: 1, name: `evil${ESCAPES}`, fingerprint: 'ABCD-EFGH', pairingOpen: true, clientApiVersion: 2, helloProof: 1 })
       if (u.pathname === '/pair/claim') return json(400, { error: `Bad${ESCAPES} code`, code: 'bad_request' })
       return json(404, {})
     }) as typeof fetch

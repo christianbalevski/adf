@@ -145,7 +145,7 @@ export type RemotePairErrorCode =
   | 'expired'
   | 'insecure_unconfirmed'
   | 'remote_access_off'
-  /** The host's ADF predates remote access (its /remote/hello answers 401). */
+  /** The host's ADF predates remote access (its /remote/hello answers 401) or the authenticated hello (remote-access.md §5.2.1). */
   | 'old_daemon'
   /** The host's fingerprint is not the one pinned for this address, or the approval came with another. */
   | 'fingerprint_mismatch'

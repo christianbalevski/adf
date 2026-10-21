@@ -39,6 +39,8 @@ export type RemoteConnectProblem =
   | 'fingerprint'
   /** The OS keychain did not give the saved connection's token. */
   | 'keychain'
+  /** cli-remotes.json cannot be read: the saved connection is not known until it is fixed (waited for). */
+  | 'unreadable'
 
 export class RemoteConnectError extends Error {
   constructor(readonly problem: RemoteConnectProblem, message: string) {
@@ -167,11 +169,15 @@ const CONNECTION_PROBLEM: Record<ConnectionError['code'], RemoteConnectProblem> 
   keychain: 'keychain',
   pinned: 'fingerprint',
   unreachable: 'unreachable',
+  unreadable: 'unreadable',
 }
 
 function asConnectError(err: unknown): unknown {
   return err instanceof ConnectionError ? new RemoteConnectError(CONNECTION_PROBLEM[err.code], err.message) : err
 }
+
+/** The progress line while cli-remotes.json cannot be read (R2A-3): the attempt waits for it, as for a host that is down. */
+export const REMOTES_UNREADABLE_PREFIX = 'Waiting for the list of saved connections'
 
 /** The progress line while Studio waits for an unreachable remote daemon (index.ts notifies once on it). */
 export const REMOTE_WAITING_PREFIX = 'Waiting for the remote ADF daemon'
@@ -247,15 +253,26 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
     const name = config.remote.name
     if (name) {
       progress(`Reading the token for ${name}…`)
-      try {
-        const target = await savedConnectionTarget(config, name, opts.env ?? process.env, {
-          onSlow: () => progress(`Waiting for the OS keychain: answer its prompt for ${name} (it can be behind other windows).`),
-        })
-        url = target.url
-        token = target.token
-        saved = { name, remote: target.remote }
-      } catch (err) {
-        throw asConnectError(err)
+      // cli-remotes.json that cannot be read (R2A-3) is waited for, the file named, as a host that is down.
+      let delay = opts.retry?.initialMs ?? 2_000
+      for (let attempt = 1; ; attempt++) {
+        try {
+          stopIfClosed()
+          const target = await savedConnectionTarget(config, name, opts.env ?? process.env, {
+            onSlow: () => progress(`Waiting for the OS keychain: answer its prompt for ${name} (it can be behind other windows).`),
+          })
+          url = target.url
+          token = target.token
+          saved = { name, remote: target.remote }
+          break
+        } catch (err) {
+          const e = asConnectError(err)
+          if (!(e instanceof RemoteConnectError) || e.problem !== 'unreadable' || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw e
+          stopIfClosed()
+          progress(`${REMOTES_UNREADABLE_PREFIX} (attempt ${attempt}; next in ${Math.round(delay / 1000)} s): ${e.message}`)
+          await abortable(sleep(delay), signal)
+          delay = Math.min(opts.retry?.maxMs ?? 30_000, delay * 2)
+        }
       }
     } else {
       const checked = remoteConfigProblem(config, codec)
@@ -275,12 +292,12 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
     for (let attempt = 1; ; attempt++) {
       try {
         stopIfClosed()
-        if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, opts.fetch).catch((e) => { throw asConnectError(e) })
+        if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, token, opts.fetch).catch((e) => { throw asConnectError(e) })
         // The pin check and the handshake each wait: the token goes out only while the connection is still wanted.
         stopIfClosed()
         info = await remoteHandshake(url, token, opts)
         stopIfClosed()
-        if (saved) pin = pinCheckFor(saved.name, saved.remote.fingerprint, url, opts.fetch)
+        if (saved) pin = pinCheckFor(saved.name, saved.remote.fingerprint, url, token, opts.fetch)
         break
       } catch (err) {
         if (!(err instanceof RemoteConnectError) || !RETRIED.has(err.problem) || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw err

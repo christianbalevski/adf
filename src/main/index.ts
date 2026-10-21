@@ -9,7 +9,7 @@ type EmbeddedIpc = typeof import('./ipc')
 import { registerOrbitalCacheHandlers } from './ipc/orbital-cache'
 import { registerEditRecoveryHandlers } from './backend/edit-recovery'
 import { purgeStaleProcessDirs } from './utils/scratch-dir'
-import { withDeadline } from './utils/concurrency'
+import { MovableDeadline, withDeadline } from './utils/concurrency'
 import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
@@ -170,6 +170,8 @@ const FAST_SHUTDOWN_BUDGET_MS = 3_000
  * and start its agents (handover.ts toEmbedded refuses while it runs).
  */
 const EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS = 22_000
+/** What the quit keeps after that wait (the rest of the cleanup, app.exit). */
+const EXIT_WAIT_MARGIN_MS = 3_000
 /** The mode studio-backend.json holds now (the next launch's), once the backend settings store exists. */
 let savedBackendMode: (() => string) | null = null
 let shutdownBudgetMs = SHUTDOWN_BUDGET_MS
@@ -200,16 +202,19 @@ function runShutdownCleanup(): Promise<void> {
       // per keepDaemonRunning, stops the daemon Studio started (§8.3).
       remoteAccess?.dispose()
       const toEmbedded = !!daemonMode && isRelaunching() && savedBackendMode?.() === 'embedded' && budget === SHUTDOWN_BUDGET_MS
+      // The quit's budget; a restart into Inside Studio moves it once the daemon answered that it stops (R2A-4), to
+      // the exit wait plus a margin, so the deadline never cuts that wait short.
+      const deadline = new MovableDeadline(budget, (ms) => {
+        console.error(`[App] Cleanup exceeded ${ms}ms budget — forcing exit`)
+      })
       const cleanup = daemonMode
         ? daemonMode.shutdown({
           // "Keep Running" in the question about connected computers: this quit only.
           ...(remoteAccess?.quitGate.keepDaemonForThisQuit ? { keepDaemonRunning: true } : {}),
-          ...(toEmbedded ? { waitForDaemonExitMs: EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS } : {}),
+          ...(toEmbedded ? { waitForDaemonExitMs: EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS, onExitWait: (ms: number) => deadline.moveTo(ms + EXIT_WAIT_MARGIN_MS) } : {}),
         })
         : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
-      const { timedOut } = await withDeadline(cleanup, toEmbedded ? EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS + 3_000 : budget, () => {
-        console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
-      })
+      const { timedOut } = await deadline.race(cleanup)
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
     } catch (error) {
       console.error('[App] Cleanup error:', error)
@@ -783,7 +788,7 @@ app.whenReady().then(async () => {
     if (twin && changes && !changes.moves.has(SLOT_RUNTIME)) changes.moves.set(SLOT_RUNTIME, savedRuntimeId(twin))
     if (changes) runtimeKeysFollow?.(changes)
     if (twin && store) {
-      void clearTwinSlot(store, lastSaved).then((name) => {
+      void clearTwinSlot(store, lastSaved, connectionsEnv).then((name) => {
         if (!name) return
         syncRuntimes()
         connections?.changed()
