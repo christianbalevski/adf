@@ -102,6 +102,115 @@ describe('sidebar', () => {
   })
 })
 
+describe('sidebar groups', () => {
+  const DIR_2 = '/agents-2'
+  const AGENT_3 = '/agents-2/agent-3.adf'
+  const ID_3 = '9a4c2e10-6b5d-4f37-8e19-2c7d5b0a4f33'
+
+  /** A second folder on This computer, so there is a place for a folder divider. */
+  async function twoFolders(runtimes: RuntimeView[] | undefined): Promise<string> {
+    const p = await page(runtimes)
+    const { useTrackedDirsStore } = await import('../../../src/renderer/stores/tracked-dirs.store')
+    const tracked = useTrackedDirsStore.getState()
+    tracked.setDirectories([DIR, DIR_2])
+    tracked.setFilesForDir(DIR_2, [entry(AGENT_3, ID_3)])
+    return p.sidebar()
+  }
+  const FOLDER_DIVIDER = 'border-t border-hairline my-1'
+
+  it('more than one runtime: a divider between server groups, none between folders', async () => {
+    const html = await twoFolders([LOCAL, REMOTE])
+    expect(html.match(/data-runtime-divider/g)).toHaveLength(1)
+    expect(html).not.toContain(FOLDER_DIVIDER)
+    // The divider sits between the two headers.
+    const divider = html.indexOf('data-runtime-divider')
+    expect(divider).toBeGreaterThan(html.indexOf('host-0 (Local)'))
+    expect(divider).toBeLessThan(html.indexOf('>host-1<'))
+  })
+
+  it('This computer only: folders keep their divider, and there is no server divider', async () => {
+    const html = await twoFolders([LOCAL])
+    expect(html.split(FOLDER_DIVIDER)).toHaveLength(2)
+    expect(html).not.toContain('data-runtime-divider')
+    expect(html).not.toContain('data-runtime-header')
+  })
+
+  it('server headers are sticky with the sidebar background, and keep their chevron', async () => {
+    const html = await (await page([LOCAL, REMOTE])).sidebar()
+    const headers = [...html.matchAll(/<div[^>]*data-runtime-header=""[^>]*>/g)].map((m) => m[0])
+    expect(headers).toHaveLength(2)
+    for (const h of headers) {
+      expect(h).toMatch(/class="[^"]*\bsticky top-0\b/)
+      expect(h).toMatch(/\bbg-surface-2\b/)
+      expect(h).toContain('aria-expanded="true"')
+    }
+  })
+})
+
+describe('Not reviewed', () => {
+  /** The row of an agent: from the avatar slot that starts it to its name. */
+  function rowOf(html: string, name: string): string {
+    const end = html.indexOf(`>${name}<`)
+    const start = html.lastIndexOf('class="group flex items-center', end)
+    return html.slice(start, end)
+  }
+
+  async function sidebar(): Promise<string> {
+    const p = await page([LOCAL])
+    const { useTrackedDirsStore } = await import('../../../src/renderer/stores/tracked-dirs.store')
+    useTrackedDirsStore.getState().setFilesForDir(DIR, [entry(AGENT_1, ID_1), { ...entry(AGENT_2, ID_2), reviewed: false }])
+    return p.sidebar()
+  }
+
+  it('the shield takes the avatar’s place, with its label, and there is no trailing badge', async () => {
+    const html = await sidebar()
+    const row = rowOf(html, 'agent-2')
+    expect(row).toContain('data-review-shield')
+    expect(row).toContain('role="img" aria-label="Not reviewed" tabindex="0"')
+    // No avatar beside it, and nothing after the name says it again.
+    const reviewed = rowOf(html, 'agent-1')
+    const avatar = reviewed.match(/<span class="flex transition-opacity[^"]*">/)?.[0]
+    expect(avatar).toBeTruthy()
+    expect(row).not.toContain(avatar!)
+    expect(html.match(/Not reviewed/g)).toHaveLength(1)
+  })
+
+  it('a reviewed agent keeps its avatar', async () => {
+    const row = rowOf(await sidebar(), 'agent-1')
+    expect(row).not.toContain('data-review-shield')
+    expect(row).not.toContain('Not reviewed')
+  })
+})
+
+describe('title bar', () => {
+  const BOX_1: RuntimeView = { id: 'remote:box-1', kind: 'remote', name: 'box-1', url: 'https://box-1.example:7386', state: 'connected' }
+
+  /** The open agent's cluster, with agent-1 open on `runtimeId`. */
+  async function cluster(runtimeId: string): Promise<string> {
+    await page([LOCAL, BOX_1])
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    useDocumentStore.getState().setFilePath(AGENT_1, runtimeId)
+    useAgentStore.getState().setConfig({ id: ID_1, name: 'agent-1' } as never)
+    const { AgentTitleCluster } = await import('../../../src/renderer/components/layout/TitleBar')
+    return renderToStaticMarkup(<AgentTitleCluster />)
+  }
+
+  it('a remote agent shows the remote icon after its name, "On box-1"', async () => {
+    const html = await cluster(BOX_1.id)
+    expect(html).toContain('role="img" aria-label="On box-1"')
+    expect(html).toContain('data-remote-mark')
+    expect(html.indexOf('data-title-remote')).toBeGreaterThan(html.indexOf('agent-1'))
+  })
+
+  it('a local agent has no icon', async () => {
+    const html = await cluster('local')
+    expect(html).toContain('agent-1')
+    expect(html).not.toContain('data-remote-mark')
+    expect(html).not.toContain('On ')
+  })
+})
+
 describe('bell rows', () => {
   const approval = (runtimeId?: string): PendingNotification => ({
     id: 'n1', kind: 'approval', filePath: AGENT_1, agentName: 'agent-1', loop: 'main', requestId: 'n1', toolName: 'fs_write', preview: 'a.md', requestedAt: 1,
