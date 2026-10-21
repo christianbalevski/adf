@@ -25,7 +25,8 @@ import { registerBackendSettingsHandlers, safeStorageCodec } from './backend/bac
 import { grantLocalOpen } from './backend/local-open-grants'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from './backend/daemon-mode'
 import { registerRemoteAccessHandlers, type RemoteAccessIpc } from './backend/remote-access-ipc'
-import { LINK_STATE, migratePairedSlot, remotesEnv, runtimeSlot, SavedConnectionsCache } from './backend/connections'
+import { clearTwinSlot, LINK_STATE, migratePairedSlot, remotesEnv, runtimeSlot, SavedConnectionsCache, slotTwin } from './backend/connections'
+import { savedRuntimeId, SLOT_RUNTIME } from './backend/daemon-mode/runtime-manager'
 import { notConnectedSentence } from '../shared/runtime-tag'
 import type { RuntimeView } from '../shared/types/connection.types'
 import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
@@ -746,7 +747,8 @@ app.whenReady().then(async () => {
   let backendStore: BackendSettingsStore | null = null
   // Saved connections: cli-remotes.json next to Studio's settings file, shared with adf (settings-scopes.md §5.2).
   const connectionsEnv = remotesEnv(getUserDataPath())
-  // A remote paired before the shared list moves into it, pinned like the others.
+  // A remote paired before the shared list moves into it, pinned like the others (its Open Recent and Mesh view keys follow, §7.4).
+  const slotFingerprint = backend.config.remote.url ? backend.config.remote.paired?.fingerprint ?? null : null
   await migratePairedSlot(backend, safeStorageCodec, connectionsEnv).catch((err) => console.warn('[Connection] Moving the paired remote URL failed:', err))
   // Read with async IO, cached; refreshed when adf or Studio writes cli-remotes.json (review item 9).
   let connections: Connections | null = null
@@ -773,7 +775,20 @@ app.whenReady().then(async () => {
     syncRuntimes()
     const before = lastSaved
     lastSaved = savedCache.get()
-    if (before) runtimeKeysFollow?.(savedConnectionChanges(before, lastSaved))
+    const changes = before ? savedConnectionChanges(before, lastSaved) : null
+    // The remote slot's computer is now a saved connection (`adf pair`): the slot goes (URL and token), and its keys
+    // go to that connection, so `adf remotes forget` of it later brings no slot back (migratePairedSlot at launch).
+    const store = savedCache.unreadable ? null : backendStore
+    const twin = store ? slotTwin(store.config(), lastSaved) : null
+    if (twin && changes && !changes.moves.has(SLOT_RUNTIME)) changes.moves.set(SLOT_RUNTIME, savedRuntimeId(twin))
+    if (changes) runtimeKeysFollow?.(changes)
+    if (twin && store) {
+      void clearTwinSlot(store, lastSaved).then((name) => {
+        if (!name) return
+        syncRuntimes()
+        connections?.changed()
+      })
+    }
   })
   await savedCache.refresh().catch(() => {})
   lastSaved = savedCache.get()
@@ -850,7 +865,7 @@ app.whenReady().then(async () => {
     // Never rewritten when nothing moves (a list of This computer only keeps its bytes).
     const savedWindows = handle.clientSettings.get(AGENT_WINDOWS_KEY)
     const slotInSet = (): boolean => !!runtimeSlot(backendStore?.config() ?? backend.config, savedCache.get())
-    const renamed = renamedRuntimes(savedWindows, savedCache.get(), { inSet: slotInSet(), fingerprint: backend.config.remote.paired?.fingerprint ?? null })
+    const renamed = renamedRuntimes(savedWindows, savedCache.get(), { inSet: slotInSet(), fingerprint: slotFingerprint })
     const relinked = relinkSavedAgentWindows(savedWindows, savedCache.get(), slotInSet())
     if (relinked) {
       console.log('[AgentWindows] Saved agent windows of a renamed connection moved to it (same fingerprint)')

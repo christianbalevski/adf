@@ -7,7 +7,7 @@ import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc
 import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
-import { runMode, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
+import { runMode, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { PinMismatchError } from './daemon-mode/connection'
 import { runtimeOrder, SLOT_RUNTIME } from './daemon-mode/runtime-manager'
@@ -222,19 +222,30 @@ export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnecti
  * remote URL slot is then empty; an older Studio's remote mode names the saved
  * connection, for the migration (runtime-migration.ts). Keychain only: when
  * it does not take the token the slot stays, and its pin is still checked
- * (remote/connector.ts). Returns the saved name, or null.
+ * (remote/connector.ts). A slot whose computer is already a saved connection
+ * (slotTwin) only goes: that connection keeps its own token, and forgetting
+ * it (`adf remotes forget`) leaves no slot to come back. Returns the saved
+ * name, or null. Nothing moves while cli-remotes.json cannot be read.
  */
 export async function migratePairedSlot(boot: Pick<BootBackend, 'config' | 'configPath' | 'writeBlocked'>, codec: SecretCodec, env: NodeJS.ProcessEnv, log: Pick<Console, 'log' | 'warn'> = console): Promise<string | null> {
   const slot = boot.config.remote
-  if (boot.writeBlocked || !slot.url || !slot.token || !slot.paired) return null
-  const token = codec.decrypt(slot.token)
-  if (!token) return null
-  let name: string
-  try {
-    name = (await saveConnection(env, { url: slot.url, token, fingerprint: slot.paired.fingerprint, hostName: slot.paired.name, deviceId: slot.paired.deviceId, label: slot.paired.label })).name
-  } catch (err) {
-    log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${err instanceof Error ? err.message : String(err)}`)
+  if (boot.writeBlocked || !slot.url || !slot.paired) return null
+  const read = await readRemotesAsync(env)
+  if (read.unreadable) {
+    log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${read.unreadable}`)
     return null
+  }
+  let name = slotTwin(boot.config, read.file.remotes)
+  const twin = name !== null
+  if (!name) {
+    const token = slot.token ? codec.decrypt(slot.token) : null
+    if (!token) return null
+    try {
+      name = (await saveConnection(env, { url: slot.url, token, fingerprint: slot.paired.fingerprint, hostName: slot.paired.name, deviceId: slot.paired.deviceId, label: slot.paired.label })).name
+    } catch (err) {
+      log.warn(`[Connection] Kept the paired remote URL in studio-backend.json: ${err instanceof Error ? err.message : String(err)}`)
+      return null
+    }
   }
   const origin = remoteUrlOrigin(slot.url)
   const next: StudioBackendConfig = {
@@ -244,7 +255,39 @@ export async function migratePairedSlot(boot: Pick<BootBackend, 'config' | 'conf
   }
   await writeJsonAtomicAsync(boot.configPath, next)
   boot.config = next
-  log.log(`[Connection] Moved the paired remote URL ${slot.url} to the saved connection "${name}" (pinned to ${slot.paired.fingerprint})`)
+  log.log(twin
+    ? `[Connection] Removed the paired remote URL ${slot.url} of studio-backend.json: it is the saved connection "${name}" (${slot.paired.fingerprint}), which keeps its own token`
+    : `[Connection] Moved the paired remote URL ${slot.url} to the saved connection "${name}" (pinned to ${slot.paired.fingerprint})`)
+  return name
+}
+
+/**
+ * The saved connection the remote slot of studio-backend.json is (paired
+ * with its fingerprint; runtimeSlot hides the slot behind it), or null.
+ */
+export function slotTwin(config: Pick<StudioBackendConfig, 'remote'>, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>): string | null {
+  const fp = config.remote.url ? config.remote.paired?.fingerprint : undefined
+  return fp ? Object.entries(saved).find(([, r]) => r.fingerprint === fp)?.[0] ?? null : null
+}
+
+/**
+ * While Studio runs, cli-remotes.json gained the computer of the remote slot
+ * (`adf pair`, Studio's Add): the slot goes, URL and token, as at launch
+ * (migratePairedSlot). The saved connection was already the runtime; later
+ * `adf remotes forget` of it then forgets the computer, as Studio's Remove
+ * does. Returns the connection's name, or null (no twin, or the save failed:
+ * said in the log).
+ */
+export async function clearTwinSlot(store: Pick<BackendSettingsStore, 'config' | 'set'>, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>, log: Pick<Console, 'log' | 'warn'> = console): Promise<string | null> {
+  const name = slotTwin(store.config(), saved)
+  if (!name) return null
+  const url = store.config().remote.url
+  const result = await store.set({ remoteUrl: null })
+  if (!result.ok) {
+    log.warn(`[Connection] Kept the remote URL ${url} of studio-backend.json beside the saved connection "${name}" (same computer): ${result.error}`)
+    return null
+  }
+  log.log(`[Connection] Removed the remote URL ${url} of studio-backend.json: it is the saved connection "${name}" (same fingerprint), which keeps its own token`)
   return name
 }
 
