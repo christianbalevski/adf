@@ -6,7 +6,7 @@ import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES, type AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
 import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload, ToolApprovalResolvedPayload } from '../../shared/types/ipc.types'
-import { parseLoopSendStamp } from '../../shared/utils/loop-parser'
+import { classifyInjectedText, detectTriggerType, parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
 import { findApprovalTargetEntry } from './approval-target'
@@ -211,7 +211,8 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
             type: 'trigger',
             content: payload.content,
             timestamp: event.timestamp,
-            metadata: { ...seqMeta(payload), triggerType: payload.triggerType }
+            // Named from the text, as on reload, so a wake reads the same either way.
+            metadata: { ...seqMeta(payload), triggerType: detectTriggerType(payload.content) ?? payload.triggerType }
           }, loop)
         }
         break
@@ -625,42 +626,25 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       // timer_fired removed — agent-scope timers already produce trigger_message;
       // system-scope timers are captured in adf_logs.
 
-      case 'inter_agent_message': {
-        const payload = event.payload as {
-          fromAgent: string
-          toAgent: string
-          channel?: string
-          content: string
-          direction: 'incoming' | 'outgoing'
-        }
-        agentStore.addLogEntry({
-          id: nanoid(),
-          type: 'inter_agent',
-          content: payload.content,
-          timestamp: event.timestamp,
-          metadata: {
-            fromAgent: payload.fromAgent,
-            toAgent: payload.toAgent,
-            channel: payload.channel,
-            direction: payload.direction
-          }
-        }, loop)
-        break
-      }
+      // inter_agent_message is not a loop row: the message is in the inbox, not
+      // the agent's context, until msg_read brings it in. The fleet map still
+      // shows it as activity (useMeshGraph).
 
       case 'context_injected': {
-        const payload = event.payload as { category: string; content: string; seq?: number }
+        const payload = event.payload as { category: string; content: string; addedBy?: string; seq?: number }
         // A no-wake loop_send lands in the target's context rather than
         // starting a turn; same stamp, same block.
         const injectedLoopSend = parseLoopSendStamp(payload.content)
+        // loop_inject sends its row text, marker and all: read it as reload does.
+        const stamped = injectedLoopSend || payload.content.startsWith('[Context: ') ? classifyInjectedText(payload.content) : null
         const injectedEntry: AgentLogEntry = {
           id: nanoid(),
           type: 'context',
-          content: injectedLoopSend ? injectedLoopSend.body : payload.content,
+          content: stamped ? stamped.content : payload.content,
           timestamp: event.timestamp,
-          metadata: injectedLoopSend
-            ? { ...seqMeta(payload), category: 'loop', fromLoop: injectedLoopSend.fromLoop }
-            : { ...seqMeta(payload), category: payload.category }
+          metadata: stamped
+            ? { ...seqMeta(payload), ...stamped.metadata }
+            : { ...seqMeta(payload), category: payload.category, ...(payload.addedBy ? { addedBy: payload.addedBy } : {}) }
         }
         // Loop deliveries defer to the block boundary; other injections keep
         // their current inline behaviour.

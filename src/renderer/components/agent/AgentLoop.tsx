@@ -15,6 +15,7 @@ import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdow
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
 import { loopColor } from '../../utils/loop-color'
 import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../utils/loop-activity'
+import { contextLabel, describeWake, mergeInstructionRows } from '../../utils/loop-labels'
 import { LOOP_ERROR_ACTION_LABELS, actionableErrorId, errorAction, isMissingProvider, type LoopErrorAction } from '../../utils/loop-error'
 import { restoreDraft, sendWithRecovery } from '../../utils/send-recovery'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
@@ -294,25 +295,6 @@ const ThinkingContent = memo(({ content }: { content: string }) => {
 })
 
 // Memoized individual log entry renderer
-const TRIGGER_LABELS: Record<string, string> = {
-  document_edit: 'Doc Edit',
-  message_received: 'Message Received',
-  schedule: 'Timer Fired',
-  inbox_notification: 'Inbox',
-  autonomous_start: 'Auto Start',
-  file_change: 'File Change',
-  outbox: 'Outbox',
-  tool_call: 'Tool Intercepted',
-  task_complete: 'Task Complete'
-}
-
-const CONTEXT_LABELS: Record<string, string> = {
-  system_prompt: 'System Prompt',
-  dynamic_instructions: 'Dynamic Instructions',
-  provider_context: 'Added by Provider',
-  loop: 'Loop Message'
-}
-
 /**
  * A message delivered by another loop's `loop_send`. It arrives as a plain user
  * row (adf_loop has no metadata column) and is classified by its durable
@@ -387,7 +369,7 @@ function isCollapsibleActivity(entry: AgentLogEntry, toolPairs: ToolPairIndex): 
   // A runtime notice (compacting, a provider that gave up) is status the
   // owner must see without opening a group.
   if (isSystemNotice(entry)) return false
-  if (entry.type === 'thinking' || entry.type === 'context' || entry.type === 'trigger') return true
+  if (entry.type === 'thinking' || entry.type === 'context') return true
   if (entry.type !== 'tool_call') return false
   const name = entry.metadata?.name as string | undefined
   if (name === 'say' || name === 'ask') return false
@@ -409,12 +391,9 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
     activityEntries = []
   }
 
-  for (const entry of entries) {
+  // A trigger is never folded: it is the line that opens a woken turn.
+  for (const entry of mergeInstructionRows(entries)) {
     if (isCollapsibleActivity(entry, toolPairs)) {
-      // A trigger opens a new turn. A turn that ended on a tool call (e.g.
-      // sys_set_state) leaves no visible row between it and the next wake,
-      // so without this the timer, its turn and the last one read as one block.
-      if (entry.type === 'trigger') flushActivity()
       activityEntries.push(entry)
     } else {
       flushActivity()
@@ -456,11 +435,8 @@ function getActivitySummary(entries: AgentLogEntry[]): { label: string; family: 
   }
 
   const lastEntry = entries.at(-1)
-  if (lastEntry?.type === 'trigger') {
-    return { label: TRIGGER_LABELS[lastEntry.metadata?.triggerType as string] ?? 'Trigger', family: 'neutral' }
-  }
   if (lastEntry?.type === 'context') {
-    return { label: CONTEXT_LABELS[lastEntry.metadata?.category as string] ?? 'Context', family: 'neutral' }
+    return { label: contextLabel(lastEntry), family: 'neutral' }
   }
   if (lastEntry?.type === 'thinking') return { label: 'Thinking', family: 'neutral' }
   return { label: 'Working', family: 'neutral' }
@@ -873,24 +849,29 @@ const LogEntryRow = memo(({
         </div>
       )}
       {entry.type === 'trigger' && (() => {
-        const triggerType = (entry.metadata?.triggerType as string) ?? 'unknown'
-        const label = TRIGGER_LABELS[triggerType] ?? 'Trigger'
+        // What woke the agent: the line that opens the turn. Expanded, the
+        // exact text the model received.
+        const { tag, detail } = describeWake(entry)
         const isExpanded = expandedTriggers.has(entry.id)
         return (
-          <div className={compact ? 'overflow-hidden' : LOG_BOX}>
+          <div>
             <button
               onClick={() => onToggleTrigger(entry.id)}
-              className={`flex w-full items-center gap-1.5 px-1.5 py-1 font-mono text-xs text-[var(--ink-muted)] ${LOG_ROW_HOVER}`}
+              aria-expanded={isExpanded}
+              className="flex w-full min-w-0 items-center gap-2 py-1 text-left text-[11px] text-[var(--ink-muted)] hover:text-[var(--ink)]"
             >
-              <span>{label}</span>
+              <span aria-hidden className="h-px w-3 shrink-0 bg-[var(--rule)]" />
+              <span className="shrink-0 font-medium text-[var(--ink)]">{tag}</span>
+              {detail && <span className="min-w-0 truncate">{`· ${detail}`}</span>}
+              <span aria-hidden className="h-px min-w-3 flex-1 bg-[var(--rule)]" />
               {entry.timestamp > 0 && (
-                <span className="ml-auto text-[var(--ink-faint)]">
+                <span className="shrink-0 text-[10px] text-[var(--ink-faint)]">
                   {formatLoopTime(entry.timestamp)}
                 </span>
               )}
             </button>
             {isExpanded && (
-              <div className="max-h-64 overflow-y-auto whitespace-pre-wrap px-1.5 pb-2 pt-1 font-mono text-xs text-[var(--ink-muted)]">
+              <div className={`${LOG_BOX} max-h-64 overflow-y-auto whitespace-pre-wrap px-2.5 py-2 font-mono text-xs text-[var(--ink-muted)]`}>
                 {entry.content}
               </div>
             )}
@@ -925,22 +906,30 @@ const LogEntryRow = memo(({
         </div>
         )
       })()}
-      {isSystemNotice(entry) && (
-        // A runtime notice is status, not context: shown as it is, never folded.
-        <div className="flex items-start gap-2 rounded-lg border border-[var(--rule)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
-          <span className="max-h-40 min-w-0 flex-1 overflow-y-auto whitespace-pre-wrap break-words">
-            {entry.content.replace(/^\[System\] /, '')}
-          </span>
-          {entry.timestamp > 0 && (
-            <span className="shrink-0 text-[10px] text-[var(--ink-faint)]">
-              {formatLoopTime(entry.timestamp)}
-            </span>
-          )}
-        </div>
-      )}
+      {isSystemNotice(entry) && (() => {
+        // A notice is shown as it is, never folded. `runtime` is input the
+        // model received; `status` is for the owner and never reached it.
+        const forOwner = entry.metadata?.category === 'status'
+        return (
+          <div className={`rounded-lg border px-2.5 py-1.5 text-xs text-[var(--ink-muted)] ${forOwner ? 'border-dashed border-[var(--rule)]' : 'border-[var(--rule)]'}`}>
+            <div className="mb-0.5 flex items-center gap-2 text-[11px]">
+              <span className={forOwner ? 'text-[var(--ink-faint)]' : 'font-medium text-[var(--ink)]'}>
+                {forOwner ? 'Not sent to the model' : 'Runtime → agent'}
+              </span>
+              {entry.timestamp > 0 && (
+                <span className="ml-auto shrink-0 text-[10px] text-[var(--ink-faint)]">
+                  {formatLoopTime(entry.timestamp)}
+                </span>
+              )}
+            </div>
+            <div className="max-h-40 overflow-y-auto whitespace-pre-wrap break-words">
+              {entry.content.replace(/^\[System\] /, '')}
+            </div>
+          </div>
+        )
+      })()}
       {entry.type === 'context' && !isLoopMessageEntry(entry) && !isSystemNotice(entry) && (() => {
-        const category = (entry.metadata?.category as string) ?? 'unknown'
-        const label = CONTEXT_LABELS[category] ?? 'Context Injected'
+        const label = contextLabel(entry)
         const isExpanded = expandedContexts.has(entry.id)
         return (
           <div className={compact ? 'overflow-hidden' : LOG_BOX}>
@@ -1034,31 +1023,6 @@ const LogEntryRow = memo(({
           </div>
         </div>
       )}
-      {entry.type === 'inter_agent' && (() => {
-        const direction = entry.metadata?.direction as string
-        const fromAgent = entry.metadata?.fromAgent as string
-        const toAgent = entry.metadata?.toAgent as string
-        const channel = entry.metadata?.channel as string
-        const isIncoming = direction === 'incoming'
-        return (
-          <div className="rounded-lg border border-[var(--rule)] bg-[var(--paper)] px-2.5 py-2">
-            <div className="mb-1 flex min-w-0 items-center gap-1.5 text-[11px] text-[var(--ink-muted)]">
-              <span className="shrink-0">{isIncoming ? 'From' : 'To'}</span>
-              <span className="min-w-0 truncate font-mono text-[var(--ink)]" title={isIncoming ? fromAgent : toAgent}>
-                {isIncoming ? fromAgent : toAgent}
-              </span>
-              {channel && (
-                <span className="shrink-0 rounded-[var(--radius-sm)] border border-[var(--rule)] px-1 font-mono text-[10px] text-[var(--ink-faint)]">
-                  {channel}
-                </span>
-              )}
-            </div>
-            <div className="whitespace-pre-wrap text-xs text-[var(--ink)]">
-              {entry.content}
-            </div>
-          </div>
-        )
-      })()}
     </div>
   )
 })

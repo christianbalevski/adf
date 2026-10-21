@@ -1,4 +1,5 @@
 import type { AgentLogEntry } from '../stores/agent.store'
+import { isNoticeCategory } from '../../shared/utils/loop-parser'
 
 /**
  * `metadata.seq` — the adf_loop row a transcript entry came from — on entries
@@ -58,7 +59,7 @@ export function pendingBlockIndexes(log: AgentLogEntry[]): number[] {
  */
 export function interruptedBlockIndexes(log: AgentLogEntry[]): number[] {
   let end = log.length - 1
-  while (end >= 0 && log[end].type === 'context' && log[end].metadata?.category === 'System') end--
+  while (end >= 0 && log[end].type === 'context' && isNoticeCategory(log[end].metadata?.category)) end--
   return pendingBlockIndexes(log.slice(0, end + 1))
 }
 

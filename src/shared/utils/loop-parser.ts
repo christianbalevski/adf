@@ -10,13 +10,6 @@ import type { ContentBlock } from '../types/provider.types'
 import type { LoopEntry, DisplayEntry, DisplayEntryType } from '../types/adf-v02.types'
 import { attachmentsOf, displayAttachment, isFileRefBlock, splitLegacyUploads, type DisplayAttachment } from './file-ref'
 
-/** Detect context injection entries by their `[Context: <category>]` prefix.
- *  Returns the category string if matched, else null. */
-export function isContextEntry(text: string): string | null {
-  const match = text.match(/^\[Context: ([^\]]+)\]/)
-  return match ? match[1] : null
-}
-
 /**
  * Detect the inter-loop provenance stamp `[from loop:<name>] ` that
  * `LoopPool.sendToLoop` writes into the delivered row's content.
@@ -90,6 +83,52 @@ export function isRuntimeNotice(text: string): boolean {
   return RUNTIME_NOTICE_PREFIXES.some((prefix) => text.startsWith(prefix))
 }
 
+/**
+ * What the loop shows for runtime-written input that is not the owner's words.
+ * `adf_loop` has no metadata column, so a row's leading text is its marker:
+ *
+ * - `runtime`: a notice the model receives (`[System] …`, the autonomous nudges).
+ * - `status`: a notice for the owner only, never sent to the model
+ *   (`[Context: status]`; `[Context: System]` before the two were split).
+ * - `system_prompt` / `dynamic_instructions`: the instructions as last sent.
+ * - `provider_context`: input the provider added; `addedBy` names it.
+ * - `injected`: `loop_inject` context, with its `injectCategory` and `origin`.
+ * - `loop`: a message from another of the agent's loops.
+ */
+export type InjectedCategory = 'runtime' | 'status' | 'system_prompt' | 'dynamic_instructions' | 'provider_context' | 'injected' | 'loop'
+
+/** The categories shown as their own row rather than folded into a step block. */
+export function isNoticeCategory(category: unknown): boolean {
+  return category === 'runtime' || category === 'status'
+}
+
+/** The `[Context: …]` head of a provider's input, naming the provider. */
+export function providerContextCategory(addedBy: string): string {
+  return `provider_context | from=${addedBy.replace(/[\]|\n]/g, ' ')}`
+}
+
+export function classifyInjectedText(text: string): { content: string; metadata: Record<string, unknown> & { category: InjectedCategory | string } } | null {
+  const context = text.match(/^\[Context: ([^\]]+)\] ?([\s\S]*)$/)
+  if (context) {
+    const [name, ...fields] = context[1].split(' | ')
+    const field = (key: string) => fields.find((f) => f.startsWith(`${key}=`))?.slice(key.length + 1)
+    const content = context[2]
+    if (fields.includes('loop_inject=v2')) {
+      return { content, metadata: { category: 'injected', injectCategory: name, origin: field('origin') ?? 'system:unknown' } }
+    }
+    if (name === 'System' || name === 'status') return { content, metadata: { category: 'status' } }
+    if (name === 'provider_context') {
+      const addedBy = field('from')
+      return { content, metadata: { category: 'provider_context', ...(addedBy ? { addedBy } : {}) } }
+    }
+    return { content, metadata: { category: name } }
+  }
+  const loopSend = parseLoopSendStamp(text)
+  if (loopSend) return { content: loopSend.body, metadata: { category: 'loop', fromLoop: loopSend.fromLoop } }
+  if (isRuntimeNotice(text)) return { content: text, metadata: { category: 'runtime' } }
+  return null
+}
+
 /** Extract the first image VFS path from tool result text and return an adf-file:// URL. */
 function extractImageUrl(content: string): string | null {
   const match = content.match(/\[image: ([^\s]+) \(/)
@@ -128,19 +167,29 @@ function withToolAttachments(meta: Record<string, unknown>, attachments: Display
   return next
 }
 
-/** Detect system trigger messages by their known prefixes. */
-function detectTriggerType(text: string): string | null {
+/**
+ * What woke the agent, from the text the runtime wrote for it
+ * (`AgentExecutor.buildTriggerMessage`). Null for anything else, which is the
+ * owner's own words. Used on reload and live, so both name a wake alike.
+ */
+export function detectTriggerType(text: string): string | null {
   if (text.startsWith('The user has edited the document.')) return 'document_edit'
   if (text.startsWith('You received a message from agent')) return 'message_received'
-  if (text.startsWith('A scheduled timer has fired')) return 'schedule'
-  if (text.startsWith('[Inbox notification]')) return 'inbox_notification'
+  if (text.startsWith('A scheduled timer has fired')) return 'timer'
+  if (text.startsWith('[Inbox notification]')) return 'inbox'
   if (text === 'Go.') return 'autonomous_start'
   if (text === 'The user has manually triggered you. Review the document and respond.') return 'manual_invoke'
-  // v3 trigger types
+  if (text.startsWith('Agent started. Review your mind')) return 'startup'
+  if (text.startsWith('A batch of ') && text.includes(' events fired: ')) return 'batch'
   if (text.startsWith('A file has been ')) return 'file_change'
   if (text.startsWith('An outbound message was sent')) return 'outbox'
-  if (text.startsWith('A tool call was intercepted')) return 'tool_call'
+  // "was intercepted" is the wording before 2026-10.
+  if (text.startsWith('A tool call has been intercepted') || text.startsWith('A tool call was intercepted')) return 'tool_call'
+  if (text.startsWith('A task has been created.')) return 'task_create'
   if (text.startsWith('A task has completed')) return 'task_complete'
+  if (text.startsWith('A log entry has been recorded.')) return 'log_entry'
+  if (text.startsWith('An LLM call completed.')) return 'llm_call'
+  if (text.startsWith('You have been triggered. Review the current state')) return 'unknown'
   return null
 }
 
@@ -210,40 +259,14 @@ export function parseLoopToDisplay(entries: LoopEntry[]): DisplayEntry[] {
             })
             continue
           }
-          const contextCategory = isContextEntry(block.text)
-          if (contextCategory) {
-            const content = block.text.replace(/^\[Context: [^\]]+\] /, '')
+          const injected = classifyInjectedText(block.text)
+          if (injected) {
             displayEntries.push({
               id: `loop-${entry.seq}-${bi}`,
               type: 'context',
-              content,
+              content: injected.content,
               timestamp,
-              metadata: { seq: entry.seq, category: contextCategory }
-            })
-            continue
-          }
-          // Inter-loop delivery (loop_send). Rendered as an injected-context
-          // block labelled with the sender, never as an owner chat bubble —
-          // the stamp is the only thing that distinguishes the two, and it is
-          // present identically here (rehydrate) and on the live event path.
-          const loopSend = parseLoopSendStamp(block.text)
-          if (loopSend) {
-            displayEntries.push({
-              id: `loop-${entry.seq}-${bi}`,
-              type: 'context',
-              content: loopSend.body,
-              timestamp,
-              metadata: { seq: entry.seq, category: 'loop', fromLoop: loopSend.fromLoop }
-            })
-            continue
-          }
-          if (isRuntimeNotice(block.text)) {
-            displayEntries.push({
-              id: `loop-${entry.seq}-${bi}`,
-              type: 'context',
-              content: block.text,
-              timestamp,
-              metadata: { seq: entry.seq, category: 'System' }
+              metadata: { seq: entry.seq, ...injected.metadata }
             })
             continue
           }
@@ -463,40 +486,14 @@ export function parseLoopWithToolPairs(entries: LoopEntry[]): DisplayEntry[] {
             })
             continue
           }
-          const contextCategory = isContextEntry(block.text)
-          if (contextCategory) {
-            const content = block.text.replace(/^\[Context: [^\]]+\] /, '')
+          const injected = classifyInjectedText(block.text)
+          if (injected) {
             displayEntries.push({
               id: `loop-${entry.seq}-${bi}`,
               type: 'context',
-              content,
+              content: injected.content,
               timestamp,
-              metadata: { seq: entry.seq, category: contextCategory }
-            })
-            continue
-          }
-          // Inter-loop delivery (loop_send). Rendered as an injected-context
-          // block labelled with the sender, never as an owner chat bubble —
-          // the stamp is the only thing that distinguishes the two, and it is
-          // present identically here (rehydrate) and on the live event path.
-          const loopSend = parseLoopSendStamp(block.text)
-          if (loopSend) {
-            displayEntries.push({
-              id: `loop-${entry.seq}-${bi}`,
-              type: 'context',
-              content: loopSend.body,
-              timestamp,
-              metadata: { seq: entry.seq, category: 'loop', fromLoop: loopSend.fromLoop }
-            })
-            continue
-          }
-          if (isRuntimeNotice(block.text)) {
-            displayEntries.push({
-              id: `loop-${entry.seq}-${bi}`,
-              type: 'context',
-              content: block.text,
-              timestamp,
-              metadata: { seq: entry.seq, category: 'System' }
+              metadata: { seq: entry.seq, ...injected.metadata }
             })
             continue
           }

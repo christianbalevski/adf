@@ -194,7 +194,7 @@ describe('interrupted output', () => {
       const store = useAgentStore.getState()
       store.addLogEntry({ id: 'u', type: 'user', content: 'Write an essay.', timestamp: 1, metadata: { seq: 1 } })
       store.addLogEntry({ id: 't', type: 'text', content: 'The essay begins', timestamp: 2 })
-      store.addLogEntry({ id: 'n', type: 'context', content: '[System] Turn interrupted by user.', timestamp: 3, metadata: { seq: 3, category: 'System' } })
+      store.addLogEntry({ id: 'n', type: 'context', content: '[System] Turn interrupted by user.', timestamp: 3, metadata: { seq: 3, category: 'runtime' } })
       createAgentEventHandler()({ type: 'turn_complete', payload: { content: [], interrupted: true, partial: true, seq: 2 }, timestamp: 4 } as AgentExecutionEvent)
       const log = useAgentStore.getState().log
       expect(log.find((e) => e.id === 't')?.metadata).toMatchObject({ seq: 2, interrupted: true })

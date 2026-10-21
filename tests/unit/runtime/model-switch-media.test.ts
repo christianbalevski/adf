@@ -11,10 +11,10 @@ const turn = (agent: ReturnType<typeof createHeadlessAgent>, text = 'continue') 
   type: 'chat', source: 'test', data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text }], created_at: 1234 } },
 }), { scope: 'agent' }))
 
-/** The System notices this agent's loop recorded. */
+/** The status notices this agent's loop recorded. */
 const notices = (agent: ReturnType<typeof createHeadlessAgent>) => agent.workspace.getLoop()
   .flatMap(row => row.content_json)
-  .filter(block => block.type === 'text' && block.text?.startsWith('[Context: System] [System] Not sent to this model'))
+  .filter(block => block.type === 'text' && block.text?.startsWith('[Context: status] [System] Not sent to this model'))
   .map(block => block.text!)
 
 afterEach(() => vi.unstubAllGlobals())
@@ -30,7 +30,7 @@ describe('live model media policy changes', () => {
     const agent = createHeadlessAgent({ name: 'agent-1', provider, profile: 'benchmark', registerTools() {} })
     const events: Array<{ category?: string; content?: string }> = []
     agent.executor.on('event', (event: { type: string; payload: { category?: string; content?: string } }) => {
-      if (event.type === 'context_injected' && event.payload.category === 'System') events.push(event.payload)
+      if (event.type === 'context_injected' && event.payload.category === 'status') events.push(event.payload)
     })
     const media: ContentBlock[] = [
       { type: 'text', text: 'Saved file: clip.mp4' },
@@ -48,7 +48,7 @@ describe('live model media policy changes', () => {
       agent.executor.updateConfig({ ...config, model: { ...config.model, model_id: 'text-model', multimodal: { image: false, audio: false, video: false } } })
       await turn(agent)
       expect(notices(agent)).toEqual([
-        "[Context: System] [System] Not sent to this model: 1 image (image input is off in this agent's model settings), " +
+        "[Context: status] [System] Not sent to this model: 1 image (image input is off in this agent's model settings), " +
         "1 audio (audio input is off in this agent's model settings), 1 video (video input is off in this agent's model settings). The originals stay in history.",
       ])
       expect(events.filter(event => event.content?.includes('Not sent to this model'))).toHaveLength(1)
@@ -106,7 +106,7 @@ describe('live model media policy changes', () => {
       expect(wire).toContain(mediaPlaceholder('video'))
       expect(wire).not.toContain('dmlkZW8=')
       expect(notices(agent)).toEqual([
-        '[Context: System] [System] Not sent to this model: 1 video (Anthropic does not accept video input). The originals stay in history.',
+        '[Context: status] [System] Not sent to this model: 1 video (Anthropic does not accept video input). The originals stay in history.',
       ])
       expect(agent.executor.getState()).not.toBe('error')
       expect(agent.session.getMessages()[0].content).toContainEqual({ type: 'video_url', video_url: { url: 'data:video/mp4;base64,dmlkZW8=' } })

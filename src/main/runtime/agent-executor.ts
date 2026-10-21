@@ -31,7 +31,7 @@ import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prom
 import { sliceWellFormed, toWellFormed } from '../../shared/utils/well-formed'
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
-import { parseLoopToDisplay, formatTurnErrorRow } from '../../shared/utils/loop-parser'
+import { parseLoopToDisplay, formatTurnErrorRow, providerContextCategory } from '../../shared/utils/loop-parser'
 // Shared with deriveLoopConfig — both enforcement points must read a duplicated
 // declaration the same way, or a side loop inherits an un-gated copy of a tool
 // the executor treats as restricted.
@@ -2044,7 +2044,7 @@ export class AgentExecutor extends EventEmitter {
     try {
       this.emitEvent({
         type: 'context_injected',
-        payload: { category: 'System', content: `Compacting conversation history (${reason})...` },
+        payload: { category: 'status', content: `Compacting conversation history (${reason})...` },
         timestamp: Date.now()
       })
       await this.forceCompact(reason)
@@ -2477,7 +2477,7 @@ export class AgentExecutor extends EventEmitter {
           } else {
             this.emitEvent({
               type: 'context_injected',
-              payload: { category: 'System', content: 'Auto-compacting conversation history...' },
+              payload: { category: 'status', content: 'Auto-compacting conversation history...' },
               timestamp: Date.now()
             })
             chatTokens = await this.forceCompact(`auto: ${chatTokens} >= ${compactThreshold}`)
@@ -2576,7 +2576,7 @@ export class AgentExecutor extends EventEmitter {
           if (preflightTokens >= preflightBound && this.provider) {
             this.emitEvent({
               type: 'context_injected',
-              payload: { category: 'System', content: 'Compacting conversation history (context limit reached)…' },
+              payload: { category: 'status', content: 'Compacting conversation history (context limit reached)…' },
               timestamp: Date.now()
             })
             const previousPromptCache = this.systemPromptCache
@@ -2737,10 +2737,10 @@ export class AgentExecutor extends EventEmitter {
           try {
             this.session.getWorkspace().insertLog('warn', 'executor', 'output_limit_reached', null, notice.slice(0, 300))
           } catch { /* observability is never fatal */ }
-          const noticeSeq = this.session.appendContextEntry('System', notice)
+          const noticeSeq = this.session.appendContextEntry('status', notice)
           this.emitEvent({
             type: 'context_injected',
-            payload: { category: 'System', content: notice, ...(noticeSeq !== undefined ? { seq: noticeSeq } : {}) },
+            payload: { category: 'status', content: notice, ...(noticeSeq !== undefined ? { seq: noticeSeq } : {}) },
             timestamp: Date.now()
           })
         }
@@ -2748,14 +2748,16 @@ export class AgentExecutor extends EventEmitter {
         // Model input a provider added on its own (Claude Code's reminders:
         // environment, date, account) — recorded so the loop shows everything
         // the model received.
-        const providerContext = (response.providerMetadata?.adf as { contextInjections?: unknown } | undefined)?.contextInjections
+        const adfMeta = response.providerMetadata?.adf as { contextInjections?: unknown; contextSource?: unknown } | undefined
+        const providerContext = adfMeta?.contextInjections
         if (Array.isArray(providerContext)) {
+          const addedBy = typeof adfMeta?.contextSource === 'string' && adfMeta.contextSource ? adfMeta.contextSource : (this.provider?.name ?? 'provider')
           for (const content of providerContext) {
             if (typeof content !== 'string' || !content) continue
-            const pcSeq = this.session.appendContextEntry('provider_context', content)
+            const pcSeq = this.session.appendContextEntry(providerContextCategory(addedBy), content)
             this.emitEvent({
               type: 'context_injected',
-              payload: { category: 'provider_context', content, ...(pcSeq !== undefined ? { seq: pcSeq } : {}) },
+              payload: { category: 'provider_context', addedBy, content, ...(pcSeq !== undefined ? { seq: pcSeq } : {}) },
               timestamp: Date.now()
             })
           }
@@ -4778,10 +4780,10 @@ export class AgentExecutor extends EventEmitter {
       if (older) parts.push(`${counted(older, kind)} (older than the request media limit: ${requestMediaLimitText(requestMediaLimit(this.config.context))})`)
     }
     const notice = `[System] Not sent to this model: ${parts.join(', ')}. The originals stay in history.`
-    const seq = this.session.appendContextEntry('System', notice)
+    const seq = this.session.appendContextEntry('status', notice)
     this.emitEvent({
       type: 'context_injected',
-      payload: { category: 'System', content: notice, ...(seq !== undefined ? { seq } : {}) },
+      payload: { category: 'status', content: notice, ...(seq !== undefined ? { seq } : {}) },
       timestamp: Date.now()
     })
   }
@@ -6239,7 +6241,7 @@ export class AgentExecutor extends EventEmitter {
     this.session.flushToLoop()
     this.emitEvent({
       type: 'context_injected',
-      payload: { category: 'System', content: text, ...(message.seq !== undefined ? { seq: message.seq } : {}) },
+      payload: { category: 'runtime', content: text, ...(message.seq !== undefined ? { seq: message.seq } : {}) },
       timestamp: Date.now()
     })
   }
@@ -6320,7 +6322,7 @@ export class AgentExecutor extends EventEmitter {
     try {
       this.session.getWorkspace().insertLog('warn', 'executor', 'chat_discarded', null, notice.slice(0, 500), { reason, turn_ids: ids })
     } catch { /* observability is never fatal */ }
-    this.emitEvent({ type: 'context_injected', payload: { category: 'System', content: notice }, timestamp: Date.now() })
+    this.emitEvent({ type: 'context_injected', payload: { category: 'runtime', content: notice }, timestamp: Date.now() })
     this.pendingDiscardNotice = this.pendingDiscardNotice ? `${this.pendingDiscardNotice}\n${notice}` : notice
     if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
   }

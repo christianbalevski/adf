@@ -1,22 +1,23 @@
 import type { AgentLogEntry } from '../stores/agent.store'
 import { lacksSeq } from '../hooks/live-seq'
+import { isNoticeCategory } from '../../shared/utils/loop-parser'
 
 export function isTurnCompleteMarker(entry: AgentLogEntry): boolean {
   return entry.type === 'system' && entry.content.trim().toLowerCase() === 'turn complete'
 }
 
 /**
- * A runtime notice to the owner (`context_injected`, category `System`):
- * compaction, a provider that gave up, the silent-turn nudge. Status, not
- * workflow noise, so it is never folded into an activity group.
+ * A notice row: one the model received (`runtime`: nudges, recovery, the
+ * silent-turn notice) or one for the owner only (`status`: compacting, output
+ * limit). Never folded into an activity group.
  */
 export function isSystemNotice(entry: AgentLogEntry): boolean {
-  return entry.type === 'context' && entry.metadata?.category === 'System'
+  return entry.type === 'context' && isNoticeCategory(entry.metadata?.category)
 }
 
 /** The notice the executor emits when a compaction begins. */
 export function isCompactingNotice(entry: AgentLogEntry): boolean {
-  return isSystemNotice(entry) && /^(auto-)?compacting\b/i.test(entry.content.trim())
+  return entry.type === 'context' && entry.metadata?.category === 'status' && /^(auto-)?compacting\b/i.test(entry.content.trim())
 }
 
 export interface LoopActivity {

@@ -717,7 +717,7 @@
           content: "[System] Turn interrupted by user."
           id: "loop-3-0"
           metadata:
-            category: "System"
+            category: "runtime"
             seq: 3
           timestamp: "<t>"
           type: "context"
@@ -1043,7 +1043,7 @@
   type: "response_metadata"
 #4:
   payload:
-    category: "System"
+    category: "runtime"
     content: "[System] Turn interrupted by user."
     seq: 3
   timestamp: "<t>"

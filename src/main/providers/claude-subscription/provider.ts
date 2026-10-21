@@ -275,7 +275,8 @@ export class ClaudeSubscriptionProvider implements LLMProvider {
           cacheReadTokens: r.usage.cacheRead,
           cacheWriteTokens: r.usage.cacheWrite,
           ...(r.usage.reasoning !== undefined ? { reasoningTokens: r.usage.reasoning } : {}),
-          ...(r.injections.length > 0 ? { contextInjections: r.injections } : {}),
+          // Claude Code adds these itself; the loop labels them with this name.
+          ...(r.injections.length > 0 ? { contextInjections: r.injections, contextSource: 'Claude Code' } : {}),
         },
         ...(r.rateLimit ? { claude: { rateLimit: r.rateLimit } } : {}),
       },

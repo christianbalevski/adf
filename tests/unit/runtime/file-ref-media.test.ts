@@ -80,10 +80,10 @@ function storedRefs(agent: HeadlessAgent) {
   return agent.workspace.getLoop().flatMap(row => row.content_json).filter(block => block.type === 'file_ref').map(block => block.file_ref!)
 }
 
-/** The System notices the agent's loop recorded about media left out. */
+/** The status notices the agent's loop recorded about media left out. */
 function systemNotices(agent: HeadlessAgent): string[] {
   return agent.workspace.getLoop().flatMap(row => row.content_json)
-    .filter(b => b.type === 'text' && b.text?.startsWith('[Context: System] [System] Not sent to this model'))
+    .filter(b => b.type === 'text' && b.text?.startsWith('[Context: status] [System] Not sent to this model'))
     .map(b => b.text!)
 }
 
@@ -330,7 +330,7 @@ describe('size and request limits', () => {
     })
     await agent.executor.executeTurn(chat([{ type: 'text', text: 'all of these' }, ...refs]))
     await agent.executor.executeTurn(chat([{ type: 'text', text: 'and now?' }]))
-    const notice = '[Context: System] [System] Not sent to this model: 11 images (older than the request media limit: 20 files, 20.0 MB). The originals stay in history.'
+    const notice = '[Context: status] [System] Not sent to this model: 11 images (older than the request media limit: 20 files, 20.0 MB). The originals stay in history.'
     expect(systemNotices(agent)).toEqual([notice, notice])
   })
 
@@ -349,7 +349,7 @@ describe('size and request limits', () => {
     })
     await agent.executor.executeTurn(chat([{ type: 'text', text: 'three' }, ...refs]))
     // Over 2: the oldest drop until half (1) remains.
-    expect(systemNotices(agent)).toEqual(['[Context: System] [System] Not sent to this model: 2 images (older than the request media limit: 2 files, 20.0 MB). The originals stay in history.'])
+    expect(systemNotices(agent)).toEqual(['[Context: status] [System] Not sent to this model: 2 images (older than the request media limit: 2 files, 20.0 MB). The originals stay in history.'])
     expect(provider.last()).toContain('outside the request media limit (2 files, 20.0 MB)')
 
     // A very large limit sends them all, with no clamping.

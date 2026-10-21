@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { formatTurnErrorRow, parseLoopToDisplay, parseLoopWithToolPairs, parseTurnErrorRow } from '../../../src/shared/utils/loop-parser'
+import { detectTriggerType, formatTurnErrorRow, parseLoopToDisplay, parseLoopWithToolPairs, parseTurnErrorRow, providerContextCategory } from '../../../src/shared/utils/loop-parser'
 import { persistedErrorDetails } from '../../../src/main/runtime/agent-executor'
 import type { LoopEntry } from '../../../src/shared/types/adf-v02.types'
 
@@ -134,7 +134,7 @@ describe('persisted error details', () => {
 
 describe('loop-parser runtime notices', () => {
   // Every user-role row the runtime writes reaches the model, so every one is
-  // shown — as a System notice, not as the owner's words.
+  // shown — as a runtime notice, not as the owner's words.
   it.each([
     '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]',
     '[You have responded 2 times in a row without calling any tools. Do not reply with another status update.]',
@@ -144,16 +144,67 @@ describe('loop-parser runtime notices', () => {
     '[Provider error ("503") — auto-recovery retry 1/3, ~1m since the first failure.]',
     '[Provider unavailable ("503"). Gave up.]',
     '[Turn error ("bad") — structural recovery retry 1/3.]',
-  ])('shows %s as a System notice', (text) => {
+  ])('shows %s as a runtime notice', (text) => {
     for (const parse of [parseLoopToDisplay, parseLoopWithToolPairs]) {
       const display = parse([userEntry([{ type: 'text', text }], 7)])
       expect(display).toHaveLength(1)
-      expect(display[0]).toMatchObject({ type: 'context', content: text, metadata: { seq: 7, category: 'System' } })
+      expect(display[0]).toMatchObject({ type: 'context', content: text, metadata: { seq: 7, category: 'runtime' } })
     }
   })
 
   it('leaves an owner message alone', () => {
     const display = parseLoopToDisplay([userEntry([{ type: 'text', text: 'What is the System status?' }])])
     expect(display[0].type).toBe('user')
+  })
+})
+
+describe('loop-parser injected context', () => {
+  const parseOne = (text: string) => {
+    const results = [parseLoopToDisplay, parseLoopWithToolPairs].map(parse => parse([userEntry([{ type: 'text', text }], 3)]))
+    expect(results[0]).toEqual(results[1])
+    return results[0][0]
+  }
+
+  it('reads an owner-only notice as status, old marker and new', () => {
+    for (const marker of ['[Context: status]', '[Context: System]']) {
+      expect(parseOne(`${marker} [System] Not sent to this model: 1 image.`)).toMatchObject({
+        type: 'context', content: '[System] Not sent to this model: 1 image.', metadata: { category: 'status' },
+      })
+    }
+  })
+
+  it('names the provider that added context, when the row says', () => {
+    expect(parseOne(`[Context: ${providerContextCategory('Claude Code')}] Today is Tuesday.`)).toMatchObject({
+      content: 'Today is Tuesday.', metadata: { category: 'provider_context', addedBy: 'Claude Code' },
+    })
+    expect(parseOne('[Context: provider_context] Today is Tuesday.').metadata).toEqual({ seq: 3, category: 'provider_context' })
+  })
+
+  it('reads loop_inject rows with their category and origin', () => {
+    expect(parseOne('[Context: notes | loop_inject=v2 | origin=lambda:watch.ts | key=k1] remember this')).toMatchObject({
+      content: 'remember this', metadata: { category: 'injected', injectCategory: 'notes', origin: 'lambda:watch.ts' },
+    })
+  })
+
+  it('keeps the instruction categories', () => {
+    expect(parseOne('[Context: system_prompt] You are an agent.').metadata?.category).toBe('system_prompt')
+    expect(parseOne('[Context: dynamic_instructions] 2 unread.').metadata?.category).toBe('dynamic_instructions')
+  })
+})
+
+describe('loop-parser wake reasons', () => {
+  it.each([
+    ['Agent started. Review your mind for context and take any startup actions.', 'startup'],
+    ['A tool call has been intercepted.\nTool: fs_write', 'tool_call'],
+    ['A tool call was intercepted.\nTool: fs_write', 'tool_call'],
+    ['A task has been created.\nTask ID: t1', 'task_create'],
+    ['A log entry has been recorded.\nLevel: warn', 'log_entry'],
+    ['An LLM call completed.\nProvider: x', 'llm_call'],
+    ['A batch of 3 events fired: timer, inbox. Check your inbox/tasks for details.', 'batch'],
+    ['A scheduled timer has fired.\nPayload: tick', 'timer'],
+    ['[Inbox notification] New messages.', 'inbox'],
+  ])('reads %j as a %s wake', (text, triggerType) => {
+    expect(detectTriggerType(text)).toBe(triggerType)
+    expect(parseLoopToDisplay([userEntry([{ type: 'text', text }])])[0]).toMatchObject({ type: 'trigger', metadata: { triggerType } })
   })
 })

@@ -94,6 +94,9 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
       case 'context':
         if (meta.category === 'loop' && typeof meta.fromLoop === 'string') {
           items.push({ ...base, kind: 'user', text: entry.content, origin: 'loop', from: meta.fromLoop })
+        } else if (meta.category === 'runtime') {
+          // A notice the model received, like a wake: the runtime speaking.
+          items.push({ ...base, kind: 'user', text: entry.content, origin: 'runtime' })
         } else {
           items.push({ ...base, kind: 'context', category: String(meta.category ?? 'context'), text: entry.content })
         }

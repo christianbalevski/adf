@@ -116,12 +116,12 @@ describe('live step', () => {
 
 describe('compaction phase', () => {
   const notice = (id: string, content: string): AgentLogEntry => ({
-    id, type: 'context', content, timestamp: 1, metadata: { category: 'System' },
+    id, type: 'context', content, timestamp: 1, metadata: { category: 'status' },
   })
   const compacting = { entryId: null, phase: 'Compacting…' }
   const trigger = entry('trigger', 'trigger')
 
-  it('reads a System context entry as a notice, and only that', () => {
+  it('reads a status or runtime context entry as a notice, and only that', () => {
     expect(isSystemNotice(notice('n', 'Auto-compacting conversation history...'))).toBe(true)
     expect(isSystemNotice(entry('context', 'context', { category: 'system_prompt' }))).toBe(false)
   })
