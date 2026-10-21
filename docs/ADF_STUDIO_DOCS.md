@@ -82,11 +82,12 @@ Below the header:
 - **Running**: a collapsible list of the running agents, with a count.
 - One section per tracked folder, as a tree. A folder row has **Start all** or **Stop all**. Right-click it for **Rescan**, **Show in Explorer** (**Reveal in Finder** on macOS) and **Untrack folder…**.
 
+With only the local server, the tracked folders are listed with a divider between them. With more than one server connected, the folders are grouped under one header per server: *name* (Local) first, then each other server with the remote icon. A divider separates the servers, not the folders. A header collapses its group, and while its group scrolls it stays at the top of the list until the next server's header takes its place. Right-click a header for **Track folder…** on that server.
+
 An agent row shows, left to right:
 
-- the avatar with its state dot. An amber ring means the agent is waiting on you; the tooltip says **Waiting for your approval** or **Has a question for you**;
+- the avatar with its state dot. An amber ring means the agent is waiting on you; the tooltip says **Waiting for your approval** or **Has a question for you**. An agent that has not been reviewed yet, for example a file someone sent you, shows an amber shield with `!` in place of the avatar, with the tooltip **Not reviewed**; Studio shows the review before it starts;
 - the agent's file name, with a small count when inner loops are working;
-- **Not reviewed** (a shield with `!`): the agent, for example a file someone sent you, has not been reviewed yet; Studio shows the review before it starts;
 - **Open in its own window** (a window glyph): the agent has a window of its own;
 - a bolt for an autonomous agent;
 - on hover, its messaging direction (**Sends messages**, **Receives messages**, **Sends and receives messages**);

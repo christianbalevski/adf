@@ -835,13 +835,15 @@ export function Sidebar() {
       >
         {multi ? (
           // One group per runtime, in the set's order (multi-runtime.md §5.4).
+          // The dividers sit between servers here, not between their folders.
           <div className="pb-1">
-            {runtimes.map((rt) => (
-              <RuntimeGroup key={rt.id} runtime={rt} onTrack={() => trackOn(rt.id)}>
+            {runtimes.map((rt, index) => (
+              <div key={rt.id}>
+              {index > 0 && <div data-runtime-divider="" className="border-t border-hairline mb-1" />}
+              <RuntimeGroup runtime={rt} onTrack={() => trackOn(rt.id)}>
                 {rt.id === LOCAL_RUNTIME ? (
-                  directories.length > 0 ? visibleDirectories.map((dirPath, index) => (
+                  directories.length > 0 ? visibleDirectories.map((dirPath) => (
               <div key={dirPath}>
-                {index > 0 && <div className="border-t border-hairline my-1" />}
                 <DirectorySection
                   dirPath={dirPath}
                   files={visibleFilesByDir[dirPath] ?? []}
@@ -872,6 +874,7 @@ export function Sidebar() {
                   />
                 )}
               </RuntimeGroup>
+              </div>
             ))}
           </div>
         ) : directories.length > 0 ? (
@@ -919,7 +922,9 @@ export function Sidebar() {
 /**
  * A runtime's group (multi-runtime.md §5.4): its name, and its state while
  * it is down; its tracked folders inside. Collapsible like a folder; its
- * context menu tracks a folder on that runtime.
+ * context menu tracks a folder on that runtime. The header sticks to the top
+ * of the tree while its group scrolls under it, until the next group's header
+ * pushes it up; its background is the sidebar's, so no row shows through.
  */
 function RuntimeGroup({ runtime, onTrack, children }: { runtime: RuntimeView; onTrack: () => void; children: React.ReactNode }) {
   const [expanded, toggle] = useFolderExpanded(`runtime:${runtime.id}`)
@@ -936,7 +941,8 @@ function RuntimeGroup({ runtime, onTrack, children }: { runtime: RuntimeView; on
         onClick={toggle}
         onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle() } }}
         onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); setMenu({ x: e.clientX, y: e.clientY }) }}
-        className="w-full pl-3 pr-1.5 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
+        data-runtime-header=""
+        className="sticky top-0 z-10 w-full pl-3 pr-1.5 pt-[5px] pb-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text)] bg-surface-2 hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
       >
         <Chevron expanded={expanded} />
         {runtime.kind === 'remote' && <RemoteMark size={11} />}
@@ -999,9 +1005,8 @@ const RemoteRuntimeTree = memo(function RemoteRuntimeTree({
       aria-disabled={down || undefined}
       title={down ? CONNECTION_STATE_LABELS[runtime.state] : undefined}
     >
-      {visibleDirectories.map((dirPath, index) => (
+      {visibleDirectories.map((dirPath) => (
         <div key={dirPath}>
-          {index > 0 && <div className="border-t border-hairline my-1" />}
           <DirectorySection
             dirPath={dirPath}
             files={visibleFilesByDir[dirPath] ?? []}
@@ -1691,6 +1696,7 @@ const AgentFileRow = memo(function AgentFileRow({
         starting={(toggling && !isRunning) || isStarting}
         stopping={(toggling && isRunning) || isStopping}
         waiting={waiting}
+        needsReview={needsReview}
       />
 
       {/* The full path is the hint; a native title never renders in this
@@ -1740,16 +1746,6 @@ const AgentFileRow = memo(function AgentFileRow({
       {/* Trailing markers sit tighter than the row's own gap so the name
           keeps as much width as the sidebar allows. */}
       <span className="flex items-center gap-1 shrink-0">
-        {needsReview && (
-          <Tooltip tip="Not reviewed" className="flex shrink-0 text-[var(--adf-ui-warning)]">
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="Not reviewed" role="img">
-              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
-              <line x1="12" y1="8" x2="12" y2="12" />
-              <line x1="12" y1="16" x2="12.01" y2="16" />
-            </svg>
-          </Tooltip>
-        )}
-
         {inWindow && (
           <Tooltip tip="Open in its own window" className="flex shrink-0 text-[var(--adf-ui-text-subtle)]">
             <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" aria-label="In its own window" role="img">
@@ -1925,7 +1921,8 @@ const AgentAvatar = memo(function AgentAvatar({
   state,
   starting,
   stopping,
-  waiting = null
+  waiting = null,
+  needsReview = false
 }: {
   seed: string | null
   icon?: string
@@ -1936,6 +1933,8 @@ const AgentAvatar = memo(function AgentAvatar({
   stopping?: boolean
   /** The agent waits on the user: the rail's amber ring, with its reason as the tip. */
   waiting?: 'approval' | 'ask' | null
+  /** Not reviewed: an amber shield takes the avatar's place, with the same tip. */
+  needsReview?: boolean
 }) {
   const busy = starting || stopping
   const showBadge = busy || state !== 'not_participating'
@@ -1944,28 +1943,48 @@ const AgentAvatar = memo(function AgentAvatar({
     ? `transition-[filter,opacity] ${running || busy ? '' : 'grayscale opacity-70'}`
     : `transition-opacity ${running || busy ? '' : 'opacity-70'}`
   const waitingTip = waitingLabel(waiting)
+  const tip = [needsReview ? 'Not reviewed' : null, waitingTip].filter(Boolean).join(' · ')
   const avatar = (
     <span className="relative shrink-0 w-4 h-4 flex items-center justify-center">
       {waitingTip && (
         <span className="absolute -inset-0.5 rounded-full ring-2 ring-amber-400 dark:ring-amber-400 animate-pulse" aria-hidden />
       )}
-      <span className={`flex ${quiet}`}>
-        <OrbitalAvatar seed={seed} icon={icon} iconSeed={iconSeed} size={16} emojiSize={12} animated={state === 'active'} />
-      </span>
+      {needsReview ? (
+        // Full strength, never faded like a stopped avatar: it is a warning.
+        <span data-review-shield="" className="flex text-[var(--adf-ui-warning)]">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+            <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z" />
+            <line x1="12" y1="8" x2="12" y2="12" />
+            <line x1="12" y1="16" x2="12.01" y2="16" />
+          </svg>
+        </span>
+      ) : (
+        <span className={`flex ${quiet}`}>
+          <OrbitalAvatar seed={seed} icon={icon} iconSeed={iconSeed} size={16} emojiSize={12} animated={state === 'active'} />
+        </span>
+      )}
       {showBadge && (
         // A ring in the row's own colour lifts the badge off the orbital beneath
         // it; the row sets --row-bg for rest, hover and selected.
         <span className="absolute -bottom-0.5 -right-0.5 flex rounded-full shadow-[0_0_0_1.5px_var(--row-bg,var(--adf-surface-2))]">
-          {/* One tip at a time: while the ring is up the avatar's tip carries the state. */}
-          <StatusDot state={state} starting={starting} stopping={stopping} bare={!!waitingTip} />
+          {/* One tip at a time: while the avatar has a tip of its own the dot has none. */}
+          <StatusDot state={state} starting={starting} stopping={stopping} bare={!!tip} />
         </span>
       )}
     </span>
   )
-  if (!waitingTip) return avatar
+  if (!tip) return avatar
   return (
-    <Tooltip tip={waitingTip} delay={300} className="flex shrink-0">
-      <span role="img" aria-label={waitingTip} className="flex">{avatar}</span>
+    <Tooltip tip={tip} delay={300} className="flex shrink-0">
+      {/* The shield is a tab stop, so its tip also shows on keyboard focus. */}
+      <span
+        role="img"
+        aria-label={tip}
+        tabIndex={needsReview ? 0 : undefined}
+        className={needsReview ? 'flex rounded outline-none focus-visible:ring-1 focus-visible:ring-[var(--adf-ui-focus)]' : 'flex'}
+      >
+        {avatar}
+      </span>
     </Tooltip>
   )
 })
