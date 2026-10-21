@@ -31,7 +31,7 @@ import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemoteAccessView, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
-import { andList, listenPlan, PUBLIC_WARNING } from '../../../shared/utils/network-consent-text'
+import { andList, listenPlan, PUBLIC_WARNING, unidentifiedText } from '../../../shared/utils/network-consent-text'
 
 // --- Pure helpers (tested) ------------------------------------------------------
 
@@ -469,6 +469,11 @@ export function SharePanelView({ view, runtime = null, busy, error, now, opened 
       {view && !view.available && <p className="text-[var(--adf-ui-text-muted)]">{view.unavailableReason}</p>}
       {view?.available && !status && <p className="text-[var(--adf-ui-danger)]">{view.error ?? 'Studio could not read remote access.'}</p>}
       {status && consent && <ShareConsent consent={consent} busy={busy} onAllow={onAllow} />}
+      {status?.networks.filter((n) => !n.id).map((n) => (
+        <p key={`unidentified:${n.kind}:${n.ifaces.join(',')}`} className="text-[var(--adf-ui-text-muted)]">
+          {unidentifiedText(n.problem)}<DocsLink href={DOCS.unidentifiedNetwork} label="Help" className="ml-1.5 !text-[11px]" />
+        </p>
+      ))}
       {status && !consent && (
         <>
           {approved

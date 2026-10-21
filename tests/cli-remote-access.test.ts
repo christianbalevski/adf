@@ -191,7 +191,7 @@ describe.each(['linux', 'darwin', 'win32'] as const)('adf daemon remote status t
     const h = await host({ platform, gateway: '192.168.77.1|' })
     expect(await h.run('remote', 'on')).toBe(0)
     expect(lines(h.out).slice(0, 2)).toEqual(['Remote access: on', 'Paused on Unidentified network.'])
-    expect(h.out.join('')).toContain('  Unidentified network  not allowed (its router did not answer)')
+    expect(h.out.join('')).toContain('  Unidentified network  not allowed. ADF cannot identify this network. The router does not answer.')
   })
 
   it('on, with no network: no address', async () => {

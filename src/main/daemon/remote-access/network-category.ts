@@ -11,6 +11,7 @@
 import { execFile } from 'node:child_process'
 import { createSocket } from 'node:dgram'
 import { readFile } from 'node:fs/promises'
+import type { NetworkProblem } from '../../../shared/types/remote-access.types'
 
 export type Exec = (file: string, args: string[], opts?: { timeoutMs?: number }) => Promise<string>
 
@@ -20,6 +21,34 @@ export const defaultExec: Exec = (file, args, opts = {}) => new Promise((resolve
     else resolve(String(stdout))
   })
 })
+
+/**
+ * macOS tools by absolute path first: an app started from the Finder or by
+ * launchd, or a login shell whose PATH leaves out /usr/sbin, cannot find
+ * `netstat`, `arp` or `ipconfig` by name. The bare name is the fallback when
+ * the absolute path does not exist (ENOENT).
+ */
+export const DARWIN_TOOLS: Readonly<Record<'netstat' | 'arp' | 'ipconfig', string>> = {
+  netstat: '/usr/sbin/netstat',
+  arp: '/usr/sbin/arp',
+  ipconfig: '/usr/sbin/ipconfig',
+}
+
+/** Run `tool` on macOS by its absolute path, then by name if that path is missing. */
+async function execDarwinTool(exec: Exec, tool: keyof typeof DARWIN_TOOLS, args: string[], opts?: { timeoutMs?: number }): Promise<string> {
+  try {
+    return await exec(DARWIN_TOOLS[tool], args, opts)
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT') throw err
+    return exec(tool, args, opts)
+  }
+}
+
+/** `netstat -rn -f inet: spawn netstat ENOENT`: one line, at most 200 characters. */
+function errorDetail(what: string, err: unknown): string {
+  const text = err instanceof Error ? err.message : String(err)
+  return `${what}: ${text.split(/\r?\n/)[0]}`.slice(0, 200)
+}
 
 // --- Windows ------------------------------------------------------------------
 
@@ -47,15 +76,20 @@ const WINDOWS_PROFILE_COMMAND = 'Get-NetConnectionProfile | Select-Object Interf
 
 // --- macOS / Linux: the default gateway ------------------------------------------
 
-/** `netstat -rn -f inet` (macOS): `default  192.168.1.1  UGScg  en0` → en0 → 192.168.1.1 (the first default per interface). */
+/**
+ * `netstat -rn -f inet` (macOS): `default  192.168.1.1  UGScg  en0` → en0 →
+ * 192.168.1.1 (the first default per interface). `default link#23 UCSIg
+ * utun4` (a VPN's scoped default) has no gateway address and is skipped.
+ * Older macOS print `Refs` and `Use` (numbers) before `Netif`.
+ */
 export function parseDarwinDefaultRoutes(text: string): Map<string, string> {
   const out = new Map<string, string>()
   for (const line of text.split(/\r?\n/)) {
     const cols = line.trim().split(/\s+/)
     if (cols[0] !== 'default' || cols.length < 4) continue
     const gateway = cols[1]
-    const iface = cols[3]
-    if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(gateway)) continue
+    const iface = cols.slice(3).find((c) => !/^\d+$/.test(c))
+    if (!iface || !/^\d{1,3}(\.\d{1,3}){3}$/.test(gateway)) continue
     if (!out.has(iface)) out.set(iface, gateway)
   }
   return out
@@ -132,69 +166,115 @@ export function parseWindowsArp(text: string): Map<string, string> {
   return out
 }
 
+/** One interface's gateway this check: its IP and MAC, or the step that failed. */
+export interface GatewayReading {
+  gateway: string | null
+  mac: string | null
+  /** Null when `mac` is known. */
+  problem: NetworkProblem | null
+}
+
 /**
  * The network each of `ifaces` is on, as `<gateway IP>|<gateway MAC>` ('' when
- * unknown), read every address check (security review item 2): a network can
- * change while the interface name and even its address stay the same (another
- * router on the same subnet). Cheap reads only: /proc on Linux, netstat and arp
- * on macOS, route and arp on Windows. Never throws.
+ * unknown): readGatewayReadings without the reason.
  */
 export async function readGatewayIdentities(
   ifaces: readonly string[],
   interfaces: NodeJS.Dict<{ address: string; family: string | number; internal: boolean }[]>,
   deps: CategoryReaderDeps = {},
 ): Promise<Map<string, string>> {
+  const readings = await readGatewayReadings(ifaces, interfaces, deps)
+  return new Map(ifaces.map((iface) => {
+    const r = readings.get(iface)
+    return [iface, r?.gateway ? `${r.gateway}|${r.mac ?? ''}` : '']
+  }))
+}
+
+/**
+ * The gateway of each of `ifaces`, read every address check (security review
+ * item 2): a network can change while the interface name and even its
+ * address stay the same (another router on the same subnet). Cheap reads
+ * only: /proc on Linux, netstat and arp on macOS, route and arp on Windows.
+ * Never throws: a failed step is the reading's `problem` (the route table,
+ * no gateway, the ARP table, no answer), and an unidentified network never
+ * matches consent.
+ */
+export async function readGatewayReadings(
+  ifaces: readonly string[],
+  interfaces: NodeJS.Dict<{ address: string; family: string | number; internal: boolean }[]>,
+  deps: CategoryReaderDeps = {},
+): Promise<Map<string, GatewayReading>> {
   const platform = deps.platform ?? process.platform
   const exec = deps.exec ?? defaultExec
   const readText = deps.readText ?? ((path: string) => readFile(path, 'utf-8'))
   const probe = deps.probe ?? udpProbe
   const sleep = deps.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
-  const out = new Map<string, string>()
-  for (const iface of ifaces) out.set(iface, '')
+  const out = new Map<string, GatewayReading>()
   if (ifaces.length === 0) return out
+  // 1. Each interface's default gateway, and the address the probe leaves from.
+  const routeTool = platform === 'win32' ? 'route print -4 0.0.0.0' : platform === 'darwin' ? 'netstat -rn -f inet' : '/proc/net/route'
+  let routes: Map<string, string>
   try {
-    // 1. Each interface's default gateway, and the address the probe leaves from.
-    const targets: Array<{ iface: string; gateway: string; from: string | null; arpKey: string }> = []
-    const ipv4 = (iface: string) => (interfaces[iface] ?? []).find((i) => !i.internal && (i.family === 'IPv4' || i.family === 4))?.address ?? null
+    routes = platform === 'win32'
+      ? parseWindowsRoutes(await exec('route', ['print', '-4', '0.0.0.0']))
+      : platform === 'darwin'
+        ? parseDarwinDefaultRoutes(await execDarwinTool(exec, 'netstat', ['-rn', '-f', 'inet']))
+        : parseLinuxRoutes(await readText('/proc/net/route'))
+  } catch (err) {
+    const problem: NetworkProblem = { step: 'route_read', detail: errorDetail(routeTool, err) }
+    for (const iface of ifaces) out.set(iface, { gateway: null, mac: null, problem })
+    return out
+  }
+  const targets: Array<{ iface: string; gateway: string; from: string | null; arpKey: string }> = []
+  const ipv4 = (iface: string) => (interfaces[iface] ?? []).find((i) => !i.internal && (i.family === 'IPv4' || i.family === 4))?.address ?? null
+  for (const iface of ifaces) {
+    let target: (typeof targets)[number] | null = null
     if (platform === 'win32') {
-      const routes = parseWindowsRoutes(await exec('route', ['print', '-4', '0.0.0.0']))
-      for (const iface of ifaces) {
-        for (const info of interfaces[iface] ?? []) {
-          const gateway = routes.get(info.address)
-          if (!gateway) continue
-          targets.push({ iface, gateway, from: info.address, arpKey: `${info.address}|${gateway}` })
-          break
-        }
+      for (const info of interfaces[iface] ?? []) {
+        const gateway = routes.get(info.address)
+        if (gateway) { target = { iface, gateway, from: info.address, arpKey: `${info.address}|${gateway}` }; break }
       }
     } else {
-      const routes = platform === 'darwin'
-        ? parseDarwinDefaultRoutes(await exec('netstat', ['-rn', '-f', 'inet']))
-        : parseLinuxRoutes(await readText('/proc/net/route'))
-      for (const iface of ifaces) {
-        const gateway = routes.get(iface)
-        if (gateway) targets.push({ iface, gateway, from: ipv4(iface), arpKey: `${iface}|${gateway}` })
-      }
+      const gateway = routes.get(iface)
+      if (gateway) target = { iface, gateway, from: ipv4(iface), arpKey: `${iface}|${gateway}` }
     }
-    const readArp = async () => platform === 'win32'
-      ? parseWindowsArp(await exec('arp', ['-a']))
-      : platform === 'darwin' ? parseDarwinArp(await exec('arp', ['-an'])) : parseLinuxArp(await readText('/proc/net/arp'))
-    // 2. Probe before every read of the table (final check): the MAC must come from this check, never an
-    //    earlier one. A gateway that answers is identified; one that gives no MAC after the tries is not.
-    let pending = targets
-    for (let attempt = 0; attempt < ARP_PROBE_TRIES && pending.length > 0; attempt++) {
-      if (attempt > 0) await sleep(ARP_PROBE_WAIT_MS)
-      await Promise.all(pending.map((t) => probe(t.gateway, t.from).catch(() => {})))
-      const arp = await readArp()
-      const missing: typeof targets = []
-      for (const t of pending) {
-        const mac = arp.get(t.arpKey)
-        out.set(t.iface, `${t.gateway}|${mac ?? ''}`)
-        if (!mac) missing.push(t)
-      }
-      pending = missing
+    if (target) targets.push(target)
+    else out.set(iface, { gateway: null, mac: null, problem: { step: 'no_gateway', detail: `no default route on ${iface} (${routeTool})` } })
+  }
+  const arpTool = platform === 'win32' ? 'arp -a' : platform === 'darwin' ? 'arp -an' : '/proc/net/arp'
+  const readArp = async () => platform === 'win32'
+    ? parseWindowsArp(await exec('arp', ['-a']))
+    : platform === 'darwin' ? parseDarwinArp(await execDarwinTool(exec, 'arp', ['-an'])) : parseLinuxArp(await readText('/proc/net/arp'))
+  // 2. Probe before every read of the table (final check): the MAC must come from this check, never an
+  //    earlier one. A gateway that answers is identified; one that gives no MAC after the tries is not.
+  const probeErrors = new Map<string, string>()
+  let pending = targets
+  for (let attempt = 0; attempt < ARP_PROBE_TRIES && pending.length > 0; attempt++) {
+    if (attempt > 0) await sleep(ARP_PROBE_WAIT_MS)
+    await Promise.all(pending.map(async (t) => {
+      const error = await probe(t.gateway, t.from).catch((err: unknown) => (err instanceof Error ? err.message : String(err)))
+      if (typeof error === 'string' && error) probeErrors.set(t.iface, error)
+    }))
+    let arp: Map<string, string>
+    try {
+      arp = await readArp()
+    } catch (err) {
+      const problem: NetworkProblem = { step: 'arp_read', detail: errorDetail(arpTool, err) }
+      for (const t of pending) out.set(t.iface, { gateway: t.gateway, mac: null, problem })
+      return out
     }
-  } catch {
-    // Unknown gateways: the network is unidentified, and an unidentified network never matches consent.
+    const missing: typeof targets = []
+    for (const t of pending) {
+      const mac = arp.get(t.arpKey) ?? null
+      const probeError = probeErrors.get(t.iface)
+      out.set(t.iface, {
+        gateway: t.gateway,
+        mac,
+        problem: mac ? null : { step: 'no_answer', detail: `no ARP entry for ${t.gateway} on ${t.iface} after ${attempt + 1} probe(s)${probeError ? ` (probe: ${probeError})` : ''}` },
+      })
+      if (!mac) missing.push(t)
+    }
+    pending = missing
   }
   return out
 }
@@ -203,8 +283,8 @@ export interface CategoryReaderDeps {
   platform?: NodeJS.Platform
   exec?: Exec
   readText?: (path: string) => Promise<string>
-  /** Make the OS resolve the gateway's MAC (default: one UDP datagram from `from` to the gateway's discard port 9). */
-  probe?: (gateway: string, from: string | null) => Promise<void>
+  /** Make the OS resolve the gateway's MAC (default: one UDP datagram from `from` to the gateway's discard port 9). A string: why nothing was sent (shown when no MAC follows). */
+  probe?: (gateway: string, from: string | null) => Promise<string | null | void>
   sleep?: (ms: number) => Promise<void>
 }
 
@@ -215,28 +295,46 @@ export const ARP_PROBE_WAIT_MS = 200
 /**
  * One UDP datagram to the gateway's discard port (9): the OS must resolve
  * the gateway's MAC to send it, so a live gateway answers ARP and its entry
- * is fresh when the table is read. Nothing listens for a reply; errors are
- * ignored (no route, or the address just went away).
+ * is fresh when the table is read. Nothing listens for a reply. When the
+ * bind to `from` fails (the address just went away), the datagram goes
+ * unbound. Resolves with the error text when nothing could be sent (no
+ * route, or a macOS Local Network refusal: EHOSTUNREACH), else null. Never
+ * rejects.
  */
-export function udpProbe(gateway: string, from: string | null): Promise<void> {
+export async function udpProbe(gateway: string, from: string | null): Promise<string | null> {
+  const first = await sendOnce(gateway, from)
+  if (!first?.startsWith('bind: ')) return first
+  const second = await sendOnce(gateway, null)
+  return second ? `${first}; unbound: ${second}` : null
+}
+
+function sendOnce(gateway: string, bindTo: string | null): Promise<string | null> {
   return new Promise((resolve) => {
     let done = false
+    let bound = !bindTo
     const socket = createSocket('udp4')
-    const finish = () => {
+    const finish = (error: string | null) => {
       if (done) return
       done = true
       try { socket.close() } catch { /* closed */ }
-      resolve()
+      resolve(error)
     }
-    socket.on('error', finish)
-    const send = () => socket.send(Buffer.from([0]), 9, gateway, () => finish())
+    socket.on('error', (err) => finish(`${bound ? '' : 'bind: '}${err.message}`))
+    const send = () => {
+      bound = true
+      try {
+        socket.send(Buffer.from([0]), 9, gateway, (err) => finish(err ? err.message : null))
+      } catch (err) {
+        finish(err instanceof Error ? err.message : String(err))
+      }
+    }
     try {
-      if (from) socket.bind({ address: from, port: 0, exclusive: true }, send)
+      if (bindTo) socket.bind({ address: bindTo, port: 0, exclusive: true }, send)
       else send()
-    } catch {
-      finish()
+    } catch (err) {
+      finish(`${bindTo ? 'bind: ' : ''}${err instanceof Error ? err.message : String(err)}`)
     }
-    setTimeout(finish, 500).unref?.()
+    setTimeout(() => finish(null), 500).unref?.()
   })
 }
 
@@ -261,7 +359,7 @@ export async function readOsCategories(ifaces: readonly string[], deps: Category
  * The Wi-Fi name (SSID) of each of `ifaces` where reading it never asks for
  * a permission:
  * - Linux: `iwgetid <iface> -r`.
- * - macOS: `ipconfig getsummary <iface>` (`SSID : <name>`). It never prompts;
+ * - macOS: `/usr/sbin/ipconfig getsummary <iface>` (`SSID : <name>`). It never prompts;
  *   macOS 14.4 and later answer `<redacted>` without location access, which
  *   counts as no name.
  * - Windows: none. The WLAN API (netsh, WlanQueryInterface) needs location
@@ -277,7 +375,7 @@ export async function readWifiNames(ifaces: readonly string[], deps: CategoryRea
     try {
       const ssid = platform === 'linux'
         ? (await exec('iwgetid', [iface, '-r'], { timeoutMs: 2_000 })).trim()
-        : parseDarwinSummarySsid(await exec('ipconfig', ['getsummary', iface], { timeoutMs: 2_000 }))
+        : parseDarwinSummarySsid(await execDarwinTool(exec, 'ipconfig', ['getsummary', iface], { timeoutMs: 2_000 }))
       if (ssid) out.set(iface, ssid)
     } catch { /* wired, or no tool: no name */ }
   }

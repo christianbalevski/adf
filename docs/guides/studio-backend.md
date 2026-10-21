@@ -865,7 +865,8 @@ counts too where ADF can read it without asking for a permission: on Linux,
 and on macOS before 14.4. Windows does not count it. The tailnet is its
 name. ADF asks the router for its MAC address at every check (every 10
 seconds). A router that does not answer is an "Unidentified network":
-nothing listens there and it cannot be allowed.
+nothing listens there and it cannot be allowed. Studio says why
+([Settings › Unidentified network](settings.md#unidentified-network)).
 
 Limit: anyone who knows your router's MAC address, a former guest for
 example, can copy it onto their own router with the same subnet. ADF then
