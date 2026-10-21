@@ -18,10 +18,10 @@ import { loadRemotes, readRemoteToken } from '../../src/main/cli/remotes'
 import { deviceToken, helloResponse } from '../helpers/hello-proof'
 
 const URL_ = 'http://100.101.102.103:7385'
-const TOKEN = deviceToken('rawl-hub')
+const TOKEN = deviceToken('box-1')
 const codec: SecretCodec = { available: () => true, encrypt: (p) => `safe:${p}`, decrypt: (s) => s.slice(5) }
 const quiet = { log: () => {}, warn: () => {} }
-const paired = { fingerprint: 'ABCD-EFGH', name: 'rawl-hub', deviceId: 'dev1', label: 'agent-2 laptop' }
+const paired = { fingerprint: 'ABCD-EFGH', name: 'box-1', deviceId: 'dev1', label: 'agent-2 laptop' }
 const slotConfig = (mode: 'local' | 'remote'): StudioBackendConfig => ({ v: 1, mode, keepDaemonRunning: false, remote: { url: URL_, token: codec.encrypt(TOKEN), allowInsecureHttp: false, paired } })
 
 const dirs: string[] = []
@@ -54,20 +54,20 @@ function fakeServer(fingerprint: string) {
 describe('the paired remote URL of studio-backend.json', () => {
   it('moves into the shared list on first use; remote mode then uses it by name; the file keeps no token', async () => {
     const s = setup('remote')
-    expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBe('rawl-hub')
-    expect(loadRemotes(s.env).remotes['rawl-hub']).toMatchObject({ url: URL_, fingerprint: 'ABCD-EFGH', deviceId: 'dev1', label: 'agent-2 laptop' })
+    expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBe('box-1')
+    expect(loadRemotes(s.env).remotes['box-1']).toMatchObject({ url: URL_, fingerprint: 'ABCD-EFGH', deviceId: 'dev1', label: 'agent-2 laptop' })
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBe(TOKEN)
     const file = JSON.parse(readFileSync(s.path, 'utf8'))
     expect(file.mode).toBe('remote')
-    expect(file.remote).toEqual({ url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' })
-    expect(s.boot.config.remote.name).toBe('rawl-hub')
+    expect(file.remote).toEqual({ url: null, token: null, allowInsecureHttp: false, name: 'box-1' })
+    expect(s.boot.config.remote.name).toBe('box-1')
     // Done once: nothing left to move.
     expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBeNull()
   })
 
   it('in local mode it moves too, without becoming the connection in use', async () => {
     const s = setup('local')
-    expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBe('rawl-hub')
+    expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBe('box-1')
     expect(JSON.parse(readFileSync(s.path, 'utf8')).remote).toEqual({ url: null, token: null, allowInsecureHttp: false })
   })
 

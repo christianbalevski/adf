@@ -124,6 +124,6 @@ linux:
       arch: [x64]
     - target: AppImage
       arch: [x64]
-  maintainer: Christian Balevski <christian.balevski@gmail.com>
+  maintainer: Christian Balevski <owner@example.com>
   category: Development
   icon: resources/icons/png/512x512.png

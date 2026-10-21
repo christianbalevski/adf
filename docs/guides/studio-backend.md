@@ -57,17 +57,17 @@ About), and the runtime's pages (Prompts, Agent templates, Providers,
 Packages, MCP servers, Skills, Channels, Files, Identity, Networking,
 Compute, Usage). With the local runtime only, the runtime group has no heading.
 With a connection saved, it is headed **Runtime** with a picker of the
-runtime names ("*name* (Local)", "rawl-hub", …); the runtime pages show the
+runtime names ("*name* (Local)", "box-1", …); the runtime pages show the
 runtime picked there, and the Studio pages do not change. Settings opens on
 the runtime of the open agent (from an agent window: that window's runtime),
 else the local runtime; the choice is not saved. A picked runtime that is not
-connected is listed with its state ("rawl-hub · Not connected, retrying"),
+connected is listed with its state ("box-1 · Not connected, retrying"),
 and its pages show "Not connected to *name*." with their controls disabled.
 
 ### Runtime names
 
 Runtime names show only while a connection is saved. This computer's runtime
-is *name* (Local), for example "rawl-laptop (Local)": *name* is the runtime
+is *name* (Local), for example "laptop-1 (Local)": *name* is the runtime
 alias (Settings → Identity), else the computer's name, and the runtime is
 "Local" when neither is known. A runtime on another computer shows its saved
 name with the remote icon (tooltip "Remote"). The same names are used in the
@@ -122,7 +122,7 @@ mesh and Kill. With the local runtime only: nothing while it is connected, and
 its state without a name while it is not ("Connecting"). With a connection saved: one group, the
 runtime of the open agent, or the local runtime when no agent is open. The
 group shows the runtime's name ([Runtime names](#runtime-names)), its
-address in the tooltip, its state while it is not connected ("rawl-hub ·
+address in the tooltip, its state while it is not connected ("box-1 ·
 Not connected, retrying"), its **Mesh** and its **Kill**. **Kill** stops the
 agents and the mesh of that runtime only ("Stops all agents and mesh on
 *name*"), stays enabled while that runtime's mesh runs, and is disabled while
@@ -135,7 +135,7 @@ were added (`runtimeOrder` in `studio-backend.json`). Each row shows the
 name, the state, **Mesh** and **Kill**. **Kill all** at the top ("Stops all
 agents and mesh on every runtime") stops every connected runtime at once;
 its result names what it stopped ("Stopped 3 agents · Mesh off"), or "Partial
-stop · Not reached: rawl-hub" for a runtime that is not connected or did not
+stop · Not reached: box-1" for a runtime that is not connected or did not
 answer. The arrow is red while a runtime not shown is not connected. `↑`/`↓`
 move between the buttons; `Esc` closes the list and returns to the arrow. An
 agent window shows the group of its own runtime and no arrow.
@@ -144,7 +144,7 @@ While a runtime is not connected, its sidebar group and its agents are
 greyed, its pending approvals cannot be answered, and its agent windows stay
 open with the connection state. A runtime that fails shows a notification
 and its state; only the local runtime opens a dialog when it fails. **Help**
-names each runtime that is not connected ("rawl-hub: not connected
+names each runtime that is not connected ("box-1: not connected
 (https://…), retrying"); **Reconnect** acts on it, and is a submenu of their
 names when more than one is down. Reconnect on another computer whose
 connection failed connects it again without restarting Studio: its agent

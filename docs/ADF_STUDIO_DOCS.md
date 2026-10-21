@@ -143,7 +143,7 @@ In Local mode, with a connection saved in [Connections](guides/settings.md#conne
 - the sidebar has one group per runtime, headed with its name and, while it is not connected, its state; that runtime's agents are greyed while it is not connected;
 - **Go to Agent…** shows the runtime's name after the agent's;
 - the Mesh view draws each runtime as a region, labelled with its name;
-- every row in **Notifications**, every toast and every system notification names its runtime before the agent (`rawl-hub · agent-1`);
+- every row in **Notifications**, every toast and every system notification names its runtime before the agent (`box-1 · agent-1`);
 - an agent window's title is `<agent> · <runtime name>`;
 - **File → Open Recent** lists each other computer's agents under its name;
 - the **Help** menu names each runtime that is not connected, and **Reconnect** acts on it.

@@ -24,16 +24,16 @@ describe('the runtime indicator (settings-scopes.md §4.1)', () => {
   })
 
   it('a remote: its name with the remote icon; the address only in the tooltip', () => {
-    const remote = current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub', url: 'https://rawl-hub.tail1234.ts.net:7385' })
-    expect(runtimeIndicator(remote)).toEqual({ text: 'rawl-hub', remote: true, tooltip: 'https://rawl-hub.tail1234.ts.net:7385', problem: false })
+    const remote = current({ id: 'remote:box-1', kind: 'remote', name: 'box-1', url: 'https://box-1.tail1234.ts.net:7385' })
+    expect(runtimeIndicator(remote)).toEqual({ text: 'box-1', remote: true, tooltip: 'https://box-1.tail1234.ts.net:7385', problem: false })
     const html = renderToStaticMarkup(<RuntimeIndicator current={remote} onOpen={() => {}} />)
-    expect(html).toContain('>rawl-hub<')
-    expect(html).toContain('title="https://rawl-hub.tail1234.ts.net:7385"')
+    expect(html).toContain('>box-1<')
+    expect(html).toContain('title="https://box-1.tail1234.ts.net:7385"')
     expect(html).toContain('<svg')
   })
 
   it('a problem shows in the same spot with the status line\'s words, This computer included', () => {
-    expect(runtimeIndicator(current({ kind: 'remote', name: 'rawl-hub', state: 'retrying' }))?.text).toBe('rawl-hub · Not connected, retrying')
+    expect(runtimeIndicator(current({ kind: 'remote', name: 'box-1', state: 'retrying' }))?.text).toBe('box-1 · Not connected, retrying')
     expect(runtimeIndicator(current({ state: 'connecting' }))).toEqual({ text: 'host-0 (Local) · Connecting', remote: false, tooltip: null, problem: true })
     expect(renderToStaticMarkup(<RuntimeIndicator current={current({ state: 'not-connected' })} onOpen={() => {}} />)).not.toContain('<svg')
   })

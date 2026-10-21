@@ -4,7 +4,7 @@ Every workstream agent reads this file, `docs/design/daemon-backend.md` and its 
 
 ## Environment
 
-- Work only in your own worktree, `C:\Users\Christian\repos\adf\.claude\worktrees\db-<id>`, on branch `ws/<id>`. Never touch another worktree, the main checkout or `feat/daemon-backend`.
+- Work only in your own worktree, `<repo>\.claude\worktrees\db-<id>`, on branch `ws/<id>`. Never touch another worktree, the main checkout or `feat/daemon-backend`.
 - `node_modules` is a junction shared by all worktrees. NEVER run `npm install`, `npm ci`, `npm test`, `npm run test*`, `scripts/rebuild-for-node.mjs`, `electron-rebuild` or anything else that rebuilds native modules or edits `node_modules`. `electron-builder` packaging rebuilds native modules by default, so do not run it unless your workstream says so and you have confirmed `npmRebuild: false`.
 - Tests: `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe node_modules/vitest/vitest.mjs run <paths>` (Git Bash). Run only the suites you touch plus the ones named in your acceptance criteria. Integration suites that bind ports MAY collide with parallel agents; retry once before treating it as a failure.
 - Type-check: `npx tsc --noEmit -p tsconfig.node.json`. The baseline is the count on your branch's base commit (159 on `feat/daemon-backend` as of W1-F; it only goes down). Your branch MUST NOT add errors. Report before/after counts. For renderer code also run `npx tsc --noEmit -p tsconfig.web.json` and compare against its baseline on your branch's base commit.

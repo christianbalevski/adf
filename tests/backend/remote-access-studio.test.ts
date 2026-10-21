@@ -434,9 +434,9 @@ describe('pairing from Settings → Connections', () => {
   })
 
   it('a saved connection\'s pinned fingerprint (trust on first use): another one at its address is refused (security review 4)', async () => {
-    const p = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: TAILNET, fingerprint: 'QQQQ-QQQQ' }] })
+    const p = pairSetup({ savedConnections: [{ name: 'box-1', url: TAILNET, fingerprint: 'QQQQ-QQQQ' }] })
     expect(await p.flow.start({ url: TAILNET })).toMatchObject({ step: 'failed', code: 'fingerprint_mismatch' })
-    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when rawl-hub was paired; Studio sent nothing, and if it was set up again, remove rawl-hub and pair again.')
+    expect(p.last().message).toBe('100.101.102.103 now answers with fingerprint ABCD-EFGH, not QQQQ-QQQQ as when box-1 was paired; Studio sent nothing, and if it was set up again, remove box-1 and pair again.')
     expect(p.replaces).toEqual([])
     expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
   })
@@ -457,7 +457,7 @@ describe('pairing from Settings → Connections', () => {
     expect(replaced.saved).toHaveLength(1)
 
     // Another computer saved (another fingerprint, another address): a new connection, no question.
-    const other = pairSetup({ savedConnections: [{ name: 'rawl-hub', url: 'https://hub.example.com', fingerprint: 'QQQQ-QQQQ' }, { name: 'legacy', url: 'https://old.example.com', fingerprint: null }] })
+    const other = pairSetup({ savedConnections: [{ name: 'box-1', url: 'https://hub.example.com', fingerprint: 'QQQQ-QQQQ' }, { name: 'legacy', url: 'https://old.example.com', fingerprint: null }] })
     expect(await other.flow.start({ url: TAILNET })).toMatchObject({ step: 'need_code' })
     expect(other.replaces).toEqual([])
   })

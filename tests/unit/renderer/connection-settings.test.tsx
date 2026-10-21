@@ -31,7 +31,7 @@ describe('the Connection page rows', () => {
     const html = rows([
       row({ state: 'connected', action: null }),
       // A saved connection is connected while saved (multi-runtime.md §6.5): its state, no action.
-      row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'retrying', action: null, url: 'http://100.101.102.103:7385', address: '100.101.102.103', fingerprint: 'ABCD-EFGH', removable: true }),
+      row({ id: 'remote:box-1', kind: 'saved', name: 'box-1', state: 'retrying', action: null, url: 'http://100.101.102.103:7385', address: '100.101.102.103', fingerprint: 'ABCD-EFGH', removable: true }),
       row({ id: 'found:NEWW-2345@http://192.168.1.44:7385', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair', url: 'http://192.168.1.44:7385', address: '192.168.1.44', fingerprint: 'NEWW-2345', encrypted: false, pairingOpen: true }),
     ])
     expect(html).toContain('>Connected<')
@@ -58,8 +58,8 @@ describe('the Connection page rows', () => {
   })
 
   it('the local row is `<name> (Local)`; a saved row has the remote icon before its name, and no "(Remote)"', () => {
-    const html = rows([row({ state: 'connected', action: null }), row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connected', action: null, removable: true })])
-    const [local, saved] = html.split('data-connection="remote:rawl-hub"')
+    const html = rows([row({ state: 'connected', action: null }), row({ id: 'remote:box-1', kind: 'saved', name: 'box-1', state: 'connected', action: null, removable: true })])
+    const [local, saved] = html.split('data-connection="remote:box-1"')
     expect(local).toContain('host-0 (Local)')
     expect(local).not.toContain('data-remote-mark')
     expect(saved).toContain('data-remote-mark')
@@ -67,7 +67,7 @@ describe('the Connection page rows', () => {
   })
 
   it('a saved row never shows Pair, Add or Connect', () => {
-    const html = rows([row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connecting', action: null, fingerprint: 'ABCD-EFGH', address: '100.101.102.103', removable: true })])
+    const html = rows([row({ id: 'remote:box-1', kind: 'saved', name: 'box-1', state: 'connecting', action: null, fingerprint: 'ABCD-EFGH', address: '100.101.102.103', removable: true })])
     expect(html).not.toContain('>Pair<')
     expect(html).not.toContain('>Add<')
     expect(html).not.toContain('>Connect<')
@@ -226,7 +226,7 @@ describe('Connection page docs links', () => {
 })
 
 describe('local only: Remotes is "None."', () => {
-  const saved = row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connected', action: null, removable: true })
+  const saved = row({ id: 'remote:box-1', kind: 'saved', name: 'box-1', state: 'connected', action: null, removable: true })
   const found = row({ id: 'found:F@u', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair' })
 
   it('a remote counts as saved once it is in the list; a computer found on the network does not', () => {

@@ -17,7 +17,7 @@ import { remotesEnv, saveConnection } from '../../src/main/backend/connections'
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
-const input = { url: 'http://100.101.102.103:7385', token: 'adfd_' + 'k'.repeat(40), fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' }
+const input = { url: 'http://100.101.102.103:7385', token: 'adfd_' + 'k'.repeat(40), fingerprint: 'ABCD-EFGH', hostName: 'box-1', deviceId: 'd', label: 'l' }
 
 function noKeychain(): { env: NodeJS.ProcessEnv; dir: string } {
   const dir = mkdtempSync(join(tmpdir(), 'adf-keychain-file-'))
@@ -46,7 +46,7 @@ describe('the user-only token file only after the user says so', () => {
     const saved = await saveConnection(env, input, { confirmFile: async () => true })
     expect(saved.store).toMatchObject({ where: 'file' })
     expect(readRemoteToken('ABCD-EFGH', env)).toBe(input.token)
-    expect(Object.keys(loadRemotes(env).remotes)).toEqual(['rawl-hub'])
+    expect(Object.keys(loadRemotes(env).remotes)).toEqual(['box-1'])
   })
 
   it('a keychain that refuses the write: the reason names the refusal', async () => {

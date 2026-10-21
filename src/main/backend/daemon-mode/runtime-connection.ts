@@ -103,7 +103,7 @@ export interface RuntimeConnectionOptions {
   kind: RuntimeKind
   /** This computer (tests: a remote primary): untagged traffic, the menu, the dialogs, the client lease. */
   primary: boolean
-  /** The runtime's name, for notices ("rawl-hub"). */
+  /** The runtime's name, for notices ("box-1"). */
   name: () => string
   deps: DaemonModeDeps
   shared: RuntimeShared
@@ -189,7 +189,7 @@ export function isRemoteAccessRoute(path: string): boolean {
   return p === '/remote-access' || p.startsWith('/remote-access/')
 }
 
-/** A log whose lines name the runtime: `[Backend] x` → `[Backend remote:rawl-hub] x`. */
+/** A log whose lines name the runtime: `[Backend] x` → `[Backend remote:box-1] x`. */
 export function runtimeLog(log: Pick<Console, 'log' | 'warn' | 'error'>, id: RuntimeId): Pick<Console, 'log' | 'warn' | 'error'> {
   const tag = (args: unknown[]): unknown[] => {
     if (typeof args[0] !== 'string') return [`[${id}]`, ...args]
