@@ -266,8 +266,12 @@ Selectors: `selectRuntimeSlice(state, id)`, `selectAllAgents(state)` (each with 
 ### 6.4 The Mesh view
 
 - One map. Multi-runtime: each runtime's tracked folders form one region, labelled with the runtime name. A region is placed next to the existing ones; its placement is saved per runtime (§7.4).
-- Each runtime's fleet poll reports its mesh peers. A peer whose `runtime_id` is a runtime in the set is drawn as that runtime's region, not as a peer station. Other peers are stations, one per `runtime_id` across all polls.
-- Edges between agents on different runtimes come only from traffic a runtime reports (peer street heat). Studio MUST NOT forward messages between runtimes.
+- Each runtime's fleet poll reports its mesh peers. A peer that is a runtime in the set is drawn as that runtime's region, not as a peer station. Other peers are stations, one per `runtime_id` across all polls.
+- A peer is a runtime in the set when any of these match, in order: its `runtime_did` and that runtime's DID; its `runtime_id` and one matched before (any poll); its remote access fingerprint (mDNS TXT `fp`) and the fingerprint the connection was paired with; its address (host and TXT `daemon_port`, or the host alone when one remote has it) and the connection's URL; its directory, when every stub with a DID is a tile of that one runtime. A runtime DID read that fails or returns none is read again after 5 s, doubling to 5 min.
+- A stub whose agent DID is a tile on the map is not drawn. The check runs against the tiles of the same render, so a peer that becomes a runtime in the set is never drawn twice; its region, with no saved place yet, takes the cell its station held.
+- Edges between agents on different runtimes come only from traffic a runtime reports. Studio MUST NOT forward messages between runtimes. Egress (`toFilePaths: ['station:peer:<runtime_id>']`, `toPeerAgent`) and ingress (`filePath: 'station:peer:<runtime_id>'`, `fromPeerAgent`) with a peer that is a runtime in the set are drawn tile to tile: the `runtime_id` gives the runtime, the agent's DID or handle the tile, looked up within that runtime only. When both runtimes report one message, the second report is not drawn (a report waits 15 s for its twin). Traffic with other peers keeps its station, street heat and stub ping.
+- Handles in This computer's message log name This computer's agents only; an equal handle on another runtime is another agent.
+- Multi-runtime: every region has a solid border in `--ink-faint`; a peer station has a dashed one in the same token and the tooltip "Peer". No reach or allow/block badges, no bridge lines. With This computer only, nothing changes.
 - A down runtime's region is greyed with its state.
 - Batch commands on a selection are sent per runtime, one call each. A refusal on one runtime is reported; the others proceed.
 

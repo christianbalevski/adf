@@ -1,5 +1,5 @@
 import type { AdfApi } from '../../../preload/api'
-import type { AppSettings, FleetAgentStatus, FleetBurnResult, FleetMessageResult } from '../../../shared/types/ipc.types'
+import type { AppSettings, FleetAgentStatus, FleetBurnResult, FleetMessageResult, MeshEvent } from '../../../shared/types/ipc.types'
 import { reportFailure } from '../../stores/failure-notices.store'
 import { runtimeName } from '../../stores/runtimes.store'
 import type { RuntimeView } from '../../../shared/types/connection.types'
@@ -155,27 +155,230 @@ export interface MapPeer {
   runtime_id: string
   runtime_did?: string
   first_seen?: number
+  /** The peer's mesh address. */
+  url?: string
+  host?: string
+  /** Remote access fingerprint and daemon port (TXT `fp`, `daemon_port`), when it announces them. */
+  fingerprint?: string
+  daemon_port?: number
+  /** Its directory: one stub tile per agent. */
+  agents?: Array<{ handle: string; did?: string }>
   [key: string]: unknown
 }
 
 /**
- * The peer stations of every runtime's poll (§6.4): a peer that is a runtime
- * of the set (its runtime DID is one of theirs) is drawn as that runtime's
- * region, not as a station; every other peer is one station per runtime id,
- * the first poll that reports it winning.
+ * What ties a peer of a poll to a runtime of the set (§6.4). Built per poll;
+ * `learned` is kept across polls, so a record that lacks the runtime DID is
+ * still known by its runtime_id once any record of it matched.
  */
-export function mergePeers<P extends MapPeer>(polls: ReadonlyArray<readonly P[]>, setDids: ReadonlySet<string>): P[] {
+export interface PeerMatch {
+  /** Runtime DID per runtime of the set, as read so far (null: not read). */
+  dids: Readonly<Record<RuntimeId, string | null | undefined>>
+  /** The remote runtimes of the set: address, and the fingerprint they were paired with. */
+  remotes: ReadonlyArray<{ id: RuntimeId; url: string | null; fingerprint: string | null }>
+  /** Peer runtime_id → runtime of the set, learned from an earlier match. */
+  learned: Readonly<Record<string, RuntimeId>>
+  /** Agent DID → the runtime of the set whose tile it is. */
+  agentDids: ReadonlyMap<string, RuntimeId>
+}
+
+const cleanHost = (host: string): string => host.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
+
+const hostPort = (url: string | null | undefined): { host: string; port: string } | null => {
+  if (!url) return null
+  try {
+    const u = new URL(url)
+    return { host: cleanHost(u.hostname), port: u.port }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * The runtime of the set a peer is, or null for a peer the map does not
+ * manage: by runtime DID, by a runtime_id matched before, by fingerprint, by
+ * address (host and daemon port; the host alone when one remote has it), and
+ * last by its directory (every stub with a DID is a tile of one runtime).
+ */
+export function managedRuntimeOf(p: MapPeer, m: PeerMatch): RuntimeId | null {
+  if (p.runtime_did) {
+    for (const [id, did] of Object.entries(m.dids)) if (did && did === p.runtime_did) return id
+  }
+  const learned = m.learned[p.runtime_id]
+  if (learned) return learned
+  if (p.fingerprint) {
+    const hit = m.remotes.find((r) => r.fingerprint && r.fingerprint === p.fingerprint)
+    if (hit) return hit.id
+  }
+  const at = hostPort(p.url) ?? (p.host ? { host: cleanHost(p.host), port: '' } : null)
+  if (at) {
+    const sameHost = m.remotes.filter((r) => hostPort(r.url)?.host === at.host)
+    const exact = p.daemon_port ? sameHost.filter((r) => hostPort(r.url)?.port === String(p.daemon_port)) : sameHost
+    if (exact.length === 1) return exact[0].id
+  }
+  const stubs = (p.agents ?? []).filter((a) => a.did)
+  if (stubs.length > 0) {
+    const owners = new Set(stubs.map((a) => m.agentDids.get(a.did!) ?? null))
+    if (owners.size === 1 && !owners.has(null)) return [...owners][0]!
+  }
+  return null
+}
+
+/** The peer without the stubs whose agent DID is a tile of the map (the peer itself when none is). */
+function withoutManagedStubs<P extends MapPeer>(p: P, agentDids: ReadonlyMap<string, RuntimeId>): P {
+  if (!p.agents || !p.agents.some((a) => a.did && agentDids.has(a.did))) return p
+  return { ...p, agents: p.agents.filter((a) => !(a.did && agentDids.has(a.did))) }
+}
+
+/** A set of runtime DIDs as a PeerMatch (by runtime DID only). */
+function matchOfDids(setDids: ReadonlySet<string>): PeerMatch {
+  const dids: Record<string, string> = {}
+  for (const did of setDids) dids[did] = did
+  return { dids, remotes: [], learned: {}, agentDids: new Map() }
+}
+
+/**
+ * The peer stations of every runtime's poll (§6.4): a peer that is a runtime
+ * of the set (managedRuntimeOf) is drawn as that runtime's region, not as a
+ * station; every other peer is one station per runtime id, the first poll
+ * that reports it winning, without the stubs that are tiles of the map.
+ * `onMatch` hears each runtime_id matched, so the next poll knows it.
+ */
+export function mergePeers<P extends MapPeer>(
+  polls: ReadonlyArray<readonly P[]>,
+  match: PeerMatch | ReadonlySet<string>,
+  onMatch?: (peerRuntimeId: string, runtime: RuntimeId) => void,
+): P[] {
+  const m = match instanceof Set ? matchOfDids(match) : (match as PeerMatch)
+  const managed = new Map<string, RuntimeId>()
+  for (const peers of polls) {
+    for (const p of peers) {
+      if (managed.has(p.runtime_id)) continue
+      const rt = managedRuntimeOf(p, m)
+      if (rt) managed.set(p.runtime_id, rt)
+    }
+  }
+  for (const [rid, rt] of managed) onMatch?.(rid, rt)
   const seen = new Set<string>()
   const out: P[] = []
   for (const peers of polls) {
     for (const p of peers) {
-      if (p.runtime_did && setDids.has(p.runtime_did)) continue
-      if (seen.has(p.runtime_id)) continue
+      if (managed.has(p.runtime_id) || seen.has(p.runtime_id)) continue
       seen.add(p.runtime_id)
-      out.push(p)
+      out.push(withoutManagedStubs(p, m.agentDids))
     }
   }
   return out
+}
+
+/** Agent DID → runtime, over the map's agents. */
+export function agentDidsOf(agents: readonly FleetAgentStatus[]): Map<string, RuntimeId> {
+  const out = new Map<string, RuntimeId>()
+  for (const a of agents) if (a.did) out.set(a.did, keyRuntime(a.filePath) ?? LOCAL_RUNTIME)
+  return out
+}
+
+// ---- Cross-runtime traffic (§6.4) -------------------------------------------
+//
+// A runtime reports a message to or from another runtime as traffic with that
+// peer's station (`station:peer:<runtime_id>`, and the agent at the other
+// end). When that peer is a runtime of the set its station is not drawn, so
+// the message is drawn between the two tiles instead: the peer's runtime_id
+// gives the runtime (as the polls matched it), the agent's DID or handle the
+// tile, looked up within that runtime only.
+
+const PEER_STATION = 'station:peer:'
+
+/** Peer runtime_id → runtime of the set, as the last poll matched them. Empty with This computer only. */
+let peerRuntimes: Readonly<Record<string, RuntimeId>> = {}
+
+export function setPeerRuntimes(next: Readonly<Record<string, RuntimeId>>): void {
+  peerRuntimes = next
+}
+
+/** Per agent list: DID and handle → path (DIDs first; a handle never hides a DID). */
+const tileIndex = new WeakMap<readonly FleetAgentStatus[], Map<string, string>>()
+
+function tileOf(agents: readonly FleetAgentStatus[], id: string): string | null {
+  let index = tileIndex.get(agents)
+  if (!index) {
+    index = new Map()
+    for (const a of agents) if (a.did) index.set(a.did, a.filePath)
+    for (const a of agents) if (a.handle && !index.has(a.handle)) index.set(a.handle, a.filePath)
+    tileIndex.set(agents, index)
+  }
+  return index.get(id) ?? null
+}
+
+/** The map key of the tile of a peer's agent, when the peer is a runtime of the set. */
+export function peerAgentTile(peerRuntimeId: string, id: string | undefined, agentsOf: (runtime: RuntimeId) => readonly FleetAgentStatus[]): string | null {
+  const runtime = peerRuntimes[peerRuntimeId]
+  if (!runtime || !id) return null
+  const filePath = tileOf(agentsOf(runtime), id)
+  return filePath === null ? null : agentKey({ runtimeId: runtime, filePath })
+}
+
+/**
+ * One message is reported twice when both ends are runtimes of the set: the
+ * sender's runtime reports it leaving, the recipient's arriving. Each report
+ * waits this long for its twin, which is then not drawn again.
+ */
+const TWIN_MS = 15_000
+const twins = new Map<string, { out: number[]; in: number[] }>()
+
+function isTwin(route: string, side: 'out' | 'in', now: number): boolean {
+  const entry = twins.get(route) ?? { out: [], in: [] }
+  entry.out = entry.out.filter((t) => now - t < TWIN_MS)
+  entry.in = entry.in.filter((t) => now - t < TWIN_MS)
+  const other = side === 'out' ? entry.in : entry.out
+  const twin = other.length > 0
+  if (twin) other.shift()
+  else entry[side].push(now)
+  if (entry.out.length === 0 && entry.in.length === 0) twins.delete(route)
+  else twins.set(route, entry)
+  return twin
+}
+
+/** For tests: no peer matched, no report waiting for its twin. */
+export function resetPeerTraffic(): void {
+  twins.clear()
+  peerRuntimes = {}
+}
+
+type RoutedPayload = {
+  filePath: string
+  toFilePaths?: string[]
+  toPeerAgent?: { runtimeId: string; id: string }
+  fromPeerAgent?: { runtimeId: string; id: string }
+}
+
+/**
+ * A message_routed event with a managed peer's station replaced by the tile
+ * at the other end (egress: `toPeerAgent`; ingress: `fromPeerAgent`). The
+ * event itself when nothing resolves (a peer the map does not manage, This
+ * computer only); null when it is the twin of a report already drawn.
+ */
+export function resolvePeerTraffic(event: MeshEvent, agentsOf: (runtime: RuntimeId) => readonly FleetAgentStatus[], now = Date.now()): MeshEvent | null {
+  if (event.type !== 'message_routed') return event
+  const payload = event.payload as RoutedPayload
+  const to = payload.toFilePaths ?? []
+  // Egress: one station target, and the agent it is bound for.
+  if (to.length === 1 && to[0].startsWith(PEER_STATION) && payload.toPeerAgent) {
+    const tile = peerAgentTile(to[0].slice(PEER_STATION.length), payload.toPeerAgent.id, agentsOf)
+    if (!tile || tile === payload.filePath) return event
+    if (isTwin(`${payload.filePath}|${tile}`, 'out', now)) return null
+    const { toPeerAgent: _resolved, ...rest } = payload
+    return { ...event, payload: { ...rest, toFilePaths: [tile] } } as MeshEvent
+  }
+  // Ingress: from the station, sent by the agent named.
+  if (typeof payload.filePath === 'string' && payload.filePath.startsWith(PEER_STATION) && payload.fromPeerAgent && to.length === 1) {
+    const tile = peerAgentTile(payload.filePath.slice(PEER_STATION.length), payload.fromPeerAgent.id, agentsOf)
+    if (!tile || tile === to[0]) return event
+    if (isTwin(`${tile}|${to[0]}`, 'in', now)) return null
+    const { fromPeerAgent: _resolved, ...rest } = payload
+    return { ...event, payload: { ...rest, filePath: tile } } as MeshEvent
+  }
+  return event
 }
 
 // ---- Per-runtime client keys (multi-runtime.md §7.4) ------------------------

@@ -181,6 +181,8 @@ export interface TerrainNodeData {
   muted?: boolean
   /** A runtime on another computer: the banner shows the remote icon before its name. */
   remote?: boolean
+  /** Multi-runtime: a region of a runtime the map manages (solid border; a peer's station is dashed). */
+  managed?: boolean
   /** Far offscreen (MeshGraphView's overscan visibility pass) — render a
    *  hollow fixed-size shell instead of the full content */
   culled?: boolean
@@ -589,6 +591,8 @@ export interface RegionDecor {
   muted?: (dirPath: string) => boolean
   /** The region is a runtime on another computer: its name shows with the remote icon. */
   remote?: (dirPath: string) => boolean
+  /** The region belongs to a runtime the map manages: its border is solid. */
+  managed?: (dirPath: string) => boolean
 }
 
 export function computeFleetLayout(agents: FleetAgentStatus[], placement?: FleetPlacement, decor?: RegionDecor): FleetLayoutResult {
@@ -758,7 +762,8 @@ export function computeFleetLayout(agents: FleetAgentStatus[], placement?: Fleet
       members: plan.members.map((m) => ({ filePath: m.filePath, handle: m.handle, seed: seedFor(m), icon: agentAvatarEmoji(m.icon, m.agentId || m.filePath) })),
       districts: plan.districts,
       ...(decor?.muted?.(plan.dirPath) ? { muted: true } : {}),
-      ...(decor?.remote?.(plan.dirPath) ? { remote: true } : {})
+      ...(decor?.remote?.(plan.dirPath) ? { remote: true } : {}),
+      ...(decor?.managed?.(plan.dirPath) ? { managed: true } : {})
     } satisfies TerrainNodeData
 
     nodes.push({
