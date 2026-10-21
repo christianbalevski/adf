@@ -11,8 +11,8 @@ Open Settings with the gear in the title bar, Edit → Settings… (ADF Studio �
 
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
-- **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
-- The runtime's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. With the local runtime only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Server** with a picker of the server names ("*name* (Local)", and each saved connection such as `box-1`), and the pages show the settings of the server picked there, under a quiet header strip: "Server", then the server's icon and name. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else the local runtime; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
+- **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever server it connects to.
+- The server's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the settings of the agent server (the ADF daemon). With the local server only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Server** with a picker of the server names ("*name* (Local)", and each saved connection such as `box-1`), and the pages show the settings of the server picked there, under a quiet header strip: "Server", then the server's icon and name. Settings opens on the server of the open agent (from an agent window: that window's server), else the local server; the choice is not saved. A picked server that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
 
 ## Saving
 
@@ -32,8 +32,8 @@ Settings save as you change them. There is no Save button, except in a dialog th
 Studio sends no telemetry. Each request it or the runtime makes on its own has an off switch:
 
 - **Studio → Updates → Automatic checks** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every hour. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates. **Check for updates** checks now.
-- **Runtime → Providers → Models** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
-- **Runtime → MCP servers → Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
+- **Server → Providers → Models** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. Off = providers are contacted only when you click **Test** or an agent runs.
+- **Server → MCP servers → Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
 - **Studio → Privacy → Spell-check dictionaries** (Linux only, `spellcheckDownloadsEnabled`) — a **Download** button. Linux spell check uses Hunspell dictionaries from Google's CDN; nothing is fetched until you click it. After that, a newly added spell-check language downloads the same way. Windows and macOS use the OS spell checker and never download.
 
 The first-party skill catalog is a default entry in **Settings → Skills**, fetched when you open the skill browser; remove it there to stop that request. [Network traffic](../NETWORK.md) lists every connection.
@@ -53,12 +53,12 @@ Your user identity as a `did:key` DID, derived from a 12-word seed phrase genera
 
 ![Settings → Identity showing the Owner Identity card with owner DID, alias field, mesh-sharing checkbox, Back up seed phrase and Import identity buttons plus a "Seed not backed up" badge, and the Runtime Identity card below with the runtime DID, a green "Delegation valid" badge, and the agent directory URL.](../assets/screenshots/settings-identity.png)
 
-### Runtime key
+### Server key
 
-This computer's runtime DID. It identifies this computer to other computers; two computers never share one, even with the same owner. Shows:
+**Server key** ("Identifies this server to other servers. Two servers never share one.") is the server's runtime DID. Two servers never share one, even with the same owner. Shows:
 
 - A **Delegation valid** badge when the runtime holds a valid owner-signed delegation certificate (issuer and issue date shown below).
-- The **agent directory URL** (`http://<host>:<port>/agents`) — the endpoint other runtimes fetch to discover the agent cards this runtime serves, filtered by each requester's visibility scope.
+- The **agent directory URL** (`http://<host>:<port>/agents`): the endpoint that other servers fetch to find the agent cards that this server serves. Each requester sees only what its visibility scope allows.
 
 ### Agent identities
 
@@ -68,7 +68,7 @@ Per-agent DIDs and keystores are managed separately in the dock's **Agent → Id
 
 Providers are the LLM services that power your agents. You need at least one configured provider before agents can think. The `providers` config section is on [`sys_update_config`](tools.md#sys_update_config)'s immutable deny list — agents can never write it, not even via approval; provider setup is always the owner's (agents can still set their own `model.provider` and `model.model_id`).
 
-An agent uses its own provider, else its template's, else the runtime default. The runtime default is the provider marked **Default** on this page (**Make default for new agents** in its dialog), or the first one. In an agent's Config, the Provider list groups the providers stored on the agent (**On this agent**) and the ones set up here but not stored on it (**Runtime**; they do not go with the file).
+An agent uses its own provider, else its template's, else the server default. The server default is the provider marked **Default** on this page (**Make default for new agents** in its dialog), or the first one. In an agent's Config, the Provider list groups the providers stored on the agent (**On this agent**) and the ones set up here but not stored on it (**Runtime**; they do not go with the file).
 
 ### Adding a Provider
 
@@ -409,7 +409,7 @@ You cannot allow an unidentified network. When the router answers, the card show
 | **Network** | Other computers on allowed networks can reach the agents that you share. | `meshLan`. Listens on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, only on allowed networks; the addresses follow network changes within 10 seconds. A running server restarts on a change. `MESH_HOST` overrides it. |
 | **Agents** | "*N* shared", each agent with its visibility (**LAN** or **Public**). The name opens the agent's window. | Read only. Visibility is set in Agent → Config → Messaging ([Visibility tiers](messaging.md#visibility-tiers)). |
 
-An agent with `lan` or `public` visibility turns on the same listening as **Network**. A `public` agent never binds every interface (`0.0.0.0`) by itself: it needs the same consent per network, and the status card names it until you allow the network. Only `MESH_HOST=0.0.0.0` binds every interface; that is the operator's choice, for example on a server. A server with only a public address has no network to allow: while a `public` agent listens on this computer only, the daemon log, `adf daemon status` and the status card say so and name `MESH_HOST`. A device paired with this computer that changes an agent's visibility gets no listener without your consent either.
+An agent with `lan` or `public` visibility turns on the same listening as **Network**. A `public` agent never binds every interface (`0.0.0.0`) by itself: it needs the same consent per network, and the status card names it until you allow the network. Only `MESH_HOST=0.0.0.0` binds every interface; that is the operator's choice, for example on a server. A server with only a public address has no network to allow: while a `public` agent listens on this computer only, the daemon log, `adf daemon status` and the status card say "Public agents listen on this computer only. No network is allowed. On a computer with only a public address, set MESH_HOST=0.0.0.0. Then restart the server." A device paired with this computer that changes an agent's visibility gets no listener without your consent either.
 
 The switches, the port and the binding are app-level, not agent-reachable; agents request changes from their principal.
 
@@ -427,7 +427,7 @@ The switches, the port and the binding are app-level, not agent-reachable; agent
 | **Tailnet** | The Tailscale sweep (Advanced → **Tailscale**, `tailnetDiscovery`) |
 | **Address** | An address you added (`meshManualPeers`), with ✕ to remove it (Undo in the toast) |
 
-Each row shows the server icon, the host, its mesh address and, right-aligned, its agent count, or **Unreachable** when its directory did not answer. With none: "No server found." **Managed** (tooltip "This Studio also connects to this server (Settings → Connections).") means Connections also has that server under **Remote servers**: the fingerprint it announces is the one the connection was paired with, so a computer saved under its Tailscale https name is Managed too. A server that announces no fingerprint is matched by host and daemon port, unless another server on that host announces the connection's fingerprint. An address you added that nothing answers at yet is listed with "No answer".
+Each row shows the server icon, the host, its mesh address and, right-aligned, its agent count, or **Unreachable** when its directory did not answer (tooltip "The server sent an announcement. Its directory did not answer. Possible causes: a firewall, a wrong network interface, or a stopped mesh server."). With none: "No server found." **Managed** (tooltip "This Studio also connects to this server (Settings → Connections).") means Connections also has that server under **Remote servers**: the fingerprint it announces is the one the connection was paired with, so a computer saved under its Tailscale https name is Managed too. A server that announces no fingerprint is matched by host and daemon port, unless another server on that host announces the connection's fingerprint. An address you added that nothing answers at yet is listed with "No answer".
 
 **Address** with **Add** adds one: `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port. An address with `http://`, a path or a port outside 1–65535 is refused under the field. **Recheck** ("Look on the tailnet and at the addresses again now.") probes the tailnet and the addresses and fetches each directory again.
 
@@ -443,7 +443,7 @@ Closed by default; nothing in it is hidden.
 | **Tailscale** | Look for agent servers on the computers of your tailnet (`tailnetDiscovery`). |
 | **Addresses** | This computer's LAN addresses and Tailscale state, and each interface address with **Copy**; a link while **Network** is on. |
 | **HTTPS** | `tailscale serve` gives this server an https address on your tailnet (remote access over https): **Enable** or **Disable**, each confirmed with the exact command first. Otherwise one sentence with the cause: why remote access cannot be read (for example "Remote access needs Local as the connection (Settings → Connections).", or the daemon's error), "Needs Tailscale." while Tailscale is not running, or "Tailscale did not answer." when `tailscale serve status` failed. |
-| **Firewall** | Whether other servers can reach the mesh port ("Other servers find this server, but they see 0 agents. Add a firewall rule to let them in." while a rule is missing). When a rule is missing, the exact commands to run in an administrator shell, with **Copy** and a link to [LAN discovery › Firewalls](lan-discovery.md#firewalls). Studio never adds a firewall rule itself. |
+| **Firewall** | Whether other servers can reach the mesh port ("Other servers find this server. They see 0 agents. Add a firewall rule for the mesh port." while a rule is missing; "The firewall rule exists. The mesh server does not answer on *address*." when it is there but nothing answers). When a rule is missing, the exact commands to run in an administrator shell, with **Copy** and a link to [LAN discovery › Firewalls](lan-discovery.md#firewalls). Studio never adds a firewall rule itself. |
 | **Endpoints** | The agents serving on the mesh: handle, URL, **Site** (public folder served), route count, pattern count. "Mesh is off." while the mesh is off. See [HTTP Serving](serving.md). |
 
 With another computer picked in the **Server** picker, **Networks**, **HTTPS**, **Firewall** and **Endpoints** say "Change on *name*.": they belong to that computer.
