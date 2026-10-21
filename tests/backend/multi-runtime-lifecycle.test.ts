@@ -21,7 +21,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 
 import { electronStub } from './daemon-mode-electron'
 import { IPC } from '../../src/shared/constants/ipc-channels'
-import { AGENT_1, AGENT_2, FILE_1, REMOTE_FILE_2, TOKEN, WINDOW, boot, cleanup, fakeHost, pending, tick, until, type FakeHost } from './multi-runtime-harness'
+import { AGENT_1, AGENT_2, FILE_1, REMOTE_FILE_2, TOKEN, WINDOW, tokenOf, boot, cleanup, fakeHost, pending, tick, until, type FakeHost } from './multi-runtime-harness'
 
 afterEach(cleanup)
 
@@ -37,7 +37,7 @@ const authed = (host: FakeHost, from: number) => host.daemon.requests.slice(from
 
 describe('a runtime removed while it connects sends nothing more', () => {
   it('removed during the backoff of an unreachable remote: when the host comes back, no token goes there and no session opens', async () => {
-    const host2 = fakeHost('host-2', 47392, 'FP-HOST-2')
+    const host2 = fakeHost('host-2', 47392, 'HOST-AAAC')
     host2.reachable = false
     // Each backoff sleep lasts 50 times its delay: the removal lands inside one.
     const t = await boot({ hosts: [host2], sleepScale: 50 })
@@ -58,7 +58,7 @@ describe('a runtime removed while it connects sends nothing more', () => {
 
   for (const path of ['/agents', '/approvals']) {
     it(`removed while GET ${path} of its connect is in flight: nothing more is sent, its session never starts and its approvals never show`, async () => {
-      const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+      const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
       host1.daemon.routes.set('GET /approvals', () => ({ pending: [pending('n1', REMOTE_FILE_2, 'agent-2')], history: [] }))
       const gate = hold()
       host1.gates.set(path, gate.promise)
@@ -87,7 +87,7 @@ describe('a runtime removed while it connects sends nothing more', () => {
 
 describe('a runtime that retires', () => {
   it('Remove: an agent window opened on it meanwhile is refused and opens no session there', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const r1 = t.handle.runtimes.get('remote:host-1')!
@@ -102,7 +102,7 @@ describe('a runtime that retires', () => {
   })
 
   it('Reconnect: an agent window opened on the old connection while it retires is refused', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const failed = t.handle.runtimes.get('remote:host-1')!
@@ -123,7 +123,7 @@ describe('a runtime that retires', () => {
   })
 
   it('quit while it retires waits for its sessions too, within the session-end budget', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     await t.handle.runtimes.get('remote:host-1')!.ready
@@ -135,7 +135,7 @@ describe('a runtime that retires', () => {
   })
 
   it('forgotten, then saved again while it retires: it connects again', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const old = t.handle.runtimes.get('remote:host-1')!
@@ -153,7 +153,7 @@ describe('a runtime that retires', () => {
   })
 
   it('a second Reconnect on the old connection does not replace the fresh one', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const failed = t.handle.runtimes.get('remote:host-1')!
@@ -177,7 +177,7 @@ describe('a runtime that retires', () => {
 
 describe('approvals answered from another runtime\'s agent window (§6.1)', () => {
   async function connected() {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     host1.daemon.routes.set('POST /approvals/resolve', () => ({ success: true }))
     const t = await boot({ hosts: [host1] })
     t.local.routes.set('POST /approvals/resolve', () => ({ success: true }))
@@ -210,7 +210,7 @@ describe('approvals answered from another runtime\'s agent window (§6.1)', () =
 
 describe('the main window\'s open runtime (§4.3, §4.4)', () => {
   async function connected() {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     host1.daemon.routes.set('GET /files/agent', (req) => ({ agentId: req.query.path === REMOTE_FILE_2 ? AGENT_2 : null, loaded: req.query.path === REMOTE_FILE_2 }))
     host1.daemon.routes.set(`GET /agents/${AGENT_2}/files/raw`, () => ({ raw: 'remote-image', headers: { 'Content-Type': 'image/png' } }))
     const t = await boot({ hosts: [host1] })
@@ -231,7 +231,7 @@ describe('the main window\'s open runtime (§4.3, §4.4)', () => {
     await until(() => t.handle.runtimes.mainOpenRuntime().id === 'remote:host-1')
     const res = await t.handle.adfFile(image())
     expect(await res.text()).toBe('remote-image')
-    expect(t.host1.daemon.requests.filter((r) => r.path.endsWith('/files/raw')).map((r) => r.auth)).toEqual([`Bearer ${TOKEN}-host-1`])
+    expect(t.host1.daemon.requests.filter((r) => r.path.endsWith('/files/raw')).map((r) => r.auth)).toEqual([`Bearer ${tokenOf('host-1')}`])
     expect(t.local.requests.filter((r) => r.path.endsWith('/files/raw'))).toEqual([])
   })
 
@@ -259,12 +259,12 @@ describe('the main window\'s open runtime (§4.3, §4.4)', () => {
 
 describe('a pin check in flight (§3.5)', () => {
   it('nothing is sent while it runs: a tagged call and a stream retry carry no token; another computer then fails the runtime', async () => {
-    const host1 = fakeHost('host-1', 47391, 'FP-HOST-1')
+    const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     const t = await boot({ hosts: [host1] })
     await t.sync()
     const r1 = t.handle.runtimes.get('remote:host-1')!
     await r1.ready
-    host1.shows = 'FP-EVIL-1'
+    host1.shows = 'EVIL-AAAB'
     const check = hold()
     host1.gates.set('/remote/hello', check.promise)
     const from = host1.daemon.requests.length

@@ -23,7 +23,7 @@ import type { NetworkConsentResult, NetworkNotice, NetworkStatusView } from '../
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
 import { remotesEnv, SavedConnectionsCache, saveConnection } from './connections'
-import { KEYCHAIN_FILE_COPY } from '../cli/remotes'
+import { KEYCHAIN_FILE_COPY, readRemotesAsync, RemotesUnreadableError, remotesFilePath } from '../cli/remotes'
 
 /**
  * Remote access in Studio main
@@ -261,6 +261,10 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     onState: (state) => windows.send(IPC.REMOTE_PAIR_STATE, state),
     // Saved where `adf pair` saves (connections.ts): the keychain, else a file only this user can read. Never blocked.
     saveBlocked: () => null,
+    savedListProblem: async () => {
+      const read = await readRemotesAsync(env)
+      return read.unreadable ? new RemotesUnreadableError(remotesFilePath(env), read.unreadable).message : null
+    },
     defaultDeviceName: () => runtimeName(deps.settingsDir),
     savedConnections: () => {
       const list = Object.entries(saved()).map(([name, r]) => ({ name, url: r.url, fingerprint: r.fingerprint as string | null }))

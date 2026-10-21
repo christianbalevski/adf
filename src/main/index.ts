@@ -783,7 +783,7 @@ app.whenReady().then(async () => {
     if (twin && changes && !changes.moves.has(SLOT_RUNTIME)) changes.moves.set(SLOT_RUNTIME, savedRuntimeId(twin))
     if (changes) runtimeKeysFollow?.(changes)
     if (twin && store) {
-      void clearTwinSlot(store, lastSaved).then((name) => {
+      void clearTwinSlot(store, lastSaved, connectionsEnv).then((name) => {
         if (!name) return
         syncRuntimes()
         connections?.changed()

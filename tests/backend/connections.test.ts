@@ -16,14 +16,15 @@ import { createBackendSettingsStore, defaultBackendConfig, resolveBootBackend, t
 import { buildConnectionsView, ConnectionError, currentConnection, forgetConnection, keychainSentence, remotesEnv, saveConnection, savedConnections, savedConnectionTarget } from '../../src/main/backend/connections'
 import { createConnections } from '../../src/main/backend/connections-ipc'
 import { remoteDaemonConnector, RemoteConnectError } from '../../src/main/backend/daemon-mode/remote/connector'
-import { loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, savedRemoteToken, selectedRemote, storeRemoteToken } from '../../src/main/cli/remotes'
+import { loadRemotes, readRemoteToken, RemotesUnreadableError, remoteNameFor, saveRemotes, savedRemoteToken, selectedRemote, storeRemoteToken } from '../../src/main/cli/remotes'
 import type { BackendDaemonStatus } from '../../src/shared/types/backend.types'
 import type { RemoteDiscoveryEntry } from '../../src/shared/types/remote-access-ipc.types'
+import { deviceToken, helloResponse } from '../helpers/hello-proof'
 
 const quiet = { log: () => {}, warn: () => {} }
 const HUB = 'http://100.101.102.103:7385'
 const LAN = 'http://192.168.1.20:7385'
-const TOKEN = 'adfd_' + 'a'.repeat(40)
+const TOKEN = deviceToken('rawl-hub')
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -48,8 +49,8 @@ const codec: SecretCodec = {
   decrypt: (stored) => Buffer.from(stored.slice(5), 'base64').toString(),
 }
 
-/** An ADF daemon stand-in: /health, /version behind the token, /remote/hello with its fingerprint (or none). */
-function fakeDaemon(opts: { fingerprint?: string | null; name?: string } = {}) {
+/** An ADF daemon stand-in: /health, /version behind the token, /remote/hello with its fingerprint (or none) and the proof for TOKEN it issued. */
+function fakeDaemon(opts: { fingerprint?: string | null; name?: string; old?: boolean } = {}) {
   const requests: Array<{ url: string; auth: string | null }> = []
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -59,7 +60,7 @@ function fakeDaemon(opts: { fingerprint?: string | null; name?: string } = {}) {
     if (url.pathname === '/health') return json(200, { ok: true })
     if (url.pathname === '/remote/hello') {
       if (opts.fingerprint === null) return json(404, { error: 'Remote access is off on this computer.', code: 'remote_access_off' })
-      return json(200, { v: 1, name: opts.name ?? 'rawl-hub', fingerprint: opts.fingerprint ?? 'ABCD-EFGH', pairingOpen: false, api: '2' })
+      return helloResponse(url, { name: opts.name ?? 'rawl-hub', fingerprint: opts.fingerprint ?? 'ABCD-EFGH', tokens: [TOKEN], old: opts.old })
     }
     if (auth !== `Bearer ${TOKEN}`) return json(401, { error: 'Unauthorized' })
     if (url.pathname === '/version') return json(200, { version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION, pid: 1, startedBy: 'cli' })
@@ -129,6 +130,43 @@ describe('one list for Studio and adf (cli-remotes.json and the keychain)', () =
     await saveConnection(env, { url: LAN, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: '', label: '' })
     expect(await savedConnectionTarget(defaultBackendConfig(), 'hub', env).catch((e) => e)).toMatchObject({ code: 'transport', message: `${LAN} is plain http to an address that is not loopback or a tailnet address; pair hub in Studio to confirm the network, or use https://.` })
     expect((await savedConnectionTarget({ insecureHttpOrigins: ['http://192.168.1.20:7385'] }, 'hub', env)).url).toBe(LAN)
+  })
+
+  // R2A-1: an unreadable list refuses before the token is stored, so the saved token is never replaced.
+  it('a list that cannot be read: saveConnection rejects and the saved token stays the old one', async () => {
+    const env = sharedEnv()
+    const OLD = deviceToken('old'), NEW = deviceToken('new')
+    await saveConnection(env, { url: HUB, token: OLD, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd1', label: 'l' })
+    const list = join(env.ADF_DAEMON_SETTINGS!, '..', 'cli-remotes.json')
+    writeFileSync(list, '{ not json')
+    const err = await saveConnection(env, { url: HUB, token: NEW, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd2', label: 'l' }).catch((e) => e)
+    expect(err).toBeInstanceOf(RemotesUnreadableError)
+    expect(err.message).toMatch(/Fix or remove it; nothing was changed\.$/)
+    expect(readRemoteToken('ABCD-EFGH', env)).toBe(OLD)
+    expect(readFileSync(list, 'utf8')).toBe('{ not json')
+  })
+
+  // R2A-3: an unreadable list is not "no saved connection": the error names the file, and the connector waits for it.
+  it('a list that cannot be read: savedConnectionTarget names the file; the connector retries and connects once it is fixed', async () => {
+    const env = sharedEnv()
+    await saveConnection(env, { url: HUB, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'hub', deviceId: 'd', label: 'l' })
+    const list = join(env.ADF_DAEMON_SETTINGS!, '..', 'cli-remotes.json')
+    const good = readFileSync(list, 'utf8')
+    writeFileSync(list, '{ not json')
+    const err = await savedConnectionTarget(defaultBackendConfig(), 'hub', env).catch((e) => e)
+    expect(err).toBeInstanceOf(ConnectionError)
+    expect(err.code).toBe('unreadable')
+    expect(err.message).toContain(list)
+    expect(err.message).not.toContain('No saved connection')
+    const daemon = fakeDaemon()
+    const progress: string[] = []
+    const config: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'hub' } }
+    let sleeps = 0
+    const connector = remoteDaemonConnector(config, codec, { env, fetch: daemon.fetch, retry: { initialMs: 1, maxMs: 2 }, sleep: async () => { if (++sleeps === 2) writeFileSync(list, good) } })
+    const endpoint = await connector((t) => progress.push(t))
+    expect(endpoint.baseUrl).toBe(HUB)
+    expect(progress.filter((p) => p.startsWith('Waiting for the list of saved connections'))).toHaveLength(2)
+    expect(progress.find((p) => p.startsWith('Waiting for the list'))).toContain(list)
   })
 })
 
@@ -244,7 +282,8 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(readRemoteToken('ABCD-EFGH', s.env)).toBe(TOKEN)
     expect(JSON.parse(readFileSync(s.path, 'utf8')).insecureHttpOrigins).toEqual(['http://192.168.1.20:7385'])
     // The hello came first, without the token.
-    expect(s.daemon.requests[0]).toMatchObject({ url: `${LAN}/remote/hello`, auth: null })
+    // The authenticated hello for this token's device (remote-access.md §5.2.1).
+    expect(s.daemon.requests[0]).toMatchObject({ url: expect.stringMatching(new RegExp(`^${LAN}/remote/hello\\?nonce=[A-Za-z0-9_-]{43}&device=${TOKEN.slice(5, 15)}&origin=`)), auth: null })
   })
 
   it('Add connection: an address a saved connection was paired at, now answering with another fingerprint, is refused; the token is not sent', async () => {
@@ -309,7 +348,11 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(await s.connections.add({ url: 'ftp://x', token: TOKEN })).toMatchObject({ ok: false, code: 'invalid_url' })
     expect(await s.connections.add({ url: LAN, token: TOKEN })).toMatchObject({ ok: false, code: 'insecure_url_unconfirmed' })
     expect(await s.connections.add({ url: HUB, token: 'has space' })).toMatchObject({ ok: false, code: 'invalid_token' })
-    expect(await s.connections.add({ url: HUB, token: 'adfd_wrong' })).toMatchObject({ ok: false, code: 'unreachable' })
+    // A token the daemon did not issue: its hello cannot prove it, so the token is never sent (R2A-2).
+    expect(await s.connections.add({ url: HUB, token: deviceToken('another-device') })).toEqual({ ok: false, code: 'not_proved', error: 'rawl-hub does not know this computer\'s token, which was not sent; pair it again.' })
+    // Not a device token where an ADF daemon answers: nothing could prove who answers, so it is not saved.
+    expect(await s.connections.add({ url: HUB, token: 'adfd_wrong' })).toEqual({ ok: false, code: 'not_device_token', error: 'rawl-hub takes a device token here; make one there with: adf daemon devices add <label>.' })
+    expect(s.daemon.requests.some((r) => r.auth !== null)).toBe(false)
     expect(loadRemotes(s.env).remotes).toEqual({})
   })
 

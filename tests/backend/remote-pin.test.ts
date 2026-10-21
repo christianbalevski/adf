@@ -17,9 +17,10 @@ import { DaemonConnection, PinMismatchError, type DaemonConnector } from '../../
 import { remoteDaemonConnector } from '../../src/main/backend/daemon-mode/remote/connector'
 import { defaultBackendConfig, type SecretCodec, type StudioBackendConfig } from '../../src/main/backend/backend-config'
 import { remotesEnv, saveConnection } from '../../src/main/backend/connections'
+import { deviceToken, helloResponse, type FakeHelloHost } from '../helpers/hello-proof'
 
 const URL_ = 'http://100.101.102.103:7385'
-const TOKEN = 'adfd_' + 'p'.repeat(40)
+const TOKEN = deviceToken('rawl-hub')
 const quiet = { log: () => {}, warn: () => {}, error: () => {} }
 const codec: SecretCodec = { available: () => true, encrypt: (p) => `safe:${p}`, decrypt: (s) => s.slice(5) }
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms))
@@ -34,8 +35,11 @@ async function until(check: () => boolean, ms = 2_000): Promise<void> {
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
 
-/** A daemon at URL_: /health, /version behind the token, /remote/hello with `fingerprint()` (null: nothing answers). */
-function fakeServer(fingerprint: () => string | null) {
+/**
+ * A daemon at URL_: /health, /version behind the token, /remote/hello with `fingerprint()` (null: nothing
+ * answers) and the proof for TOKEN (`hello` changes what the host holds: an impostor, an older ADF).
+ */
+function fakeServer(fingerprint: () => string | null, hello: () => Partial<FakeHelloHost> = () => ({})) {
   const sent: Array<{ path: string; auth: string | null }> = []
   const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -45,7 +49,7 @@ function fakeServer(fingerprint: () => string | null) {
     if (url.pathname === '/remote/hello') {
       const fp = fingerprint()
       if (fp === null) throw new TypeError('fetch failed')
-      return json(200, { v: 1, name: 'rawl-hub', fingerprint: fp, pairingOpen: false, api: '2' })
+      return helloResponse(url, { name: 'rawl-hub', fingerprint: fp, tokens: [TOKEN], ...hello() })
     }
     if (url.pathname === '/health') return json(200, { ok: true })
     if (auth !== `Bearer ${TOKEN}`) return json(401, { error: 'Unauthorized' })
@@ -142,6 +146,64 @@ describe('the remote connector of a saved connection gives the connection its pi
     const down = await connector.pinCheck!().catch((e) => e)
     expect(down).not.toBeInstanceOf(PinMismatchError)
     expect(down.message).toBe(`${URL_} does not answer as rawl-hub; the token was not sent.`)
+  })
+
+  // R2A-2: the pin is not a string anything can echo. The daemon proves it holds this token's device record.
+  it('an impostor that echoes the pinned fingerprint gets no token: at launch, and on a re-dial', async () => {
+    const env = savedEnv()
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    // Shows the real fingerprint and claims to know the device, without its record: no proof it can make.
+    const impostor = fakeServer(() => 'ABCD-EFGH', () => ({ tokens: [deviceToken('another-device')] }))
+    const forging = fakeServer(() => 'ABCD-EFGH', () => ({ tokens: [] }))
+    for (const server of [impostor, forging]) {
+      const connector = remoteDaemonConnector(config, codec, { env, fetch: server.fetch, retry: { maxAttempts: 1 } })
+      const err = await connector(() => {}).catch((e) => e)
+      expect(err.message).toMatch(/^rawl-hub does not know this computer's token, which was not sent; pair it again\.$/)
+      expect(server.withToken()).toEqual([])
+      expect(server.sent.every((s) => s.auth === null)).toBe(true)
+    }
+    // An impostor that sends a proof of its own making: refused as not the computer that issued the token.
+    const real = fakeServer(() => 'ABCD-EFGH')
+    let lie = false
+    const lying = (async (input: string | URL | Request, init?: RequestInit) => {
+      const res = await real.fetch(input, init)
+      if (!lie || new URL(String(input)).pathname !== '/remote/hello') return res
+      const body = await res.json() as Record<string, unknown>
+      return new Response(JSON.stringify({ ...body, proof: 'A'.repeat(43) }), { status: 200 })
+    }) as typeof fetch
+    const connector = remoteDaemonConnector(config, codec, { env, fetch: lying })
+    await connector(() => {})
+    const sentBefore = real.withToken().length
+    lie = true
+    const forged = await connector.pinCheck!().catch((e) => e)
+    expect(forged).toBeInstanceOf(PinMismatchError)
+    expect(forged.message).toBe(`${URL_} could not prove it is rawl-hub; the token was not sent.`)
+    expect(real.withToken()).toHaveLength(sentBefore)
+  })
+
+  it('a proof replayed for another nonce fails; a valid one passes', async () => {
+    const { verifyHello } = await import('../../src/main/services/remote-hello')
+    const server = fakeServer(() => 'ABCD-EFGH')
+    expect((await verifyHello(URL_, TOKEN, { fetch: server.fetch })).kind).toBe('verified')
+    // Record the answer to one nonce, then replay it to a client that asked with another.
+    const nonceA = 'a'.repeat(43)
+    const recorded = await (await server.fetch(`${URL_}/remote/hello?${new URLSearchParams({ nonce: nonceA, device: TOKEN.slice(5, 15), origin: URL_ })}`)).text()
+    const replay = (async () => new Response(recorded, { status: 200 })) as unknown as typeof fetch
+    expect((await verifyHello(URL_, TOKEN, { fetch: replay, nonce: nonceA })).kind).toBe('verified')
+    expect((await verifyHello(URL_, TOKEN, { fetch: replay, nonce: 'b'.repeat(43) })).kind).toBe('forged')
+    // Nor for another origin (the address the client dialed is in the message).
+    expect((await verifyHello('http://100.101.102.104:7385', TOKEN, { fetch: replay, nonce: nonceA })).kind).toBe('forged')
+  })
+
+  it('an older ADF, which cannot prove who it is, is refused with one sentence, never downgraded; no token goes out', async () => {
+    const env = savedEnv()
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    const server = fakeServer(() => 'ABCD-EFGH', () => ({ old: true }))
+    const connector = remoteDaemonConnector(config, codec, { env, fetch: server.fetch })
+    const err = await connector(() => {}).catch((e) => e)
+    expect(err.message).toBe('rawl-hub runs an older ADF; update it.')
+    expect(err.problem).toBe('fingerprint')
+    expect(server.withToken()).toEqual([])
   })
 
   it('the remote URL without a fingerprint has no pin', () => {

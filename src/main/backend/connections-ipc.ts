@@ -10,7 +10,7 @@ import type { BackendSettingsStore, BootBackend } from './backend-config'
 import { buildConnectionsView, forgetConnection, SavedConnectionsCache, saveConnection } from './connections'
 import { KEYCHAIN_FILE_COPY } from '../cli/remotes'
 import { remoteHandshake } from './daemon-mode/remote/connector'
-import { PairingClient } from './remote-access/client'
+import { fetchHello, helloRefusal, verifyHello } from '../services/remote-hello'
 
 /**
  * Settings → Connections in Studio main (docs/design/settings-scopes.md §5,
@@ -126,12 +126,17 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     const origin = remoteUrlOrigin(check.url)!
     await fresh()
 
-    // Who answers there, before any token is sent (trust on first use, as Pair).
+    // Who answers there, before any token is sent (trust on first use, as Pair): the authenticated hello
+    // (remote-access.md §5.2.1) proves the computer there issued this device token.
     let hello: { name: string; fingerprint: string } | null = null
-    try {
-      const answer = await new PairingClient(check.url, deps.fetch).hello({ timeoutMs: 5_000 })
-      if (answer?.v === 1 && typeof answer.fingerprint === 'string' && typeof answer.name === 'string') hello = { name: answer.name, fingerprint: answer.fingerprint }
-    } catch { /* remote access off there, an older ADF, or a proxy: a connection without a fingerprint */ }
+    const proved = await verifyHello(check.url, token, { fetch: deps.fetch, timeoutMs: 5_000 })
+    if (proved.kind === 'not_device_token') {
+      // Not an `adfd_` token: nothing can prove who answers, so it is never saved pinned to a fingerprint.
+      const answer = await fetchHello(check.url, deps.fetch, 5_000)
+      if (answer) return fail('not_device_token', `${answer.name} takes a device token here; make one there with: adf daemon devices add <label>.`)
+    } else if (proved.kind !== 'none') {
+      hello = { name: proved.hello.name, fingerprint: proved.hello.fingerprint }
+    }
     const all = saved()
     // An address a saved computer was paired at: no token until it shows that fingerprint (trust on first use).
     const pinnedHere = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin)
@@ -142,6 +147,9 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     if (hello) {
       const pinned = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin && s.fingerprint !== hello!.fingerprint)
       if (pinned) return fail('fingerprint_mismatch', `${hostOf(check.url)} now answers with fingerprint ${hello.fingerprint}, not ${pinned[1].fingerprint} as when ${pinned[0]} was paired; Studio sent nothing, and if it was set up again, remove ${pinned[0]} and pair again.`)
+      // No proof for this token: an older ADF, or not the computer that issued it. Never saved, never sent.
+      const refusal = helloRefusal(proved, hello.name, check.url)
+      if (refusal) return fail(proved.kind === 'unsigned' ? 'old_daemon' : 'not_proved', refusal)
       // The computer is saved under another address: never move it without asking, as Pair does.
       const moved = Object.entries(all).find(([, s]) => s.fingerprint === hello!.fingerprint && remoteUrlOrigin(s.url) !== origin)
       if (moved) {

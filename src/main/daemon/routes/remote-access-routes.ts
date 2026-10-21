@@ -18,7 +18,7 @@
 // Unauthenticated (the Host / Origin checks still apply), 404 while remote
 // access is off:
 //
-//   GET  /remote/hello                       name, fingerprint, pairing open
+//   GET  /remote/hello[?nonce&device&origin]  name, fingerprint, pairing open; the device's proof (§5.2.1)
 //   POST /pair/claim                         {code, deviceName, clientKind} → 202 {claimId, expiresAt}
 //   GET  /pair/claims/:claimId?wait=<0-25>   pending | denied | approved (token delivered once)
 
@@ -32,6 +32,7 @@ import type { ClientSessionRegistry } from '../client-sessions'
 import type { RemoteAccessPatch } from '../../../shared/types/remote-access.types'
 import type { DaemonRouteContext } from './index'
 import { badRequest } from './route-helpers'
+import { helloProofRequest } from '../../services/remote-hello'
 
 const MANAGEMENT_PROOF_REFUSAL = 'Remote access is managed only from this computer: it needs this machine\'s local proof (X-ADF-Local-Proof, the daemon-local-proof file next to the daemon settings). Use ADF Studio or adf on this computer.'
 
@@ -166,11 +167,16 @@ export function registerRemoteAccessRoutes(server: FastifyInstance, ctx: DaemonR
 
   const off = (reply: FastifyReply) => reply.code(404).header('Cache-Control', 'no-store').send({ error: 'Remote access is off on this computer.', code: 'remote_access_off' })
 
-  server.get('/remote/hello', async (request, reply) => {
+  server.get<{ Querystring: Record<string, unknown> }>('/remote/hello', async (request, reply) => {
     const s = service()
     if (!s) return off(reply)
     void reply.header('Cache-Control', 'no-store')
-    try { return await s.hello(request.raw) } catch (err) { return sendError(reply, err) }
+    // The authenticated hello (remote-access.md §5.2.1): all three or none.
+    const query = isRecord(request.query) ? request.query : {}
+    const asked = query.nonce !== undefined || query.device !== undefined || query.origin !== undefined
+    const prove = asked ? helloProofRequest(query) : null
+    if (asked && !prove) return badRequest(reply, 'nonce (32 bytes, base64url), device (a device id) and origin (the origin dialed) go together')
+    try { return await s.hello(request.raw, prove ?? undefined) } catch (err) { return sendError(reply, err) }
   })
 
   server.post<{ Body: unknown }>('/pair/claim', async (request, reply) => {

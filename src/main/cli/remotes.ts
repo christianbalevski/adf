@@ -440,24 +440,28 @@ export function savedRemoteFor(url: string, env: NodeJS.ProcessEnv = process.env
 
 /**
  * Before a saved device token goes to `url` (security review item 7): the
- * daemon there MUST answer /remote/hello with the fingerprint pinned when it
- * was paired. Null = go ahead (no saved remote for that origin); otherwise the
- * sentence to show, and the token is not sent. A token given with --token or
- * ADF_DAEMON_TOKEN is the user's own choice and is not checked.
+ * daemon there MUST answer the authenticated hello (remote-access.md
+ * §5.2.1) with the fingerprint pinned when it was paired, and prove it holds
+ * the device record of the saved token. An older ADF is refused, never
+ * downgraded. Null = go ahead (no saved remote for that origin); otherwise
+ * the sentence to show, and the token is not sent. A token given with --token or ADF_DAEMON_TOKEN is the
+ * user's own choice and is not checked.
  */
 export async function pinnedRemoteRefusal(url: string, env: NodeJS.ProcessEnv, fetchImpl: typeof fetch): Promise<string | null> {
   const saved = savedRemoteFor(url, env)
   if (!saved) return null
-  const { fetchHello } = await import('./daemon-discovery')
-  const hello = await fetchHello(url, fetchImpl)
+  const token = readRemoteToken(saved.remote.fingerprint, env)
+  const { fetchHello, helloRefusal, verifyHello } = await import('../services/remote-hello')
+  // No token saved: nothing secret goes out, and the fingerprint alone is checked as before.
+  const check = token ? await verifyHello(url, token, { fetch: fetchImpl }) : await fetchHello(url, fetchImpl).then((hello) => hello ? { kind: 'verified' as const, hello } : { kind: 'none' as const })
   const host = `"${saved.name}" (${saved.remote.hostName ?? saved.remote.url})`
-  if (!hello) {
+  if (check.kind === 'none') {
     return `${url} did not answer as ${host}: it is down, its remote access is off, or another program answers there. The saved token was not sent.`
   }
-  if (hello.fingerprint !== saved.remote.fingerprint) {
-    return `The ADF daemon at ${url} is not ${host}: it shows fingerprint ${hello.fingerprint}, and ${saved.remote.fingerprint} was saved when you paired. The saved token was not sent. If that computer was set up again, pair it again: adf remotes forget ${saved.name}, then adf pair ${url}.`
+  if (check.kind !== 'not_device_token' && check.hello.fingerprint !== saved.remote.fingerprint) {
+    return `The ADF daemon at ${url} is not ${host}: it shows fingerprint ${check.hello.fingerprint}, and ${saved.remote.fingerprint} was saved when you paired. The saved token was not sent. If that computer was set up again, pair it again: adf remotes forget ${saved.name}, then adf pair ${url}.`
   }
-  return null
+  return helloRefusal(check, host, url)
 }
 
 /** A remote name from the host's name: lower case, letters, digits and dashes. */

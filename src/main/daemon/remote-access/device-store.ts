@@ -182,6 +182,18 @@ export class DeviceStore {
     return device
   }
 
+  /**
+   * The device behind an id, for the authenticated hello (remote-access.md
+   * §5.2.1): its record, a tombstone, or unknown (also while the store is
+   * unreadable). No secret is compared here.
+   */
+  lookup(id: string): { kind: 'device'; device: DeviceRecord } | { kind: 'revoked' } | { kind: 'unknown' } {
+    if (this.problemText) return { kind: 'unknown' }
+    const device = this.devices.get(id)
+    if (device) return { kind: 'device', device }
+    return this.revoked.has(id) ? { kind: 'revoked' } : { kind: 'unknown' }
+  }
+
   /** Constant-time check of a presented `adfd_` token. */
   check(token: string): DeviceTokenCheck {
     if (this.problemText) return { kind: 'unknown' }
