@@ -37,9 +37,9 @@ Read with: [agent-windows.md](agent-windows.md) (window and session map, `ctxFor
 |---|---|---|
 | Sidebar, Go to Agent | Tracked folders, as today | One group per runtime, headed with its name and, while down, its state; tracked folders inside |
 | Mesh view | As today | One region per runtime, labelled with its name (§6.4) |
-| Status bar | One unnamed group: `( [Mesh] [Kill] )`, a problem in the state's words | One group per runtime: `( [name] [Mesh] [Kill] )` (§6.2) |
+| Status bar | One unnamed group: `( [Mesh] [Kill] )`, a problem in the state's words | One group, the open agent's runtime: `( [name] [Mesh] [Kill] )`, and a **Runtimes** popover of every runtime with Kill all (§6.2) |
 | Approvals bell, toasts, OS notifications | As today | One list; each row and notification carries its runtime's name (§6.1) |
-| Settings | Runtime pages unheaded | Group heading **Runtime** with a picker of runtime names (§6.3) |
+| Settings | Runtime pages unheaded | Group heading **Runtime** with a picker of runtime names; the picked runtime's name on each runtime page (§6.3) |
 | Agent window title | Agent name | Agent name · runtime name |
 | Connections | One row, **Add** (SimpleConnections) | One row per runtime, found computers, **Add** (§6.5) |
 | Add | Pairs, then connects; no restart | Same |
@@ -50,7 +50,7 @@ UI copy MUST NOT describe the runtime set as additive or explain that This compu
 
 Before: Studio runs agents on This computer or on one other computer. Choosing rawl-hub in Settings → Connections asks to switch, lists what stops, and restarts Studio. Afterwards the agents of this laptop are gone from Studio until the next switch and restart. To watch both, the owner runs a second Studio with `ADF_INSTANCE`.
 
-After: the owner adds rawl-hub (**Add**, then the code shown on rawl-hub). Nothing restarts. The sidebar now shows two groups, rawl-laptop (Local) and rawl-hub, and the status bar shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
+After: the owner adds rawl-hub (**Add**, then the code shown on rawl-hub). Nothing restarts. The sidebar now shows two groups, rawl-laptop (Local) and rawl-hub, and the status bar's **Runtimes** popover shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
 
 An owner who never adds another computer sees no change.
 
@@ -251,15 +251,17 @@ Selectors: `selectRuntimeSlice(state, id)`, `selectAllAgents(state)` (each with 
 
 ### 6.2 Status bar
 
-- One group per runtime, `local` first: `( [name] [Mesh] [Kill] )`. Mesh and Kill call that runtime (`MESH_*`, `emergencyStop`, tagged). Kill's tooltip: "Stops all agents and mesh on <name>".
+- One group: the runtime of the window's agent (main window: the open agent's, else `local`; agent window: its own). `( [name] [Mesh] [Kill] )`. Mesh and Kill call that runtime (`MESH_*`, `emergencyStop`, tagged). Kill's tooltip: "Stops all agents and mesh on <name>". Kill stays armed while that runtime's mesh runs.
 - Name: plain text; remote icon for a remote; state added while down; tooltip the address. Click: Settings → Connections.
+- Main window: an up-arrow icon button beside the group (Tooltip "Runtimes"; danger colour while a runtime not shown is down) opens a popover (ContextMenu, anchored above it) listing every runtime in the set's order: name and icon, state, Mesh count, its own Kill. **Kill all** at its top calls `emergencyStop` on every connected runtime at once; its result is shown (summed "Stopped N agents · Mesh off"; "Partial stop · Not reached: <names>" for runtimes down or not answering). Kill results are shown in the group and the row alike. Arrow keys move between the Kills; Escape closes it and focuses the arrow.
+- An agent window reaches its own runtime only (§4.1): its group, no arrow.
 - This computer only: one group with no name, exactly settings-scopes.md §4.1.
-- When the groups do not fit, the remote groups collapse into one **Runtimes** button; its popover lists the same groups.
 
 ### 6.3 Settings runtime picker
 
 - Multi-runtime: the runtime group's heading is **Runtime** with a picker of runtime names. Every runtime page calls `apiFor(picked)`. The remote-mode rules of settings-scopes.md §7 follow the picked runtime's kind.
 - Settings opens on the runtime of the main window's open agent, else This computer. Opened from an agent window (`WINDOW_OPEN_SETTINGS {runtimeId}`), on that window's runtime. The choice is not saved.
+- Multi-runtime: every runtime page shows a one-line banner at the top of the page frame with the picked runtime's name and icon. None with This computer only.
 - A picked runtime that is down: "Not connected to <name>." and disabled controls, as today.
 - Studio pages (Appearance … Connections) are not affected by the picker.
 
@@ -470,7 +472,7 @@ Choices made where this design met the code. Each is the simplest option consist
 2. **Connect.** In local mode `CONNECTION_USE` refuses a saved connection and the slot: `not_found`, "Already connected." `local` and `embedded` keep today's switch until phase 4. Remote mode keeps its switch and its rows (Paired, **Connect**).
 3. **Names.** The status bar and Settings name runtimes while the set has more than one runtime, or while the one runtime is another computer (remote mode). Connections stays SimpleConnections while `remoteConnectionsSaved` is false: in local mode that equals `useMultiRuntime()`, and it also covers Inside Studio with saved connections (§7.2). `useRemoteConnectionsSaved()` is removed.
 4. **Settings picker.** The Settings body is drawn anew for each pick (a React key on the picked id). Runtime pages, and the panels they render (providers, MCP servers, channels, templates, usage), call `useSettingsApi()` (settings-runtime.tsx); outside Settings it is `window.adfApi`. Studio pages read and write This computer, Privacy's two backend keys included; the firewall, platform, spellcheck and `keepDaemonRunning` calls stay This computer's. An agent window's Settings link: main resolves the window's runtime and delivers `settings-runtime:<id>` before the open action.
-5. **Status bar.** One group per runtime (`RuntimeGroups`, StatusBar.tsx). Kill on a runtime that is down is disabled with its state as tooltip. After a Kill only that runtime's slices are reset. The remote groups fold into **Runtimes** when the bar overflows and unfold once the bar is as wide as it was when they folded (`foldRuntimeGroups`). An agent window shows its own runtime's group only.
+5. **Status bar.** One group, the window's agent's runtime (`FocusedRuntime`, StatusBar.tsx), and in the main window the **Runtimes** arrow and popover (`RuntimesPopover`, on ContextMenu) with every runtime's row and Kill all (`killAll`). Kill on a runtime that is down is disabled with its state as tooltip. After a Kill only that runtime's slices are reset. Kill results are kept per runtime (`useKillResultsStore`), so the group and the row show the same one. The fold of earlier builds (one group per runtime, folding when the bar overflowed) is gone. An agent window shows its own runtime's group only.
 6. **Agent windows.** The primary's restore runs at its first connect, as before. A remote's saved entries reopen when its RuntimeConnection first connects (hook `runtimeConnected`), after the main window first showed; `AgentWindows.restore(runtimeId)` restores that runtime's entries only, and a restore asked for while another runs follows it. Reconnect closes a remote's windows with `keep`, so they stay saved and reopen when the new connection connects. Remove closes them and drops them.
 7. **Remove.** The dialog counts the runtime's agent windows only ("Closes 2 agent windows."). Unsaved editor text in the main window is not counted: main does not know it.
 8. **`runtimeOrder`.** The initial order is read from `studio-backend.json`; `BackendSettingsStore.setRuntimeOrder` writes it when it differs from the saved one, never while none was saved and the order is empty (M11).

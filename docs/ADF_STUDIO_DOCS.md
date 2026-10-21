@@ -48,7 +48,7 @@ The main window has five areas:
 - **Sidebar** (left): your tracked folders and the agents in them.
 - **Center**: Home, the Mesh view, Settings, or the open agent's editor tabs.
 - **Dock** (right): the open agent's panels. Shown only while an agent is on screen.
-- **Status bar** (bottom): the open agent's save state, model and context, the Logs and Tasks toggles, the version, and each runtime's mesh and **Kill**.
+- **Status bar** (bottom): the open agent's save state, model and context, the Logs and Tasks toggles, the version, and the runtime's mesh and **Kill**.
 
 Every icon-only control shows its name as a tooltip on hover, with its keyboard shortcut when it has one.
 
@@ -134,7 +134,7 @@ The dock has five tabs:
 
 With an agent open, the left side shows **Saved** or **Unsaved changes** (click to save), the model of the loop on screen, and its context gauge (click for the breakdown), then **Logs** and **Tasks**. The right side shows an **Update** badge when a new version is available, the version, and the runtime group: **Mesh (N)** or **Mesh off** (click for Settings → Networking), and **Kill**, which stops every agent and the mesh.
 
-In Local mode, with a connection saved in [Connections](guides/settings.md#connection), there is one runtime group per runtime: the local runtime first, then the other computers in the order they were added. Each group shows the runtime's name ([Runtime names](guides/studio-backend.md#runtime-names): *name* (Local) for this computer; a saved name with the remote icon, tooltip "Remote", for another computer; the address as tooltip; a click opens Settings → Connections), its state while it is not connected, its **Mesh** and its **Kill**. **Kill** stops the agents and the mesh of that runtime only, and is disabled while that runtime is not connected. When the groups do not fit, the groups of the other computers are one **Runtimes** button that lists them. An agent window shows the group of its own runtime.
+In Local mode, with a connection saved in [Connections](guides/settings.md#connection), the runtime group is that of the open agent's runtime, or of the local runtime when no agent is open. It shows the runtime's name ([Runtime names](guides/studio-backend.md#runtime-names): *name* (Local) for this computer; a saved name with the remote icon, tooltip "Remote", for another computer; the address as tooltip; a click opens Settings → Connections), its state while it is not connected, its **Mesh** and its **Kill**. **Kill** stops the agents and the mesh of that runtime only, and is disabled while that runtime is not connected. The up arrow beside the group (tooltip "Runtimes"; red while another runtime is not connected) opens a list of every runtime, the local runtime first, then the other computers in the order they were added: each with its name, state, **Mesh** and **Kill**. **Kill all** at the top stops the agents and the mesh on every connected runtime and says what it stopped, or which runtimes it did not reach. `↑`/`↓` move between the buttons; `Esc` closes the list. An agent window shows the group of its own runtime and no arrow.
 
 ### More than one runtime
 
@@ -225,7 +225,7 @@ Every field is documented in [Creating and Configuring Agents](guides/creating-a
 Settings (the gear in the title bar, or `Cmd/Ctrl + ,`) replaces the sidebar with its own navigation: **Back to app**, **Search settings**, then two groups.
 
 - **Studio**, this app on this computer: **Appearance**, **Notifications**, **Updates**, **Privacy**, **About**, **Connections**.
-- The runtime's pages: **Prompts**, **Agent templates**, **Providers**, **Packages**, **MCP servers**, **Skills**, **Channels**, **Files**, **Identity**, **Networking**, **Compute**, **Usage**. With the local runtime only, this group has no heading. With a connection saved in **Connections**, it is headed **Runtime** with a picker of the runtime names, and these pages show the runtime picked there. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else the local runtime; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." and its controls are disabled. The **Studio** pages do not change with the picker.
+- The runtime's pages: **Prompts**, **Agent templates**, **Providers**, **Packages**, **MCP servers**, **Skills**, **Channels**, **Files**, **Identity**, **Networking**, **Compute**, **Usage**. With the local runtime only, this group has no heading. With a connection saved in **Connections**, it is headed **Runtime** with a picker of the runtime names, and these pages show the runtime picked there. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else the local runtime; the choice is not saved. Each of these pages shows the picked runtime's name at the top (with the remote icon for another computer). A picked runtime that is not connected shows "Not connected to *name*." and its controls are disabled. The **Studio** pages do not change with the picker.
 
 Settings save as you change them; **Saved** shows in the page header when a write lands, and a refused write shows **Not saved:** with the reason. The complete reference, including the save rules, is in [Settings](guides/settings.md).
 

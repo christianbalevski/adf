@@ -115,17 +115,26 @@ In Local mode, ***name* (Local)** under the list shows the
 
 The status bar shows the runtime right of the version, grouped with its
 mesh and Kill. With the local runtime only: nothing while it is connected, and
-its state without a name while it is not ("Connecting"). With a connection saved: one group per runtime,
-the local runtime first, then the other computers in the order they were added
-(`runtimeOrder` in `studio-backend.json`). Each group shows the runtime's
-name ([Runtime names](#runtime-names)), its address in the tooltip, its
-state while it is not connected ("rawl-hub · Not connected, retrying"), its
-**Mesh** and its **Kill**. **Kill** stops the agents and the mesh of that
-runtime only ("Stops all agents and mesh on *name*") and is disabled while
-that runtime is not connected. When the groups do not fit, the other
-computers' groups are one **Runtimes** button that lists them. An agent
-window shows the group of its own runtime. A click on a name opens Studio →
+its state without a name while it is not ("Connecting"). With a connection saved: one group, the
+runtime of the open agent, or the local runtime when no agent is open. The
+group shows the runtime's name ([Runtime names](#runtime-names)), its
+address in the tooltip, its state while it is not connected ("rawl-hub ·
+Not connected, retrying"), its **Mesh** and its **Kill**. **Kill** stops the
+agents and the mesh of that runtime only ("Stops all agents and mesh on
+*name*"), stays enabled while that runtime's mesh runs, and is disabled while
+that runtime is not connected. A click on the name opens Studio →
 Connections.
+
+The up arrow beside the group (tooltip "Runtimes") opens a list of every
+runtime: the local runtime first, then the other computers in the order they
+were added (`runtimeOrder` in `studio-backend.json`). Each row shows the
+name, the state, **Mesh** and **Kill**. **Kill all** at the top ("Stops all
+agents and mesh on every runtime") stops every connected runtime at once;
+its result names what it stopped ("Stopped 3 agents · Mesh off"), or "Partial
+stop · Not reached: rawl-hub" for a runtime that is not connected or did not
+answer. The arrow is red while a runtime not shown is not connected. `↑`/`↓`
+move between the buttons; `Esc` closes the list and returns to the arrow. An
+agent window shows the group of its own runtime and no arrow.
 
 While a runtime is not connected, its sidebar group and its agents are
 greyed, its pending approvals cannot be answered, and its agent windows stay

@@ -68,27 +68,46 @@ describe('status bar (§6.2)', () => {
     expect(one).toContain('aria-label="Kill: nothing running"')
   })
 
-  it('more than one runtime: one group per runtime, This computer first, each named, with its own Mesh and Kill', async () => {
+  it('more than one runtime: one named group, the open agent\'s runtime (This computer with none), and the Runtimes arrow', async () => {
     const html = await (await page([LOCAL, REMOTE, REMOTE_2])).statusBar()
-    expect(groups(html)).toEqual(['local', HOST_1, HOST_2])
+    expect(groups(html)).toEqual(['local'])
     expect(html).toContain('aria-label="Runtime: host-0 (Local)"')
-    expect(html).toContain('aria-label="Runtime: host-1"')
-    expect(html).toContain('title="https://host-1.example:7386"')
-    // A runtime that is down: its state, and its Kill disabled with the state as tooltip.
-    expect(html).toContain('aria-label="Runtime: host-2 · Not connected, retrying"')
-    expect(html).toContain('aria-label="Kill on host-2: Not connected, retrying"')
     expect(html).toContain('aria-label="Kill on host-0 (Local): nothing running"')
-    expect(html.match(/>Kill</g)).toHaveLength(3)
-    expect(html.match(/Mesh off/g)?.length).toBeGreaterThanOrEqual(3)
+    expect(html).toContain('aria-label="Runtimes"')
+    expect(html).toContain('data-runtimes-arrow')
+    expect(html.match(/>Kill</g)).toHaveLength(1)
+    // A runtime not shown is down: the arrow says so.
+    const arrow = html.slice(html.indexOf('aria-label="Runtimes"'))
+    expect(arrow.slice(0, arrow.indexOf('>'))).toContain('!text-[var(--adf-ui-danger)]')
+  })
+
+  it('a remote\'s group: its address as tooltip; down, its state and its Kill disabled with the state as tooltip', async () => {
+    await page([LOCAL, REMOTE, REMOTE_2])
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { StatusBar } = await import('../../../src/renderer/components/layout/StatusBar')
+    useDocumentStore.getState().setFilePath('/srv/agents/agent-1.adf', HOST_1)
+    const up = renderToStaticMarkup(<StatusBar />)
+    expect(groups(up)).toEqual([HOST_1])
+    expect(up).toContain('aria-label="Runtime: host-1"')
+    expect(up).toContain('title="https://host-1.example:7386"')
+    useDocumentStore.getState().setFilePath('/srv/agents/agent-1.adf', HOST_2)
+    const down = renderToStaticMarkup(<StatusBar />)
+    expect(groups(down)).toEqual([HOST_2])
+    expect(down).toContain('aria-label="Runtime: host-2 · Not connected, retrying"')
+    expect(down).toContain('aria-label="Kill on host-2: Not connected, retrying"')
   })
 
   it('the local runtime is `<name> (Local)` with no mark; a remote is its saved name with the remote icon, never "(Remote)"', async () => {
     const html = await (await page([LOCAL, REMOTE])).statusBar()
-    const group = (id: string) => html.slice(html.indexOf(`data-runtime-group="${id}"`)).split('data-runtime-group=')[1]
-    expect(group('local')).toContain('host-0 (Local)')
-    expect(group('local')).not.toContain('data-remote-mark')
-    expect(group(HOST_1)).toContain('data-remote-mark')
-    expect(html).not.toContain('(Remote)')
+    const group = (markup: string, id: string) => markup.slice(markup.indexOf(`data-runtime-group="${id}"`)).split('data-runtime-group=')[1]
+    expect(group(html, 'local')).toContain('host-0 (Local)')
+    expect(group(html, 'local')).not.toContain('data-remote-mark')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { StatusBar } = await import('../../../src/renderer/components/layout/StatusBar')
+    useDocumentStore.getState().setFilePath('/srv/agents/agent-1.adf', HOST_1)
+    const remote = renderToStaticMarkup(<StatusBar />)
+    expect(group(remote, HOST_1)).toContain('data-remote-mark')
+    expect(html + remote).not.toContain('(Remote)')
     const { RemoteMark } = await import('../../../src/renderer/components/common/RemoteMark')
     const { Tooltip } = await import('../../../src/renderer/components/common/Tooltip')
     const mark = (RemoteMark as (p: object) => React.ReactElement<{ tip: string }>)({})
@@ -96,29 +115,21 @@ describe('status bar (§6.2)', () => {
     expect(mark.props.tip).toBe('Remote')
   })
 
-  it('Kill names the runtime it stops once something runs there', async () => {
+  it('Kill names the runtime it stops once something runs there, and stays armed while its mesh runs', async () => {
     await page([LOCAL, REMOTE])
     const { useMeshStore } = await import('../../../src/renderer/stores/mesh.store')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
     useMeshStore.getState().setEnabled(true, HOST_1)
     const { StatusBar } = await import('../../../src/renderer/components/layout/StatusBar')
-    const html = renderToStaticMarkup(<StatusBar />)
-    expect(html).toContain('aria-label="Stops all agents and mesh on host-1"')
-    expect(html).toContain('aria-label="Kill on host-0 (Local): nothing running"')
+    expect(renderToStaticMarkup(<StatusBar />)).toContain('aria-label="Kill on host-0 (Local): nothing running"')
+    useDocumentStore.getState().setFilePath('/srv/agents/agent-1.adf', HOST_1)
+    expect(renderToStaticMarkup(<StatusBar />)).toContain('aria-label="Stops all agents and mesh on host-1"')
   })
 
-  it('an agent window shows its own runtime\'s group only', async () => {
+  it('an agent window shows its own runtime\'s group only, and no Runtimes arrow (it reaches its own runtime only)', async () => {
     const html = await (await page([LOCAL, REMOTE], { search: '?window=agent&runtime=remote%3Ahost-1&file=%2Fsrv%2Fagents%2Fagent-1.adf' })).statusBar()
     expect(groups(html)).toEqual([HOST_1])
-  })
-
-  it('the groups fold into Runtimes when they do not fit, and unfold once the bar is that wide again', async () => {
-    const { foldRuntimeGroups } = await import('../../../src/renderer/components/layout/StatusBar')
-    const inline = { folded: false, needed: 0 }
-    expect(foldRuntimeGroups(inline, { scrollWidth: 900, clientWidth: 900 })).toBe(inline)
-    const folded = foldRuntimeGroups(inline, { scrollWidth: 1200, clientWidth: 900 })
-    expect(folded).toEqual({ folded: true, needed: 1200 })
-    expect(foldRuntimeGroups(folded, { scrollWidth: 900, clientWidth: 1100 })).toBe(folded)
-    expect(foldRuntimeGroups(folded, { scrollWidth: 1200, clientWidth: 1200 })).toEqual({ folded: false, needed: 0 })
+    expect(html).not.toContain('data-runtimes-arrow')
   })
 })
 
