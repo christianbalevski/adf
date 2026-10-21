@@ -345,7 +345,7 @@ export function StatusBar() {
  * More than one runtime (multi-runtime.md §6.2): ONE group, the runtime of
  * the agent this window shows (the main window's open agent, else This
  * computer; an agent window's own): `( [name] [Mesh] [Kill] )`. In the main
- * window an up arrow beside it (tooltip "Runtimes") opens a popover of every
+ * window an up arrow beside it (tooltip "Servers") opens a popover of every
  * runtime in the set's order, each with its state, Mesh and Kill, and Kill
  * all above them. An agent window reaches its own runtime only: its group,
  * no arrow.
@@ -371,11 +371,11 @@ export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
           {allResult && !open && (
             <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">{allResult}</span>
           )}
-          <Tooltip tip="Runtimes" className="flex">
+          <Tooltip tip="Servers" className="flex">
             <IconButton
               ref={arrowRef}
               onClick={toggle}
-              aria-label="Runtimes"
+              aria-label="Servers"
               aria-haspopup="menu"
               aria-expanded={open !== null}
               variant={open ? 'selected' : 'neutral'}
@@ -395,7 +395,7 @@ export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
 }
 
 /**
- * The Runtimes popover (ContextMenu): Kill all, then one row per runtime in
+ * The Servers popover (ContextMenu): Kill all, then one row per runtime in
  * the set's order (This computer first, then the remotes in the order
  * added): name (remote icon), state, Mesh, Kill. The arrow keys move between
  * the Kills; Escape closes it and gives the focus back to the arrow.
@@ -407,7 +407,7 @@ export function RuntimesPopover({ runtimes, position, onClose, anchor }: {
   anchor?: React.RefObject<HTMLElement | null>
 }) {
   return (
-    <ContextMenu position={position} onClose={onClose} placement={{ x: 'end', y: 'above' }} label="Runtimes" anchor={anchor}>
+    <ContextMenu position={position} onClose={onClose} placement={{ x: 'end', y: 'above' }} label="Servers" anchor={anchor}>
       <KillAllRow runtimes={runtimes} />
       <div className="my-1 border-t border-hairline" />
       {runtimes.map((r) => <RuntimeRow key={r.id} runtime={r} />)}
@@ -546,7 +546,7 @@ function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
       <button
         onClick={() => useAppStore.getState().openSettingsAt('connection')}
         title={runtime.url ?? undefined}
-        aria-label={`Runtime: ${header}`}
+        aria-label={`Server: ${header}`}
         className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${down ? 'text-[var(--adf-ui-danger)]' : ''}`}
       >
         {runtime.kind === 'remote' && <RemoteMark />}
@@ -607,7 +607,7 @@ export function RuntimeIndicator({ current, showName = true, onOpen }: { current
     <button
       onClick={onOpen}
       title={shown.tooltip ?? undefined}
-      aria-label={showName ? `Runtime: ${shown.text}` : shown.text}
+      aria-label={showName ? `Server: ${shown.text}` : shown.text}
       className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${shown.problem ? 'text-[var(--adf-ui-danger)]' : ''}`}
     >
       {shown.remote && <RemoteMark />}

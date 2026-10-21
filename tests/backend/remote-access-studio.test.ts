@@ -206,7 +206,7 @@ describe('host panel (Settings → Connections: Add → Share, Devices)', () => 
     expect(named.confirms[0].detail).toContain('full control of the agents of box-1 (Local)')
     named.host.dispose()
     await h.host.share()
-    expect(h.confirms[0].detail).toContain("full control of this computer's agents")
+    expect(h.confirms[0].detail).toContain('full control of the agents of this server')
   })
 
   it('Add a computer returns the device token once, with a notice; the view never holds it', async () => {
@@ -364,14 +364,14 @@ describe('host panel (Settings → Connections: Add → Share, Devices)', () => 
 
   it('an older daemon (404 not_found): one sentence', async () => {
     h.daemon.state.old = true
-    expect((await h.host.get()).error).toBe('This ADF daemon has no remote access. Update ADF, then restart the daemon.')
+    expect((await h.host.get()).error).toBe('This server has no remote access. Update ADF, then restart the server (adf daemon restart).')
   })
 
   it('an older daemon without the routes: one sentence, no crash', async () => {
     const old = hostSetup({
       daemon: () => ({ client: async () => new DaemonClient({ baseUrl: LOOPBACK, fetch: (async () => new Response(JSON.stringify({ message: 'Route GET:/remote-access not found', error: 'Not Found', statusCode: 404 }), { status: 404 })) as typeof fetch }) }),
     })
-    expect((await old.host.get()).error).toBe('This ADF daemon has no remote access. Update ADF, then restart the daemon.')
+    expect((await old.host.get()).error).toBe('This server has no remote access. Update ADF, then restart the server (adf daemon restart).')
   })
 })
 
@@ -814,7 +814,7 @@ describe('Discovered (discovery): a view of the one discovery feed', () => {
   it('without a feed (the daemon not connected yet) or without mDNS it says so', async () => {
     const none = setup(null)
     none.discovery.start()
-    expect(none.updates[0]).toMatchObject({ browsing: false, entries: [], problem: 'Studio is not connected to the ADF daemon yet.' })
+    expect(none.updates[0]).toMatchObject({ browsing: false, entries: [], problem: 'Studio is not connected to the local server yet.' })
     none.discovery.stop()
     const feed = new FakeFeed()
     feed.trouble = 'mDNS is not available here. Tailnet computers are still listed; or enter an address.'

@@ -61,8 +61,8 @@ describe('B2: HTTPS names the real cause, one sentence', () => {
   })
 
   it('the daemon down: its error, cut to one sentence', () => {
-    const view: RemoteAccessView = { available: true, unavailableReason: null, status: null, error: 'Studio is not connected to the ADF daemon yet. Retry in a moment.', stopsWithStudio: false }
-    expect(httpsText(view)).toBe('Studio is not connected to the ADF daemon yet.')
+    const view: RemoteAccessView = { available: true, unavailableReason: null, status: null, error: 'Studio is not connected to the local server yet. Retry in a moment.', stopsWithStudio: false }
+    expect(httpsText(view)).toBe('Studio is not connected to the local server yet.')
     expect(httpsText({ ...view, error: 'connect ECONNREFUSED 127.0.0.1:7385' })).toBe('connect ECONNREFUSED 127.0.0.1:7385.')
   })
 
@@ -93,7 +93,7 @@ describe('B3: the status card, one sentence per entry', () => {
     const entry = consentLines(net({}), ['agent-1'])[0]
     expect(entry.lines).toEqual(['Remote access and agent sharing paused on Cafe (10.0.0.0/24).', 'agent-1 is public.'])
     for (const line of entry.lines) expect(sentences(line), line).toBe(1)
-    const html = renderToStaticMarkup(<NetworkingStatusCard line="Mesh on" consent={[entry]} busy={false} note={null} firewall={null} onAllow={() => {}} />)
+    const html = renderToStaticMarkup(<NetworkingStatusCard items={[{ label: 'Mesh', value: 'On', tone: 'ok' }]} consent={[entry]} busy={false} note={null} firewall={null} onAllow={() => {}} />)
     expect(html).not.toContain('Allow on this network')
     expect(html.match(/>Allow</g)).toHaveLength(1)
   })

@@ -203,8 +203,8 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     daemon: () => {
       if (deps.mode !== 'local') return { unavailable: unavailableReason(deps.mode) }
       const daemon = deps.daemon()
-      if (!daemon) return { unavailable: 'Studio is not connected to the ADF daemon yet.' }
-      return { client: () => withTimeout(daemon.client(), 8_000, 'Studio is not connected to the ADF daemon yet.') }
+      if (!daemon) return { unavailable: 'Studio is not connected to the local server yet.' }
+      return { client: () => withTimeout(daemon.client(), 8_000, 'Studio is not connected to the local server yet.') }
     },
     stopsWithStudio: () => !deps.keepDaemonRunning() && localDaemon()?.status().startedBy === 'studio',
     push: (change) => windows.send(IPC.REMOTE_ACCESS_CHANGED, change),
@@ -233,8 +233,8 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   // One discovery feed per computer (remote-access.md §5.1): the daemon's in local mode, else this process's.
   const daemonFeed = new DaemonPeerFeed(async (path) => {
     const daemon = localDaemon()
-    if (!daemon) throw new Error('Studio is not connected to the ADF daemon yet.')
-    const client = await withTimeout(daemon.client(), 8_000, 'Studio is not connected to the ADF daemon yet.')
+    if (!daemon) throw new Error('Studio is not connected to the local server yet.')
+    const client = await withTimeout(daemon.client(), 8_000, 'Studio is not connected to the local server yet.')
     return client.request<{ peers: NetworkPeer[] }>('GET', path, { timeoutMs: 10_000 })
   })
   const inProcessFeed = new InProcessPeerFeed({ mesh: () => deps.meshPeers?.() ?? null, log })

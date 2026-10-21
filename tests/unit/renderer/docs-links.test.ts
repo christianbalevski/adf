@@ -77,9 +77,13 @@ describe('docs links of Connections and Networking (owner decision 2026-10-21)',
     expect(DOCS.remoteAccessPair).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#share`)
     expect(DOCS.remoteAccessDevices).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#devices`)
     expect(DOCS.backendAddConnection).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#add`)
+    // The Connections sections (redesign 2026-10-21): Local server, Remote servers, the local server's status.
+    expect(DOCS.backendLocalServer).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#local-server`)
+    expect(DOCS.backendRemoteServers).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#remote-servers`)
+    expect(DOCS.backendStatus).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#local-server-status`)
     expect(DOCS.networkingStatus).toBe(`${REPO_URL}/blob/main/docs/guides/settings.md#network-status`)
     expect(DOCS.meshFirewall).toBe(`${REPO_URL}/blob/main/docs/guides/lan-discovery.md#firewalls`)
-    for (const [guide, anchor] of [['studio-backend', 'share'], ['studio-backend', 'devices'], ['studio-backend', 'connect'], ['settings', 'network-status'], ['lan-discovery', 'firewalls']]) {
+    for (const [guide, anchor] of [['studio-backend', 'share'], ['studio-backend', 'devices'], ['studio-backend', 'connect'], ['studio-backend', 'local-server'], ['studio-backend', 'remote-servers'], ['studio-backend', 'local-server-status'], ['studio-backend', 'quit-studio'], ['settings', 'network-status'], ['lan-discovery', 'firewalls']]) {
       expect(anchorsFor(guide).has(anchor), `${guide}#${anchor}`).toBe(true)
     }
   })

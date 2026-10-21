@@ -58,7 +58,7 @@ export type RemoteAccessEventPayload = { [K in keyof RemoteAccessEvent]?: unknow
 
 /** The power a device gets; `runtime`: the local runtime's name while there is more than one runtime. */
 export function enableDetail(runtime: string | null = null): string {
-  return `Devices you pair or add get full control of ${runtime ? `the agents of ${runtime}` : 'this computer\'s agents'}. A device token is as powerful as your seed phrase.`
+  return `Devices that you pair or add get full control of the agents of ${runtime || 'this server'}. A device token is as powerful as your seed phrase.`
 }
 export const ENABLE_DETAIL = enableDetail()
 export { NO_NETWORK_YET }
@@ -78,7 +78,7 @@ export const LOCKOUT_NOTICE = 'Pairing: a device was locked out after 5 wrong co
 function errorText(err: unknown): string {
   if (err instanceof RemoteAccessApiError) {
     // An older daemon has no /remote-access route: 404 with code not_found, or no code at all.
-    if (err.status === 404 && (err.code === 'not_found' || err.code === 'http_404')) return 'This ADF daemon has no remote access. Update ADF, then restart the daemon.'
+    if (err.status === 404 && (err.code === 'not_found' || err.code === 'http_404')) return 'This server has no remote access. Update ADF, then restart the server (adf daemon restart).'
     return err.message
   }
   return err instanceof Error ? err.message : String(err)
@@ -311,8 +311,8 @@ export class RemoteAccessHost {
     if (typeof enabled !== 'boolean') return { ok: false, code: 'daemon', error: 'enabled must be true or false.' }
     const command = this.last?.tailscale.serveCommand ?? null
     const ok = await this.deps.confirm(enabled
-      ? { message: 'Enable Tailscale https', detail: `The daemon runs:\n${command ?? 'tailscale serve'}\n\nDevices on your tailnet then reach this computer over https.`, ok: 'Enable' }
-      : { message: 'Disable Tailscale https', detail: 'The daemon removes the tailscale serve entry for its port only.', ok: 'Disable' })
+      ? { message: 'Enable Tailscale https', detail: `The server runs:\n${command ?? 'tailscale serve'}\n\nDevices on your tailnet then reach this computer over https.`, ok: 'Enable' }
+      : { message: 'Disable Tailscale https', detail: 'The server removes only the tailscale serve entry for its port.', ok: 'Disable' })
     if (!ok) return { ok: false, code: 'cancelled', error: 'Nothing changed.' }
     let output: string | undefined
     const result = await this.run(`tailscale serve ${enabled ? 'on' : 'off'}`, async (m) => {

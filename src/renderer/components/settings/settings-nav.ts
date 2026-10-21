@@ -36,7 +36,7 @@ export const STUDIO_NAV_ITEMS: SettingsNavItem[] = [
   { id: 'updates', label: 'Updates', description: 'Version and update checks.', keywords: 'update version release check', docs: DOCS.settingsGeneral },
   { id: 'privacy', label: 'Privacy', description: 'Studio sends no telemetry.', keywords: 'privacy telemetry network spell check dictionaries', docs: DOCS.settingsGeneral },
   { id: 'about', label: 'About', description: 'Concepts and links.', keywords: 'help docs github format', docs: DOCS.index },
-  { id: 'connection', label: 'Connections', description: 'Remotes and devices.', keywords: 'backend daemon embedded local remote server url token pair add connect share connection connections this computer runtime remotes devices revoke remote access', docs: DOCS.backendConnection },
+  { id: 'connection', label: 'Connections', description: 'Servers and devices.', keywords: 'backend daemon embedded local remote server servers agent server local server remote servers url token code pair add connect share connection connections this computer runtime remotes devices revoke remote access keep running quit', docs: DOCS.backendConnection },
 ]
 
 /** Runtime: the connected daemon's settings (backend keys). */
@@ -50,7 +50,7 @@ export const RUNTIME_NAV_ITEMS: SettingsNavItem[] = [
   { id: 'channels', label: 'Channels', description: 'Telegram, Discord, Slack, email, WhatsApp', keywords: 'adapters messages integrations bot token', docs: DOCS.settingsChannels },
   { id: 'files', label: 'Files', description: 'Where agents you claim are saved.', keywords: 'agents folder directory files', docs: DOCS.settingsGeneral },
   { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation seed phrase owner', docs: DOCS.settingsIdentity },
-  { id: 'networking', label: 'Networking', description: 'Agent messaging', keywords: 'mesh network sharing lan tailscale mdns peers runtimes server port firewall https allowed networks', docs: DOCS.settingsNetworking },
+  { id: 'networking', label: 'Networking', description: 'Agent messaging', keywords: 'mesh network sharing lan tailscale mdns peers runtimes servers server mesh server port firewall https allowed networks', docs: DOCS.settingsNetworking },
   { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation', docs: DOCS.settingsCompute },
   { id: 'usage', label: 'Usage', description: 'Token totals by day, provider and model.', keywords: 'tokens usage cost burn', docs: DOCS.settingsUsage },
 ]

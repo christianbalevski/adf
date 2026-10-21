@@ -610,7 +610,7 @@ E items use agent-1 (`fs_write`) as the other writer.
 
 ## 28. Daemon status and outages (STAT)
 
-Guide: [Studio backend › Daemon status](../guides/studio-backend.md#daemon-status)
+Guide: [Studio backend › Local server status](../guides/studio-backend.md#local-server-status)
 and [When the daemon is not reachable](../guides/studio-backend.md#when-the-daemon-is-not-reachable).
 
 | ID | Steps | Expected | E | L | R |

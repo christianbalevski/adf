@@ -1394,13 +1394,13 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
               {group.scope === 'runtime' && multi ? (
                 // §6.3: the runtime pages follow the picked runtime; Studio pages do not.
                 <div className="mb-1.5 px-2" data-runtime-picker>
-                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">Runtime</div>
+                  <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">Server</div>
                   <div className="flex items-center gap-1.5">
                     {remote && <RemoteMark />}
                     <Select
                       value={runtimeId}
                       onChange={(event) => onPick(event.target.value)}
-                      aria-label="Runtime"
+                      aria-label="Server"
                       className="h-7 min-w-0 flex-1 text-xs"
                     >
                       {runtimes.map((r) => <option key={r.id} value={r.id}>{runtimeHeader(r)}</option>)}

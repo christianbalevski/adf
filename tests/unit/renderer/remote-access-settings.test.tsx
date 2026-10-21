@@ -1,10 +1,11 @@
 /**
  * Remote access and Networking in the renderer (docs/design/remote-access.md
- * §7, §9.1; owner decisions 2026-10-18 and 2026-10-21): Add → Share (consent
- * inline, the addresses by network, the code), Connections → Devices, the
- * Networking status card (consent per network, the service named), the
- * runtimes list, the firewall commands (R9), the devices list, the pairing
- * code, the token shown once and the Connect dialog's messages. Static
+ * §7, §9.1; owner decisions 2026-10-18 and 2026-10-21, redesign 2026-10-21):
+ * Add → Share (the name devices see, consent inline, the code, the address
+ * table grouped by network with one Copy per row), Connections → Devices,
+ * the Networking status card (one fact per line; consent per network, the
+ * service named), the servers list, the firewall commands (R9), the devices
+ * list, the token shown once and the Connect dialog's messages. Static
  * markup, no jsdom.
  */
 import { describe, expect, it } from 'vitest'
@@ -14,7 +15,9 @@ import {
   canAddDevice,
   changeOn,
   addedDeviceLine,
+  AddressTable,
   DevicesGroupView,
+  devicesSummary,
   groupedUrls,
   meshServerHosts,
   PUBLIC_NETWORK_WARNING,
@@ -26,8 +29,10 @@ import {
   NewTokenPanel,
   NOT_ENCRYPTED_WARNING,
   PairingCodePanel,
-  RemoteAddressList,
   RemoteDeviceList,
+  SHARE_AS_HELP,
+  SHARE_AS_LABEL,
+  STOPS_WITH_STUDIO,
   formatCode,
   lastSeenText,
   orderedUrls,
@@ -44,6 +49,7 @@ import {
   isManaged,
   meshWarningLine,
   networkDetailText,
+  networkingStatusItems,
   networkingStatusLine,
   NetworkingStatusCard,
   publicAgentsLine,
@@ -114,14 +120,26 @@ describe('addresses', () => {
     expect(orderedUrls(urls).map((u) => u.kind)).toEqual(['tailscale-https', 'tailnet', 'lan', 'mdns-name'])
   })
 
-  it('each has Copy and its label; plain http carries the short warning', () => {
-    const html = renderToStaticMarkup(<RemoteAddressList urls={urls} />)
+  it('one table, grouped by network; one row per address, each with its own Copy in the last column; the warning once, under the table', () => {
+    const home: NetworkView = { id: 'lan-0123456789abcdef', kind: 'lan', label: 'Home (192.168.1.0/24)', allowed: true, osCategory: 'private', ifaces: ['Wi-Fi'], addresses: ['192.168.1.20'] }
+    const html = renderToStaticMarkup(<AddressTable status={{ urls, networks: [home] }} />)
+    expect(html).toContain('<table')
+    expect(html.indexOf('data-address-group="Tailscale"')).toBeLessThan(html.indexOf('data-address-group="Home (192.168.1.0/24)"'))
+    expect(html.indexOf('data-address-group="Home (192.168.1.0/24)"')).toBeLessThan(html.indexOf('data-address-group="Other"'))
     expect(html.indexOf('https://agent-1-pc.tail1234.ts.net')).toBeLessThan(html.indexOf('http://192.168.1.20:7385'))
+    // Each address row: the address, its badge, its Copy, in that order; no Copy outside a row.
+    const rows = html.split('<tr').filter((r) => r.includes('data-address='))
+    expect(rows).toHaveLength(4)
+    for (const r of rows) {
+      expect(r.match(/>Copy</g), r).toHaveLength(1)
+      expect(r.indexOf('crypted<')).toBeLessThan(r.indexOf('>Copy<'))
+    }
     expect(html.match(/>Copy</g)).toHaveLength(4)
+    expect(html.slice(html.lastIndexOf('</table>'))).not.toContain('>Copy<')
     expect(html.match(/>Encrypted</g)).toHaveLength(2)
     expect(html.match(/>Not encrypted</g)).toHaveLength(2)
-    expect(html.split(NOT_ENCRYPTED_WARNING)).toHaveLength(3)
-    expect(NOT_ENCRYPTED_WARNING.split(/[.!?]\s/)).toHaveLength(1)
+    expect(html.split(NOT_ENCRYPTED_WARNING)).toHaveLength(2)
+    expect(renderToStaticMarkup(<AddressTable status={{ urls: urls.filter((u) => u.encrypted), networks: [] }} />)).not.toContain(NOT_ENCRYPTED_WARNING)
   })
 })
 
@@ -133,8 +151,9 @@ describe('computers list', () => {
     expect(lastSeenText(device({ lastSeenAt: '2026-10-18T11:40:00Z', lastSeenAddress: '192.168.1.31' }), now)).toBe('Last seen 20 min ago (192.168.1.31)')
     const html = renderToStaticMarkup(<RemoteDeviceList devices={[device({ connected: true }), device({ id: 'b', label: 'old tablet', origin: 'token' })]} busy={false} onRemove={() => {}} now={now} />)
     expect(html).toContain('agent-2 laptop')
-    expect(html).toContain('Paired · Connected now')
-    expect(html).toContain('Token · Never connected')
+    expect(html).toMatch(/Paired<\/span>.*Connected now/)
+    expect(html).toMatch(/Token<\/span>.*Never connected/)
+    expect(renderToStaticMarkup(<RemoteDeviceList devices={[]} busy={false} onRemove={() => {}} />)).toContain('None. To add a device, click Add, then Share.')
     expect(html.match(/>Revoke</g)).toHaveLength(2)
   })
 })
@@ -148,8 +167,9 @@ describe('Share (host): the code view', () => {
     const html = renderToStaticMarkup(<PairingCodePanel pairing={{ code: '012345', name: 'agent-1-pc', fingerprint: 'ABCD-EFGH', openedAt: '', expiresAt: '2026-10-18T12:02:00Z', attemptsLeft: 20, lockedSources: 1, claim: null }} fingerprint="ABCD-EFGH" now={now} />)
     expect(html).toContain('Enter this code on the other computer.')
     expect(html).toContain('012 345')
-    expect(html).toContain('Expires in 2:00 · 20 wrong codes left · Fingerprint ABCD-EFGH')
-    expect(html).toContain('1 device locked out after 5 wrong codes.')
+    expect(html).toMatch(/Expires in <span[^>]*>2:00<\/span> · 20 tries left/)
+    expect(html).toContain('Fingerprint <span class="font-mono">ABCD-EFGH</span>')
+    expect(html).toContain('1 device is locked out after 5 wrong codes.')
   })
 })
 
@@ -168,7 +188,7 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     const consent = shareConsent(status({ enabled: false, state: 'off', networks: [home] }))
     expect(consent).toMatchObject({ enable: true, networks: [], warning: null })
     // Review A2: the network it will listen on is named, already allowed or not.
-    expect(consent!.text).toBe('Computers you pair on Home (192.168.1.0/24) get full control of this runtime, as powerful as your seed phrase.')
+    expect(consent!.text).toBe('Devices that you pair on Home (192.168.1.0/24) get full control of this server, as powerful as your seed phrase.')
     const html = render(view(status({ enabled: false, state: 'off', networks: [home] })))
     expect(html).toContain(consent!.text)
     expect(html.match(/>Allow</g)).toHaveLength(1)
@@ -183,14 +203,14 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(consent).toMatchObject({ enable: false, warning: PUBLIC_NETWORK_WARNING })
     expect(consent!.networks.map((n) => n.id)).toEqual([cafe.id])
     // Review A2: every network it will listen on, the one already allowed too.
-    expect(consent!.text).toBe('Computers you pair on Home (192.168.1.0/24) and Cafe (10.0.0.0/24) get full control of this runtime, as powerful as your seed phrase.')
+    expect(consent!.text).toBe('Devices that you pair on Home (192.168.1.0/24) and Cafe (10.0.0.0/24) get full control of this server, as powerful as your seed phrase.')
     expect(render(view(status({ networks: [cafe] })))).toContain(PUBLIC_NETWORK_WARNING)
     // An unidentified network cannot be allowed: it is not asked for.
     expect(shareConsent(status({ networks: [home, { ...cafe, id: null, label: 'Unidentified network' }] }))).toBeNull()
     expect(shareConsent(status({ networks: [home] }))).toBeNull()
   })
 
-  it('allowed and listening: the code with its countdown, the addresses by network with Copy, a token under Details', () => {
+  it('allowed and listening: the name, the code with its countdown, the addresses by network with Copy, a token under Token', () => {
     const s = status({
       networks: [home],
       pairing,
@@ -204,17 +224,24 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(groupedUrls(s).map((g) => [g.title, g.urls.map((u) => u.kind)])).toEqual([
       ['Tailscale', ['tailscale-https', 'tailnet']],
       ['Home (192.168.1.0/24)', ['lan']],
-      ['Others', ['mdns-name']],
+      ['Other', ['mdns-name']],
     ])
     const html = render(view(s))
-    expect(html).toContain('012 345')
-    expect(html).toContain('Expires in 2:00')
+    // "Share this server as": the name devices see (the hello carries it), then the code, then the addresses.
+    expect(SHARE_AS_LABEL).toBe('Share this server as')
+    expect(html).toContain(`aria-label="${SHARE_AS_LABEL}"`)
+    expect(html).toContain('value="agent-1-pc"')
+    expect(html).toContain(SHARE_AS_HELP)
+    expect(html.indexOf(SHARE_AS_LABEL)).toBeLessThan(html.indexOf('012 345'))
+    expect(html.indexOf('012 345')).toBeLessThan(html.indexOf('>Addresses<'))
+    expect(html).toContain('>2:00<')
     expect(html.indexOf('>Tailscale<')).toBeLessThan(html.indexOf('>Home (192.168.1.0/24)<'))
     expect(html.match(/>Copy</g)).toHaveLength(4)
-    expect(html).toContain('>Details</summary>')
-    expect(html).toContain('Device name')
+    expect(html).toContain('>Token</summary>')
+    expect(html).toContain('aria-label="Device name"')
     expect(html).toContain('>Create<')
     expect(html).not.toContain('>Allow<')
+    expect(html).not.toContain('>Details</summary>')
   })
 
   it('a claimed code: answer Allow device on this computer; then "Approved: <name>." and Done', () => {
@@ -235,14 +262,15 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(consent!.text).toContain('on Cafe (10.0.0.0/24)')
   })
 
-  it('review A6: with more than one runtime the sentence names the local runtime Share shares', () => {
-    expect(shareConsent(status({ enabled: false, state: 'off', networks: [home] }), 'box-1 (Local)')!.text).toBe('Computers you pair on Home (192.168.1.0/24) get full control of box-1 (Local), as powerful as your seed phrase.')
-    expect(devicesHint('box-1 (Local)')).toBe('Computers using box-1 (Local).')
-    expect(devicesHint(null)).toBe('Computers using this runtime.')
-    const html = renderToStaticMarkup(<DevicesGroupView view={view(status())} runtime="box-1 (Local)" busy={false} message={null} onSwitch={noop} onKeepRunning={noop} onRevoke={noop} />)
-    // The hint is a tooltip; the row says it too.
-    expect(html).toContain('Computers you add use box-1 (Local).')
-    expect(html).not.toContain('this runtime')
+  it('review A6: the sentence names the local server Share shares; Devices names it in its help sentence', () => {
+    expect(shareConsent(status({ enabled: false, state: 'off', networks: [home] }), 'box-1 (Local)')!.text).toBe('Devices that you pair on Home (192.168.1.0/24) get full control of box-1 (Local), as powerful as your seed phrase.')
+    expect(devicesHint('box-1 (Local)')).toBe('Devices that can access box-1 (Local).')
+    expect(devicesHint(null)).toBe('Devices that can access this server.')
+    const html = renderToStaticMarkup(<DevicesGroupView view={view(status())} runtime="box-1 (Local)" busy={false} message={null} onSwitch={noop} onRevoke={noop} />)
+    // The heading's help sentence, and the row.
+    expect(html).toContain('Devices that can access box-1 (Local).')
+    expect(html).toContain('Devices that you pair can connect to box-1 (Local).')
+    expect(html).not.toMatch(/runtime/i)
   })
 
   it('an expired code offers Renew; not local mode says why', () => {
@@ -287,35 +315,51 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
   it('the token once, with Copy and Done, and where to use it', () => {
     const html = renderToStaticMarkup(<NewTokenPanel label="agent-2 laptop" token="adfd_k3j9q2m7xa_secret" onDone={() => {}} />)
     expect(html).toContain('adfd_k3j9q2m7xa_secret')
-    expect(html).toContain('shown once')
+    expect(html).toContain('Studio shows it only one time.')
     expect(html).toContain('>Copy<')
     expect(html).toContain('>Done<')
-    expect(html).toContain('On the other computer: Add, Connect, then Details.')
+    expect(html).toContain('On the other computer, click Add, then Connect, and enter the token.')
   })
 })
 
-describe('Connections → Devices: computers using this runtime, each with Revoke', () => {
+describe('Connections → Devices: devices that can access the local server, each with Revoke', () => {
   const noop = () => {}
-  it('the Remote access switch with its line, the devices and Revoke', () => {
-    const html = renderToStaticMarkup(<DevicesGroupView view={{ available: true, unavailableReason: null, status: status({ devices: [device({ connected: true })] }), error: null, stopsWithStudio: true }} busy={false} message={null} onSwitch={noop} onKeepRunning={noop} onRevoke={noop} />)
+  it('the Remote access switch with its line, the devices and Revoke; what quitting does, exactly, with no second quit control', () => {
+    const html = renderToStaticMarkup(<DevicesGroupView view={{ available: true, unavailableReason: null, status: status({ devices: [device({ connected: true })] }), error: null, stopsWithStudio: true }} runtime="host-0 (Local)" busy={false} message={null} onSwitch={noop} onRevoke={noop} />)
     expect(html).toContain('>Devices<')
+    expect(html).toContain('Devices that can access host-0 (Local).')
+    expect(html).toContain('<details class="group" open="">')
+    expect(html).toContain('>On · 1 device<')
     expect(html).toContain('aria-label="Remote access"')
     expect(html).toContain('Listening on 192.168.1.20, 100.101.102.103.')
     expect(html).toContain('agent-2 laptop')
     expect(html).toContain('>Revoke<')
-    expect(html).toContain('>Keep running<')
+    expect(html).toContain(STOPS_WITH_STUDIO)
+    expect(html).not.toContain('>Keep running<')
+    expect(html).not.toContain('lose the connection')
+    expect(html.match(/role="switch"/g)).toHaveLength(1)
+  })
+
+  it('off with no device: collapsed to its heading, which says Off', () => {
+    const v = { available: true, unavailableReason: null, status: status({ enabled: false, state: 'off' }), error: null, stopsWithStudio: false }
+    const html = renderToStaticMarkup(<DevicesGroupView view={v} busy={false} message={null} onSwitch={noop} onRevoke={noop} />)
+    expect(html).toContain('<details class="group">')
+    expect(devicesSummary(v)).toBe('Off')
+    expect(html).toContain('>Off<')
   })
 
   it('not local mode: the reason, and the switch is disabled', () => {
-    const html = renderToStaticMarkup(<DevicesGroupView view={{ available: false, unavailableReason: 'Remote access needs Local as the connection (Settings → Connections).', status: null, error: null, stopsWithStudio: false }} busy={false} message={null} onSwitch={noop} onKeepRunning={noop} onRevoke={noop} />)
+    const v = { available: false, unavailableReason: 'Remote access needs Local as the connection (Settings → Connections).', status: null, error: null, stopsWithStudio: false }
+    const html = renderToStaticMarkup(<DevicesGroupView view={v} busy={false} message={null} onSwitch={noop} onRevoke={noop} />)
     expect(html).toContain('Remote access needs Local as the connection')
+    expect(devicesSummary(v)).toBe('Not available')
     expect(html).toMatch(/role="switch"[^>]*disabled=""|disabled=""[^>]*role="switch"/)
   })
 })
 
 describe('a remote runtime: one sentence for every host-only control (review item 11)', () => {
   it('changeOn is the one line; Settings uses it for identity, and Networking for the networks, firewall, HTTPS and endpoints', () => {
-    expect(changeOn('rawl-hub')).toBe('Change on rawl-hub.')
+    expect(changeOn('box-1')).toBe('Change on box-1.')
     const read = (file: string) => readFileSync(join(__dirname, '../../../src/renderer/components/settings', file), 'utf-8')
     const page = read('SettingsPage.tsx')
     expect(page).not.toMatch(/Firewall: change on/)
@@ -343,9 +387,26 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     allowedNetworks: [{ id: home.id, kind: 'lan', label: home.label, addedAt: '2026-10-18T00:00:00Z' }],
     tailscale: 'running', tailnetAddress: '100.101.102.103', firewall: { state: 'ok', message: '' }, waiting: { remoteAccess: false, mesh: false }, ...over,
   })
-  const card = (consent: ReturnType<typeof consentLines>) => renderToStaticMarkup(<NetworkingStatusCard line="Mesh on" consent={consent} busy={false} note={null} firewall={null} onAllow={() => {}} />)
+  const items = networkingStatusItems({ meshOn: true, networks: [home], shared: 0 })
+  const card = (consent: ReturnType<typeof consentLines>) => renderToStaticMarkup(<NetworkingStatusCard items={items} consent={consent} busy={false} note={null} firewall={null} onAllow={() => {}} />)
 
-  it('the status card line: the mesh, the networks (allowed or not), the agents shared', () => {
+  it('the status card: one fact per line (Mesh, each network, Shared), each with its state', () => {
+    expect(networkingStatusItems({ meshOn: true, networks: [home, cafe], shared: 3 })).toEqual([
+      { label: 'Mesh', value: 'On', tone: 'ok' },
+      { label: 'Network', value: 'Home (192.168.1.0/24) · Allowed', tone: 'ok' },
+      { label: 'Network', value: 'Cafe (10.0.0.0/24) · Not allowed', tone: 'off' },
+      { label: 'Shared', value: '3 agents', tone: 'ok' },
+    ])
+    expect(networkingStatusItems({ meshOn: false, networks: [], shared: 1 }).map((i) => i.value)).toEqual(['Off', 'None', '1 agent'])
+    expect(networkingStatusItems({ meshOn: true, networks: [{ ...cafe, id: null, label: 'Unidentified network' }], shared: 0 })[1]).toEqual({ label: 'Network', value: 'Unidentified network · Not identified', tone: 'down' })
+    // A remote server: its network is not this computer's.
+    expect(networkingStatusItems({ meshOn: true, networks: null, shared: 2 }).map((i) => i.label)).toEqual(['Mesh', 'Shared'])
+    const html = renderToStaticMarkup(<NetworkingStatusCard items={networkingStatusItems({ meshOn: true, networks: [home], shared: 3 })} consent={[]} busy={false} note={null} firewall={null} onAllow={() => {}} />)
+    expect(html).toContain('<dl')
+    for (const s of ['>Mesh<', '>On<', '>Network<', '>Home (192.168.1.0/24) · Allowed<', '>Shared<', '>3 agents<']) expect(html, s).toContain(s)
+  })
+
+  it('the status line (logs and tests): the mesh, the networks (allowed or not), the agents shared', () => {
     expect(networkingStatusLine({ meshOn: true, networks: [home], shared: 3 })).toBe('Mesh on · Home (192.168.1.0/24) (allowed) · 3 agents shared')
     expect(networkingStatusLine({ meshOn: false, networks: [cafe], shared: 1 })).toBe('Mesh off · Cafe (10.0.0.0/24) (not allowed) · 1 agent shared')
     expect(networkingStatusLine({ meshOn: true, networks: [], shared: 0 })).toBe('Mesh on · No network · 0 agents shared')
@@ -413,7 +474,7 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     // A network to allow: its Allow line already says what to do.
     expect(meshWarningLine({ warning }, consentLines(net({ networks: [cafe] }), ['agent-1']))).toBeNull()
     expect(meshWarningLine({}, [])).toBeNull()
-    const html = renderToStaticMarkup(<NetworkingStatusCard line="Mesh on" consent={[]} busy={false} note={null} firewall={null} warning={warning} onAllow={() => {}} />)
+    const html = renderToStaticMarkup(<NetworkingStatusCard items={items} consent={[]} busy={false} note={null} firewall={null} warning={warning} onAllow={() => {}} />)
     expect(html).toContain(warning)
   })
 
@@ -421,7 +482,7 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     expect(sharedAgents([{ visibility: 'lan' }, { visibility: 'public' }, { visibility: 'localhost' }, { visibility: 'off' }, {}])).toHaveLength(2)
   })
 
-  it('Runtimes: one list, how each was found, Managed when Connections has it, added addresses that do not answer', () => {
+  it('Servers: one list, how each was found, Managed when Connections has it, added addresses that do not answer', () => {
     expect([foundBy('mdns'), foundBy(undefined), foundBy('tailnet'), foundBy('manual')]).toEqual(['LAN', 'LAN', 'Tailnet', 'Address'])
     const found = [
       { runtime_id: 'r1', host: '192.168.1.44', port: 7295, url: 'http://192.168.1.44:7295', source: 'mdns' as const, agent_count: 2 },
@@ -432,11 +493,11 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     expect(isManaged(found[0], [{ kind: 'saved', url: 'http://192.168.1.44:7385' }])).toBe(true)
     expect(isManaged(found[0], [{ kind: 'found', url: 'http://192.168.1.44:7385' }, { kind: 'saved', url: 'http://10.0.0.9:7385' }])).toBe(false)
     expect(addressMatches('[fd7a::1]:7295', { host: 'fd7a::1', port: 7295 })).toBe(true)
-    expect(addressMatches('desk', { host: 'desk', port: 7295 })).toBe(true)
+    expect(addressMatches('laptop-1', { host: 'laptop-1', port: 7295 })).toBe(true)
   })
 
   it('the firewall: what blocks, the exact commands to run, never an elevated button (R9)', () => {
-    expect(firewallText({ supported: true, ruleConfigured: false, reachable: null, lanIp: '192.168.1.20', detail: '', port: 7295, serverLanBound: true, verified: false })).toBe('Peers see this runtime but list 0 agents until a firewall rule lets them in.')
+    expect(firewallText({ supported: true, ruleConfigured: false, reachable: null, lanIp: '192.168.1.20', detail: '', port: 7295, serverLanBound: true, verified: false })).toBe('Other servers find this server, but they see 0 agents. Add a firewall rule to let them in.')
     expect(firewallText({ supported: true, ruleConfigured: true, reachable: true, lanIp: '192.168.1.20', detail: '', port: 7295, serverLanBound: true, verified: true })).toBe('Open on 192.168.1.20:7295.')
     const html = renderToStaticMarkup(<FirewallCommands commands={["New-NetFirewallRule -DisplayName 'ADF Mesh (LAN)'"]} />)
     expect(html).toContain('New-NetFirewallRule')
@@ -496,27 +557,37 @@ describe('consent review 3: the network notice is a strip in the window, not a d
 })
 
 describe('the pages render (static, no IPC)', () => {
-  it('Settings → Networking: the status card, Sharing, Networks, Runtimes, Advanced closed', async () => {
+  it('Settings → Networking: the status card, Sharing, Networks, Servers, Advanced closed, in that order', async () => {
     const { NetworkingSettings } = await import('../../../src/renderer/components/settings/NetworkingSettings')
     const html = renderToStaticMarkup(<NetworkingSettings remote={false} runtimeName="host-0 (Local)" pickedMesh={undefined} />)
-    expect(html).toContain('Mesh off · 0 agents shared')
-    for (const s of ['>Sharing<', '>Networks<', '>Runtimes<', '>Advanced</summary>', 'aria-label="Mesh"', 'aria-label="Network"', '>Agents', '0 shared']) expect(html, s).toContain(s)
+    expect(html).toContain('data-status-card=""')
+    expect(html).toContain('>Mesh<')
+    expect(html).toContain('>0 agents<')
+    const order = ['data-status-card=""', '>Sharing<', '>Networks<', '>Servers<', '>Advanced</summary>'].map((s) => html.indexOf(s))
+    for (const at of order) expect(at).toBeGreaterThan(-1)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
+    for (const s of ['aria-label="Mesh"', 'aria-label="Network"', '>Agents', '0 shared', '>Mesh server<']) expect(html, s).toContain(s)
+    expect(html).not.toContain('>Runtimes<')
     expect(html).not.toContain('<details open')
     expect(html).not.toContain('aria-label="LAN"')
-    // A remote runtime: host-only rows say where they are changed.
-    expect(renderToStaticMarkup(<NetworkingSettings remote runtimeName="rawl-hub" pickedMesh="remote:rawl-hub" />)).toContain('Change on rawl-hub.')
+    // Server naming in what it renders.
+    expect(html.replace(/<[^>]+>/g, ' ')).not.toMatch(/\bruntimes?\b/i)
+    // A remote server: host-only rows say where they are changed.
+    expect(renderToStaticMarkup(<NetworkingSettings remote runtimeName="box-1" pickedMesh="remote:box-1" />)).toContain('Change on box-1.')
   })
 
-  it('Add: Connect and Share; Connect lists what was found and an Address; Share loads', async () => {
+  it('Add: Connect and Share; Connect shows Address, Code and Token at once; Share loads', async () => {
     const { AddDialog, AddConnectionDialog } = await import('../../../src/renderer/components/settings/ConnectionSettings')
     const add = renderToStaticMarkup(<AddDialog onClose={() => {}} />)
     expect(add).toContain('>Add</h2>')
     expect(add).toContain('>Connect<')
     expect(add).toContain('>Share<')
     const connect = renderToStaticMarkup(<AddConnectionDialog onClose={() => {}} onBack={() => {}} />)
+    expect(connect).toContain('>Connect</h2>')
     expect(connect).toContain('aria-label="Address"')
-    expect(connect).toContain('>Details</summary>')
+    expect(connect).toContain('aria-label="Code"')
     expect(connect).toContain('aria-label="Token"')
+    expect(connect).not.toContain('>Details</summary>')
     expect(connect).toContain('>Back<')
     expect(connect).not.toContain('Use a token instead')
     const share = renderToStaticMarkup(<SharePanelView view={null} busy={false} error={null} approved={null} label="" created={null} onLabel={() => {}} onAllow={() => {}} onRenew={() => {}} onCreateToken={() => {}} onBack={() => {}} onDone={() => {}} />)

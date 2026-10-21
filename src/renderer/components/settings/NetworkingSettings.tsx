@@ -1,21 +1,24 @@
 /**
  * Settings → Networking (docs/guides/settings.md#networking): agent
- * messaging only. Remote access (other computers using this runtime) is in
+ * messaging only. Remote access (other devices that use this server) is in
  * Settings → Connections (Add → Share, Devices).
  *
- * - Status card: one line ("Mesh on · Home (192.168.1.0/24) (allowed) · 3
- *   agents shared") and the only per-network consent action, Allow on the
- *   current network, with the service that waits for it named.
+ * - Status card: Mesh, each current network (allowed or not), the agents
+ *   shared, one fact per line; then the only per-network consent action,
+ *   Allow on the current network, with the service that waits for it
+ *   named, and the reason when a network cannot be identified.
  * - Sharing: Mesh, Network (the mesh's LAN mode) and the shared Agents.
  * - Networks: the allowed networks, each with Remove, then each current
  *   network that cannot be identified, with why and Help (no Allow: §3.3.1).
- * - Runtimes: the runtimes found on the LAN, the tailnet or at an address,
- *   with Add for an address; Managed when Connections has that computer.
- * - Advanced, collapsed but never hidden: Autostart, Port, Server,
+ * - Servers: the agent servers found on the LAN, the tailnet or at an
+ *   address, with Add for an address; Managed when Connections has that
+ *   server.
+ * - Advanced, collapsed but never hidden: Autostart, Port, Mesh server,
  *   Tailscale, Addresses, HTTPS, Firewall, Endpoints.
  *
- * Copy rule (owner): labels are one word or a noun; at most one effect
- * sentence per row; the rest is a tooltip or the guide.
+ * Copy rule (owner): labels are one word or a noun; help text is short
+ * sentences, one fact each (ASD-STE100 style); the rest is a tooltip or the
+ * guide. In the UI the runtime is a "server".
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -39,13 +42,14 @@ import { useSettingsApi } from './settings-runtime'
 import { useSettingsSave } from './settings-save'
 import { checkPeerAddress, checkWholeNumber } from './settings-inputs'
 import { changeOn, meshServerHosts } from './RemoteAccessSettings'
+import { ServerIcon } from '../common/ServerIcons'
 
 /** The Mesh switch's tooltip: what turning it off interrupts. */
-export const MESH_OFF_NOTE = 'Off stops agent messaging, agent websites and APIs, and delivery from peer runtimes.'
+export const MESH_OFF_NOTE = 'Off stops agent messages, agent websites, agent APIs and messages from other servers.'
 
 /** The effect sentences of the Sharing switches (one each). */
-export const MESH_EFFECT = 'Agents on this computer message each other.'
-export const NETWORK_EFFECT = 'Other computers on allowed networks reach agents you share.'
+export const MESH_EFFECT = 'Agents on this server send messages to each other.'
+export const NETWORK_EFFECT = 'Other computers on allowed networks can reach the agents that you share.'
 
 /** A stable empty list (a store selector must not return a new array each call). */
 const NO_ROWS: ConnectionRow[] = []
@@ -66,7 +70,28 @@ export function sharedAgents<T extends Pick<MeshAgentStatus, 'visibility'>>(agen
   return agents.filter((a) => a.visibility === 'lan' || a.visibility === 'public')
 }
 
-/** "Mesh on · Home (192.168.1.0/24) (allowed) · 3 agents shared"; `networks` null: not this computer's (a remote runtime). */
+export interface StatusItem {
+  label: string
+  value: string
+  tone: 'ok' | 'off' | 'down'
+}
+
+/**
+ * The status card's facts, one per line: Mesh, each current network
+ * (allowed, not allowed, or not identified), Shared. `networks` null: not
+ * this computer's (a remote server), so no Network line.
+ */
+export function networkingStatusItems({ meshOn, networks, shared }: { meshOn: boolean; networks: NetworkView[] | null; shared: number }): StatusItem[] {
+  const items: StatusItem[] = [{ label: 'Mesh', value: meshOn ? 'On' : 'Off', tone: meshOn ? 'ok' : 'off' }]
+  if (networks) {
+    if (networks.length === 0) items.push({ label: 'Network', value: 'None', tone: 'off' })
+    for (const n of networks) items.push({ label: 'Network', value: `${n.label} · ${n.allowed ? 'Allowed' : n.id ? 'Not allowed' : 'Not identified'}`, tone: n.allowed ? 'ok' : n.id ? 'off' : 'down' })
+  }
+  items.push({ label: 'Shared', value: `${shared} ${shared === 1 ? 'agent' : 'agents'}`, tone: shared > 0 ? 'ok' : 'off' })
+  return items
+}
+
+/** "Mesh on · Home (192.168.1.0/24) (allowed) · 3 agents shared"; `networks` null: not this computer's (a remote server). The card shows networkingStatusItems. */
 export function networkingStatusLine({ meshOn, networks, shared }: { meshOn: boolean; networks: NetworkView[] | null; shared: number }): string {
   const parts = [meshOn ? 'Mesh on' : 'Mesh off']
   if (networks) {
@@ -244,9 +269,9 @@ function Badge({ children, tone = 'muted' }: { children: React.ReactNode; tone?:
   )
 }
 
-/** The status card: one line, then Allow for each current network not allowed, with what waits for it. */
-export function NetworkingStatusCard({ line, consent, busy, note, firewall, warning = null, onAllow }: {
-  line: string
+/** The status card: one fact per line, then Allow for each current network not allowed, with what waits for it. */
+export function NetworkingStatusCard({ items, consent, busy, note, firewall, warning = null, onAllow }: {
+  items: StatusItem[]
   consent: ConsentLine[]
   busy: boolean
   note: string | null
@@ -255,21 +280,34 @@ export function NetworkingStatusCard({ line, consent, busy, note, firewall, warn
   warning?: string | null
   onAllow: (id: string) => void
 }) {
+  const problems = [warning, note ?? firewall].filter((p): p is string => !!p)
   return (
-    <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-      <span>{line}<LearnMore href={DOCS.networkingStatus} /></span>
+    <div role="status" className="mb-4 overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-hairline bg-[var(--adf-ui-surface)] text-[12px] text-[var(--adf-ui-text)]" data-status-card="">
+      <div className="flex items-start justify-between gap-4 px-4 py-3">
+        <dl className="grid grid-cols-[max-content_1fr] items-center gap-x-6 gap-y-1.5">
+          {items.map((item, i) => (
+            <div key={`${item.label}:${i}`} className="contents">
+              <dt className="text-[var(--adf-ui-text-muted)]">{item.label}</dt>
+              <dd className="flex min-w-0 items-center gap-1.5">
+                <span aria-hidden="true" className={`size-1.5 shrink-0 rounded-full ${item.tone === 'ok' ? 'bg-[var(--adf-ui-success)]' : item.tone === 'down' ? 'bg-[var(--adf-ui-danger)]' : 'bg-[var(--adf-ui-border)]'}`} />
+                <span className="min-w-0 break-words">{item.value}</span>
+              </dd>
+            </div>
+          ))}
+        </dl>
+        <LearnMore href={DOCS.networkingStatus} />
+      </div>
       {consent.map((c) => (
-        <div key={c.key} className="flex w-full flex-wrap items-center justify-between gap-2">
-          <span className="space-y-0.5">
+        <div key={c.key} className="flex items-start justify-between gap-4 border-t border-[var(--adf-ui-separator)] px-4 py-2.5" data-consent={c.networkId ?? c.key}>
+          <div className="min-w-0 space-y-0.5">
             {c.lines.map((l) => <span key={l} className="block">{l}</span>)}
-            {c.reason && <UnidentifiedReason reason={c.reason} detail={c.detail} />}
-          </span>
-          {c.networkId && <Button size="compact" disabled={busy} onClick={() => onAllow(c.networkId!)}>Allow</Button>}
-          {c.warning && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{c.warning}</span>}
+            {c.reason && <span className="block text-[var(--adf-ui-text-muted)]"><UnidentifiedReason reason={c.reason} detail={c.detail} /></span>}
+            {c.warning && <span className="block text-[11px] text-[var(--adf-ui-danger)]">{c.warning}</span>}
+          </div>
+          {c.networkId && <Button size="compact" variant="primary" disabled={busy} onClick={() => onAllow(c.networkId!)}>Allow</Button>}
         </div>
       ))}
-      {warning && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{warning}</span>}
-      {(firewall || note) && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? firewall}</span>}
+      {problems.map((p) => <div key={p} className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5 text-[11px] text-[var(--adf-ui-danger)]">{p}</div>)}
     </div>
   )
 }
@@ -310,17 +348,17 @@ interface LanFirewallState {
 export function firewallText(fw: LanFirewallState): string {
   if (fw.verified) return `Open${fw.lanIp ? ` on ${fw.lanIp}:${fw.port}` : ''}.`
   if (!fw.serverLanBound) return 'The mesh server is not listening on a network yet.'
-  if (fw.supported && fw.ruleConfigured === false) return 'Peers see this runtime but list 0 agents until a firewall rule lets them in.'
+  if (fw.supported && fw.ruleConfigured === false) return 'Other servers find this server, but they see 0 agents. Add a firewall rule to let them in.'
   if (fw.supported && fw.ruleConfigured === null) return fw.detail
   if (!fw.supported) return fw.detail
-  return `The firewall rule is there, but the server did not answer on ${fw.lanIp ?? 'the LAN address'}.`
+  return `The firewall rule exists, but the mesh server does not answer on ${fw.lanIp ?? 'the LAN address'}.`
 }
 
 export function FirewallCommands({ commands }: { commands: string[] }) {
   if (commands.length === 0) return null
   return (
     <div className="mt-1 space-y-1">
-      <p className="text-[11px] text-[var(--adf-ui-text-muted)]">Run in an administrator shell:</p>
+      <p className="text-[11px] text-[var(--adf-ui-text-muted)]">Run these commands in an administrator shell.</p>
       <pre className="whitespace-pre-wrap break-all rounded border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 py-1 font-mono text-[11px] text-[var(--adf-ui-text)]">{commands.join('\n')}</pre>
       <div className="flex items-center gap-2">
         <Button size="compact" variant="ghost" onClick={() => void navigator.clipboard?.writeText(commands.join('\n')).catch(() => {})}>Copy</Button>
@@ -339,7 +377,7 @@ function FirewallRow({ lan, restarting, hostName }: { lan: boolean; restarting: 
     api.checkLanFirewall().then((r) => { if (alive) setFw(r as LanFirewallState) }).catch(() => { if (alive) setFw(null) })
     return () => { alive = false }
   }, [lan, restarting, hostName])
-  const description = hostName ? changeOn(hostName) : !lan ? 'Checked while Network is on.' : fw ? firewallText(fw) : 'Checking…'
+  const description = hostName ? changeOn(hostName) : !lan ? 'Studio checks the firewall while Network is on.' : fw ? firewallText(fw) : 'Checking…'
   return (
     <SettingsRow separator stacked label="Firewall" description={description}>
       {fw && !fw.verified && !hostName && lan && <FirewallCommands commands={fw.commands ?? []} />}
@@ -350,7 +388,7 @@ function FirewallRow({ lan, restarting, hostName }: { lan: boolean; restarting: 
 // --- The page ---------------------------------------------------------------------
 
 export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
-  /** The picked runtime is on another computer: its network, firewall and allowed networks are changed there. */
+  /** The picked server is on another computer: its network, firewall and allowed networks are changed there. */
   remote: boolean
   runtimeName: string
   pickedMesh: RuntimeId | undefined
@@ -535,7 +573,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
   const shared = sharedAgents(meshAgents)
   const publicHandles = meshAgents.filter((a) => a.visibility === 'public').map((a) => a.handle ?? a.filePath)
   const thisComputer = !remote && !!netView?.available
-  const statusLine = networkingStatusLine({ meshOn: meshEnabled, networks: thisComputer ? netView!.networks : null, shared: shared.length })
+  const statusItems = networkingStatusItems({ meshOn: meshEnabled, networks: thisComputer ? netView!.networks : null, shared: shared.length })
   const consent = thisComputer ? consentLines(netView!, publicHandles) : []
   const tailscale = remoteView?.status?.tailscale ?? null
   const rows = runtimeList(found, manualPeers)
@@ -543,7 +581,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
   return (
     <>
       <NetworkingStatusCard
-        line={statusLine}
+        items={statusItems}
         consent={consent}
         busy={netBusy}
         note={netNote}
@@ -558,7 +596,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
         </SettingsRow>
         <SettingsRow
           separator
-          label={<>Network<InfoHint tip="Listens on private networks and Tailscale, only on a network you allowed. An agent with lan or public visibility turns it on too." /></>}
+          label={<>Network<InfoHint tip="The mesh listens on private networks and Tailscale, but only on networks that you allow. An agent with lan or public visibility also turns this on." /></>}
           description={NETWORK_EFFECT}
           help={meshRestarting ? 'Restarting…' : undefined}
         >
@@ -572,7 +610,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
             }}
           />
         </SettingsRow>
-        <SettingsRow separator stacked label={<>Agents<InfoHint tip="Agents with lan or public visibility (Agent → Config → Messaging)." /></>} description={<>{shared.length} shared<LearnMore href={DOCS.visibility} /></>}>
+        <SettingsRow separator stacked label={<>Agents<InfoHint tip="Agents with lan or public visibility. Set it in Agent → Config → Messaging." /></>} description={<>{shared.length} shared<LearnMore href={DOCS.visibility} /></>}>
           {shared.length > 0 && (
             <ul className="space-y-0.5 text-[12px]">
               {shared.map((a) => (
@@ -589,14 +627,14 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
         </SettingsRow>
       </SettingsGroup>
 
-      <SettingsGroup title="Networks">
+      <SettingsGroup title="Networks" description="The networks where this server can listen. You allow each network one time.">
         {remote
           ? <SettingsRow label="Networks" description={changeOn(runtimeName)} />
           : !netView?.available || (netView.allowedNetworks.length === 0 && unidentifiedNetworks(netView.networks).length === 0)
-            ? <SettingsRow label="None" />
+            ? <SettingsRow label="None" description="To allow a network, use Allow in the card above." />
             : <>
               {netView.allowedNetworks.map((n, i) => (
-                <SettingsRow key={n.id} separator={i > 0} label={n.label} description={netView.networks.some((c) => c.id === n.id) ? 'Current' : undefined}>
+                <SettingsRow key={n.id} separator={i > 0} label={<span className="flex items-center gap-2">{n.label}{netView.networks.some((c) => c.id === n.id) && <Badge tone="accent">Current</Badge>}</span>}>
                   <Button size="compact" disabled={netBusy} onClick={() => void changeNetwork('forget', n.id)}>Remove</Button>
                 </SettingsRow>
               ))}
@@ -611,34 +649,36 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
             </>}
       </SettingsGroup>
 
-      <SettingsGroup title="Runtimes" hint="Runtimes found on this network, on your tailnet, or at an address you added. Agent counts come from each runtime's directory.">
+      <SettingsGroup title="Servers" description="Agent servers on your networks, on your tailnet, or at an address that you add. The agent count comes from the directory of each server.">
         {rows.length === 0
-          ? <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">None found.</p>
+          ? <p className="border-t border-[var(--adf-ui-separator)] px-4 py-3 text-[12px] text-[var(--adf-ui-text-muted)]">No server found.</p>
           : (
             <ul className="divide-y divide-[var(--adf-ui-separator)] border-t border-[var(--adf-ui-separator)]">
               {rows.map((row) => {
                 const address = row.address
                 return (
-                  <li key={row.kind === 'found' ? `${row.runtime.runtime_id}|${row.runtime.url}` : `address:${row.address}`} className="flex flex-wrap items-center gap-2 px-4 py-2 text-[12px]">
+                  <li key={row.kind === 'found' ? `${row.runtime.runtime_id}|${row.runtime.url}` : `address:${row.address}`} className="flex flex-wrap items-center gap-2 px-4 py-2.5 text-[12px]">
                     {row.kind === 'found' ? (
                       <>
-                        <span className="font-mono text-[var(--adf-ui-text)]">{row.runtime.host}</span>
+                        <span className="text-[var(--adf-ui-text-muted)]"><ServerIcon size={14} /></span>
+                        <span className="font-mono font-medium text-[var(--adf-ui-text)]">{row.runtime.host}</span>
                         <Badge>{foundBy(row.runtime.source)}</Badge>
-                        {isManaged(row.runtime, savedRows, found) && <Tooltip tip="Also under Settings → Connections"><span><Badge tone="accent">Managed</Badge></span></Tooltip>}
+                        {isManaged(row.runtime, savedRows, found) && <Tooltip tip="This Studio also connects to this server (Settings → Connections)."><span><Badge tone="accent">Managed</Badge></span></Tooltip>}
                         {row.runtime.url && <span className="font-mono text-[11px] text-[var(--adf-ui-text-subtle)]">{row.runtime.url.replace(/^https?:\/\//, '')}</span>}
                         {row.runtime.agent_count === undefined
-                          ? <Tooltip tip="The runtime announced itself but its directory did not answer: a firewall, the wrong interface, or its mesh server is down."><span className="text-[var(--adf-ui-warning)]">Unreachable</span></Tooltip>
-                          : <span className="text-[var(--adf-ui-text-subtle)]">{row.runtime.agent_count} {row.runtime.agent_count === 1 ? 'agent' : 'agents'}</span>}
+                          ? <Tooltip tip="The server announced itself, but its directory did not answer. A firewall, the wrong network interface or a stopped mesh server can cause this." className="ml-auto"><span className="text-[var(--adf-ui-warning)]">Unreachable</span></Tooltip>
+                          : <span className="ml-auto text-[var(--adf-ui-text-muted)]">{row.runtime.agent_count} {row.runtime.agent_count === 1 ? 'agent' : 'agents'}</span>}
                       </>
                     ) : (
                       <>
-                        <span className="font-mono text-[var(--adf-ui-text)]">{row.address}</span>
+                        <span className="text-[var(--adf-ui-text-muted)]"><ServerIcon size={14} /></span>
+                        <span className="font-mono font-medium text-[var(--adf-ui-text)]">{row.address}</span>
                         <Badge>Address</Badge>
-                        <span className="text-[var(--adf-ui-text-subtle)]">No answer</span>
+                        <span className="ml-auto text-[var(--adf-ui-text-subtle)]">No answer</span>
                       </>
                     )}
                     {address && (
-                      <IconButton className="ml-auto" onClick={() => removeAddress(address)} aria-label={`Remove ${address}`} variant="danger" title="Remove">✕</IconButton>
+                      <IconButton onClick={() => removeAddress(address)} aria-label={`Remove ${address}`} variant="danger" title="Remove">✕</IconButton>
                     )}
                   </li>
                 )
@@ -658,7 +698,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
               className="!w-72 font-mono !text-[12px]"
             />
             <Button onClick={() => void addAddress()} size="compact">Add</Button>
-            <Tooltip tip="Probe the tailnet and the addresses now, then fetch each runtime's directory">
+            <Tooltip tip="Look on the tailnet and at the addresses again now.">
               <Button onClick={() => void recheck()} disabled={rechecking} loading={rechecking} size="compact">Recheck</Button>
             </Tooltip>
           </div>
@@ -668,13 +708,13 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
       <SettingsGroup>
         <details>
           <summary className="cursor-pointer select-none px-4 py-3 text-[13px] font-semibold text-[var(--adf-ui-text)]">Advanced</summary>
-          <SettingsRow separator label={<>Autostart<InfoHint tip="Start the mesh when the runtime starts. The Mesh switch does not change this." /></>}>
+          <SettingsRow separator label={<>Autostart<InfoHint tip="The mesh starts when the server starts. The Mesh switch does not change this." /></>}>
             <Switch label="Autostart" checked={meshAutoStart} onChange={(next) => void persist({ meshEnabled: next }, setMeshAutoStart, next, meshAutoStart)} />
           </SettingsRow>
           <SettingsRow
             separator
             label="Port"
-            description={meshServerStatus.running ? 'Apply restarts the server on the new port.' : 'Used when the server starts.'}
+            description={meshServerStatus.running ? 'Apply restarts the mesh server on the new port.' : 'The mesh server uses this port when it starts.'}
             error={meshPortError ?? undefined}
           >
             <div className="flex items-center gap-2">
@@ -693,12 +733,12 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
           </SettingsRow>
           <SettingsRow
             separator
-            label="Server"
-            description={meshServerStatus.running ? `Running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}` : 'Stopped'}
+            label="Mesh server"
+            description={meshServerStatus.running ? `Running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}.` : 'Stopped.'}
           >
             <span aria-hidden="true" className={`block size-2 rounded-full ${meshServerStatus.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-danger)]'}`} />
           </SettingsRow>
-          <SettingsRow separator label={<>Tailscale<InfoHint tip="Probe the computers on your tailnet for ADF runtimes." /></>}>
+          <SettingsRow separator label={<>Tailscale<InfoHint tip="Look for agent servers on the computers of your tailnet." /></>}>
             <Switch
               label="Tailscale"
               checked={tailnetOn}
@@ -713,7 +753,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
             stacked
             label="Addresses"
             description={thisComputer ? networkDetailText(netView!) : lanInfo.hostname ? <span className="font-mono">{lanInfo.hostname}</span> : undefined}
-            help={!meshLan ? 'Other computers reach these once Network is on.' : undefined}
+            help={!meshLan ? 'Other computers can reach these addresses when Network is on.' : undefined}
           >
             {lanInfo.addresses.length > 0 && (
               <div className="space-y-1">
@@ -737,7 +777,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
           </SettingsRow>
           <SettingsRow
             separator
-            label={<>HTTPS<InfoHint tip="tailscale serve in front of this runtime's daemon, for computers that use it over your tailnet." /></>}
+            label={<>HTTPS<InfoHint tip="tailscale serve gives this server an https address on your tailnet." /></>}
             description={remote ? changeOn(runtimeName) : httpsText(remoteView)}
             error={serveError ?? undefined}
           >
@@ -746,7 +786,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
             )}
           </SettingsRow>
           <FirewallRow lan={meshLan || shared.length > 0} restarting={meshRestarting} hostName={remote ? runtimeName : null} />
-          <SettingsRow separator stacked label="Endpoints" description={remote ? changeOn(runtimeName) : meshEnabled ? `${meshAgents.length} serving.` : 'Mesh is off.'}>
+          <SettingsRow separator stacked label="Endpoints" description={remote ? changeOn(runtimeName) : meshEnabled ? `${meshAgents.length} ${meshAgents.length === 1 ? 'agent serves' : 'agents serve'} on the mesh.` : 'Mesh is off.'}>
             {meshEnabled && !remote && meshAgents.length > 0 && (
               <ul className="space-y-1">
                 {meshAgents.map((agent) => {

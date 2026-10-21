@@ -1,7 +1,7 @@
 /**
  * How the local runtime is named wherever runtime names show
  * (docs/design/multi-runtime.md §1.3): `<runtime name> (Local)`, e.g.
- * "Christian-MBP (Local)". The runtime name is the runtime alias (Settings →
+ * "laptop-1 (Local)". The runtime name is the runtime alias (Settings →
  * Identity), else the computer's host name. With no name known: "Local".
  * A remote shows its saved name; the UI adds the remote icon (tooltip
  * "Remote"), never "(Remote)".

@@ -12,7 +12,7 @@ Open Settings with the gear in the title bar, Edit → Settings… (ADF Studio �
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
 - **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
-- The runtime's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. With the local runtime only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Runtime** with a picker of the runtime names ("*name* (Local)", and each saved connection such as `rawl-hub`), and the pages show the settings of the runtime picked there. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else the local runtime; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
+- The runtime's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. With the local runtime only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Server** with a picker of the server names ("*name* (Local)", and each saved connection such as `box-1`), and the pages show the settings of the server picked there, under a quiet header strip: "Server", then the server's icon and name. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else the local runtime; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
 
 ## Saving
 
@@ -359,13 +359,21 @@ A second tier is **locked by default** rather than hard-denied: `security.allow_
 
 ## Networking
 
-**Settings → Networking** is about agent messaging: the mesh, which agents other computers can reach, the networks you allowed and the runtimes found. Other computers that use this runtime (remote access) are in [Connections](#connection).
+**Settings → Networking** is about agent messaging: the mesh, which agents other computers can reach, the networks you allowed and the agent servers found. Other devices that use this server (remote access) are in [Connections](#connection).
 
-The page has, in this order: the status card, **Sharing** (**Mesh**, **Network**, **Agents**), **Networks**, **Runtimes** and **Advanced** (closed until you open it).
+The page has, in this order: the status card, **Sharing** (**Mesh**, **Network**, **Agents**), **Networks**, **Servers** and **Advanced** (closed until you open it).
 
 ### Network status
 
-The status card is one line, for example "Mesh on · Wi-Fi (192.168.1.0/24) (allowed) · 3 agents shared": the mesh, each network this computer is on and whether you allowed it, and the number of agents with `lan` or `public` visibility. With another computer picked in the **Runtime** picker, the line has no network part.
+The status card has one fact per line, each with a state dot:
+
+| Line | Value |
+|---|---|
+| **Mesh** | On or Off |
+| **Network** | One line for each network this computer is on: "Wi-Fi (192.168.1.0/24) · Allowed", "· Not allowed", or "· Not identified"; "None" with no network |
+| **Shared** | The number of agents with `lan` or `public` visibility, for example "3 agents" |
+
+With another computer picked in the **Server** picker, the card has no **Network** line.
 
 Nothing listens beyond `127.0.0.1` on a network until you allow it, once per network, the same on every OS (details: [Studio backend › Network status](studio-backend.md#network-status)). For each network you are on that is not allowed, the card shows **Allow** and what waits for it:
 
@@ -397,8 +405,8 @@ You cannot allow an unidentified network. When the router answers, the card show
 
 | Row | Effect | Setting |
 |---|---|---|
-| **Mesh** | Agents on this computer message each other. | The mesh and its server, now. Off stops agent messaging, agent websites and `serving.api` routes, and delivery from peer runtimes (tooltip). **Kill** in the status bar also turns it off. |
-| **Network** | Other computers on allowed networks reach agents you share. | `meshLan`. Listens on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, only on allowed networks; the addresses follow network changes within 10 seconds. A running server restarts on a change. `MESH_HOST` overrides it. |
+| **Mesh** | Agents on this server send messages to each other. | The mesh and its mesh server, now. "Off stops agent messages, agent websites, agent APIs and messages from other servers." (tooltip). **Kill** in the status bar also turns it off. |
+| **Network** | Other computers on allowed networks can reach the agents that you share. | `meshLan`. Listens on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, only on allowed networks; the addresses follow network changes within 10 seconds. A running server restarts on a change. `MESH_HOST` overrides it. |
 | **Agents** | "*N* shared", each agent with its visibility (**LAN** or **Public**). The name opens the agent's window. | Read only. Visibility is set in Agent → Config → Messaging ([Visibility tiers](messaging.md#visibility-tiers)). |
 
 An agent with `lan` or `public` visibility turns on the same listening as **Network**. A `public` agent never binds every interface (`0.0.0.0`) by itself: it needs the same consent per network, and the status card names it until you allow the network. Only `MESH_HOST=0.0.0.0` binds every interface; that is the operator's choice, for example on a server. A server with only a public address has no network to allow: while a `public` agent listens on this computer only, the daemon log, `adf daemon status` and the status card say so and name `MESH_HOST`. A device paired with this computer that changes an agent's visibility gets no listener without your consent either.
@@ -407,11 +415,11 @@ The switches, the port and the binding are app-level, not agent-reachable; agent
 
 ### Networks
 
-The networks you allowed, each with **Remove**, which closes its listeners at once; the network you are on now is marked **Current**. The mesh and remote access use the same list (`allowedNetworks` in `remote-access.json`). With another computer picked in the **Runtime** picker: "Change on *name*."
+"The networks where this server can listen. You allow each network one time." The networks you allowed, each with **Remove**, which closes its listeners at once; the network you are on now has the **Current** badge. With none: "None" and "To allow a network, use Allow in the card above." The mesh and remote access use the same list (`allowedNetworks` in `remote-access.json`). With another computer picked in the **Server** picker: "Change on *name*."
 
-### Runtimes
+### Servers
 
-One list of the ADF runtimes found, each with how it was found:
+"Agent servers on your networks, on your tailnet, or at an address that you add." One list of the agent servers found (each one's mesh), with how it was found:
 
 | Badge | Found by |
 |---|---|
@@ -419,9 +427,9 @@ One list of the ADF runtimes found, each with how it was found:
 | **Tailnet** | The Tailscale sweep (Advanced → **Tailscale**, `tailnetDiscovery`) |
 | **Address** | An address you added (`meshManualPeers`), with ✕ to remove it (Undo in the toast) |
 
-Each row shows the host, its mesh address and its agent count, or **Unreachable** when its directory did not answer. **Managed** means Connections also has that computer as a saved connection: the fingerprint it announces is the one the connection was paired with, so a computer saved under its Tailscale https name is Managed too. A runtime that announces no fingerprint is matched by host and daemon port, unless another runtime on that host announces the connection's fingerprint. An address you added that nothing answers at yet is listed with "No answer".
+Each row shows the server icon, the host, its mesh address and, right-aligned, its agent count, or **Unreachable** when its directory did not answer. With none: "No server found." **Managed** (tooltip "This Studio also connects to this server (Settings → Connections).") means Connections also has that server under **Remote servers**: the fingerprint it announces is the one the connection was paired with, so a computer saved under its Tailscale https name is Managed too. A server that announces no fingerprint is matched by host and daemon port, unless another server on that host announces the connection's fingerprint. An address you added that nothing answers at yet is listed with "No answer".
 
-**Address** with **Add** adds one: `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port. An address with `http://`, a path or a port outside 1–65535 is refused under the field. **Recheck** probes the tailnet and the addresses now and fetches each directory again.
+**Address** with **Add** adds one: `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port. An address with `http://`, a path or a port outside 1–65535 is refused under the field. **Recheck** ("Look on the tailnet and at the addresses again now.") probes the tailnet and the addresses and fetches each directory again.
 
 ### Advanced
 
@@ -429,16 +437,16 @@ Closed by default; nothing in it is hidden.
 
 | Row | Content |
 |---|---|
-| **Autostart** | Start the mesh when the runtime starts (`meshEnabled`). The Mesh switch does not change it. |
+| **Autostart** | The mesh starts when the server starts (`meshEnabled`). The Mesh switch does not change it. |
 | **Port** | The mesh port (`meshPort`, default 7295). Leaving the field changes nothing; **Apply** saves it and restarts a running server on it. A value outside 1–65535 is refused under the field. |
-| **Server** | Running or stopped, with the addresses it listens on (for example `127.0.0.1, 192.168.1.20, port 7295`, or `127.0.0.1 only (no private network)` on a network not allowed). |
-| **Tailscale** | Probe the computers on your tailnet for ADF runtimes (`tailnetDiscovery`). |
+| **Mesh server** | Running or stopped, with the addresses it listens on (for example `127.0.0.1, 192.168.1.20, port 7295`, or `127.0.0.1 only (no private network)` on a network not allowed). |
+| **Tailscale** | Look for agent servers on the computers of your tailnet (`tailnetDiscovery`). |
 | **Addresses** | This computer's LAN addresses and Tailscale state, and each interface address with **Copy**; a link while **Network** is on. |
-| **HTTPS** | `tailscale serve` in front of this runtime's daemon (remote access over https on your tailnet): **Enable** or **Disable**, each confirmed with the exact command first. Otherwise one sentence with the cause: why remote access cannot be read (for example "Remote access needs Local as the connection (Settings → Connections).", or the daemon's error), "Needs Tailscale." while Tailscale is not running, or "Tailscale did not answer." when `tailscale serve status` failed. |
-| **Firewall** | Whether peers can reach the mesh port. When a rule is missing, the exact commands to run in an administrator shell, with **Copy** and a link to [LAN discovery › Firewalls](lan-discovery.md#firewalls). Studio never adds a firewall rule itself. |
+| **HTTPS** | `tailscale serve` gives this server an https address on your tailnet (remote access over https): **Enable** or **Disable**, each confirmed with the exact command first. Otherwise one sentence with the cause: why remote access cannot be read (for example "Remote access needs Local as the connection (Settings → Connections).", or the daemon's error), "Needs Tailscale." while Tailscale is not running, or "Tailscale did not answer." when `tailscale serve status` failed. |
+| **Firewall** | Whether other servers can reach the mesh port ("Other servers find this server, but they see 0 agents. Add a firewall rule to let them in." while a rule is missing). When a rule is missing, the exact commands to run in an administrator shell, with **Copy** and a link to [LAN discovery › Firewalls](lan-discovery.md#firewalls). Studio never adds a firewall rule itself. |
 | **Endpoints** | The agents serving on the mesh: handle, URL, **Site** (public folder served), route count, pattern count. "Mesh is off." while the mesh is off. See [HTTP Serving](serving.md). |
 
-With another computer picked in the **Runtime** picker, **Networks**, **HTTPS**, **Firewall** and **Endpoints** say "Change on *name*.": they belong to that computer.
+With another computer picked in the **Server** picker, **Networks**, **HTTPS**, **Firewall** and **Endpoints** say "Change on *name*.": they belong to that computer.
 
 ## System Prompt
 
@@ -585,29 +593,22 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Connection
 
-**Studio → Connections** is last in the Studio group. It has one **Add** and two lists:
+**Studio → Connections** ("Servers and devices.") is last in the Studio group. In Studio the runtime is an agent server (the ADF daemon). From top to bottom, the page has one **Add**, then three sections ([Studio backend › Connection](studio-backend.md#connection)):
 
-- **Remotes** (tooltip "Runtimes this Studio uses."): the runtimes this Studio uses.
-- **Devices** (tooltip "Computers using this runtime."): the **Remote access** switch and the computers that use this runtime, each with **Revoke** (see [Studio backend › Devices](studio-backend.md#devices)).
+- **Local server** ("The agent server on this computer."): *name* (Local) with its state, **Details** (pid, who started it, URL, version, key), its **More** menu (⋯, **Inside Studio (legacy)**), and **Keep running after Studio quits** (`keepDaemonRunning`, default off). It is never listed under Remote servers.
+- **Remote servers** ("Agent servers on other computers that this Studio connects to."): each saved connection (shared with `adf`) with its state, address and fingerprint, and **Remove** in its **More** menu. The menu opens over the page, so the card never cuts it.
+- **Devices** ("Devices that can access *name* (Local)."): the **Remote access** switch and the devices that use the local server, each with **Revoke** (see [Studio backend › Devices](studio-backend.md#devices)).
 
-**Add** opens one dialog, titled **Add**, with two choices ([Studio backend › Add](studio-backend.md#add)):
+For a Studio with the local server only, **Remote servers** and **Devices** fold to their heading line, which keeps "None" or "Off" in view; a click opens them. The status bar then shows no server name, and Kill's tooltip reads "Stops all agents and mesh".
 
-| Choice | Help line | What it does |
+**Add** opens one dialog, titled **Add**, with two cards side by side, each with an icon ([Studio backend › Add](studio-backend.md#add)):
+
+| Card | Help line | What it does |
 |---|---|---|
-| **Connect** | "Use a runtime on another computer." | Lists the computers found on this network and your tailnet; pick one or type an **Address**, then enter the 6-digit code shown on that computer. The connection is saved and connects in one step. A token is under **Details**. |
-| **Share** | "Let another computer use this runtime." | Asks for consent first when remote access is off or this network is not allowed (one **Allow**), then shows this runtime's addresses by network with **Copy** and a 6-digit code with its countdown. The other computer enters the code; this computer still asks **Allow device**. Then "Approved: *name*." A token shown once is under **Details**. Only in Local mode. |
+| **Connect** | "Connect to a remote agent server." | Lists the servers found on this network and your tailnet as picks, then **Address**, **Code** and **Token**, all visible: "Enter a code or a token. To get a code, click Add, then Share on the other server." With a code, Studio shows the server's fingerprint to check, then **Pair**. The connection is saved and connects. |
+| **Share** | "Share this server." | **Share this server as** (the name devices see, the runtime alias), consent first when remote access is off or this network is not allowed (one **Allow**), then a 6-digit code with its countdown (**Renew** once it is gone), and one table of this server's addresses grouped by network, each row with its own **Copy**. The other computer enters the code; this computer still asks **Allow device**. Then "Approved: *name*." A token shown once is under **Token**. Only in Local mode. |
 
-Until a runtime on another computer is saved, **Remotes** says "None.". **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
-
-Once a connection is saved, **Remotes** lists the runtimes Studio connects to:
-
-| Row | State | Action |
-|---|---|---|
-| *name* (Local) | Connected, or its state while it is not connected; none while Inside Studio runs | None; **Inside Studio (legacy)** in its **More** menu (⋯); **Connect** while Inside Studio runs |
-| Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
-| A saved connection (shared with `adf`) | Connected, Connecting, Not connected, retrying, or Not connected | None; **Remove** in its **More** menu |
-
-Computers found on the network that are not saved are listed in **Add** → **Connect**, not on the page. On success the connection is saved and connects at once; the dialog shows **Done**. Studio does not restart. **Remove** asks first: "Removes the address and token from Studio and adf.", and "Closes *N* agent windows." when that runtime has agent windows open, then "Still listed on *name*; revoke it there."; it then disconnects and forgets the connection. See [Studio backend › Connection](studio-backend.md#connection).
+On success the connection is saved and connects at once; the dialog shows **Done**. Studio does not restart. **Remove** asks first: "Removes the address and token from Studio and adf.", and "Closes *N* agent windows." when that server has agent windows open, then "Still listed on *name*; revoke it there."; it then disconnects and forgets the connection.
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
@@ -620,7 +621,7 @@ A `studio-backend.json` saved by an earlier release with `"mode": "remote"` is m
 
 Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies at the next launch. Without the file, Studio runs in Local mode: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as any first launch in Local mode does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
-In Local mode, the page also shows ***name* (Local)**: the daemon (state, pid, who started it; URL and version under **Details**) and **Background** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. Inside Studio neither shows.
+**Keep running after Studio quits** is the one quit setting (earlier releases showed it twice, as **Background** and as **On quit** → **Keep running**). Its row says what happens: "When you quit Studio, Studio stops the server and its agents." (off), "When you quit Studio, the server and its agents keep running." (on; the ADF CLI manages it, `adf daemon stop`), or "Studio does not stop this server when you quit Studio, because the ADF CLI started it." Inside Studio does not show it.
 
 - An address must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` address needs the confirmation that the token is sent unencrypted.
 - Tokens are in the OS keychain (shared with `adf`), sent only to their connection's address, and never shown again.
@@ -628,7 +629,7 @@ In Local mode, the page also shows ***name* (Local)**: the daemon (state, pid, w
 
 ### Go back to running agents inside Studio
 
-In **Settings → Connections**, choose **Inside Studio (legacy)** in the Local row's **More** menu (or **Connect** under **Details**), then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+In **Settings → Connections → Local server**, choose **Inside Studio (legacy)** in the local row's **More** menu, then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 

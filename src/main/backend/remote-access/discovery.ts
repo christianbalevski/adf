@@ -141,7 +141,7 @@ export class RemoteDiscovery {
     this.last = {
       entries: this.entries(),
       browsing: !!feed && feed.problem() === null,
-      problem: feed ? feed.problem() : this.running ? 'Studio is not connected to the ADF daemon yet.' : null,
+      problem: feed ? feed.problem() : this.running ? 'Studio is not connected to the local server yet.' : null,
     }
     this.deps.onUpdate(this.last)
   }
