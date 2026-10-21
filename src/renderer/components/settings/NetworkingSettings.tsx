@@ -77,13 +77,11 @@ export function networkingStatusLine({ meshOn, networks, shared }: { meshOn: boo
   return parts.join(' · ')
 }
 
-/** "agent-1 is public; Allow on this network to share it." (owner decision 2026-10-21). */
+/** "agent-1 is public.", under the paused line (one sentence; the button is Allow). */
 export function publicAgentsLine(handles: string[]): string | null {
   if (handles.length === 0) return null
   const names = handles.length === 1 ? handles[0] : `${handles.slice(0, -1).join(', ')} and ${handles[handles.length - 1]}`
-  return handles.length === 1
-    ? `${names} is public; Allow on this network to share it.`
-    : `${names} are public; Allow on this network to share them.`
+  return `${names} ${handles.length === 1 ? 'is' : 'are'} public.`
 }
 
 export interface ConsentLine {
@@ -98,7 +96,8 @@ export interface ConsentLine {
  * One entry per current network that is not allowed: the service that
  * waits for it, named ("Remote access", "Agent sharing" or both; never
  * remote access when only the mesh waits), the public agents, and the
- * Public warning.
+ * Public warning. Every line is one sentence. The card's lines are built
+ * here only.
  */
 export function consentLines(view: Pick<NetworkStatusView, 'networks' | 'waiting'>, publicHandles: string[]): ConsentLine[] {
   const waiting = view.waiting ?? { remoteAccess: false, mesh: false }
@@ -134,6 +133,9 @@ export interface FoundRuntime {
   /** undefined = announced, but its directory did not answer. */
   agent_count?: number
   source?: 'mdns' | 'tailnet' | 'manual'
+  /** Remote access on that runtime (TXT `fp`, `daemon_port`, mdns-service.ts). */
+  fingerprint?: string
+  daemon_port?: number
 }
 
 /** How a runtime was found, as its badge says. */
@@ -146,10 +148,32 @@ function hostOf(url: string | null): string | null {
   try { return new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase() } catch { return null }
 }
 
-/** This Studio also has that computer under Connections (a saved row on the same host). */
-export function isManaged(runtime: Pick<FoundRuntime, 'host' | 'url'>, rows: Pick<ConnectionRow, 'kind' | 'url'>[]): boolean {
+/** The explicit port of `url` ('' or null: the scheme's default, or not a URL). */
+function portOf(url: string | null): string | null {
+  if (!url) return null
+  try { return new URL(url).port || null } catch { return null }
+}
+
+type ManagedRuntime = Pick<FoundRuntime, 'host' | 'url' | 'fingerprint' | 'daemon_port'>
+type ManagedRow = Pick<ConnectionRow, 'kind' | 'url'> & { fingerprint?: string | null }
+
+/**
+ * This Studio also has that computer under Connections: a saved row with the
+ * fingerprint it announces; else (a fingerprint missing on either side) a
+ * saved row on the same host and daemon port, unless another runtime of
+ * `found` announces that row's fingerprint.
+ */
+export function isManaged(runtime: ManagedRuntime, rows: ManagedRow[], found: readonly ManagedRuntime[] = []): boolean {
   const hosts = new Set([runtime.host.toLowerCase(), hostOf(runtime.url)].filter((h): h is string => !!h))
-  return rows.some((r) => r.kind === 'saved' && !!hostOf(r.url) && hosts.has(hostOf(r.url)!))
+  return rows.some((r) => {
+    if (r.kind !== 'saved') return false
+    if (r.fingerprint && runtime.fingerprint) return r.fingerprint === runtime.fingerprint
+    const host = hostOf(r.url)
+    if (!host || !hosts.has(host)) return false
+    const port = portOf(r.url)
+    if (port && runtime.daemon_port && port !== String(runtime.daemon_port)) return false
+    return !(r.fingerprint && found.some((f) => f !== runtime && f.fingerprint === r.fingerprint))
+  })
 }
 
 /** An address the user added that matches a found runtime (`host:port`, or a bare host). */
@@ -208,6 +232,26 @@ export function NetworkingStatusCard({ line, consent, busy, note, firewall, onAl
       {(firewall || note) && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? firewall}</span>}
     </div>
   )
+}
+
+/** One sentence: the first of `text`, ended with a period when it has no end. */
+function oneSentence(text: string): string {
+  const t = text.trim()
+  const first = /^.*?[.!?](?=\s|$)/s.exec(t)?.[0] ?? t
+  return /[.!?]$/.test(first) ? first : `${first}.`
+}
+
+/** The HTTPS row under Advanced: on or off, else the real cause (no Local daemon, its error, Tailscale). */
+export function httpsText(view: RemoteAccessView | null): string {
+  if (!view) return 'Checking…'
+  const tailscale = view.status?.tailscale
+  if (!tailscale) {
+    const cause = view.unavailableReason ?? view.error
+    return cause ? oneSentence(cause) : 'Checking…'
+  }
+  if (tailscale.state !== 'running') return 'Needs Tailscale.'
+  if (tailscale.serve === 'unknown') return 'Tailscale did not answer.'
+  return tailscale.serve === 'on' ? `On${tailscale.httpsUrl ? `: ${tailscale.httpsUrl}` : ''}.` : 'Off.'
 }
 
 /** The firewall rule state under Advanced: what blocks, and the exact commands to run (R9: never run by Studio). */
@@ -529,7 +573,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
                       <>
                         <span className="font-mono text-[var(--adf-ui-text)]">{row.runtime.host}</span>
                         <Badge>{foundBy(row.runtime.source)}</Badge>
-                        {isManaged(row.runtime, savedRows) && <Tooltip tip="Also under Settings → Connections"><span><Badge tone="accent">Managed</Badge></span></Tooltip>}
+                        {isManaged(row.runtime, savedRows, found) && <Tooltip tip="Also under Settings → Connections"><span><Badge tone="accent">Managed</Badge></span></Tooltip>}
                         {row.runtime.url && <span className="font-mono text-[11px] text-[var(--adf-ui-text-subtle)]">{row.runtime.url.replace(/^https?:\/\//, '')}</span>}
                         {row.runtime.agent_count === undefined
                           ? <Tooltip tip="The runtime announced itself but its directory did not answer: a firewall, the wrong interface, or its mesh server is down."><span className="text-[var(--adf-ui-warning)]">Unreachable</span></Tooltip>
@@ -643,11 +687,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
           <SettingsRow
             separator
             label={<>HTTPS<InfoHint tip="tailscale serve in front of this runtime's daemon, for computers that use it over your tailnet." /></>}
-            description={remote
-              ? changeOn(runtimeName)
-              : tailscale?.state === 'running' && tailscale.serve !== 'unknown'
-                ? (tailscale.serve === 'on' ? `On${tailscale.httpsUrl ? `: ${tailscale.httpsUrl}` : ''}.` : 'Off.')
-                : 'Needs Tailscale.'}
+            description={remote ? changeOn(runtimeName) : httpsText(remoteView)}
             error={serveError ?? undefined}
           >
             {!remote && tailscale?.state === 'running' && tailscale.serve !== 'unknown' && (

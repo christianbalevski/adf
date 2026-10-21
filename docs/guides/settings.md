@@ -374,7 +374,7 @@ Nothing listens beyond `127.0.0.1` on a network until you allow it, once per net
 | "Agent sharing paused on *network*." | **Network** is on, or an agent has `lan` or `public` visibility |
 | "Remote access paused on *network*." | Remote access is on ([Connections](#connection) → **Devices**) |
 | "Remote access and agent sharing paused on *network*." | Both |
-| "*agent-1* is public; Allow on this network to share it." | An agent has `public` visibility |
+| "*agent-1* is public." | Under the paused line when an agent has `public` visibility |
 | "Public network. …" | Under the line when Windows calls the network Public, or on macOS and Linux, which do not say |
 
 **Allow** is the only place on this page that gives consent. An unidentified network has no **Allow**: nothing can listen there. When a firewall block is known, the card says how to fix it.
@@ -405,7 +405,7 @@ One list of the ADF runtimes found, each with how it was found:
 | **Tailnet** | The Tailscale sweep (Advanced → **Tailscale**, `tailnetDiscovery`) |
 | **Address** | An address you added (`meshManualPeers`), with ✕ to remove it (Undo in the toast) |
 
-Each row shows the host, its mesh address and its agent count, or **Unreachable** when its directory did not answer. **Managed** means Connections also has that computer as a saved connection. An address you added that nothing answers at yet is listed with "No answer".
+Each row shows the host, its mesh address and its agent count, or **Unreachable** when its directory did not answer. **Managed** means Connections also has that computer as a saved connection: the fingerprint it announces is the one the connection was paired with, so a computer saved under its Tailscale https name is Managed too. A runtime that announces no fingerprint is matched by host and daemon port, unless another runtime on that host announces the connection's fingerprint. An address you added that nothing answers at yet is listed with "No answer".
 
 **Address** with **Add** adds one: `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port. An address with `http://`, a path or a port outside 1–65535 is refused under the field. **Recheck** probes the tailnet and the addresses now and fetches each directory again.
 
@@ -420,7 +420,7 @@ Closed by default; nothing in it is hidden.
 | **Server** | Running or stopped, with the addresses it listens on (for example `127.0.0.1, 192.168.1.20, port 7295`, or `127.0.0.1 only (no private network)` on a network not allowed). |
 | **Tailscale** | Probe the computers on your tailnet for ADF runtimes (`tailnetDiscovery`). |
 | **Addresses** | This computer's LAN addresses and Tailscale state, and each interface address with **Copy**; a link while **Network** is on. |
-| **HTTPS** | `tailscale serve` in front of this runtime's daemon (remote access over https on your tailnet): **Enable** or **Disable**, each confirmed with the exact command first. "Needs Tailscale." without it. |
+| **HTTPS** | `tailscale serve` in front of this runtime's daemon (remote access over https on your tailnet): **Enable** or **Disable**, each confirmed with the exact command first. Otherwise one sentence with the cause: why remote access cannot be read (for example "Remote access needs Local as the connection (Settings → Connections).", or the daemon's error), "Needs Tailscale." while Tailscale is not running, or "Tailscale did not answer." when `tailscale serve status` failed. |
 | **Firewall** | Whether peers can reach the mesh port. When a rule is missing, the exact commands to run in an administrator shell, with **Copy** and a link to [LAN discovery › Firewalls](lan-discovery.md#firewalls). Studio never adds a firewall rule itself. |
 | **Endpoints** | The agents serving on the mesh: handle, URL, **Site** (public folder served), route count, pattern count. "Mesh is off." while the mesh is off. See [HTTP Serving](serving.md). |
 

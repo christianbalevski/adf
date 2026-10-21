@@ -312,13 +312,13 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     expect(consentLines(net({ networks: [{ ...cafe, osCategory: 'private' }], waiting: { remoteAccess: true, mesh: false } }), [])[0].warning).toBeNull()
   })
 
-  it('a public agent asks for the same consent per network, visibly: "agent-1 is public; Allow on this network to share it."', () => {
-    expect(publicAgentsLine(['agent-1'])).toBe('agent-1 is public; Allow on this network to share it.')
-    expect(publicAgentsLine(['agent-1', 'agent-2'])).toBe('agent-1 and agent-2 are public; Allow on this network to share them.')
+  it('a public agent asks for the same consent per network, visibly: "agent-1 is public." under the paused line', () => {
+    expect(publicAgentsLine(['agent-1'])).toBe('agent-1 is public.')
+    expect(publicAgentsLine(['agent-1', 'agent-2'])).toBe('agent-1 and agent-2 are public.')
     expect(publicAgentsLine([])).toBeNull()
-    expect(consentLines(net({ networks: [cafe] }), ['agent-1'])[0].lines).toEqual(['Agent sharing paused on Cafe (10.0.0.0/24).', 'agent-1 is public; Allow on this network to share it.'])
+    expect(consentLines(net({ networks: [cafe] }), ['agent-1'])[0].lines).toEqual(['Agent sharing paused on Cafe (10.0.0.0/24).', 'agent-1 is public.'])
     const html = card(consentLines(net({ networks: [cafe] }), ['agent-1']))
-    expect(html).toContain('agent-1 is public; Allow on this network to share it.')
+    expect(html).toContain('agent-1 is public.')
     expect(html.match(/>Allow</g)).toHaveLength(1)
   })
 
