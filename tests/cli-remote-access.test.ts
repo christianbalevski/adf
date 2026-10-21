@@ -709,7 +709,7 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
 describe('review A8: adf daemon status names a public agent that listens on this computer only', () => {
   it('the mesh server\'s warning is a line of its own, naming MESH_HOST; none without one', async () => {
     const { daemonStatus, daemonTarget } = await import('../src/main/cli/daemon-control')
-    const warning = 'Public agents listen on this computer only (no allowed network); on a server, set MESH_HOST=0.0.0.0 and restart the daemon.'
+    const warning = 'Public agents listen on this computer only. No network is allowed. On a computer with only a public address, set MESH_HOST=0.0.0.0. Then restart the server.'
     const fetchWith = (server: Record<string, unknown>) => (async (input: string | URL | Request) => {
       const path = new URL(String(input)).pathname
       const body = path === '/network/server' ? server : path === '/health' ? { ok: true } : {}

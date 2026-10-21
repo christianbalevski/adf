@@ -87,7 +87,7 @@ export const FleetPeerAgentCard = memo(function FleetPeerAgentCard({
         {peerSource && (
           <span
             className="text-[10px] px-1.5 py-px rounded-full bg-indigo-50 dark:bg-indigo-900/30 text-indigo-600 dark:text-indigo-400"
-            title="How this runtime is reached"
+            title="How this server is reached"
           >
             via {SOURCE_LABEL[peerSource] ?? peerSource}
           </span>

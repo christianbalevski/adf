@@ -331,7 +331,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
       </SettingsGroup>
 
       {/* Runtime identity */}
-      <SettingsGroup title="Runtime key" hint="Identifies this computer to other computers; two computers never share one.">
+      <SettingsGroup title="Server key" hint="Identifies this server to other servers. Two servers never share one.">
         <SettingsRow
           label={<>DID{status && (status.runtimeDelegationValid ? <StateBadge tone="ok">Delegation valid</StateBadge> : <StateBadge tone="bad">No valid delegation</StateBadge>)}</>}
           stacked
@@ -347,7 +347,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             in place of the hostname mDNS/Tailscale would otherwise share. */}
         <SettingsRow
           separator
-          label={<>Alias<InfoHint tip="Shown to peers when this runtime is discoverable (Networking → Network, or Tailscale). Blank: the hostname." /></>}
+          label={<>Alias<InfoHint tip="Other servers see this name when this server is discoverable (Networking → Network, or Tailscale). Blank: the host name." /></>}
         >
           <TextInput
             aria-label="Runtime alias"
@@ -357,7 +357,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             onChange={(e) => setRuntimeAlias(e.target.value)}
             onBlur={() => commitAlias('runtime', runtimeAlias)}
             onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-            placeholder="A name for this runtime"
+            placeholder="A name for this server"
             className="!w-64 !text-[12px]"
           />
         </SettingsRow>
@@ -366,7 +366,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
           <SettingsRow
             separator
             stacked
-            label={<>Directory<InfoHint tip="Lists the agent cards this runtime serves, filtered by each requester's visibility scope. Other runtimes fetch it to discover your agents." /></>}
+            label={<>Directory<InfoHint tip="Lists the agent cards that this server serves. Each requester sees only what its visibility scope allows. Other servers fetch it to find your agents." /></>}
             help={meshServer?.running ? undefined : 'The mesh server is not running; start it in Networking to serve agent cards.'}
           >
             <DidValue copyKey="directory" value={directoryUrl} copied={copied} onCopy={handleCopy} />
@@ -1602,7 +1602,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
 
           {activeTab === 'privacy' && <>
           <SettingsGroup title="Privacy" description="Studio sends no telemetry." docs={DOCS.settingsGeneral}>
-            <SettingsRow label="Network traffic" description={<>Every connection Studio and the runtime make.<DocsLink href={NETWORK_DOCS} className="ml-1.5 !text-[11px]" /></>} />
+            <SettingsRow label="Network traffic" description={<>Every connection that Studio and the server make.<DocsLink href={NETWORK_DOCS} className="ml-1.5 !text-[11px]" /></>} />
             {window.adfApi?.platform === 'linux' && (
               <SettingsRow
                 label="Spell-check dictionaries"

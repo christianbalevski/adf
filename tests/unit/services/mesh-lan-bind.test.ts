@@ -214,7 +214,7 @@ describe('owner decision 2026-10-21: a public agent needs the same consent per n
       await server.start()
       expect(server.getWarning()).toBe(PUBLIC_LOOPBACK_WARNING)
       expect(PUBLIC_LOOPBACK_WARNING).toContain('MESH_HOST')
-      expect(PUBLIC_LOOPBACK_WARNING.split(/[.!?]\s/)).toHaveLength(1)
+      expect(PUBLIC_LOOPBACK_WARNING).toBe('Public agents listen on this computer only. No network is allowed. On a computer with only a public address, set MESH_HOST=0.0.0.0. Then restart the server.')
       const logged = () => warn.mock.calls.filter((c) => String(c[0]).includes('MESH_HOST')).length
       expect(logged()).toBe(1)
       // Logged once, not every check.

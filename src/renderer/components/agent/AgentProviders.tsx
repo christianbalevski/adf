@@ -19,7 +19,7 @@ export function groupProviders(agentProviders: AdfProviderConfig[] | undefined, 
 }
 
 /** The tooltip of the group of providers set on the runtime and not on the agent. */
-export const RUNTIME_PROVIDERS_TIP = 'Set up in Settings → Providers on this runtime. Not saved on this agent, so it does not go with the file.'
+export const RUNTIME_PROVIDERS_TIP = 'Set up in Settings → Providers on this server. Not saved on this agent, so it does not go with the file.'
 
 /**
  * A template's empty Provider, as its first option: new agents get the
@@ -28,7 +28,7 @@ export const RUNTIME_PROVIDERS_TIP = 'Set up in Settings → Providers on this r
  */
 export function runtimeDefaultLabel(appProviders: ProviderConfig[], defaultProviderId: string | undefined): string {
   const p = appProviders.find((x) => x.id === defaultProviderId) ?? appProviders[0]
-  return p ? `Runtime default (${labelOf(p)})` : 'Runtime default (none set up)'
+  return p ? `Server default (${labelOf(p)})` : 'Server default (none set up)'
 }
 
 /** `<option>`s for a provider `<select>`, grouped by where the provider lives. */
@@ -42,7 +42,7 @@ export function ProviderOptions({ agentProviders, appProviders }: { agentProvide
         </optgroup>
       )}
       {appOnly.length > 0 && (
-        <optgroup label="Runtime" title={RUNTIME_PROVIDERS_TIP}>
+        <optgroup label="Server" title={RUNTIME_PROVIDERS_TIP}>
           {appOnly.map((p) => <option key={p.id} value={p.id}>{p.label}</option>)}
         </optgroup>
       )}

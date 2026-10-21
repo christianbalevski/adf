@@ -52,7 +52,7 @@ describe('the Settings pages', () => {
 
   it('sentence case titles on the former hand-built pages', () => {
     const page = read('SettingsPage.tsx')
-    for (const title of ['title="Owner identity"', 'title="Runtime key"', 'title="Agent identities"', 'title="Back up seed phrase"', 'title="Packages"', 'title="Installed by agents"', 'title="Containers"', 'title="Default container"', 'title="Host"', 'title="Custom containers"']) {
+    for (const title of ['title="Owner identity"', 'title="Server key"', 'title="Agent identities"', 'title="Back up seed phrase"', 'title="Packages"', 'title="Installed by agents"', 'title="Containers"', 'title="Default container"', 'title="Host"', 'title="Custom containers"']) {
       expect(page, title).toContain(title)
     }
     // Networking: the status card, Sharing, Networks, Servers, then Advanced (collapsed, never hidden).

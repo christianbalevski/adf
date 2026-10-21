@@ -205,7 +205,7 @@ describe('version handshake and its failures', () => {
     const port = await listen(createHttpServer(daemonHandler([])))
     const err = await connectError(remoteConfig(`http://127.0.0.1:${port}`, { token: 'tok_wrong_wrong_wrong_wrong_wrong_wrong' }))
     expect(err.problem).toBe('unauthorized')
-    expect(err.message).toMatch(/refused the token; on 127.0.0.1 choose Add, then Share, and pair again./)
+    expect(err.message).toMatch(/refused the token. On 127.0.0.1, click Add, then Share, and pair again./)
   })
 
   it('an unreachable host (nothing listens on the port)', async () => {
@@ -213,7 +213,7 @@ describe('version handshake and its failures', () => {
     await new Promise<void>((done) => servers.pop()!.close(() => done()))
     const err = await connectError(remoteConfig(`http://127.0.0.1:${port}`))
     expect(err.problem).toBe('unreachable')
-    expect(err.message).toMatch(new RegExp(`Cannot reach the ADF daemon at http://127\\.0\\.0\\.1:${port} \\(ECONNREFUSED`))
+    expect(err.message).toMatch(new RegExp(`Cannot reach the agent server at http://127\\.0\\.0\\.1:${port} \\(ECONNREFUSED`))
   })
 
   it('a host that does not answer in time', async () => {

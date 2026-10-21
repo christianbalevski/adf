@@ -21,21 +21,21 @@ const provider = (id: string, name: string): ProviderConfig =>
 describe('provider precedence', () => {
   it('a template\'s empty Provider names the runtime default: the marked one, else the first', () => {
     const list = [provider('p1', 'agent-1 LLM'), provider('p2', 'agent-2 LLM')]
-    expect(runtimeDefaultLabel(list, 'p2')).toBe('Runtime default (agent-2 LLM)')
-    expect(runtimeDefaultLabel(list, undefined)).toBe('Runtime default (agent-1 LLM)')
-    expect(runtimeDefaultLabel(list, 'gone')).toBe('Runtime default (agent-1 LLM)')
-    expect(runtimeDefaultLabel([], undefined)).toBe('Runtime default (none set up)')
+    expect(runtimeDefaultLabel(list, 'p2')).toBe('Server default (agent-2 LLM)')
+    expect(runtimeDefaultLabel(list, undefined)).toBe('Server default (agent-1 LLM)')
+    expect(runtimeDefaultLabel(list, 'gone')).toBe('Server default (agent-1 LLM)')
+    expect(runtimeDefaultLabel([], undefined)).toBe('Server default (none set up)')
   })
 
-  it('runtime-only providers are one group with a one-word label; the explanation is its tooltip', () => {
+  it('server-only providers are one group with a one-word label; the explanation is its tooltip', () => {
     const html = renderToStaticMarkup(<select><ProviderOptions agentProviders={[{ id: 'p1', type: 'openai-compatible', name: 'agent-1 LLM', baseUrl: '' }]} appProviders={[provider('p1', 'agent-1 LLM'), provider('p2', 'agent-2 LLM')]} /></select>)
     expect(html).toContain('label="On this agent"')
-    expect(html).toContain('label="Runtime"')
+    expect(html).toContain('label="Server"')
     expect(html).toContain(`title="${RUNTIME_PROVIDERS_TIP.replace(/→/g, '→')}"`)
     expect(html).not.toContain('App only')
   })
 
   it('the Templates page states the order once', () => {
-    expect(PROVIDER_PRECEDENCE).toBe('An agent uses its own provider, else its template\'s, else the runtime default.')
+    expect(PROVIDER_PRECEDENCE).toBe('An agent uses its own provider, else its template\'s, else the server default.')
   })
 })

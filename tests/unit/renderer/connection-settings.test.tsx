@@ -355,7 +355,7 @@ describe('the sidebar: Studio and the runtime pages', () => {
   it('the Privacy row is named for what it lists, not like the Connection page (review item 14)', () => {
     const page = readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
     expect(page).not.toContain('label="Connections"')
-    expect(page).toContain('<SettingsRow label="Network traffic" description={<>Every connection Studio and the runtime make.<DocsLink href={NETWORK_DOCS}')
+    expect(page).toContain('<SettingsRow label="Network traffic" description={<>Every connection that Studio and the server make.<DocsLink href={NETWORK_DOCS}')
     expect(page).not.toContain('docs/NETWORK.md lists')
   })
 

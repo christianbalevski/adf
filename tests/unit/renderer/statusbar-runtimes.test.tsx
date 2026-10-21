@@ -175,7 +175,7 @@ describe('the Servers popover', () => {
     expect(row(HOST_1)).toContain('aria-label="Stops all agents and mesh on host-1"')
     expect(row(HOST_2)).toContain('Not connected, retrying')
     expect(row(HOST_2)).toContain('aria-label="Kill on host-2: Not connected, retrying"')
-    expect(html).toContain('aria-label="Stops all agents and mesh on every runtime"')
+    expect(html).toContain('aria-label="Stops all agents and the mesh on every server"')
     expect(html.match(/role="menuitem"/g)).toHaveLength(4)
   })
 

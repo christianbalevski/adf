@@ -179,7 +179,7 @@ export type MeshBindMode = 'loopback' | 'lan' | 'env'
  * listens): logged once, and in the server status (`warning`), so
  * `adf daemon status` and Studio's status card show it.
  */
-export const PUBLIC_LOOPBACK_WARNING = 'Public agents listen on this computer only (no allowed network); on a server, set MESH_HOST=0.0.0.0 and restart the daemon.'
+export const PUBLIC_LOOPBACK_WARNING = 'Public agents listen on this computer only. No network is allowed. On a computer with only a public address, set MESH_HOST=0.0.0.0. Then restart the server.'
 
 export class MeshServer {
   private server: FastifyInstance | null = null

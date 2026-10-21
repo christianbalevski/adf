@@ -43,7 +43,7 @@ export function killTooltip(current: Pick<ConnectionCurrent, 'name'> | null, nam
 }
 
 /** Kill all's tooltip (multi-runtime.md §6.2). */
-export const KILL_ALL_TIP = 'Stops all agents and mesh on every runtime'
+export const KILL_ALL_TIP = 'Stops all agents and the mesh on every server'
 
 /**
  * Kill results by runtime id ('all': Kill all), each shown for a few

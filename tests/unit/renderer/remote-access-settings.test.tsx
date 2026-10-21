@@ -491,7 +491,7 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
   })
 
   it('review A8: a public agent with no allowed network to listen on (a headless VPS, any runtime): the card says so and names MESH_HOST', () => {
-    const warning = 'Public agents listen on this computer only (no allowed network); on a server, set MESH_HOST=0.0.0.0 and restart the daemon.'
+    const warning = 'Public agents listen on this computer only. No network is allowed. On a computer with only a public address, set MESH_HOST=0.0.0.0. Then restart the server.'
     // A remote runtime (no consent lines) or this computer with nothing to allow: the line shows.
     expect(meshWarningLine({ warning }, [])).toBe(warning)
     expect(meshWarningLine({ warning }, consentLines(net({ networks: [{ ...cafe, id: null, label: 'Unidentified network' }] }), ['agent-1']))).toBe(warning)
@@ -521,7 +521,7 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
   })
 
   it('the firewall: what blocks, the exact commands to run, never an elevated button (R9)', () => {
-    expect(firewallText({ supported: true, ruleConfigured: false, reachable: null, lanIp: '192.168.1.20', detail: '', port: 7295, serverLanBound: true, verified: false })).toBe('Other servers find this server, but they see 0 agents. Add a firewall rule to let them in.')
+    expect(firewallText({ supported: true, ruleConfigured: false, reachable: null, lanIp: '192.168.1.20', detail: '', port: 7295, serverLanBound: true, verified: false })).toBe('Other servers find this server. They see 0 agents. Add a firewall rule for the mesh port.')
     expect(firewallText({ supported: true, ruleConfigured: true, reachable: true, lanIp: '192.168.1.20', detail: '', port: 7295, serverLanBound: true, verified: true })).toBe('Open on 192.168.1.20:7295.')
     const html = renderToStaticMarkup(<FirewallCommands commands={["New-NetFirewallRule -DisplayName 'ADF Mesh (LAN)'"]} />)
     expect(html).toContain('New-NetFirewallRule')

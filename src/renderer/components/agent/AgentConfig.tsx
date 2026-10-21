@@ -1522,7 +1522,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Field label="Model ID">
             {/* Runtime default: new agents get that provider's default model, so there is nothing to pick here. */}
             {template && !local.model.provider ? (
-              <span className="text-xs text-[var(--adf-ui-text-subtle)]">The runtime default's model</span>
+              <span className="text-xs text-[var(--adf-ui-text-subtle)]">The server default's model</span>
             ) : (
               <ModelIdField
                 providerId={local.model.provider}

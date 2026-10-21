@@ -776,13 +776,13 @@ its state in Settings → Connections, the sidebar and the status bar; **Help
 
 | Sentence starts with | Fix |
 |---|---|
-| "Cannot reach the ADF daemon at …" / "… did not answer within 15 s" | The server, tunnel or tailnet is down. Studio keeps trying |
-| "… answered HTTP 502/503/504: a proxy answers there, but the ADF daemon behind it does not." | Start the daemon on the server. Studio keeps trying |
-| "The ADF daemon at … refused the token; on *host* choose Add, then Share, and pair again." | On the host, **Add → Share**, and pair again. The master token (`adf daemon token`) is refused from other computers. A token refused after connecting ends the connection with the same sentence |
-| "The ADF daemon at … does not accept the host name …" | Add the name to `ADF_DAEMON_ALLOWED_HOSTS` on the server and restart the daemon |
+| "Cannot reach the agent server at …" / "… did not answer within 15 s" | The server, tunnel or tailnet is down. Studio keeps trying |
+| "… answered HTTP 502/503/504: a proxy answers there, but the agent server behind it does not." | Start the daemon on the server. Studio keeps trying |
+| "The agent server at … refused the token. On *host*, click Add, then Share, and pair again." | On the host, **Add → Share**, and pair again. The master token (`adf daemon token`) is refused from other computers. A token refused after connecting ends the connection with the same sentence |
+| "The agent server at … does not accept the host name …" | Add the name to `ADF_DAEMON_ALLOWED_HOSTS` on the server and restart the daemon |
 | "The TLS connection to … failed" | Give the server a certificate this computer trusts, or use an SSH tunnel. Studio has no option to skip certificate checks |
 | "… answered a redirect" | Enter the daemon's final URL |
-| "… does not answer as an ADF daemon" | Wrong address or port |
+| "… does not answer as an agent server" | Wrong address or port |
 | "… speaks client API N; this Studio needs M." | Update the daemon on the server (or Studio) to the same version |
 | "No token is saved for … or it cannot be decrypted on this computer." | **Add** the connection again |
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
@@ -818,7 +818,7 @@ server's copy.
 ### Sign-in pages
 
 When the remote daemon wants to open an MCP sign-in page, Studio asks first:
-"Open a sign-in page on *page host*? The ADF daemon at *daemon host* asks to
+"Open a sign-in page on *page host*? The agent server at *daemon host* asks to
 open *page host* in your browser (…). Open it only if you started this
 sign-in." Studio opens only https pages on public addresses, at most one
 every 5 seconds, and takes the browser's callback on this computer and hands

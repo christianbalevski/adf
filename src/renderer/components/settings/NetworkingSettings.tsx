@@ -348,10 +348,10 @@ interface LanFirewallState {
 export function firewallText(fw: LanFirewallState): string {
   if (fw.verified) return `Open${fw.lanIp ? ` on ${fw.lanIp}:${fw.port}` : ''}.`
   if (!fw.serverLanBound) return 'The mesh server is not listening on a network yet.'
-  if (fw.supported && fw.ruleConfigured === false) return 'Other servers find this server, but they see 0 agents. Add a firewall rule to let them in.'
+  if (fw.supported && fw.ruleConfigured === false) return 'Other servers find this server. They see 0 agents. Add a firewall rule for the mesh port.'
   if (fw.supported && fw.ruleConfigured === null) return fw.detail
   if (!fw.supported) return fw.detail
-  return `The firewall rule exists, but the mesh server does not answer on ${fw.lanIp ?? 'the LAN address'}.`
+  return `The firewall rule exists. The mesh server does not answer on ${fw.lanIp ?? 'the LAN address'}.`
 }
 
 export function FirewallCommands({ commands }: { commands: string[] }) {
@@ -596,7 +596,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
         </SettingsRow>
         <SettingsRow
           separator
-          label={<>Network<InfoHint tip="The mesh listens on private networks and Tailscale, but only on networks that you allow. An agent with lan or public visibility also turns this on." /></>}
+          label={<>Network<InfoHint tip="The mesh listens on private networks and Tailscale. It listens only on networks that you allow. An agent with lan or public visibility also sets this switch on." /></>}
           description={NETWORK_EFFECT}
           help={meshRestarting ? 'Restarting…' : undefined}
         >
@@ -610,7 +610,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
             }}
           />
         </SettingsRow>
-        <SettingsRow separator stacked label={<>Agents<InfoHint tip="Agents with lan or public visibility. Set it in Agent → Config → Messaging." /></>} description={<>{shared.length} shared<LearnMore href={DOCS.visibility} /></>}>
+        <SettingsRow separator stacked label={<>Agents<InfoHint tip="Agents with lan or public visibility. To set the visibility, go to Agent → Config → Messaging." /></>} description={<>{shared.length} shared<LearnMore href={DOCS.visibility} /></>}>
           {shared.length > 0 && (
             <ul className="space-y-0.5 text-[12px]">
               {shared.map((a) => (
@@ -666,7 +666,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
                         {isManaged(row.runtime, savedRows, found) && <Tooltip tip="This Studio also connects to this server (Settings → Connections)."><span><Badge tone="accent">Managed</Badge></span></Tooltip>}
                         {row.runtime.url && <span className="font-mono text-[11px] text-[var(--adf-ui-text-subtle)]">{row.runtime.url.replace(/^https?:\/\//, '')}</span>}
                         {row.runtime.agent_count === undefined
-                          ? <Tooltip tip="The server announced itself, but its directory did not answer. A firewall, the wrong network interface or a stopped mesh server can cause this." className="ml-auto"><span className="text-[var(--adf-ui-warning)]">Unreachable</span></Tooltip>
+                          ? <Tooltip tip="The server sent an announcement. Its directory did not answer. Possible causes: a firewall, a wrong network interface, or a stopped mesh server." className="ml-auto"><span className="text-[var(--adf-ui-warning)]">Unreachable</span></Tooltip>
                           : <span className="ml-auto text-[var(--adf-ui-text-muted)]">{row.runtime.agent_count} {row.runtime.agent_count === 1 ? 'agent' : 'agents'}</span>}
                       </>
                     ) : (
