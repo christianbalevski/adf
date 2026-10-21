@@ -73,6 +73,15 @@ export function deviceRemovedNotice(label: string): string {
 }
 
 export const WRONG_CODES_NOTICE = 'Pairing closed after too many wrong codes.'
+
+/** Leaving Share turned remote access off again: Share turned it on, and no device was added (S1). */
+export const SHARE_OFF_NOTICE = 'Remote access is off again. Share turned it on, and no device was added.'
+
+/** Leaving Share while a device waits for Allow device: nothing is closed or turned off (D4). */
+export const SHARE_CLAIM_NOTICE = 'A device waits for Allow device. Remote access stays on.'
+
+/** What leaving Share did (shareLeave). */
+export type ShareLeft = 'off' | 'stays' | 'claim' | 'pending' | null
 export const LOCKOUT_NOTICE = 'Pairing: a device was locked out after 5 wrong codes.'
 
 function errorText(err: unknown): string {
@@ -94,6 +103,13 @@ export class RemoteAccessHost {
   private disposed = false
   private lockouts = 0
   private sharing = false
+  /**
+   * The Share in progress, kept in main so leaving it does not depend on the
+   * renderer's timing (S1): whether Share turned remote access on, the
+   * devices before it, whether Share opened the pairing window, and a leave
+   * asked for while share() still ran.
+   */
+  private shareSession: { turnedOn: boolean; before: Set<string> | null; openedPairing: boolean; leaveAsked: boolean } | null = null
 
   constructor(private readonly deps: RemoteAccessHostDeps) {
     this.log = deps.log ?? console
@@ -213,9 +229,11 @@ export class RemoteAccessHost {
     if (this.sharing) return { ok: false, code: 'cancelled', error: 'Share is already asking.' }
     this.sharing = true
     let turnedOn = false
+    const session = this.shareSession ??= { turnedOn: false, before: null, openedPairing: false, leaveAsked: false }
     try {
       const status = await mgmt.status()
       this.adopt(status)
+      session.before ??= new Set(status.devices.map((d) => d.id))
       const plan = listenPlan(status, { allow: true })
       const enable = !status.enabled
       if (!enable && plan.allow.length === 0) return { ok: true, view: this.view(status, null), turnedOn: false }
@@ -227,6 +245,7 @@ export class RemoteAccessHost {
       if (enable) {
         await mgmt.set({ enabled: true })
         turnedOn = true
+        session.turnedOn = true
         this.log.log('[Remote access] On (Settings → Connections → Add → Share)')
       }
       for (const n of plan.allow) {
@@ -243,6 +262,51 @@ export class RemoteAccessHost {
       return { ok: false, code: 'daemon', error, turnedOn }
     } finally {
       this.sharing = false
+      // The renderer left while the dialog was open: leave now, in main.
+      if (session.leaveAsked) void this.shareLeave()
+    }
+  }
+
+  /**
+   * Leaving Share (Back, Cancel, the dialog closing, the window reloading):
+   * decided here, not in the renderer (S1). While a device waits for Allow
+   * device, nothing changes (D4). Otherwise the pairing window Share opened
+   * closes, and remote access goes off again when Share turned it on and no
+   * device was added since; that is logged and shown as a notice. While
+   * share() still runs, the leave is applied when it ends ('pending').
+   */
+  async shareLeave(): Promise<{ left: ShareLeft }> {
+    const session = this.shareSession
+    if (!session) return { left: null }
+    if (this.sharing) { session.leaveAsked = true; return { left: 'pending' } }
+    const mgmt = this.management()
+    if (typeof mgmt === 'string') { this.shareSession = null; return { left: null } }
+    try {
+      const status = await mgmt.status()
+      if (status.pairing?.claim) {
+        this.shareSession = null
+        this.log.log('[Remote access] Left Share while a device waits for Allow device: kept on')
+        this.notice('share-claim', SHARE_CLAIM_NOTICE)
+        return { left: 'claim' }
+      }
+      this.shareSession = null
+      if (session.openedPairing && status.pairing) {
+        await mgmt.closePairing()
+        this.log.log('[Remote access] Pairing window closed (left Share)')
+      }
+      const added = status.devices.some((d) => !session.before?.has(d.id))
+      if (session.turnedOn && !added && status.enabled) {
+        await mgmt.set({ enabled: false })
+        this.log.log('[Remote access] Off again (left Share; Share turned it on and no device was added)')
+        this.notice(`share-off:${Date.now()}`, SHARE_OFF_NOTICE)
+        this.publish(this.adopt(await mgmt.status()))
+        return { left: 'off' }
+      }
+      this.publish(this.adopt(await mgmt.status()))
+      return { left: session.turnedOn ? 'stays' : null }
+    } catch (err) {
+      this.log.warn(`[Remote access] Leaving Share failed: ${errorText(err)}`)
+      return { left: null }
     }
   }
 
@@ -293,6 +357,8 @@ export class RemoteAccessHost {
   async openPairing(): Promise<RemoteAccessResult> {
     return this.run('Opening pairing', async (m) => {
       await m.openPairing()
+      // Only Share opens a window here: leaving Share closes it.
+      ;(this.shareSession ??= { turnedOn: false, before: null, openedPairing: false, leaveAsked: false }).openedPairing = true
       this.log.log('[Remote access] Pairing window opened (Settings → Connections)')
       return m.status()
     })

@@ -22,7 +22,7 @@ import { electronStub } from './daemon-mode-electron'
 import { createFakeRemoteDaemon, device, type FakeRemoteDaemon } from './remote-access-fakes'
 import { DaemonClient, staticCredentials } from '../../src/shared/daemon-client'
 import { IPC } from '../../src/shared/constants/ipc-channels'
-import { RemoteAccessHost, deviceAddedNotice, deviceRemovedNotice, NO_NETWORK_YET, WINDOWS_FIREWALL_DETAIL, type RemoteAccessHostDeps } from '../../src/main/backend/remote-access/host'
+import { RemoteAccessHost, deviceAddedNotice, deviceRemovedNotice, NO_NETWORK_YET, SHARE_CLAIM_NOTICE, SHARE_OFF_NOTICE, WINDOWS_FIREWALL_DETAIL, type RemoteAccessHostDeps } from '../../src/main/backend/remote-access/host'
 import { PairingFlow, type PairingSaveInput } from '../../src/main/backend/remote-access/pairing'
 import { DaemonPeerFeed, RemoteDiscovery, type PeerFeed } from '../../src/main/backend/remote-access/discovery'
 import { RemoteQuitGate, quitQuestion } from '../../src/main/backend/remote-access/quit-gate'
@@ -154,6 +154,59 @@ describe('host panel (Settings → Connections: Add → Share, Devices)', () => 
     h.setConfirm(false)
     expect(await h.host.share()).toMatchObject({ ok: false, code: 'cancelled' })
     expect(h.daemon.requests.filter((r) => r.method !== 'GET')).toEqual([])
+  })
+
+  it('S1: leaving Share is decided in main: what Share turned on goes off when no device was added, with a notice', async () => {
+    h.daemon.state.networks.push(cafe())
+    expect(await h.host.share()).toMatchObject({ ok: true, turnedOn: true })
+    await h.host.openPairing()
+    expect(await h.host.shareLeave()).toEqual({ left: 'off' })
+    expect(h.daemon.state.enabled).toBe(false)
+    expect(h.daemon.state.pairing).toBeNull()
+    expect(h.notices).toContain(SHARE_OFF_NOTICE)
+    // A second leave (the window reloading after Back) changes nothing more.
+    expect(await h.host.shareLeave()).toEqual({ left: null })
+  })
+
+  it('S1: leaving while share() is still running is applied when it ends, not lost to renderer timing', async () => {
+    let release: (() => void) | null = null
+    const slow = hostSetup({ confirm: () => new Promise<boolean>((r) => { release = () => r(true) }) })
+    slow.daemon.state.networks.push(cafe())
+    const sharing = slow.host.share()
+    await until(() => release !== null)
+    // The renderer left (Back, Cancel, a reload) while the dialog was open.
+    expect(await slow.host.shareLeave()).toEqual({ left: 'pending' })
+    release!()
+    expect(await sharing).toMatchObject({ ok: true, turnedOn: true })
+    await until(() => slow.daemon.state.enabled === false)
+    expect(slow.notices).toContain(SHARE_OFF_NOTICE)
+    slow.host.dispose()
+  })
+
+  it('S1: a device added through Share keeps remote access on; Share not having turned it on changes nothing', async () => {
+    h.daemon.state.networks.push(cafe())
+    await h.host.share()
+    await h.host.addDevice('laptop-1')
+    expect(await h.host.shareLeave()).toEqual({ left: 'stays' })
+    expect(h.daemon.state.enabled).toBe(true)
+    const on = hostSetup()
+    on.daemon.state.enabled = true
+    await on.host.share()
+    expect(await on.host.shareLeave()).toEqual({ left: null })
+    expect(on.daemon.state.enabled).toBe(true)
+    on.host.dispose()
+  })
+
+  it('D4: while a claim is pending, leaving Share keeps the pairing window and remote access, and says so', async () => {
+    h.daemon.state.networks.push(cafe())
+    h.setClaim(null)
+    await h.host.share()
+    await h.host.openPairing()
+    h.daemon.state.pairing!.claim = { claimId: 'c1', deviceName: 'laptop-2', clientKind: 'studio', address: '10.0.0.6', via: 'lan', tailnetLogin: null, at: new Date().toISOString() }
+    expect(await h.host.shareLeave()).toEqual({ left: 'claim' })
+    expect(h.daemon.state.enabled).toBe(true)
+    expect(h.daemon.state.pairing).not.toBeNull()
+    expect(h.notices).toContain(SHARE_CLAIM_NOTICE)
   })
 
   it('review A2: a Public network already allowed (for agent sharing) is still named and warned about; nothing to allow, so it only turns on', async () => {
@@ -1027,6 +1080,39 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     expect(boxes[2].detail).toContain('Cafe (10.0.0.0/24)')
     expect(daemon.state.enabled).toBe(true)
     expect(daemon.state.allowed.map((a) => a.id)).toContain('lan-fedcba9876543210')
+    ipc.dispose()
+  })
+
+  it('S1: a reload of the main window during Share leaves it in main: what Share turned on goes off', async () => {
+    electronStub.handlers.clear()
+    const daemon = createFakeRemoteDaemon({ loopback: LOOPBACK })
+    daemon.state.networks.push({ id: 'lan-fedcba9876543210', kind: 'lan', label: 'Cafe (10.0.0.0/24)', allowed: false, osCategory: 'public', ifaces: ['Wi-Fi'], addresses: ['10.0.0.5'] })
+    const client = new DaemonClient({ baseUrl: LOOPBACK, credentials: staticCredentials(MASTER), fetch: daemon.fetch })
+    const listeners = new Map<string, Array<(...a: unknown[]) => void>>()
+    const webContents = {
+      id: 1,
+      on: (name: string, fn: (...a: unknown[]) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), fn]) },
+      once: (name: string, fn: (...a: unknown[]) => void) => { listeners.set(name, [...(listeners.get(name) ?? []), fn]) },
+    }
+    const main = { isDestroyed: () => false, isFocused: () => true, webContents }
+    const ipc = registerRemoteAccessHandlers({
+      mode: 'local', daemon: () => ({ client: async () => client, status: () => ({ startedBy: 'studio' }) }), backend: store().store, codec: fakeCodec(),
+      window: () => main as never, keepDaemonRunning: () => false,
+      overrides: { discovery: { feed: () => null }, consentPollMs: 0 },
+      log: quiet,
+    })
+    electronStub.dialogResponse = 0
+    const invoke = (channel: string, ...args: unknown[]) => electronStub.handlers.get(channel)!({ sender: webContents }, ...args)
+    expect(await invoke(IPC.REMOTE_ACCESS_SHARE)).toMatchObject({ ok: true, turnedOn: true })
+    expect(daemon.state.enabled).toBe(true)
+    // A same-document navigation is not a reload.
+    for (const fn of listeners.get('did-start-navigation') ?? []) fn({ isMainFrame: true, isSameDocument: true })
+    await tick(20)
+    expect(daemon.state.enabled).toBe(true)
+    for (const fn of listeners.get('did-start-navigation') ?? []) fn({ isMainFrame: true, isSameDocument: false })
+    await until(() => daemon.state.enabled === false)
+    // The renderer's own leave after that changes nothing more.
+    expect(await invoke(IPC.REMOTE_ACCESS_SHARE_LEAVE)).toEqual({ left: null })
     ipc.dispose()
   })
 

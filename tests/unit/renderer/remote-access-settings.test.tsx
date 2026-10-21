@@ -304,9 +304,15 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
     expect(STAYS_ON_LINE.split(/[.!?]\s/)).toHaveLength(1)
     expect(render(view(status({ networks: [home], pairing })), { leave: 'stays' })).toContain(STAYS_ON_LINE)
     expect(render(view(status({ networks: [home], pairing })), { leave: 'off' })).not.toContain(STAYS_ON_LINE)
-    // The panel turns it off on leaving (Back, Cancel, the dialog closing): in its unmount, with setRemoteAccess, never silently kept on.
+    // S1: leaving (Back, Cancel, the dialog closing) asks main, which decides; the renderer never turns it off itself.
     const src = readFileSync(join(__dirname, '../../../src/renderer/components/settings/RemoteAccessSettings.tsx'), 'utf-8')
-    expect(src).toMatch(/leaveRef\.current === 'off'[^\n]*setRemoteAccess\(\{ enabled: false \}\)/)
+    expect(src).toMatch(/useEffect\(\(\) => \(\) => \{ void window\.adfApi\?\.leaveRemoteShare/)
+    expect(src).not.toContain('setRemoteAccess({ enabled: false })')
+    expect(src).not.toContain('closeRemotePairing')
+    // While Share works (the Allow dialog is open), Back and Cancel are disabled.
+    const busy = render(view(status({ enabled: false, state: 'off', networks: [home] })), { busy: true })
+    expect(busy).toMatch(/<button[^>]*disabled=""[^>]*>Back<\/button>/)
+    expect(busy).toMatch(/<button[^>]*disabled=""[^>]*>Cancel<\/button>/)
     // Review A1: Share's Allow goes to main's Share call; the renderer never asserts a confirmation.
     expect(src).toContain('window.adfApi.shareRemoteAccess()')
     expect(src).not.toContain('confirmed')

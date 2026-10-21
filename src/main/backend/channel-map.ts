@@ -546,6 +546,7 @@ export const CHANNEL_MAP = {
   [IPC.REMOTE_ACCESS_GET]: local('invoke', 'Local mode: GET /remote-access[?refresh=1]. A pairing window open is re-read every second.'),
   [IPC.REMOTE_ACCESS_SET]: local('invoke', 'Local mode: PUT /remote-access, after a native confirmation naming the networks it listens on when turning on. Main window only.'),
   [IPC.REMOTE_ACCESS_SHARE]: local('invoke', 'Local mode, Add → Share: one native confirmation naming every network remote access will listen on, then PUT /remote-access {enabled: true} and POST /remote-access/networks for each network it named. Main window only.'),
+  [IPC.REMOTE_ACCESS_SHARE_LEAVE]: local('invoke', 'Local mode, leaving Add → Share: main decides (RemoteAccessHost.shareLeave). It closes the pairing window Share opened, and turns remote access off again when Share turned it on and no device was added; nothing while a claim waits. Also run when the main window reloads or closes. Main window only.'),
   [IPC.REMOTE_ACCESS_DEVICE_ADD]: local('invoke', 'Local mode: POST /remote-access/devices; the token is returned once to the renderer and never logged.'),
   [IPC.REMOTE_ACCESS_DEVICE_REMOVE]: local('invoke', 'Local mode: DELETE /remote-access/devices/:id after a native confirmation.'),
   [IPC.REMOTE_ACCESS_PAIRING_OPEN]: local('invoke', 'Local mode: POST /remote-access/pairing. A claim raises the native "Allow <device>?" dialog, answered with POST /remote-access/pairing/claims/:claimId.'),

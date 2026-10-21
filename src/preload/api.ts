@@ -753,6 +753,8 @@ export interface AdfApi {
   setRemoteAccess: (request: { enabled?: boolean; name?: string }) => Promise<RemoteAccessResult>
   /** Add → Share: main asks once (a native dialog naming every network it listens on), then turns remote access on and allows them. */
   shareRemoteAccess: () => Promise<RemoteShareResult>
+  /** Leaving Add → Share: main closes what Share opened and turns off what it turned on (RemoteAccessHost.shareLeave). */
+  leaveRemoteShare: () => Promise<{ left: 'off' | 'stays' | 'claim' | 'pending' | null }>
   /** "Add a computer": a device token, returned this once. */
   addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
   /** Remove a computer (confirmed first): disconnected now, its token stops working. */

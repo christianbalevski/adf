@@ -430,17 +430,12 @@ export function SharePanel({ runtime = null, onBack, onDone }: { runtime?: strin
   const approved = status && before.current ? addedDeviceLine(before.current, status.devices) : null
   const pairing = status?.pairing ?? null
   const leave = shareLeave({ turnedOn, allowed, added: !!approved || !!created })
-  const approvedRef = useRef(false)
-  approvedRef.current = !!approved
-  const leaveRef = useRef(leave)
-  leaveRef.current = leave
 
   // Leaving Share: the pairing window it opened closes unless a computer claimed it; remote access goes off again
   // when Share turned it on and no device was added (review A5). Main logs both; the Devices switch shows it.
-  useEffect(() => () => {
-    if (openedRef.current && !approvedRef.current) void window.adfApi?.closeRemotePairing?.().catch(() => {})
-    if (leaveRef.current === 'off') void window.adfApi?.setRemoteAccess({ enabled: false }).catch(() => {})
-  }, [])
+  // Main decides what leaving does (S1): it knows whether Share turned remote access on, whether a device
+  // was added and whether a claim waits (D4), also while share() still runs or the window reloads.
+  useEffect(() => () => { void window.adfApi?.leaveRemoteShare?.().catch(() => {}) }, [])
 
   const openPairing = () => {
     openedRef.current = true
@@ -636,8 +631,8 @@ export function SharePanelView({ view, runtime = null, busy, error, now, opened 
       {error && <p role="status" className="text-[var(--adf-ui-danger)]">{error}</p>}
       {leave === 'stays' && <p className="text-[var(--adf-ui-text-muted)]">{STAYS_ON_LINE}</p>}
       <div className="flex justify-end gap-2 border-t border-[var(--adf-ui-separator)] pt-3">
-        <Button onClick={onBack}>Back</Button>
-        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone}>Cancel</Button>}
+        <Button onClick={onBack} disabled={busy}>Back</Button>
+        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone} disabled={busy}>Cancel</Button>}
       </div>
     </div>
   )

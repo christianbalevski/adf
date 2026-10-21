@@ -345,10 +345,31 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   // --- Host: Settings → Connections (Add → Share, Devices) ---
   ipcMain.handle(IPC.REMOTE_ACCESS_GET, (_event, opts?: { refresh?: unknown }) => host.get({ refresh: opts?.refresh === true }))
   ipcMain.handle(IPC.REMOTE_ACCESS_SET, mainOnly(IPC.REMOTE_ACCESS_SET, refused, (request: { enabled?: unknown; name?: unknown }) => host.set(request ?? {})))
-  ipcMain.handle(IPC.REMOTE_ACCESS_SHARE, mainOnly(IPC.REMOTE_ACCESS_SHARE, refused, () => host.share()))
+  // S1: a reload or close of the window that runs Share leaves it, in main.
+  const watched = new WeakSet<object>()
+  const leaveWithWindow = (event: { sender?: unknown } | undefined): void => {
+    const sender = event?.sender as { on?: (name: string, fn: (...a: unknown[]) => void) => unknown; once?: (name: string, fn: () => void) => unknown } | undefined
+    if (!sender || typeof sender.on !== 'function' || watched.has(sender)) return
+    watched.add(sender)
+    const leave = (why: string) => { log.log(`[Remote access] The main window ${why}: leaving Share`); void host.shareLeave() }
+    sender.on('did-start-navigation', (details: unknown, _url: unknown, isInPlace: unknown, isMainFrame: unknown) => {
+      const d = details as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+      if ((d?.isMainFrame ?? isMainFrame) && !(d?.isSameDocument ?? isInPlace)) leave('reloads')
+    })
+    sender.on('render-process-gone', () => leave('crashed'))
+    sender.once?.('destroyed', () => leave('closed'))
+  }
+  const watching = <A extends unknown[], R>(handler: (event: { sender?: unknown } | undefined, ...args: A) => Promise<R>) =>
+    async (event: { sender?: unknown } | undefined, ...args: A): Promise<R> => {
+      const win = deps.window()
+      if (win && !win.isDestroyed() && event?.sender === win.webContents) leaveWithWindow(event)
+      return handler(event, ...args)
+    }
+  ipcMain.handle(IPC.REMOTE_ACCESS_SHARE, watching(mainOnly(IPC.REMOTE_ACCESS_SHARE, refused, () => host.share())))
+  ipcMain.handle(IPC.REMOTE_ACCESS_SHARE_LEAVE, mainOnly(IPC.REMOTE_ACCESS_SHARE_LEAVE, { left: null }, () => host.shareLeave()))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, mainOnly(IPC.REMOTE_ACCESS_DEVICE_ADD, refused, (label: unknown) => host.addDevice(label)))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_REMOVE, mainOnly(IPC.REMOTE_ACCESS_DEVICE_REMOVE, refused, (id: unknown) => host.removeDevice(id)))
-  ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, mainOnly(IPC.REMOTE_ACCESS_PAIRING_OPEN, refused, () => host.openPairing()))
+  ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, watching(mainOnly(IPC.REMOTE_ACCESS_PAIRING_OPEN, refused, () => host.openPairing())))
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_CLOSE, mainOnly(IPC.REMOTE_ACCESS_PAIRING_CLOSE, refused, () => host.closePairing()))
   ipcMain.handle(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, mainOnly(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, refused, (enabled: unknown) => host.tailscaleServe(enabled)))
 

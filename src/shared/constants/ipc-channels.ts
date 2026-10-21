@@ -445,6 +445,7 @@ export const IPC = {
   REMOTE_ACCESS_GET: 'adf:remote-access:get',
   REMOTE_ACCESS_SET: 'adf:remote-access:set',
   REMOTE_ACCESS_SHARE: 'adf:remote-access:share',
+  REMOTE_ACCESS_SHARE_LEAVE: 'adf:remote-access:share-leave',
   REMOTE_ACCESS_DEVICE_ADD: 'adf:remote-access:device-add',
   REMOTE_ACCESS_DEVICE_REMOVE: 'adf:remote-access:device-remove',
   REMOTE_ACCESS_PAIRING_OPEN: 'adf:remote-access:pairing-open',
