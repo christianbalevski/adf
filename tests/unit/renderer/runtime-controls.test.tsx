@@ -22,7 +22,7 @@ describe('Kill', () => {
     expect(killTooltip(current(), false)).toBe('Stops all agents and mesh')
     expect(killTooltip(null, false)).toBe('Stops all agents and mesh')
     expect(killTooltip(current(), true)).toBe('Stops all agents and mesh on host-0 (Local)')
-    expect(killTooltip(current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub' }), true)).toBe('Stops all agents and mesh on rawl-hub')
+    expect(killTooltip(current({ id: 'remote:box-1', kind: 'remote', name: 'box-1' }), true)).toBe('Stops all agents and mesh on box-1')
     expect(killTooltip(null, true)).toBe('Stops all agents and mesh on Local')
   })
 

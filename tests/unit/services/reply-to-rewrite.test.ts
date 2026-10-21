@@ -20,7 +20,7 @@ describe('isLoopbackHost', () => {
     ['::1', true],
     ['[::1]', true],
     ['::FFFF:127.0.0.1', true],
-    ['192.168.1.179', false],
+    ['192.168.1.50', false],
     ['10.0.0.5', false],
     ['MacBook-Pro.local', false],
     ['example.com', false],

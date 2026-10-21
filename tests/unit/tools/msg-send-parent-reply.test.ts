@@ -17,12 +17,12 @@ import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
  * parent_id replies to a remote mesh sender must route to the transport-
  * observed host, not the sender's loopback reply_to (which would hit this
  * runtime and 404). Repro: reply_to http://127.0.0.1:7295/agents/remote/inbox,
- * observed peer 100.80.54.124.
+ * observed peer 100.101.102.104.
  */
 
 const REMOTE_DID = 'did:key:z6MkRemoteSender'
 const LOOPBACK_REPLY_TO = 'http://127.0.0.1:7295/agents/remote/inbox'
-const OBSERVED_ROUTE = 'http://100.80.54.124:7295/agents/remote/inbox'
+const OBSERVED_ROUTE = 'http://100.101.102.104:7295/agents/remote/inbox'
 
 type Row = Record<string, unknown>
 
@@ -47,7 +47,7 @@ async function replyTo(row: Row, extra: Record<string, unknown> = {}) {
 describe('msg_send parent_id reply routing', () => {
   it('routes a remote mesh reply to the transport-observed return_path, not loopback reply_to', async () => {
     // return_path exactly as the HTTP ingress computes it
-    const returnPath = rewriteLoopbackHost(LOOPBACK_REPLY_TO, '100.80.54.124')
+    const returnPath = rewriteLoopbackHost(LOOPBACK_REPLY_TO, '100.101.102.104')
     expect(returnPath).toBe(OBSERVED_ROUTE)
     const out = await replyTo({
       id: 'in1', from: REMOTE_DID, reply_to: LOOPBACK_REPLY_TO, return_path: returnPath,
@@ -97,7 +97,7 @@ describe('msg_send parent_id reply routing', () => {
   it('leaves adapter-sourced rows alone (wire return_path never becomes an address)', async () => {
     const out = await replyTo({
       id: 'in7', from: 'telegram:42', source: 'telegram', source_context: { chat_id: -100123, chat_type: 'group' },
-      return_path: 'http://100.80.54.124:7295/agents/x/inbox'
+      return_path: 'http://100.101.102.104:7295/agents/x/inbox'
     })
     // No address → mesh-manager routes via the adapter using source_context (group/thread)
     expect(out.address).toBeUndefined()
@@ -113,11 +113,11 @@ describe('resolveParentReplyAddress boundaries', () => {
   })
 
   it.each([
-    ['different path (other agent)', 'http://100.80.54.124:7295/agents/victim/inbox'],
-    ['different port', 'http://100.80.54.124:9999/agents/remote/inbox'],
-    ['different scheme', 'https://100.80.54.124:7295/agents/remote/inbox'],
-    ['added query', 'http://100.80.54.124:7295/agents/remote/inbox?x=1'],
-    ['added credentials', 'http://u:p@100.80.54.124:7295/agents/remote/inbox'],
+    ['different path (other agent)', 'http://100.101.102.104:7295/agents/victim/inbox'],
+    ['different port', 'http://100.101.102.104:9999/agents/remote/inbox'],
+    ['different scheme', 'https://100.101.102.104:7295/agents/remote/inbox'],
+    ['added query', 'http://100.101.102.104:7295/agents/remote/inbox?x=1'],
+    ['added credentials', 'http://u:p@100.101.102.104:7295/agents/remote/inbox'],
     ['loopback return_path', 'http://127.0.0.2:7295/agents/remote/inbox'],
     ['malformed return_path', 'not a url']
   ])('falls back to reply_to on %s', (_label, returnPath) => {

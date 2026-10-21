@@ -16,7 +16,7 @@ export interface RemoteServices {
   oauth: OAuthCallbackRelay
   /** The daemon's host (`host:port`), as dialogs name it. */
   host(): string
-  /** The connection's name, as Settings names the runtime ("rawl-hub"); the host when it has none (settings-scopes.md §7). */
+  /** The connection's name, as Settings names the runtime ("box-1"); the host when it has none (settings-scopes.md §7). */
   name(): string
   /**
    * Stream a file of this computer to `path` on the daemon (octet-stream,

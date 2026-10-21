@@ -39,7 +39,7 @@ beforeAll(async () => {
     leases: { registerClient: async () => {} },
     fetch: daemon.fetch,
     createSession: () => createFakeClientSession(),
-    runtimeName: () => 'rawl-hub',
+    runtimeName: () => 'box-1',
     log: quiet,
   })
   expect(await handle.ready).toBe(true)
@@ -61,11 +61,11 @@ describe('stored values with a remote daemon', () => {
     await handle.session.openFile(FILE, async () => AGENT)
     daemon.requests.length = 0
     daemon.routes.set(`GET /agents/${AGENT}/identity`, ({ query }) => ({ purposes: query.prefix === 'app:token' ? ['app:token'] : [] }))
-    expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })).toEqual({ value: null, reason: 'Stored on rawl-hub.' })
+    expect(await invoke(IPC.IDENTITY_REVEAL, { purpose: 'app:token' })).toEqual({ value: null, reason: 'Stored on box-1.' })
     // IDENTITY_GET: the placeholder for a stored value, null for none (W4-B review: a form that saves what it read keeps the value).
     expect(await invoke(IPC.IDENTITY_GET, { purpose: 'app:token' })).toBe('__redacted__')
     expect(await invoke(IPC.IDENTITY_GET, { purpose: 'app:other' })).toBeNull()
-    expect(await invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath: FILE, providerId: 'p1' })).toEqual({ credentials: {}, error: remoteValuesSentence('rawl-hub') })
+    expect(await invoke(IPC.PROVIDER_CREDENTIAL_GET, { filePath: FILE, providerId: 'p1' })).toEqual({ credentials: {}, error: remoteValuesSentence('box-1') })
     expect(daemon.requests.map((r) => r.path)).toEqual([`/agents/${AGENT}/identity`, `/agents/${AGENT}/identity`])
   })
 

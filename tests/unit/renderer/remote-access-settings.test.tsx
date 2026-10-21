@@ -258,7 +258,7 @@ describe('Connections → Devices: computers using this runtime, each with Revok
 
 describe('a remote runtime: one sentence for every host-only control (review item 11)', () => {
   it('changeOn is the one line; Settings uses it for identity, and Networking for the networks, firewall, HTTPS and endpoints', () => {
-    expect(changeOn('rawl-hub')).toBe('Change on rawl-hub.')
+    expect(changeOn('box-1')).toBe('Change on box-1.')
     const read = (file: string) => readFileSync(join(__dirname, '../../../src/renderer/components/settings', file), 'utf-8')
     const page = read('SettingsPage.tsx')
     expect(page).not.toMatch(/Firewall: change on/)
@@ -417,7 +417,7 @@ describe('the pages render (static, no IPC)', () => {
     expect(html).not.toContain('<details open')
     expect(html).not.toContain('aria-label="LAN"')
     // A remote runtime: host-only rows say where they are changed.
-    expect(renderToStaticMarkup(<NetworkingSettings remote runtimeName="rawl-hub" pickedMesh="remote:rawl-hub" />)).toContain('Change on rawl-hub.')
+    expect(renderToStaticMarkup(<NetworkingSettings remote runtimeName="box-1" pickedMesh="remote:box-1" />)).toContain('Change on box-1.')
   })
 
   it('Add: Connect and Share; Connect lists what was found and an Address; Share loads', async () => {

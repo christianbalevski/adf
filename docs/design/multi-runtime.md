@@ -28,7 +28,7 @@ Read with: [agent-windows.md](agent-windows.md) (window and session map, `ctxFor
 - **Runtime set**: the runtimes Studio connects to: This computer, plus every saved connection (§3.1).
 - **Runtime id**: the connection id of settings-scopes.md §5.4: `local`, `remote:<name>` (a saved connection in `cli-remotes.json`) or `remote` (the one connection without a fingerprint in `studio-backend.json`).
 - **Multi-runtime**: the runtime set has more than one entry. A runtime in the set counts while it is down.
-- **Runtime name** (owner decision 2026-10-21): the local runtime (`local`) is shown as `<runtime name> (Local)`, e.g. "rawl-laptop (Local)". The runtime name is the runtime alias (Settings → Identity), else the computer's host name (`local-runtime-name.ts`); with neither, "Local". A remote runtime is shown as its saved name with the remote icon (tooltip "Remote"), never "(Remote)". Text-only places (window titles, OS notifications, menus) show the name alone. `local` stays the id and what users type (`adf remotes use local`).
+- **Runtime name** (owner decision 2026-10-21): the local runtime (`local`) is shown as `<runtime name> (Local)`, e.g. "laptop-1 (Local)". The runtime name is the runtime alias (Settings → Identity), else the computer's host name (`local-runtime-name.ts`); with neither, "Local". A remote runtime is shown as its saved name with the remote icon (tooltip "Remote"), never "(Remote)". Text-only places (window titles, OS notifications, menus) show the name alone. `local` stays the id and what users type (`adf remotes use local`).
 - **Agent ref**: `{runtimeId, agentId, filePath}`. Two refs name the same agent when the runtime ids are equal and the agent ids are equal; when either agent id is null, when the file paths are equal under that runtime's path rule (`samePath(a, b, kind === 'remote')`).
 
 ### 1.4 User-visible behaviour
@@ -48,9 +48,9 @@ UI copy MUST NOT describe the runtime set as additive or explain that This compu
 
 ### 1.5 Before and after
 
-Before: Studio runs agents on This computer or on one other computer. Choosing rawl-hub in Settings → Connections asks to switch, lists what stops, and restarts Studio. Afterwards the agents of this laptop are gone from Studio until the next switch and restart. To watch both, the owner runs a second Studio with `ADF_INSTANCE`.
+Before: Studio runs agents on This computer or on one other computer. Choosing box-1 in Settings → Connections asks to switch, lists what stops, and restarts Studio. Afterwards the agents of this laptop are gone from Studio until the next switch and restart. To watch both, the owner runs a second Studio with `ADF_INSTANCE`.
 
-After: the owner adds rawl-hub (**Add**, then the code shown on rawl-hub). Nothing restarts. The sidebar now shows two groups, rawl-laptop (Local) and rawl-hub, and the status bar's **Runtimes** popover shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
+After: the owner adds box-1 (**Add**, then the code shown on box-1). Nothing restarts. The sidebar now shows two groups, laptop-1 (Local) and box-1, and the status bar's **Runtimes** popover shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When box-1 goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
 
 An owner who never adds another computer sees no change.
 
@@ -245,7 +245,7 @@ Selectors: `selectRuntimeSlice(state, id)`, `selectAllAgents(state)` (each with 
 - Each runtime's main-window stream feeds its snapshot into `ApprovalsAggregator` in main. The merged snapshot lists pending entries oldest first and history newest first, each with `runtimeId` (omitted for `local`).
 - `NoticeOwners` keys by `runtimeId` and notification id. The notice window rule (agent-windows.md §6) compares agent refs.
 - `ApprovalsUi` (native notifier, macOS menu bar, reveal) takes the merged snapshot. The badge counts all pending entries. The menu bar's token totals add the runtimes' totals.
-- Multi-runtime: each bell row, toast and OS notification names its runtime before the agent (`rawl-hub · agent-1`). The local runtime is named too (`rawl-laptop (Local) · agent-1`).
+- Multi-runtime: each bell row, toast and OS notification names its runtime before the agent (`box-1 · agent-1`). The local runtime is named too (`laptop-1 (Local) · agent-1`).
 - Answering resolves through `apiFor(entry.runtimeId)`.
 - A runtime's entries that cannot be answered (runtime down) are shown disabled (§3.6).
 

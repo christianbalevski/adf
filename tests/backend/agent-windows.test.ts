@@ -96,10 +96,10 @@ describe('one window per agent', () => {
 
 describe('saved list', () => {
   it('is written on open and close, for the current runtime', () => {
-    const { manager, windows, saved } = setup({ runtime: 'remote:rawl-hub' })
+    const { manager, windows, saved } = setup({ runtime: 'remote:box-1' })
     manager.open({ filePath: FILE_1, agentId: AGENT_1, bounds: BOUNDS })
     manager.open({ filePath: FILE_2, agentId: AGENT_2 })
-    expect(saved()).toEqual({ runtime: 'remote:rawl-hub', windows: [
+    expect(saved()).toEqual({ runtime: 'remote:box-1', windows: [
       { agentId: AGENT_1, filePath: FILE_1, bounds: BOUNDS },
       { agentId: AGENT_2, filePath: FILE_2, bounds: BOUNDS },
     ] })
@@ -180,7 +180,7 @@ describe('saved list', () => {
   it('drops malformed entries and lists saved for another runtime', () => {
     const raw = { runtime: 'local', windows: [{ agentId: AGENT_1, filePath: FILE_1, bounds: { x: 1, y: 2, width: 0, height: 5 } }, { filePath: 3 }, null, { filePath: FILE_2 }] }
     expect(parseSavedAgentWindows(raw, 'local')).toEqual([{ agentId: AGENT_1, filePath: FILE_1 }, { agentId: null, filePath: FILE_2 }])
-    expect(parseSavedAgentWindows(raw, 'remote:rawl-hub')).toEqual([])
+    expect(parseSavedAgentWindows(raw, 'remote:box-1')).toEqual([])
     expect(parseSavedAgentWindows('nonsense', 'local')).toEqual([])
   })
 })
@@ -256,7 +256,7 @@ describe('restore', () => {
     expect(await one.manager.restore()).toEqual({ opened: 0, skipped: 0 })
     expect(one.windows).toHaveLength(1)
 
-    const other = setup({ runtime: 'remote:rawl-hub', saved: savedList([AGENT_1, FILE_1]) })
+    const other = setup({ runtime: 'remote:box-1', saved: savedList([AGENT_1, FILE_1]) })
     expect(await other.manager.restore()).toEqual({ opened: 0, skipped: 0 })
     expect(other.windows).toEqual([])
   })
