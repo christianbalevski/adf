@@ -5,6 +5,8 @@
  * names the service that waits for the network, never another one.
  */
 
+import type { NetworkProblem, NetworkProblemStep } from '../types/remote-access.types'
+
 /** The services that listen beyond loopback once the network is allowed. */
 export interface WaitingServices {
   /** Remote access is on (other computers use this runtime). */
@@ -33,4 +35,58 @@ export function pausedText(services: WaitingServices, networkLabel: string): str
 /** The warning for a network not reported Private, by the services that wait. */
 export function publicNetworkWarning(services: WaitingServices): string {
   return services.remoteAccess ? PUBLIC_WARNING : PUBLIC_MESH_WARNING
+}
+
+// --- What remote access listens on (review A2) -------------------------------------
+
+interface ListenNetwork { id: string | null; kind: 'lan' | 'tailnet'; label: string; allowed: boolean; osCategory: 'private' | 'public' | 'unknown' }
+
+/**
+ * The networks remote access listens on once turned on (owner decision
+ * 2026-10-18 b): every current network allowed, plus with `allow` (Share)
+ * the current ones Share allows, then the networks allowed earlier that
+ * this computer is not on now (it listens there when it joins them).
+ * `exposed`: one of the current ones is a LAN the OS does not report
+ * Private (the Public warning), whether allowed now or earlier.
+ */
+export function listenPlan(
+  status: { networks: ListenNetwork[]; allowedNetworks: Array<{ id: string; label: string }> },
+  opts: { allow: boolean },
+): { allow: ListenNetwork[]; labels: string[]; exposed: boolean } {
+  const allow = opts.allow ? status.networks.filter((n) => !n.allowed && !!n.id) : []
+  const current = status.networks.filter((n) => !!n.id && (n.allowed || allow.includes(n)))
+  const elsewhere = status.allowedNetworks.filter((a) => !status.networks.some((n) => n.id === a.id))
+  return {
+    allow,
+    labels: [...current.map((n) => n.label), ...elsewhere.map((a) => a.label)],
+    exposed: current.some((n) => n.kind === 'lan' && n.osCategory !== 'private'),
+  }
+}
+
+/** "A", "A and B", "A, B and C". */
+export function andList(items: string[]): string {
+  return items.length <= 1 ? (items[0] ?? '') : `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
+/** No network allowed yet: remote access is on and listens nowhere until one is. */
+export const NO_NETWORK_YET = 'It listens on no network until you allow one.'
+
+/** "Listens on <networks>." */
+export function listensOnText(labels: string[]): string {
+  return labels.length > 0 ? `Listens on ${andList(labels)}.` : NO_NETWORK_YET
+}
+
+/** The reason a network cannot be identified, one sentence per step (ASD-STE100 style). */
+export const NETWORK_PROBLEM_TEXT: Record<NetworkProblemStep, string> = {
+  route_read: 'It cannot read the route table.',
+  no_gateway: 'It cannot find the router address.',
+  arp_read: 'It cannot read the address table.',
+  no_answer: 'The router does not answer.',
+  no_subnet: 'It cannot find the subnet.',
+}
+
+/** "Studio cannot identify this network. The router does not answer." (`who`: "Studio", or "ADF" in the CLI). */
+export function unidentifiedText(problem: NetworkProblem | undefined, who = 'Studio'): string {
+  const head = `${who} cannot identify this network.`
+  return problem ? `${head} ${NETWORK_PROBLEM_TEXT[problem.step]}` : head
 }

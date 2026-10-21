@@ -48,9 +48,9 @@ describe('the Mesh controls', () => {
 
   it('one effect sentence per switch; what off interrupts is the tooltip', () => {
     expect(MESH_OFF_NOTE.split(/[.!]\s/)).toHaveLength(1)
-    expect(MESH_OFF_NOTE).toMatch(/messaging/)
-    expect(MESH_EFFECT).toBe('Agents on this computer message each other.')
-    expect(NETWORK_EFFECT).toBe('Other computers on allowed networks reach agents you share.')
+    expect(MESH_OFF_NOTE).toMatch(/agent messages/)
+    expect(MESH_EFFECT).toBe('Agents on this server send messages to each other.')
+    expect(NETWORK_EFFECT).toBe('Other computers on allowed networks can reach the agents that you share.')
     for (const s of [MESH_EFFECT, NETWORK_EFFECT]) expect(s.split(/[.!]\s/)).toHaveLength(1)
     expect(networkingPage()).toContain('description={MESH_EFFECT}')
     expect(networkingPage()).toContain('description={NETWORK_EFFECT}')

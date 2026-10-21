@@ -36,6 +36,13 @@ describe('firewall-service command builders', () => {
       }
     })
 
+    it('Windows: each add first removes any rule of the same name, so a stale (Block) rule cannot win and a re-run adds no duplicate', () => {
+      const [tcp, udp] = lanFirewallCommands('win32', 7295, 'C:\\ADF\\ADF Studio.exe')
+      for (const [cmd, name] of [[tcp, FW_RULE_TCP], [udp, FW_RULE_UDP]] as const) {
+        expect(cmd.startsWith(`Get-NetFirewallRule -DisplayName '${name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; New-NetFirewallRule -DisplayName '${name}' `)).toBe(true)
+      }
+    })
+
     it('Windows: a single quote in the path is doubled, so it cannot end the literal', () => {
       expect(lanFirewallCommands('win32', 7295, "C:\\o'brien\\app.exe")[0]).toContain("'C:\\o''brien\\app.exe'")
     })
@@ -74,4 +81,24 @@ describe('firewall-service command builders', () => {
     })
   })
 
+})
+
+// S3: PowerShell treats the typographic single quotes U+2018, U+2019, U+201A and U+201B as quote marks too.
+describe('S3: PowerShell quoting doubles every single-quote character', () => {
+  const QUOTES = ['\'', '\u2018', '\u2019', '\u201A', '\u201B']
+
+  it('a path with any of them stays one literal string in the firewall commands', async () => {
+    const { psQuote } = await import('../../../src/main/services/firewall-service')
+    for (const q of QUOTES) {
+      expect(psQuote(`C:\a${q}; Remove-Item x; ${q}b.exe`)).toBe(`'C:\a${q}${q}; Remove-Item x; ${q}${q}b.exe'`)
+    }
+    const evil = `C:\Apps\ADF\u2019; Start-Process calc; \u2018\ADF Studio.exe`
+    const [tcp] = lanFirewallCommands('win32', 7295, evil)
+    expect(tcp).toContain(`-Program 'C:\Apps\ADF\u2019\u2019; Start-Process calc; \u2018\u2018\ADF Studio.exe'`)
+  })
+
+  it('the daemon\'s block query quotes the same way', async () => {
+    const { windowsBlockQuery } = await import('../../../src/main/daemon/remote-access/firewall')
+    for (const q of QUOTES) expect(windowsBlockQuery(`C:\a${q}b.exe`)).toContain(`-Program 'C:\a${q}${q}b.exe'`)
+  })
 })

@@ -13,6 +13,11 @@
  * Studio section of docs/guides/settings.md as `#studio`, the heading
  * 59659ca8 gave it (it was `#application-settings`, which no longer exists).
  *
+ * Two baselines are newer, by owner request (the Connections and Networking
+ * redesign, 2026-10-21): connections.html and networking.html were rendered
+ * from that redesign, local only, and pin what a local-only user sees there.
+ * Only those two were written then; every other baseline is d00491a0's.
+ *
  * Normalization: React's useId ids (`:R…:` / `«r…»`) are replaced by their
  * order of appearance, as they depend on the shape of the whole tree. Nothing
  * else is changed. Math.random is a fixed sequence (the Mesh view's loading
@@ -229,6 +234,39 @@ const SURFACES: Array<{ name: string; setup: Setup; render: () => Promise<string
     render: async () => {
       const { SettingsPage } = await import('../../../src/renderer/components/settings/SettingsPage')
       return renderToStaticMarkup(<SettingsPage />)
+    },
+  },
+  {
+    // Settings → Connections, local only: Add, Local server (Keep running after Studio quits), Remote servers collapsed ("None"), Devices collapsed ("Off").
+    name: 'connections',
+    setup: {},
+    render: async () => {
+      const { ConnectionsPage } = await import('../../../src/renderer/components/settings/ConnectionSettings')
+      const { DevicesGroupView } = await import('../../../src/renderer/components/settings/RemoteAccessSettings')
+      const { useConnectionStore } = await import('../../../src/renderer/stores/connection.store')
+      const view = useConnectionStore.getState().view!
+      const rows = [{ id: 'local', kind: 'local', name: 'host-0 (Local)', state: 'connected', action: null, url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false }]
+      const backend = {
+        active: { mode: 'local', source: 'file', notices: [] }, remoteUrlProblem: null,
+        configured: { mode: 'local', keepDaemonRunning: false, remoteUrl: null, remoteTokenSaved: false, allowInsecureHttp: false },
+        encryptionAvailable: true, encryptionUnavailableReason: null,
+        daemon: { connection: 'connected', progress: null, message: null, url: 'http://127.0.0.1:7385', pid: 4242, version: '0.8.0', startedBy: 'studio', how: 'spawned', localProof: { available: true, problem: null }, trust: null, keychainProblem: null, logFile: null },
+      }
+      const remoteAccess = {
+        available: true, unavailableReason: null, error: null, stopsWithStudio: true,
+        status: { enabled: false, state: 'off', message: '', problem: null, name: 'host-0', fingerprint: 'ABCD-EFGH', port: 7385, addresses: [], urls: [], hostNames: [], tailscale: { state: 'absent', serve: 'unknown', httpsUrl: null, serveCommand: null }, mdns: { announcing: false, problem: null }, firewall: { state: 'ok', message: '', commands: [] }, devices: [], pairing: null, networks: [], allowedNetworks: [], meshLan: false },
+      }
+      const noop = () => {}
+      return renderToStaticMarkup(<ConnectionsPage view={{ ...view, rows } as never} backend={backend as never} busy={false} message={null} onAdd={noop} onConnect={noop} onRemove={noop} onKeepRunning={noop} onRestart={noop} devices={<DevicesGroupView view={remoteAccess as never} runtime="host-0 (Local)" busy={false} message={null} onSwitch={noop} onRevoke={noop} />} />)
+    },
+  },
+  {
+    // Settings → Networking, local only: the status card, Sharing, Networks, Servers, Advanced collapsed.
+    name: 'networking',
+    setup: {},
+    render: async () => {
+      const { NetworkingSettings } = await import('../../../src/renderer/components/settings/NetworkingSettings')
+      return renderToStaticMarkup(<NetworkingSettings remote={false} runtimeName="host-0 (Local)" pickedMesh={undefined} />)
     },
   },
   {

@@ -32,7 +32,7 @@ import { useSettingsApi, useSettingsRuntimeId } from './settings-runtime'
 const SHIPPED_ORDER: ShippedTemplateId[] = ['standard', 'sandboxed', 'full-access']
 
 /** Which provider a new agent gets, in order. */
-export const PROVIDER_PRECEDENCE = 'An agent uses its own provider, else its template\'s, else the runtime default.'
+export const PROVIDER_PRECEDENCE = 'An agent uses its own provider, else its template\'s, else the server default.'
 
 /** The rule instantiate follows, printed for the user verbatim. */
 const INSTANTIATE_RULE = 'New agents get everything in a template except its identity and history.'
@@ -871,7 +871,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
 
       <SettingsGroup title="Provider" description={PROVIDER_PRECEDENCE}>
         <SettingsRow
-          label={<>Runtime default<InfoHint tip="A template whose Provider is Runtime default gives new agents this provider, with its default model as Model ID. Set it with Make default in Settings → Providers." /></>}
+          label={<>Server default<InfoHint tip="A template whose Provider is Server default gives new agents this provider, with its default model as Model ID. To set it, use Make default in Settings → Providers." /></>}
         >
           <div className="flex items-center gap-2">
             <span className="text-[12px] text-[var(--adf-ui-text-muted)]">

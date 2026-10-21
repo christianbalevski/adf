@@ -52,13 +52,13 @@ describe('the Settings pages', () => {
 
   it('sentence case titles on the former hand-built pages', () => {
     const page = read('SettingsPage.tsx')
-    for (const title of ['title="Owner identity"', 'title="Runtime key"', 'title="Agent identities"', 'title="Back up seed phrase"', 'title="Packages"', 'title="Installed by agents"', 'title="Containers"', 'title="Default container"', 'title="Host"', 'title="Custom containers"']) {
+    for (const title of ['title="Owner identity"', 'title="Server key"', 'title="Agent identities"', 'title="Back up seed phrase"', 'title="Packages"', 'title="Installed by agents"', 'title="Containers"', 'title="Default container"', 'title="Host"', 'title="Custom containers"']) {
       expect(page, title).toContain(title)
     }
-    // Networking: the status card, Sharing, Networks, Runtimes, then Advanced (collapsed, never hidden).
+    // Networking: the status card, Sharing, Networks, Servers, then Advanced (collapsed, never hidden).
     const networking = read('NetworkingSettings.tsx')
-    for (const title of ['title="Sharing"', 'title="Networks"', 'title="Runtimes"', '>Advanced</summary>']) expect(networking, title).toContain(title)
-    for (const old of ['title="Discovery"', 'title="Server"', 'title="Agent endpoints"', 'title="Remote access"']) expect(networking, old).not.toContain(old)
+    for (const title of ['title="Sharing"', 'title="Networks"', 'title="Servers"', '>Advanced</summary>']) expect(networking, title).toContain(title)
+    for (const old of ['title="Runtimes"', 'title="Discovery"', 'title="Server"', 'title="Agent endpoints"', 'title="Remote access"']) expect(networking, old).not.toContain(old)
     for (const old of ['Owner Identity', 'Agent Identities', 'Back Up Seed Phrase', 'Runtime Packages', 'Agent-Installed Packages', 'Agent Endpoints', 'Approved Host Servers', 'Setup Required', 'Enable host access</span>']) {
       expect(page, old).not.toContain(old)
     }

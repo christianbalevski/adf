@@ -358,7 +358,7 @@ daemon while Studio runs (DMN-17).
 | MESH-01 | Enable/disable mesh. | Status updates; fleet map shows Enable Mesh prompt when off. | [ ] | [ ] | [ ] |
 | MESH-02 | Mesh server start, stop, restart; change port. | Status card host:port; URL opens. Remote: server runs on the daemon host. | [ ] | [ ] | [ ] |
 | MESH-03 | LAN access toggle; LAN IP list. | Binds 0.0.0.0 with restart notice; IPs listed. Remote: daemon host's IPs. | [ ] | [ ] | [ ] |
-| MESH-04 | Settings → Networking: firewall check; Enable in firewall (UAC). | Rule state shown; Enable in firewall creates the rule. Remote: the panel shows "The firewall check applies to this computer, but the mesh server runs on the remote daemon's machine. Check that machine's firewall there: …" and no Enable in firewall button. | [ ] | [ ] | [ ] |
+| MESH-04 | Settings → Networking → Advanced → Firewall: the check, and the commands to run when a rule is missing. | Rule state shown; the commands, with Copy, add the rule in an administrator shell; Studio never adds it. Remote: "Change on *name*." | [ ] | [ ] | [ ] |
 | MESH-05 | Discovered runtimes; Recheck; add/remove manual peer; tailnet toggle. | Peers listed with source badges; manual peer appears within seconds. | [ ] | [ ] | [ ] |
 | MESH-06 | Agent endpoints table. | Handles, URLs, Public/API/Shared badges. | [ ] | [ ] | [ ] |
 | MESH-07 | agent-1 `msg_send` to agent-2. | Delivered; mesh traffic bar ripple. | [ ] | [ ] | [ ] |
@@ -610,7 +610,7 @@ E items use agent-1 (`fs_write`) as the other writer.
 
 ## 28. Daemon status and outages (STAT)
 
-Guide: [Studio backend › Daemon status](../guides/studio-backend.md#daemon-status)
+Guide: [Studio backend › Local server status](../guides/studio-backend.md#local-server-status)
 and [When the daemon is not reachable](../guides/studio-backend.md#when-the-daemon-is-not-reachable).
 
 | ID | Steps | Expected | E | L | R |
@@ -822,7 +822,7 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `getMeshServerLanIps` | MESH-03 |
 | `getDiscoveredRuntimes` | MESH-05 |
 | `getPeerSharedFile`, `getPeerAgentHealth` | MESH-13 |
-| `checkLanFirewall`, `applyLanFirewall` | MESH-04 |
+| `checkLanFirewall` | MESH-04 |
 | `messageFleetAgents`, `setFleetAgentState` | MESH-10, TIME-12 |
 | `foundFleetAgent` | MESH-11 |
 | `startBackgroundAgent`, `stopBackgroundAgent`, `getBackgroundAgentStatus`, `onBackgroundAgentEvents` | FILE-22, CHAT-22, MESH-10 |
@@ -913,7 +913,7 @@ exceptions: `setZoomFactor` and `platform` use no channel (renderer-local), and
 | `addConnection` | REM-02, REM-03, REM-04, RA-05 |
 | `removeConnection` | SCOPE-05 |
 | `restartStudio` | DMN-37 |
-| `getRemoteAccess`, `setRemoteAccess`, `onRemoteAccessChanged` | RA-01, RA-03, RA-16, RA-17 |
+| `getRemoteAccess`, `setRemoteAccess`, `shareRemoteAccess`, `onRemoteAccessChanged` | RA-01, RA-03, RA-16, RA-17 |
 | `getNetworkStatus` | RA-03, RA-11, RA-17, RA-21 |
 | `allowNetwork`, `forgetNetwork` | RA-03, RA-21 |
 | `getNetworkNotices`, `dismissNetworkNotice`, `onNetworkNoticesChanged` | RA-03 |

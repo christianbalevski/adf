@@ -145,10 +145,10 @@ LAN discovery uses **two** network paths, and each needs its own firewall allowa
 **Manual:**
 
 - **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`). Settings → Networking → Advanced → **Firewall** shows the `socketfilterfw --add` and `--unblockapp` commands for this binary.
-- **Windows:** an inbound UDP 5353 rule **and** an inbound TCP `<mesh port>` rule for the ADF binary on the Private profile:
+- **Windows:** an inbound UDP 5353 rule **and** an inbound TCP `<mesh port>` rule for the ADF binary on the Private profile. Each line first removes any rule of the same name, so a stale rule cannot win and a re-run adds no duplicate:
   ```powershell
-  New-NetFirewallRule -DisplayName "ADF Mesh (LAN)" -Direction Inbound -Protocol TCP -LocalPort 7295 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
-  New-NetFirewallRule -DisplayName "ADF mDNS (LAN)" -Direction Inbound -Protocol UDP -LocalPort 5353 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
+  Get-NetFirewallRule -DisplayName "ADF Mesh (LAN)" -ErrorAction SilentlyContinue | Remove-NetFirewallRule; New-NetFirewallRule -DisplayName "ADF Mesh (LAN)" -Direction Inbound -Protocol TCP -LocalPort 7295 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
+  Get-NetFirewallRule -DisplayName "ADF mDNS (LAN)" -ErrorAction SilentlyContinue | Remove-NetFirewallRule; New-NetFirewallRule -DisplayName "ADF mDNS (LAN)" -Direction Inbound -Protocol UDP -LocalPort 5353 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
   ```
   Confirm the active network is **Private**, not Public — a Private-scoped rule doesn't apply on a Public network.
 - **Linux:** Settings → Networking → Advanced → **Firewall** detects an active **firewalld** or **ufw** and shows the commands, with `sudo`. They are: `firewall-cmd --add-port=5353/udp --add-port=7295/tcp --permanent && firewall-cmd --reload`, or `ufw allow 7295/tcp && ufw allow 5353/udp`. If no firewall is active (common on Ubuntu, where `ufw` ships inactive), inbound is already open and nothing is needed. Raw `nftables`/`iptables` setups are reported as unmanaged — add the rules by hand.

@@ -136,22 +136,22 @@ describe('one runtime group: the open agent\'s runtime', () => {
     const { bar } = await page([LOCAL, REMOTE], { search: `?window=agent&runtime=${encodeURIComponent(HOST_1)}&file=${encodeURIComponent(PATH)}` })
     const html = renderToStaticMarkup(<bar.StatusBar />)
     expect(groups(html)).toEqual([HOST_1])
-    expect(html).not.toContain('aria-label="Runtimes"')
+    expect(html).not.toContain('aria-label="Servers"')
   })
 
-  it('the arrow: an icon button with the Runtimes tooltip that opens a menu', async () => {
+  it('the arrow: an icon button with the Servers tooltip that opens a menu', async () => {
     const { bar } = await page([LOCAL, REMOTE])
     const { Tooltip } = await import('../../../src/renderer/components/common/Tooltip')
     const { elements, html } = capture(() => renderToStaticMarkup(<bar.StatusBar />))
     expect(html).toContain('aria-haspopup="menu"')
     expect(html).toContain('aria-expanded="false"')
-    expect(elements.some((e) => e.type === Tooltip && e.props.tip === 'Runtimes')).toBe(true)
+    expect(elements.some((e) => e.type === Tooltip && e.props.tip === 'Servers')).toBe(true)
     // Closed: no popover.
     expect(rows(html)).toEqual([])
   })
 })
 
-describe('the Runtimes popover', () => {
+describe('the Servers popover', () => {
   const open = { x: 400, y: 600 }
 
   it('lists every runtime in the set\'s order with its name, state, Mesh and Kill, and Kill all on top', async () => {
@@ -160,7 +160,7 @@ describe('the Runtimes popover', () => {
     const runtimes = [LOCAL, REMOTE, { ...REMOTE_2, state: 'retrying' as const }]
     const html = renderToStaticMarkup(<bar.RuntimesPopover runtimes={runtimes} position={open} onClose={() => {}} />)
     expect(html).toContain('role="menu"')
-    expect(html).toContain('aria-label="Runtimes"')
+    expect(html).toContain('aria-label="Servers"')
     expect(rows(html)).toEqual(['local', HOST_1, HOST_2])
     expect(html.indexOf('data-kill-all')).toBeLessThan(html.indexOf('data-runtime-row'))
     const row = (id: string) => html.slice(html.indexOf(`data-runtime-row="${id}"`)).split('data-runtime-row=')[1]
@@ -175,7 +175,7 @@ describe('the Runtimes popover', () => {
     expect(row(HOST_1)).toContain('aria-label="Stops all agents and mesh on host-1"')
     expect(row(HOST_2)).toContain('Not connected, retrying')
     expect(row(HOST_2)).toContain('aria-label="Kill on host-2: Not connected, retrying"')
-    expect(html).toContain('aria-label="Stops all agents and mesh on every runtime"')
+    expect(html).toContain('aria-label="Stops all agents and the mesh on every server"')
     expect(html.match(/role="menuitem"/g)).toHaveLength(4)
   })
 
@@ -266,7 +266,7 @@ describe('local only', () => {
     const { bar: bar1 } = await page([LOCAL])
     const one = renderToStaticMarkup(<bar1.StatusBar />)
     expect(one).toBe(none)
-    expect(one).not.toContain('Runtimes')
+    expect(one).not.toContain('Servers')
     expect(one).not.toContain('data-runtimes-arrow')
     expect(groups(one)).toEqual(['true'])
   })
@@ -289,6 +289,10 @@ describe('Settings runtime banner (§6.3)', () => {
     const local = await banner([LOCAL, REMOTE], 'local')
     expect(local).toContain('>host-0 (Local)</span>')
     expect(local).not.toContain('data-remote-mark')
+    expect(local).toContain('data-server-icon')
+    // A quiet header strip, not an input box: the word Server, no border, no fill.
+    expect(local).toContain('>Server</span>')
+    expect(local.slice(0, local.indexOf('>'))).not.toMatch(/border|bg-|rounded/)
     // Outside Settings: none.
     expect(await banner([LOCAL, REMOTE], null)).toBe('')
   })

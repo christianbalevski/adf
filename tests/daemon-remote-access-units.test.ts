@@ -105,7 +105,8 @@ describe('address candidates (§3.3) and what the OS tells about a network (§3.
       return summary('Home WiFi')
     }
     expect(Object.fromEntries(await readWifiNames(['en0', 'en1', 'en2'], { platform: 'darwin', exec: mac }))).toEqual({ en0: 'Home WiFi' })
-    expect(calls.slice(2)).toEqual(['ipconfig getsummary en0', 'ipconfig getsummary en1', 'ipconfig getsummary en2'])
+    // By absolute path: a GUI app's or a login shell's PATH may leave out /usr/sbin.
+    expect(calls.slice(2)).toEqual(['/usr/sbin/ipconfig getsummary en0', '/usr/sbin/ipconfig getsummary en1', '/usr/sbin/ipconfig getsummary en2'])
   })
 
   it('macOS and Linux gateway parsers: netstat/arp, /proc/net/route (little-endian) and /proc/net/arp', () => {

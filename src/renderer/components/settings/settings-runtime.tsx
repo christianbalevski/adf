@@ -4,6 +4,7 @@ import type { RuntimeId } from '../../../shared/runtime-tag'
 import { apiFor } from '../../utils/runtime-api'
 import { useRuntimes } from '../../stores/runtimes.store'
 import { RemoteMark } from '../common/RemoteMark'
+import { ServerIcon } from '../common/ServerIcons'
 
 /**
  * The runtime the Settings picker shows (docs/design/multi-runtime.md §6.3).
@@ -34,8 +35,10 @@ export function useSettingsRuntimeId(): RuntimeId | null {
 
 /**
  * Above every runtime page while more than one runtime is in the set
- * (multi-runtime.md §6.3): the picked runtime's name, with the remote icon
- * for a remote. Nothing with one runtime, and nothing outside Settings.
+ * (multi-runtime.md §6.3): a quiet header strip, "Server", then the picked
+ * server's icon and name (the remote icon for a remote). It reads as a
+ * heading, not as a field. Nothing with one runtime, and nothing outside
+ * Settings.
  */
 export function SettingsRuntimeBanner() {
   const runtimeId = useSettingsRuntimeId()
@@ -44,11 +47,15 @@ export function SettingsRuntimeBanner() {
   if (!runtime) return null
   return (
     <div
-      className="mb-5 flex items-center gap-1.5 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-separator)] bg-[var(--adf-ui-surface)] px-3 py-1.5 text-[12px] font-medium text-[var(--adf-ui-text)]"
+      className="mb-3 flex min-w-0 items-center gap-2 text-[12px] text-[var(--adf-ui-text-muted)]"
       data-runtime-banner={runtime.id}
     >
-      {runtime.kind === 'remote' && <RemoteMark />}
-      <span className="truncate">{runtime.name}</span>
+      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">Server</span>
+      <span aria-hidden="true" className="h-3 w-px bg-[var(--adf-ui-separator)]" />
+      <span className="flex min-w-0 items-center gap-1.5 font-medium text-[var(--adf-ui-text)]">
+        {runtime.kind === 'remote' ? <RemoteMark size={13} /> : <ServerIcon size={13} className="shrink-0 text-[var(--adf-ui-text-muted)]" />}
+        <span className="truncate">{runtime.name}</span>
+      </span>
     </div>
   )
 }

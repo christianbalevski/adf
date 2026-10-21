@@ -16,7 +16,7 @@ import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/q
 import { LanReach } from '../services/lan-reach'
 import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
 import { allowNetwork, forgetNetwork, readAllowedNetworks, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
-import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemotePairStartRequest } from '../../shared/types/remote-access-ipc.types'
+import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessErrorCode, RemotePairStartRequest } from '../../shared/types/remote-access-ipc.types'
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
 import { machineName } from './local-runtime-name'
@@ -59,6 +59,8 @@ export interface RemoteAccessIpcDeps {
   onConnectionsChanged?: () => void
   /** The saved connections, cached (connections.ts); default: a cache of `remotesEnv`. */
   savedCache?: SavedConnectionsCache
+  /** The local runtime's name, `<name> (Local)`, while there is more than one runtime; else null (Share's dialog, review A6). */
+  localRuntime?: () => string | null
   /** Tests: replace the Electron dialogs, notifications and network. */
   overrides?: {
     host?: Partial<RemoteAccessHostDeps>
@@ -158,6 +160,9 @@ export function claimQuestion(claim: PairingClaimView, opts: { serve?: boolean }
   }
 }
 
+/** A change of remote access or of the consent per network asked from any window but the main one (review A1). */
+export const MAIN_WINDOW_ONLY = 'Change remote access in Settings in the main window.'
+
 function withTimeout<T>(promise: Promise<T>, ms: number, message: string): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(message)), ms)
@@ -198,8 +203,8 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     daemon: () => {
       if (deps.mode !== 'local') return { unavailable: unavailableReason(deps.mode) }
       const daemon = deps.daemon()
-      if (!daemon) return { unavailable: 'Studio is not connected to the ADF daemon yet.' }
-      return { client: () => withTimeout(daemon.client(), 8_000, 'Studio is not connected to the ADF daemon yet.') }
+      if (!daemon) return { unavailable: 'Studio is not connected to the local server yet.' }
+      return { client: () => withTimeout(daemon.client(), 8_000, 'Studio is not connected to the local server yet.') }
     },
     stopsWithStudio: () => !deps.keepDaemonRunning() && localDaemon()?.status().startedBy === 'studio',
     push: (change) => windows.send(IPC.REMOTE_ACCESS_CHANGED, change),
@@ -220,6 +225,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       const response = await box({ type: 'question', ...question, buttons: ['Allow', 'Deny'], defaultId: 1, cancelId: 1, noLink: true, signal })
       return signal.aborted ? null : response === 0
     },
+    localRuntime: deps.localRuntime,
     log,
     ...o.host,
   })
@@ -227,8 +233,8 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   // One discovery feed per computer (remote-access.md §5.1): the daemon's in local mode, else this process's.
   const daemonFeed = new DaemonPeerFeed(async (path) => {
     const daemon = localDaemon()
-    if (!daemon) throw new Error('Studio is not connected to the ADF daemon yet.')
-    const client = await withTimeout(daemon.client(), 8_000, 'Studio is not connected to the ADF daemon yet.')
+    if (!daemon) throw new Error('Studio is not connected to the local server yet.')
+    const client = await withTimeout(daemon.client(), 8_000, 'Studio is not connected to the local server yet.')
     return client.request<{ peers: NetworkPeer[] }>('GET', path, { timeoutMs: 10_000 })
   })
   const inProcessFeed = new InProcessPeerFeed({ mesh: () => deps.meshPeers?.() ?? null, log })
@@ -321,14 +327,51 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     log,
   })
 
+  /**
+   * These are Studio calls, so every window can send them, an agent window
+   * of a remote runtime too (multi-runtime.md §4.2). Settings live in the
+   * main window: a change of remote access or of the consent per network
+   * from any other sender is refused and logged (review A1).
+   */
+  const mainOnly = <A extends unknown[], R>(channel: string, refusal: NoInfer<R>, fn: (...args: A) => Promise<R>) =>
+    async (event: { sender?: unknown } | undefined, ...args: A): Promise<R> => {
+      const win = deps.window()
+      if (win && !win.isDestroyed() && event?.sender === win.webContents) return fn(...args)
+      log.warn(`[Remote access] ${channel} refused: it was not sent by the main window`)
+      return refusal
+    }
+  const refused: { ok: false; code: RemoteAccessErrorCode; error: string } = { ok: false, code: 'unavailable', error: MAIN_WINDOW_ONLY }
+
   // --- Host: Settings → Connections (Add → Share, Devices) ---
   ipcMain.handle(IPC.REMOTE_ACCESS_GET, (_event, opts?: { refresh?: unknown }) => host.get({ refresh: opts?.refresh === true }))
-  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown; confirmed?: unknown }) => host.set(request ?? {}))
-  ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, (_event, label: unknown) => host.addDevice(label))
-  ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_REMOVE, (_event, id: unknown) => host.removeDevice(id))
-  ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, () => host.openPairing())
-  ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_CLOSE, () => host.closePairing())
-  ipcMain.handle(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, (_event, enabled: unknown) => host.tailscaleServe(enabled))
+  ipcMain.handle(IPC.REMOTE_ACCESS_SET, mainOnly(IPC.REMOTE_ACCESS_SET, refused, (request: { enabled?: unknown; name?: unknown }) => host.set(request ?? {})))
+  // S1: a reload or close of the window that runs Share leaves it, in main.
+  const watched = new WeakSet<object>()
+  const leaveWithWindow = (event: { sender?: unknown } | undefined): void => {
+    const sender = event?.sender as { on?: (name: string, fn: (...a: unknown[]) => void) => unknown; once?: (name: string, fn: () => void) => unknown } | undefined
+    if (!sender || typeof sender.on !== 'function' || watched.has(sender)) return
+    watched.add(sender)
+    const leave = (why: string) => { log.log(`[Remote access] The main window ${why}: leaving Share`); void host.shareLeave() }
+    sender.on('did-start-navigation', (details: unknown, _url: unknown, isInPlace: unknown, isMainFrame: unknown) => {
+      const d = details as { isMainFrame?: boolean; isSameDocument?: boolean } | undefined
+      if ((d?.isMainFrame ?? isMainFrame) && !(d?.isSameDocument ?? isInPlace)) leave('reloads')
+    })
+    sender.on('render-process-gone', () => leave('crashed'))
+    sender.once?.('destroyed', () => leave('closed'))
+  }
+  const watching = <A extends unknown[], R>(handler: (event: { sender?: unknown } | undefined, ...args: A) => Promise<R>) =>
+    async (event: { sender?: unknown } | undefined, ...args: A): Promise<R> => {
+      const win = deps.window()
+      if (win && !win.isDestroyed() && event?.sender === win.webContents) leaveWithWindow(event)
+      return handler(event, ...args)
+    }
+  ipcMain.handle(IPC.REMOTE_ACCESS_SHARE, watching(mainOnly(IPC.REMOTE_ACCESS_SHARE, refused, () => host.share())))
+  ipcMain.handle(IPC.REMOTE_ACCESS_SHARE_LEAVE, mainOnly(IPC.REMOTE_ACCESS_SHARE_LEAVE, { left: null }, () => host.shareLeave()))
+  ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, mainOnly(IPC.REMOTE_ACCESS_DEVICE_ADD, refused, (label: unknown) => host.addDevice(label)))
+  ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_REMOVE, mainOnly(IPC.REMOTE_ACCESS_DEVICE_REMOVE, refused, (id: unknown) => host.removeDevice(id)))
+  ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, watching(mainOnly(IPC.REMOTE_ACCESS_PAIRING_OPEN, refused, () => host.openPairing())))
+  ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_CLOSE, mainOnly(IPC.REMOTE_ACCESS_PAIRING_CLOSE, refused, () => host.closePairing()))
+  ipcMain.handle(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, mainOnly(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, refused, (enabled: unknown) => host.tailscaleServe(enabled)))
 
   // --- Settings → Networking: the status card ---
   const reach = o.reach ?? new LanReach({ settingsDir: deps.settingsDir ?? null })
@@ -393,8 +436,9 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
   }
-  ipcMain.handle(IPC.NETWORK_ALLOW, (_event, id: unknown) => consent('allow', id))
-  ipcMain.handle(IPC.NETWORK_FORGET, (_event, id: unknown) => consent('forget', id))
+  const consentRefused: NetworkConsentResult = { ok: false, error: MAIN_WINDOW_ONLY }
+  ipcMain.handle(IPC.NETWORK_ALLOW, mainOnly(IPC.NETWORK_ALLOW, consentRefused, (id: unknown) => consent('allow', id)))
+  ipcMain.handle(IPC.NETWORK_FORGET, mainOnly(IPC.NETWORK_FORGET, consentRefused, (id: unknown) => consent('forget', id)))
 
   const consentPrompt = new NetworkConsentPrompt({
     read: async () => {

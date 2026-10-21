@@ -61,7 +61,7 @@ import { useMesh } from '../../hooks/useMesh'
 import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
-import { selectMapAgents, mapTarget, mergeBurn, mergePeers, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { selectMapAgents, mapTarget, mergeBurn, mergePeers, trackPeerMatchState, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, normalHost, urlHostOf, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
 import { useConnectionStore } from '../../stores/connection.store'
 import { isRemoteAgentKey } from '../../../shared/types/agent-ref'
 import { useRuntimesStore, runtimeHeader } from '../../stores/runtimes.store'
@@ -269,8 +269,10 @@ export interface RemotePollState {
   dids: Record<string, string | null>
   /** A DID read that failed or came back empty: when to read again, and the wait after that. */
   didRetry?: Record<string, { at: number; wait: number }>
-  /** Peer runtime_id → runtime of the set, as matched so far. */
+  /** Peer runtime_id → runtime of the set, as the last poll matched them. */
   learned?: Record<string, string>
+  /** This computer's own interface addresses (getMeshServerLanIps): where a peer can prove it is this computer (S2). */
+  localHosts?: string[]
 }
 
 /** The first wait after a DID read that failed, doubled up to the cap. */
@@ -312,8 +314,9 @@ async function pollRuntimes(state: RemotePollState, beforeAgents?: (runtimeId: s
 /**
  * The runtime DIDs of the set (GET /identity there), read once per runtime.
  * A read that fails, or answers no DID, is read again after a wait that
- * doubles from 5 s to 5 min; meanwhile the runtime is still matched by its
- * address, fingerprint and agents (managedRuntimeOf).
+ * doubles from 5 s to 5 min; meanwhile the runtime is matched by its pinned
+ * fingerprint only (managedRuntimeOf). An id that is another computer now,
+ * or moved, is read again (forgetRuntimeMatches).
  */
 export async function setRuntimeDids(state: RemotePollState, now = Date.now()): Promise<void> {
   const runtimes = useRuntimesStore.getState().runtimes
@@ -349,21 +352,40 @@ function pairedFingerprints(): Map<string, string> {
 export function peerMatchOf(state: RemotePollState, runtimes: readonly RuntimeView[], agents: readonly FleetAgentStatus[]): PeerMatch {
   const fps = pairedFingerprints()
   const ids = new Set(runtimes.map((r) => r.id))
+  // S2: the address each runtime is proven at. A remote: its connection's host (the authenticated hello pinned
+  // the fingerprint there). This computer: its own addresses. A peer elsewhere that copies a DID or fingerprint
+  // is a station, and its traffic is drawn to that station, never onto a managed tile.
+  const hosts: Record<string, string[]> = {}
+  for (const r of runtimes) {
+    if (r.kind === 'remote') { const h = urlHostOf(r.url); hosts[r.id] = h ? [h] : [] }
+    else hosts[r.id] = (state.localHosts ?? []).map((h) => normalHost(h)).filter((h): h is string => !!h)
+  }
   return {
     dids: Object.fromEntries(Object.entries(state.dids).filter(([id]) => ids.has(id))),
-    remotes: runtimes.filter((r) => r.kind === 'remote').map((r) => ({ id: r.id, url: r.url, fingerprint: fps.get(r.id) ?? null })),
-    learned: Object.fromEntries(Object.entries(state.learned ?? {}).filter(([, id]) => ids.has(id))),
+    remotes: runtimes.filter((r) => r.kind === 'remote').map((r) => ({ id: r.id, fingerprint: fps.get(r.id) ?? null })),
     agentDids: agentDidsOf(agents),
+    hosts,
+  }
+}
+
+/** This computer's interface addresses, read once per poll (S2). */
+async function setLocalHosts(state: RemotePollState): Promise<void> {
+  try {
+    const read = window.adfApi?.getMeshServerLanIps?.()
+    const info = read ? await Promise.race([read, new Promise<null>((r) => setTimeout(() => r(null), 2_000))]) : null
+    if (info) state.localHosts = info.addresses.map((a) => a.address)
+  } catch {
+    // Unread: this computer is matched nowhere this poll; its peer records stay stations.
   }
 }
 
 /**
  * The peer stations the map draws, as one list: this computer's poll, then
- * each other runtime's, without the station of a runtime of the set (by its
- * runtime DID, a runtime_id matched before, fingerprint, address or agents,
- * so a runtime that is down now is still known). The matches are kept for
- * the next poll and for drawing traffic tile to tile. With This computer
- * only, this computer's list as it is, and no call.
+ * each other runtime's, without the station of a runtime of the set (by the
+ * runtime DID read over its connection or its pinned fingerprint). The
+ * matches are rebuilt every poll, for drawing traffic tile to tile and
+ * regionFromStation. With This computer only, this computer's list as it
+ * is, and no call.
  */
 export async function fleetPeers<P extends MapPeer>(own: P[], remote: ReadonlyArray<{ peers: unknown[] }>, state: RemotePollState): Promise<P[]> {
   const runtimes = useRuntimesStore.getState().runtimes
@@ -372,8 +394,9 @@ export async function fleetPeers<P extends MapPeer>(own: P[], remote: ReadonlyAr
     return own
   }
   await setRuntimeDids(state)
+  await setLocalHosts(state)
   const match = peerMatchOf(state, runtimes, selectMapAgents(useMeshStore.getState()))
-  const learned: Record<string, string> = { ...match.learned }
+  const learned: Record<string, string> = {}
   const shown = mergePeers([own, ...remote.map((r) => r.peers as P[])], match, (rid, rt) => { learned[rid] = rt })
   state.learned = learned
   setPeerRuntimes(learned)
@@ -1178,6 +1201,8 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
 
   // The polls of the runtimes other than This computer: cursors, last errors and runtime DIDs.
   const remotePolls = useRef<RemotePollState>({ seq: {}, errors: {}, dids: {} })
+  // A runtime id that is another computer now, or moved, drops its DID and matches (RUNTIMES_MOVED).
+  useEffect(() => trackPeerMatchState(remotePolls.current), [])
   const lastRemotePeers = useRef<ReadonlyArray<{ peers: unknown[] }>>([])
 
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet

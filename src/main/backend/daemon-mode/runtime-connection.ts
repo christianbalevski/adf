@@ -267,7 +267,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     if (unauthorized) return
     unauthorized = true
     const url = connection.baseUrl ?? 'the remote daemon'
-    log.error(`[Backend] The ADF daemon at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
+    log.error(`[Backend] The agent server at ${url} answered 401: the saved token is no longer accepted; the connection stops`)
     connection.markFailed(refusedTokenSentence(url))
     failAllTurns('disconnected')
     void clientSession?.end().catch(() => {})
@@ -389,7 +389,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
         const options = {
           type: 'question',
           message: `Open a sign-in page on ${pageHost}?`,
-          detail: `The ADF daemon at ${daemonHost} asks to open ${pageHost} in your browser (${label}). Open it only if you started this sign-in.`,
+          detail: `The agent server at ${daemonHost} asks to open ${pageHost} in your browser (${label}). Open it only if you started this sign-in.`,
           buttons: ['Open page', 'Cancel'],
           defaultId: 0,
           cancelId: 1,

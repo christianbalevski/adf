@@ -74,6 +74,8 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     // remote-access.md §9.1: registered in every mode; the host channels answer "unavailable" here, discovery and pairing work.
     'ipcMain.handle(adf:remote-access:get)',
     'ipcMain.handle(adf:remote-access:set)',
+    'ipcMain.handle(adf:remote-access:share)',
+    'ipcMain.handle(adf:remote-access:share-leave)',
     'ipcMain.handle(adf:remote-access:device-add)',
     'ipcMain.handle(adf:remote-access:device-remove)',
     'ipcMain.handle(adf:remote-access:pairing-open)',

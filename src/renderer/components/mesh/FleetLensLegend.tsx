@@ -197,7 +197,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
             at a glance regardless of the active metric. */}
         {!collapsed && foreignHubs.length > 0 && (
           <div className="pt-1.5 mt-0.5 border-t border-neutral-100 dark:border-neutral-800 space-y-1">
-            <span className="text-[9px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">foreign runtimes</span>
+            <span className="text-[9px] uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">other servers</span>
             {foreignHubs.slice(0, 4).map((h) => {
               const fh = factionHue(h.runtimeId)
               return (

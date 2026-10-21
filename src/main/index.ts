@@ -1021,6 +1021,8 @@ app.whenReady().then(async () => {
     remotesEnv: connectionsEnv,
     savedCache,
     onConnectionsChanged: () => connections?.changed(),
+    // Share's dialog names the shared runtime while there is more than one (multi-runtime.md §1.3).
+    localRuntime: () => (runtimeViews().length > 1 ? localName.display() : null),
   })
   // Settings → Connections and the status bar's runtime indicator (settings-scopes.md §4.1, §5).
   const store = backendStore

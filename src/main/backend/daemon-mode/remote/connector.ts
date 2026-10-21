@@ -100,10 +100,10 @@ export function describeFetchFailure(url: string, err: unknown, timedOut: boolea
     return new RemoteConnectError('tls', `The TLS connection to ${url} failed (${code}: ${innerMessage(err)}). Studio checks certificates and has no option to skip that: give the server a certificate this computer trusts (a reverse proxy with a public certificate, or tailscale serve), or use an SSH tunnel.`)
   }
   if (timedOut) {
-    return new RemoteConnectError('unreachable', `The ADF daemon at ${url} did not answer within ${HANDSHAKE_TIMEOUT_MS / 1000} s. Check that the server is on and reachable from this computer (VPN, tailnet, SSH tunnel).`)
+    return new RemoteConnectError('unreachable', `The agent server at ${url} did not answer within ${HANDSHAKE_TIMEOUT_MS / 1000} s. Check that the server is on and reachable from this computer (VPN, tailnet, SSH tunnel).`)
   }
   const what = code ? `${code}: ${innerMessage(err)}` : innerMessage(err)
-  return new RemoteConnectError('unreachable', `Cannot reach the ADF daemon at ${url} (${what}). Check the address, that the daemon runs on the server (adf daemon status), and that the tunnel or tailnet is up.`)
+  return new RemoteConnectError('unreachable', `Cannot reach the agent server at ${url} (${what}). Check the address, that the server runs there (adf daemon status), and that the tunnel or tailnet is up.`)
 }
 
 async function bodyOf(res: Response): Promise<Record<string, unknown> | null> {
@@ -122,7 +122,7 @@ async function bodyOf(res: Response): Promise<Record<string, unknown> | null> {
  */
 export function refusedTokenSentence(url: string): string {
   const host = (() => { try { return new URL(url).hostname.replace(/^\[|\]$/g, '') } catch { return url } })()
-  return `The ADF daemon at ${url} refused the token; on ${host} choose Add, then Share, and pair again.`
+  return `The agent server at ${url} refused the token. On ${host}, click Add, then Share, and pair again.`
 }
 
 /** An answer that is not the daemon's success: one sentence per known case. */
@@ -134,19 +134,19 @@ function describeAnswer(url: string, res: Response, step: 'health' | 'version', 
   }
   if (res.status === 403 && body?.code === 'host_not_allowed') {
     const host = (() => { try { return new URL(url).hostname } catch { return url } })()
-    return new RemoteConnectError('host_not_allowed', `The ADF daemon at ${url} does not accept the host name ${host}. On the server, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the daemon (docs: Remote daemon).`)
+    return new RemoteConnectError('host_not_allowed', `The agent server at ${url} does not accept the host name ${host}. On that computer, add it to ADF_DAEMON_ALLOWED_HOSTS and restart the server (docs: Remote daemon).`)
   }
   if (step === 'version' && res.status === 401) {
     return new RemoteConnectError('unauthorized', refusedTokenSentence(url))
   }
   if (res.status === 502 || res.status === 503 || res.status === 504) {
-    return new RemoteConnectError('proxy', `${url} answered HTTP ${res.status}: a proxy answers there, but the ADF daemon behind it does not. Start it on the server (adf daemon start) and check the proxy's target.`)
+    return new RemoteConnectError('proxy', `${url} answered HTTP ${res.status}: a proxy answers there, but the agent server behind it does not. Start it on that computer (adf daemon start) and check the proxy's target.`)
   }
   if (res.status === 404 || (res.ok && step === 'health')) {
-    return new RemoteConnectError('not_a_daemon', `${url} does not answer as an ADF daemon (HTTP ${res.status} for /${step}). Check the address and port.`)
+    return new RemoteConnectError('not_a_daemon', `${url} does not answer as an agent server (HTTP ${res.status} for /${step}). Check the address and port.`)
   }
   const detail = typeof body?.error === 'string' ? `: ${body.error}` : ''
-  return new RemoteConnectError('http', `The ADF daemon at ${url} answered HTTP ${res.status} for /${step}${detail}.`)
+  return new RemoteConnectError('http', `The agent server at ${url} answered HTTP ${res.status} for /${step}${detail}.`)
 }
 
 export interface HandshakeOptions {
@@ -239,7 +239,7 @@ export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCo
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return { error: new RemoteConnectError('transport', `The remote daemon URL is not valid: ${check.reason ?? url}`) }
   const token = readRemoteToken(config, codec)
-  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connections → Add connection (adf daemon token on the server prints it).`) }
+  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connections → Add → Connect (adf daemon token on the server prints it).`) }
   return { url: check.url, token }
 }
 

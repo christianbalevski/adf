@@ -64,20 +64,20 @@ describe('status bar (§6.2)', () => {
     expect(one).toBe(none)
     expect(groups(one)).toEqual(['true'])
     expect(one).not.toContain('host-0 (Local)')
-    expect(one).not.toContain('Runtimes')
+    expect(one).not.toContain('Servers')
     expect(one).toContain('aria-label="Kill: nothing running"')
   })
 
   it('more than one runtime: one named group, the open agent\'s runtime (This computer with none), and the Runtimes arrow', async () => {
     const html = await (await page([LOCAL, REMOTE, REMOTE_2])).statusBar()
     expect(groups(html)).toEqual(['local'])
-    expect(html).toContain('aria-label="Runtime: host-0 (Local)"')
+    expect(html).toContain('aria-label="Server: host-0 (Local)"')
     expect(html).toContain('aria-label="Kill on host-0 (Local): nothing running"')
-    expect(html).toContain('aria-label="Runtimes"')
+    expect(html).toContain('aria-label="Servers"')
     expect(html).toContain('data-runtimes-arrow')
     expect(html.match(/>Kill</g)).toHaveLength(1)
     // A runtime not shown is down: the arrow says so.
-    const arrow = html.slice(html.indexOf('aria-label="Runtimes"'))
+    const arrow = html.slice(html.indexOf('aria-label="Servers"'))
     expect(arrow.slice(0, arrow.indexOf('>'))).toContain('!text-[var(--adf-ui-danger)]')
   })
 
@@ -88,12 +88,12 @@ describe('status bar (§6.2)', () => {
     useDocumentStore.getState().setFilePath('/srv/agents/agent-1.adf', HOST_1)
     const up = renderToStaticMarkup(<StatusBar />)
     expect(groups(up)).toEqual([HOST_1])
-    expect(up).toContain('aria-label="Runtime: host-1"')
+    expect(up).toContain('aria-label="Server: host-1"')
     expect(up).toContain('title="https://host-1.example:7386"')
     useDocumentStore.getState().setFilePath('/srv/agents/agent-1.adf', HOST_2)
     const down = renderToStaticMarkup(<StatusBar />)
     expect(groups(down)).toEqual([HOST_2])
-    expect(down).toContain('aria-label="Runtime: host-2 · Not connected, retrying"')
+    expect(down).toContain('aria-label="Server: host-2 · Not connected, retrying"')
     expect(down).toContain('aria-label="Kill on host-2: Not connected, retrying"')
   })
 
@@ -184,10 +184,12 @@ describe('Settings runtime picker (§6.3)', () => {
     }
     const one = await render([LOCAL])
     expect(one).not.toContain('data-runtime-picker')
-    expect(one).not.toContain('aria-label="Runtime"')
+    expect(one).not.toContain('aria-label="Server"')
     const two = await render([LOCAL, REMOTE_2])
     expect(two).toContain('data-runtime-picker')
-    expect(two).toContain('aria-label="Runtime"')
+    expect(two).toContain('aria-label="Server"')
+    // Server naming: the picker's heading is Server.
+    expect(two).toMatch(/data-runtime-picker="[^"]*"><div[^>]*>Server<\/div>/)
     expect(two).toContain('>host-0 (Local)</option>')
     expect(two).toContain('>host-2 · Not connected, retrying</option>')
     // Studio pages come first, unaffected by the picker.
@@ -197,17 +199,16 @@ describe('Settings runtime picker (§6.3)', () => {
 })
 
 describe('Connections: Add (§6.5)', () => {
-  it('one dialog titled Add; on a found computer it shows that computer and its address', async () => {
+  it('one dialog titled Connect; on a found server it shows that server and its address', async () => {
     await page([LOCAL, REMOTE])
     const { AddConnectionDialog, foundMismatchMessage } = await import('../../../src/renderer/components/settings/ConnectionSettings')
-    const found = { name: 'desk', url: 'http://192.168.1.44:7385', address: '192.168.1.44', fingerprint: 'NEWW-2345', encrypted: false }
+    const found = { name: 'laptop-1', url: 'http://192.168.1.44:7385', address: '192.168.1.44', fingerprint: 'NEWW-2345', encrypted: false }
     const html = renderToStaticMarkup(<AddConnectionDialog onClose={() => {}} found={found} />)
-    expect(html).toContain('>Add</h2>')
-    expect(html).toContain('desk at 192.168.1.44, fingerprint NEWW-2345.')
+    expect(html).toContain('>Connect</h2>')
+    expect(html).toContain('laptop-1 at 192.168.1.44, fingerprint NEWW-2345.')
     expect(html).toContain('value="http://192.168.1.44:7385"')
     expect(html).not.toContain('Add connection')
-    expect(html).not.toContain('>Connect<')
-    expect(foundMismatchMessage(found, 'EVIL-0001')).toBe('192.168.1.44 now answers as another computer (EVIL-0001). Add it from the list again.')
+    expect(foundMismatchMessage(found, 'EVIL-0001')).toBe('The server at 192.168.1.44 has a different fingerprint (EVIL-0001). Studio sent nothing. Select the server in the list again.')
   })
 })
 

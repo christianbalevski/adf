@@ -9,7 +9,8 @@
  *   prompt. The MAC is never carried from a previous check (final check):
  *   every check probes ARP first (readGatewayIdentities); a gateway that
  *   gives no MAC after the probe leaves the network unidentified, and an
- *   unidentified network never matches consent.
+ *   unidentified network never matches consent. Its view says which step
+ *   failed (`problem`), and each change of that is logged.
  * - Tailnet: identified by the tailnet's name.
  * - A changed network on an interface closes its listeners at once
  *   (`beforeChange`), before anything else is read.
@@ -18,8 +19,10 @@
 import { createHash } from 'node:crypto'
 import { isIP } from 'node:net'
 import type { NetworkInterfaceInfo } from 'node:os'
-import type { AllowedNetwork, NetworkView } from '../../../shared/types/remote-access.types'
+import type { AllowedNetwork, NetworkProblem, NetworkView } from '../../../shared/types/remote-access.types'
+import { NETWORK_PROBLEM_TEXT } from '../../../shared/utils/network-consent-text'
 import { addressCandidates, NOT_ALLOWED_SENTENCE, type AddressCandidate } from './addresses'
+import type { GatewayReading } from './network-category'
 
 
 /** `192.168.1.20/24` → `192.168.1.0/24`; IPv6: the /64 prefix. Null without a usable cidr. */
@@ -51,15 +54,29 @@ export const UNIDENTIFIED_NETWORK = 'Unidentified network'
 /** A network id as routes take it. */
 export const NETWORK_ID = /^(lan|tailnet)-[0-9a-f]{16}$/
 
+/** Per LAN interface: a reading (readGatewayReadings), or `<gateway IP>|<gateway MAC>` ('' unknown). */
+export type GatewayMap = Map<string, string | GatewayReading>
+
+/** A gateway string (`<ip>|<mac>`, '' unknown) as a reading; the reason is inferred. */
+export function toGatewayReading(value: string | GatewayReading | undefined): GatewayReading {
+  if (value && typeof value === 'object') return value
+  const [gateway = '', mac = ''] = (value ?? '').split('|')
+  if (!gateway) return { gateway: null, mac: null, problem: { step: 'no_gateway', detail: null } }
+  if (!mac) return { gateway, mac: null, problem: { step: 'no_answer', detail: null } }
+  return { gateway, mac, problem: null }
+}
+
 export interface NetworkWatcherDeps {
-  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown), read after an ARP probe. Read every check; never merged with an earlier read. */
-  readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
+  /** Per LAN interface, the gateway read after an ARP probe. Read every check; never merged with an earlier read. */
+  readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<GatewayMap>
   /** Per LAN interface, the Wi-Fi name where readable without a prompt. */
   readWifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
   /** Windows' category per interface (shown only). Slow: read at most every `slowCheckMs`. */
   readOsCategories?: (ifaces: readonly string[]) => Promise<Map<string, 'private' | 'public'>>
   slowCheckMs: number
   now?: () => number
+  /** One line when an interface's network becomes unidentified (with the failed step) or identified again. */
+  log?: (line: string) => void
 }
 
 export interface NetworkReading {
@@ -72,6 +89,8 @@ export class NetworkWatcher {
   private keys = new Map<string, string>()
   private osCategories = new Map<string, 'private' | 'public'>()
   private osAt = 0
+  /** Per interface, the last logged problem (`step: detail`); absent = identified. */
+  private problemKeys = new Map<string, string>()
 
   constructor(private readonly deps: NetworkWatcherDeps) {}
 
@@ -98,17 +117,21 @@ export class NetworkWatcher {
     ])
     const ids = new Map<string, string | null>()
     const keys = new Map<string, string>()
+    const problems = new Map<string, NetworkProblem>()
     for (const iface of lanIfaces) {
       const info = (input.interfaces[iface] ?? []).find(i => !i.internal && isIP(i.address) === 4) ?? (input.interfaces[iface] ?? []).find(i => !i.internal)
       const subnet = info ? subnetOf(info) : null
       const addresses = candidates.filter(c => c.iface === iface).map(c => c.address).join(',')
       // Fail closed (final check): only this check's MAC, read after the probe, identifies the network.
       // A switch between two checks, or sleep and wake, cannot be seen, so nothing is carried over.
-      const mac = (gateways.get(iface) ?? '').split('|')[1] ?? ''
+      const reading = toGatewayReading(gateways.get(iface))
+      const mac = reading.mac ?? ''
       const id = mac && subnet ? lanNetworkId(mac, subnet, ssids.get(iface) ?? null) : null
       ids.set(iface, id)
       keys.set(iface, `${addresses}|${id ?? ''}`)
+      if (!id) problems.set(iface, !mac ? reading.problem ?? { step: 'no_answer', detail: null } : { step: 'no_subnet', detail: `no IPv4 netmask or IPv6 prefix on ${iface}` })
     }
+    this.logProblems(lanIfaces, problems)
     const changed = lanIfaces.filter(iface => this.keys.has(iface) && this.keys.get(iface) !== keys.get(iface))
     if (changed.length > 0) await input.beforeChange?.(changed)
     this.keys = keys
@@ -130,8 +153,10 @@ export class NetworkWatcher {
       if (!view) {
         const ssid = c.kind === 'lan' ? ssids.get(c.iface) ?? null : null
         const subnet = c.kind === 'lan' ? (() => { const i = (input.interfaces[c.iface] ?? []).find(x => x.address.toLowerCase() === c.address); return i ? subnetOf(i) : null })() : null
+        const problem = !c.networkId && c.kind === 'lan' ? problems.get(c.iface) : undefined
         view = {
           id: c.networkId,
+          ...(problem ? { problem } : {}),
           kind: c.kind,
           label: !c.networkId ? UNIDENTIFIED_NETWORK : c.kind === 'tailnet' ? `Tailnet ${input.tailnet}` : `${ssid ?? c.iface}${subnet ? ` (${subnet})` : ''}`,
           allowed: !!c.networkId && allowed.has(c.networkId),
@@ -146,5 +171,23 @@ export class NetworkWatcher {
       view.addresses.push(c.address)
     }
     return { candidates, networks }
+  }
+
+  /** Log each interface whose problem changed: no silent failure, and no line every 10 s. */
+  private logProblems(ifaces: readonly string[], problems: ReadonlyMap<string, NetworkProblem>): void {
+    const next = new Map<string, string>()
+    for (const iface of ifaces) {
+      const problem = problems.get(iface)
+      if (!problem) {
+        if (this.problemKeys.has(iface)) this.deps.log?.(`network on ${iface} identified`)
+        continue
+      }
+      const key = `${problem.step}: ${problem.detail ?? ''}`
+      next.set(iface, key)
+      if (this.problemKeys.get(iface) !== key) {
+        this.deps.log?.(`network on ${iface} cannot be identified (${problem.step}): ${NETWORK_PROBLEM_TEXT[problem.step]}${problem.detail ? ` ${problem.detail}` : ''}`)
+      }
+    }
+    this.problemKeys = next
   }
 }

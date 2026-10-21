@@ -1541,8 +1541,8 @@ Grouped by area, then category.
 - **Two inbound rules** — TCP mesh port (`ADF Mesh (LAN)`) and UDP 5353 (`ADF mDNS (LAN)`), named consistently across runtime check, elevated apply, and NSIS installer.
 - **Cross-platform state check** — `checkLanFirewall()`: Windows via `Get-NetFirewallRule` (no elevation), macOS reports per-app firewall as unknown (no reliable read), Linux detects `firewalld`/`ufw` and queries port state where readable without root.
 - **Reachability self-probe** — fetches own LAN IP's `/agents` endpoint with a 2s timeout to confirm the mesh server is LAN-bound (note: same-host probes bypass Windows firewall, so this doesn't prove peer reachability).
-- **Elevated apply flow** — Windows UAC via `Start-Process -Verb RunAs`, macOS AppleScript admin prompt via `socketfilterfw`, Linux `pkexec`; each maps user cancellation to a distinct `declined` result.
-- **Idempotent rule creation** — removes any stale rule (including a shadowing Block rule) before recreating; program-scoped to the app binary only.
+- **Commands to run, never run by Studio** — `lanFirewallCommands()`: the exact commands for an elevated shell, shown with **Copy** (remote-access.md R9). There is no elevated apply: no UAC, admin or `pkexec` prompt.
+- **Idempotent rule commands** — each Windows command removes any rule of the same name (a stale Block rule too) before it adds the rule; program-scoped to the app binary only.
 - **NSIS installer firewall rules** — `resources/firewall-installer.nsh` adds rules at elevated install time so LAN discovery never needs a runtime UAC prompt.
 - **RFC1918 LAN IP selection** — `firstLanIpv4()` picks the first private IPv4 address as the peer-reachable address.
 

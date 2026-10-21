@@ -124,7 +124,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
   }, [edgeHeat, stationId, agents])
 
   const ownerLine = detail?.isSelfOwned
-    ? { text: '✓ your runtime', tone: 'text-indigo-600 dark:text-indigo-400' }
+    ? { text: '✓ your server', tone: 'text-indigo-600 dark:text-indigo-400' }
     : detail?.ownerAlias
       ? detail.ownerVerified
         ? { text: `owned by ${detail.ownerAlias}`, tone: 'text-neutral-600 dark:text-neutral-300' }
@@ -172,7 +172,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
               )}
             </div>
             <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
-              {isPeer ? 'remote runtime' : KIND_LABEL[data.kind] ?? 'base station'}
+              {isPeer ? 'remote server' : KIND_LABEL[data.kind] ?? 'base station'}
               {detail?.source && ` — ${SOURCE_LABEL[detail.source] ?? detail.source}`}
               {ownerLine && <span className={`ml-1.5 ${ownerLine.tone}`}>· {ownerLine.text}</span>}
             </div>
@@ -243,7 +243,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
           )}
           {isPeer && peerAgents.length === 0 && (
             <div className="py-2 text-center text-[11px] italic text-[var(--adf-ui-text-subtle)]">
-              {reachable ? 'No agents visible to this runtime.' : 'Directory unreachable — agent list unknown.'}
+              {reachable ? 'No agents visible to this server.' : 'Directory unreachable — agent list unknown.'}
             </div>
           )}
 
@@ -262,7 +262,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
             {stats.top.length > 0 ? (
               <div className="mt-1.5 space-y-1">
                 <div className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                  {isPeer ? "Who's been talking to this runtime:" : 'Who uses this station:'}
+                  {isPeer ? 'Who talked to this server:' : 'Who uses this station:'}
                 </div>
                 {stats.top.map((t) =>
                   t.localFilePath ? (

@@ -1,16 +1,21 @@
 /**
  * Remote access in Settings (docs/design/remote-access.md §7, §9.1;
- * settings-scopes.md §6, §7): other computers using this runtime.
+ * settings-scopes.md §6, §7): other devices that use the local agent server.
  *
- * - Studio → Connections → Add → Share (`SharePanel`): consent inline
- *   (remote access on, and Allow on each current network not allowed, with
- *   one explicit Allow), then this runtime's addresses by network with
- *   Copy, and the 6-digit pairing code with its countdown. The other
- *   computer enters it; this computer still asks Allow device (a native
- *   dialog, remote-access.md §5.4), then "Approved: <name>.". A token
- *   shown once is under Details.
+ * - Studio → Connections → Add → Share (`SharePanel`): the name devices see
+ *   ("Share this server as", the runtime alias), what Share needs, in one
+ *   sentence naming every network it will listen on, and Allow, which asks
+ *   main (REMOTE_ACCESS_SHARE: one native dialog, then remote access on and
+ *   each network it named allowed; review A1). Then the 6-digit pairing
+ *   code with its countdown (Renew once it is gone), the firewall guidance,
+ *   and the addresses: one table, grouped by network, one Copy per row. The
+ *   other computer enters the code; this computer still asks Allow device (a
+ *   native dialog, remote-access.md §5.4), then "Approved: <name>.". A token
+ *   shown once is under Token. Leaving Share with no device added turns
+ *   remote access off again when Share turned it on (review A5).
  * - Studio → Connections → Devices (`DevicesGroup`): the Remote access
- *   switch and the computers using this runtime, each with Revoke.
+ *   switch and the devices that can access the local server, each with
+ *   Revoke.
  * - Studio → Connections → Add → Connect: pairMessage for the client side
  *   (ConnectionSettings.tsx). Discovery and pairing run in main; the token
  *   never reaches the renderer.
@@ -18,17 +23,18 @@
  * Every action goes to main, which asks the daemon. A new device token is
  * shown once, here, and dropped on Done; nothing else here holds a token.
  *
- * Copy (owner rule): labels are one word or a noun; at most one sentence
- * under a heading; the rest is behind Learn more.
+ * Copy: labels are one word or a noun; help text is short sentences, one
+ * fact each (ASD-STE100 style). In the UI the runtime is a "server".
  */
 
 import { useEffect, useRef, useState } from 'react'
-import { Button, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
+import { Button, Switch, TextInput } from '../ui'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemoteAccessView, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
-import { PUBLIC_WARNING } from '../../../shared/utils/network-consent-text'
+import { andList, listenPlan, PUBLIC_WARNING, unidentifiedText } from '../../../shared/utils/network-consent-text'
+import { PageSection, SectionRow, StateDot } from './page-section'
 
 // --- Pure helpers (tested) ------------------------------------------------------
 
@@ -87,11 +93,12 @@ export function groupedUrls(status: Pick<RemoteAccessStatus, 'urls' | 'networks'
     for (const u of urls) used.add(u.url)
   }
   const others = orderedUrls(status.urls.filter((u) => !used.has(u.url)))
-  if (others.length > 0) groups.push({ title: 'Others', urls: others })
+  if (others.length > 0) groups.push({ title: 'Other', urls: others })
   return groups
 }
 
-export const NOT_ENCRYPTED_WARNING = 'Anyone on this network can read the token.'
+/** Under the address table when an address is plain http. */
+export const NOT_ENCRYPTED_WARNING = 'Some addresses use http. Anyone on those networks can read the token.'
 
 /** "Last seen" in the devices list. */
 export function lastSeenText(device: RemoteDevice, now = Date.now()): string {
@@ -122,22 +129,51 @@ export function networkWarning(network: NetworkView): string | null {
   return network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
 }
 
+/** The server Share shares: "this server", or `<name> (Local)` when the page names it (review A6). */
+export function sharedRuntime(runtime: string | null | undefined): string {
+  return runtime || 'this server'
+}
+
+/** Devices' help sentence: "Devices that can access <name> (Local)." */
+export function devicesHint(runtime: string | null | undefined): string {
+  return `Devices that can access ${sharedRuntime(runtime)}.`
+}
+
 /**
  * What Share needs before anything listens (owner decision 2026-10-18 b:
  * never listen without consent, given per network): remote access on, and
- * each current network allowed. Null when nothing is needed.
+ * each current network allowed. The sentence names every current network
+ * it will listen on, those allowed earlier too, and the Public warning
+ * covers them all (review A2). Null when nothing is needed. Main's dialog
+ * (REMOTE_ACCESS_SHARE) is the confirmation.
  */
-export function shareConsent(status: RemoteAccessStatus): { enable: boolean; networks: NetworkView[]; text: string; warning: string | null } | null {
-  const networks = status.networks.filter((n) => !n.allowed && !!n.id)
+export function shareConsent(status: RemoteAccessStatus, runtime: string | null = null): { enable: boolean; networks: NetworkView[]; text: string; warning: string | null } | null {
+  const plan = listenPlan(status, { allow: true })
+  const networks = plan.allow as NetworkView[]
   const enable = !status.enabled
   if (!enable && networks.length === 0) return null
-  const where = networks.length > 0 ? ` on ${networks.map((n) => n.label).join(' and ')}` : ''
+  const here = status.networks.filter((n) => !!n.id).map((n) => n.label)
+  const where = here.length > 0 ? ` on ${andList(here)}` : ''
   return {
     enable,
     networks,
-    text: `Computers you pair${where} get full control of this runtime, as powerful as your seed phrase.`,
-    warning: networks.some((n) => networkWarning(n)) ? PUBLIC_NETWORK_WARNING : null,
+    text: `Devices that you pair${where} get full control of ${sharedRuntime(runtime)}. This control is equal to your seed phrase.`,
+    warning: plan.exposed ? PUBLIC_NETWORK_WARNING : null,
   }
+}
+
+/** Shown in Share when leaving keeps remote access on (review A5). */
+export const STAYS_ON_LINE = 'Remote access stays on. To turn it off, use Devices.'
+
+/**
+ * Leaving Share (Back, Cancel, closing the dialog) after its Allow: `off`
+ * when Share turned remote access on and no device was added (paired or a
+ * token), so nothing keeps listening for nobody; `stays` (STAYS_ON_LINE)
+ * when Share changed something that stays; null when it changed nothing.
+ */
+export function shareLeave({ turnedOn, allowed, added }: { turnedOn: boolean; allowed: boolean; added: boolean }): 'off' | 'stays' | null {
+  if (turnedOn && !added) return 'off'
+  return turnedOn || allowed ? 'stays' : null
 }
 
 /** "Approved: <label>." once a device that entered the code is allowed: the newest paired device since Share opened. */
@@ -146,7 +182,7 @@ export function addedDeviceLine(before: ReadonlySet<string>, devices: RemoteDevi
   return added ? `Approved: ${added.label}.` : null
 }
 
-/** The line of every host-only control with a remote runtime (settings-scopes.md §7). */
+/** The line of every host-only control with a remote server (settings-scopes.md §7). */
 export function changeOn(name: string): string {
   return `Change on ${name}.`
 }
@@ -161,11 +197,24 @@ export function pairMessage(state: RemotePairState | null, hostName: string): { 
   return null
 }
 
+/** Devices' heading summary: "Off", "On", "On · 2 devices"; "Not available" outside Local mode. */
+export function devicesSummary(view: RemoteAccessView): string {
+  if (!view.available) return 'Not available'
+  const status = view.status
+  if (!status) return ''
+  const n = status.devices.length
+  const devices = n > 0 ? ` · ${n} ${n === 1 ? 'device' : 'devices'}` : ''
+  return `${status.enabled ? 'On' : 'Off'}${devices}`
+}
+
+/** Under Remote access while Studio stops the server at quit (keepDaemonRunning off, Studio started it). */
+export const STOPS_WITH_STUDIO = 'When you quit Studio, Studio stops this server. Then devices cannot connect until you start Studio again. To change this, turn on Keep running after Studio quits.'
+
 // --- Presentational parts ----------------------------------------------------------
 
 function EncryptionBadge({ encrypted }: { encrypted: boolean }) {
   return (
-    <span className={`rounded px-1.5 py-0.5 text-[11px] font-medium ${encrypted ? 'bg-[var(--adf-ui-success-subtle,var(--adf-ui-surface-hover))] text-[var(--adf-ui-success,var(--adf-ui-text))]' : 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-text)]'}`}>
+    <span className={`whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium ${encrypted ? 'bg-[var(--adf-ui-success-subtle,var(--adf-ui-surface-hover))] text-[var(--adf-ui-success,var(--adf-ui-text))]' : 'bg-[var(--adf-ui-warning-subtle)] text-[var(--adf-ui-text)]'}`}>
       {encrypted ? 'Encrypted' : 'Not encrypted'}
     </span>
   )
@@ -175,73 +224,91 @@ function copy(text: string): void {
   void navigator.clipboard?.writeText(text).catch(() => {})
 }
 
+/** Copy, then "Copied" for a moment: the user sees that it worked. */
+function CopyButton({ text, label }: { text: string; label: string }) {
+  const [copied, setCopied] = useState(false)
+  useEffect(() => {
+    if (!copied) return
+    const timer = setTimeout(() => setCopied(false), 1500)
+    return () => clearTimeout(timer)
+  }, [copied])
+  return (
+    <Button size="compact" variant="ghost" onClick={() => { copy(text); setCopied(true) }} aria-label={label} className="w-16">
+      {copied ? 'Copied' : 'Copy'}
+    </Button>
+  )
+}
+
 function LearnMore({ href }: { href: string }) {
   return <DocsLink href={href} label="Learn more" className="ml-1.5 !text-[11px]" />
 }
 
-export function RemoteAddressList({ urls }: { urls: RemoteUrl[] }) {
-  if (urls.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No address.</p>
+/**
+ * Share's addresses (static in tests): one table, grouped by network
+ * (Tailscale, each LAN by its name, Other). One row per address: the
+ * address, its encryption, and its own Copy, aligned in one column.
+ */
+export function AddressTable({ status }: { status: Pick<RemoteAccessStatus, 'urls' | 'networks'> }) {
+  const groups = groupedUrls(status)
+  if (groups.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No address.</p>
+  const plain = status.urls.some((u) => !u.encrypted)
   return (
-    <ul className="space-y-1.5">
-      {orderedUrls(urls).map((u) => (
-        <li key={u.url} className="flex flex-wrap items-center gap-2 text-[12px]">
-          <code className="break-all text-[var(--adf-ui-text)]">{u.url}</code>
-          <EncryptionBadge encrypted={u.encrypted} />
-          <Button size="compact" variant="ghost" onClick={() => copy(u.url)} aria-label={`Copy ${u.url}`}>Copy</Button>
-          {!u.encrypted && <span className="w-full text-[11px] text-[var(--adf-ui-text-subtle)]">{NOT_ENCRYPTED_WARNING}</span>}
-        </li>
-      ))}
-    </ul>
+    <div className="space-y-1.5">
+      <div className="overflow-hidden rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)]">
+        <table className="w-full border-collapse text-[12px]" aria-label="Addresses">
+          {groups.map((g, gi) => (
+            <tbody key={g.title} data-address-group={g.title}>
+              <tr className={gi > 0 ? 'border-t border-[var(--adf-ui-separator)]' : ''}>
+                <th scope="rowgroup" colSpan={3} className="bg-[var(--adf-ui-surface-hover)] px-3 py-1.5 text-left text-[11px] font-semibold text-[var(--adf-ui-text-muted)]">{g.title}</th>
+              </tr>
+              {orderedUrls(g.urls).map((u) => (
+                <tr key={u.url} className="border-t border-[var(--adf-ui-separator)]" data-address={u.url}>
+                  <td className="w-full break-all px-3 py-1.5 font-mono text-[12px] text-[var(--adf-ui-text)]">{u.url}</td>
+                  <td className="px-2 py-1.5 text-right align-middle"><EncryptionBadge encrypted={u.encrypted} /></td>
+                  <td className="py-1 pr-1.5 text-right align-middle"><CopyButton text={u.url} label={`Copy ${u.url}`} /></td>
+                </tr>
+              ))}
+            </tbody>
+          ))}
+        </table>
+      </div>
+      {plain && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">{NOT_ENCRYPTED_WARNING}</p>}
+    </div>
   )
 }
 
-/** Share's addresses, one heading per network (groupedUrls). */
-export function GroupedAddresses({ status }: { status: Pick<RemoteAccessStatus, 'urls' | 'networks'> }) {
-  const groups = groupedUrls(status)
-  if (groups.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No address.</p>
+/** The devices list (static in tests): name, how it was added, last seen, Revoke. */
+export function RemoteDeviceList({ devices, busy, onRemove, now }: { devices: RemoteDevice[]; busy: boolean; onRemove: (device: RemoteDevice) => void; now?: number }) {
+  if (devices.length === 0) return <SectionRow><span className="text-[var(--adf-ui-text-muted)]">None. To add a device, click Add, then Share.</span></SectionRow>
   return (
-    <div className="space-y-2">
-      {groups.map((g) => (
-        <div key={g.title}>
-          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">{g.title}</div>
-          <RemoteAddressList urls={g.urls} />
-        </div>
+    <div>
+      {devices.map((d) => (
+        <SectionRow key={d.id} data-device={d.id} actions={<Button size="compact" variant="danger" disabled={busy} onClick={() => onRemove(d)}>Revoke</Button>}>
+          <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">{d.label}</div>
+          <div className="mt-0.5 flex items-center gap-2 text-[var(--adf-ui-text-muted)]">
+            <span>{d.origin === 'paired' ? 'Paired' : 'Token'}</span>
+            <span aria-hidden="true">·</span>
+            {d.connected ? <StateDot tone="ok">{lastSeenText(d, now)}</StateDot> : <span>{lastSeenText(d, now)}</span>}
+          </div>
+        </SectionRow>
       ))}
     </div>
   )
 }
 
-export function RemoteDeviceList({ devices, busy, onRemove, now }: { devices: RemoteDevice[]; busy: boolean; onRemove: (device: RemoteDevice) => void; now?: number }) {
-  if (devices.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">None.</p>
-  return (
-    <ul className="divide-y divide-[var(--adf-ui-separator)]">
-      {devices.map((d) => (
-        <li key={d.id} className="flex items-center justify-between gap-3 py-1.5">
-          <div className="min-w-0 text-[12px]">
-            <div className="font-medium text-[var(--adf-ui-text)]">{d.label}</div>
-            <div className={d.connected ? 'text-[var(--adf-ui-accent)]' : 'text-[var(--adf-ui-text-muted)]'}>
-              {d.origin === 'paired' ? 'Paired' : 'Token'} · {lastSeenText(d, now)}
-            </div>
-          </div>
-          <Button size="compact" variant="danger" disabled={busy} onClick={() => onRemove(d)}>Revoke</Button>
-        </li>
-      ))}
-    </ul>
-  )
-}
-
-/** Share, code view: the code in large digits, the countdown and the tries left. */
+/** Share, code view: the code in large digits, the countdown, the tries left and the fingerprint. */
 export function PairingCodePanel({ pairing, fingerprint, now }: { pairing: PairingWindowView; fingerprint: string | null; now?: number }) {
+  const print = pairing.fingerprint || fingerprint
   return (
-    <div className="space-y-2 text-center">
-      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the other computer.</p>
-      <p className="font-mono text-[40px] font-semibold tracking-[0.15em] text-[var(--adf-ui-text)]" aria-label="Pairing code">{formatCode(pairing.code)}</p>
+    <div className="space-y-1.5 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-4 py-4 text-center" data-pairing-code="">
+      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the other device.</p>
+      <p className="font-mono text-[40px] font-semibold leading-tight tracking-[0.15em] text-[var(--adf-ui-text)]" aria-label="Pairing code">{formatCode(pairing.code)}</p>
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
-        Expires in {pairingCountdown(pairing.expiresAt, now)} · {pairing.attemptsLeft} wrong {pairing.attemptsLeft === 1 ? 'code' : 'codes'} left
-        {(pairing.fingerprint || fingerprint) ? <> · Fingerprint {pairing.fingerprint || fingerprint}</> : null}
+        Expires in <span className="font-mono tabular-nums text-[var(--adf-ui-text)]">{pairingCountdown(pairing.expiresAt, now)}</span> · {pairing.attemptsLeft} {pairing.attemptsLeft === 1 ? 'try' : 'tries'} left
       </p>
-      {pairing.lockedSources > 0 && <p className="text-[12px] text-[var(--adf-ui-danger)]">{pairing.lockedSources} {pairing.lockedSources === 1 ? 'device' : 'devices'} locked out after 5 wrong codes.</p>}
-      {pairing.claim && <p className="text-[12px] text-[var(--adf-ui-text)]">A device entered the code. Answer the Allow device dialog.</p>}
+      {print && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">Fingerprint <span className="font-mono">{print}</span></p>}
+      {pairing.lockedSources > 0 && <p className="text-[12px] text-[var(--adf-ui-danger)]">{pairing.lockedSources} {pairing.lockedSources === 1 ? 'device is' : 'devices are'} locked out after 5 wrong codes.</p>}
+      {pairing.claim && <p className="text-[12px] font-medium text-[var(--adf-ui-text)]">A device entered the code. Answer the Allow device dialog.</p>}
     </div>
   )
 }
@@ -250,13 +317,13 @@ export function PairingCodePanel({ pairing, fingerprint, now }: { pairing: Pairi
 export function NewTokenPanel({ label, token, onDone }: { label: string; token: string; onDone: () => void }) {
   return (
     <div className="space-y-2">
-      <div className="text-[12px] text-[var(--adf-ui-text)]">Token for {label}, shown once. It is as powerful as your seed phrase.</div>
+      <div className="text-[12px] text-[var(--adf-ui-text)]">Token for {label}. Studio shows it only one time. It is as powerful as your seed phrase.</div>
       <div className="flex items-center gap-2">
         <code className="min-w-0 flex-1 break-all rounded border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 py-1 text-[12px]">{token}</code>
-        <Button size="compact" onClick={() => copy(token)}>Copy</Button>
+        <CopyButton text={token} label="Copy token" />
         <Button size="compact" variant="primary" onClick={onDone}>Done</Button>
       </div>
-      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the other computer: Add, Connect, then Details.</div>
+      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the other computer, click Add, then Connect, and enter the token.</div>
     </div>
   )
 }
@@ -264,12 +331,77 @@ export function NewTokenPanel({ label, token, onDone }: { label: string; token: 
 /** Share's consent, inline: one sentence, the Public warning, one explicit Allow. */
 export function ShareConsent({ consent, busy, onAllow }: { consent: NonNullable<ReturnType<typeof shareConsent>>; busy: boolean; onAllow: () => void }) {
   return (
-    <div className="space-y-2">
-      <p className="text-[var(--adf-ui-text)]">{consent.text}<LearnMore href={DOCS.remoteAccessPair} /></p>
+    <div className="space-y-2 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] px-4 py-3" data-share-consent="">
+      <p className="leading-5 text-[var(--adf-ui-text)]">{consent.text}<LearnMore href={DOCS.remoteAccessPair} /></p>
       {consent.warning && <p className="text-[11px] text-[var(--adf-ui-danger)]">{consent.warning}</p>}
       <div className="flex justify-end">
         <Button variant="primary" loading={busy} onClick={onAllow}>Allow</Button>
       </div>
+    </div>
+  )
+}
+
+/** A block of Share: a small heading, then its content. */
+function Block({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <section className="space-y-1.5">
+      <h3 className="text-[12px] font-semibold text-[var(--adf-ui-text)]">{title}</h3>
+      {children}
+    </section>
+  )
+}
+
+/** The label of Share's name field (owner wording). */
+export const SHARE_AS_LABEL = 'Share this server as'
+
+/** Under the name field. The name is the runtime alias: one name everywhere. */
+export const SHARE_AS_HELP = 'Devices see this server by this name. It is also the alias in Settings → Identity.'
+
+/** Under the name field while it is blank (D5). */
+export const NAME_BLANK = 'Enter a name.'
+
+/** The daemon refused the name (1 to 63 characters, no control or bidi characters): in plain words (D5). */
+export const NAME_RULE = 'Use 1 to 63 characters. Do not use control characters.'
+
+/** The note for a refused rename: the daemon's name rule in plain words, any other error as it is. */
+export function nameError(error: string): string {
+  return /1-63 characters|control or bidi/i.test(error) ? NAME_RULE : error
+}
+
+/** Focus moved to Back or Cancel: leaving, so the name is not saved (D5). */
+export function leavingFocus(target: EventTarget | null): boolean {
+  const el = target as { dataset?: Record<string, string | undefined> } | null
+  return el?.dataset?.shareLeave !== undefined
+}
+
+/** Share's name field (static in tests): saved on Enter or when the field loses focus, but not to Back or Cancel. */
+export function ShareNameField({ name, draft, busy, note, onDraft, onSave }: {
+  name: string
+  draft: string | null
+  busy: boolean
+  note: { kind: 'ok' | 'error'; text: string } | null
+  onDraft: (draft: string) => void
+  onSave: () => void
+}) {
+  const value = draft ?? name
+  return (
+    <div className="space-y-1">
+      <label className="flex flex-wrap items-center gap-x-3 gap-y-1">
+        <span className="text-[12px] font-medium text-[var(--adf-ui-text)]">{SHARE_AS_LABEL}</span>
+        <TextInput
+          value={value}
+          onChange={(e) => onDraft(e.target.value)}
+          onBlur={(e) => { if (!leavingFocus(e.relatedTarget)) onSave() }}
+          onKeyDown={(e) => { if (e.key === 'Enter') onSave() }}
+          disabled={busy}
+          maxLength={63}
+          spellCheck={false}
+          aria-label={SHARE_AS_LABEL}
+          className="min-w-0 flex-1"
+        />
+      </label>
+      <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">{SHARE_AS_HELP}</p>
+      {note && <p role="status" className={`text-[11px] ${note.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`}>{note.text}</p>}
     </div>
   )
 }
@@ -279,20 +411,27 @@ export function ShareConsent({ consent, busy, onAllow }: { consent: NonNullable<
 type ActResult = { ok: true; view: RemoteAccessView } | { ok: false; code: string; error: string }
 
 /**
- * Add → Share: another computer uses this runtime. Asks consent inline when
+ * Add → Share: other devices use this server. Asks consent inline when
  * remote access is off or a current network is not allowed (never listens
- * without it), then shows the addresses and opens a pairing window. The
- * claim is still allowed or denied on this computer (Allow device).
+ * without it), then shows the code and the addresses, and opens a pairing
+ * window. The claim is still allowed or denied on this computer (Allow
+ * device).
  */
-export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+export function SharePanel({ runtime = null, onBack, onDone }: { runtime?: string | null; onBack: () => void; onDone: () => void }) {
   const [view, setView] = useState<RemoteAccessView | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [label, setLabel] = useState('')
   const [created, setCreated] = useState<{ label: string; token: string } | null>(null)
+  const [nameDraft, setNameDraft] = useState<string | null>(null)
+  const [nameNote, setNameNote] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
+  // Share opened a pairing window (Renew once it is gone), and what its Allow changed (review A3, A5).
+  const [opened, setOpened] = useState(false)
+  const [turnedOn, setTurnedOn] = useState(false)
+  const [allowed, setAllowed] = useState(false)
   const before = useRef<ReadonlySet<string> | null>(null)
-  const opened = useRef(false)
+  const openedRef = useRef(false)
 
   useEffect(() => {
     let alive = true
@@ -304,22 +443,26 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
 
   const status = view?.status ?? null
   if (status && before.current === null) before.current = new Set(status.devices.map((d) => d.id))
-  const consent = status ? shareConsent(status) : null
+  const consent = status ? shareConsent(status, runtime) : null
   const approved = status && before.current ? addedDeviceLine(before.current, status.devices) : null
   const pairing = status?.pairing ?? null
-  const approvedRef = useRef(false)
-  approvedRef.current = !!approved
+  const leave = shareLeave({ turnedOn, allowed, added: !!approved || !!created })
 
-  // Leaving Share before a computer claimed the code closes the window this Share opened.
-  useEffect(() => () => {
-    if (opened.current && !approvedRef.current) void window.adfApi?.closeRemotePairing?.().catch(() => {})
-  }, [])
+  // Leaving Share: the pairing window it opened closes unless a computer claimed it; remote access goes off again
+  // when Share turned it on and no device was added (review A5). Main logs both; the Devices switch shows it.
+  // Main decides what leaving does (S1): it knows whether Share turned remote access on, whether a device
+  // was added and whether a claim waits (D4), also while share() still runs or the window reloads.
+  useEffect(() => () => { void window.adfApi?.leaveRemoteShare?.().catch(() => {}) }, [])
 
-  // Once it listens: the code (the existing pairing window), opened for this Share.
-  useEffect(() => {
-    if (!status || consent || approved || opened.current || !canAddDevice(status) || status.pairing) return
-    opened.current = true
+  const openPairing = () => {
+    openedRef.current = true
+    setOpened(true)
     void act(() => window.adfApi.openRemotePairing())
+  }
+  // Once it listens: the code (the existing pairing window), opened for this Share; afterwards Renew (review A3).
+  useEffect(() => {
+    if (!status || consent || approved || openedRef.current || !canAddDevice(status) || status.pairing) return
+    openPairing()
   }, [status, consent, approved])
   useEffect(() => {
     if (!pairing) return
@@ -336,24 +479,27 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
       else if (result.code !== 'cancelled') setError(result.error)
       return result.ok
     } catch {
-      setError('Studio could not reach the ADF daemon.')
+      setError('Studio could not reach the server.')
       return false
     } finally {
       setBusy(false)
     }
   }
+  // Allow asks main: one native dialog naming every network, then on and those networks allowed (review A1).
   const allow = async () => {
-    if (!consent) return
-    // The Allow under the sentence is the confirmation: no second dialog.
-    if (consent.enable && !await act(() => window.adfApi.setRemoteAccess({ enabled: true, confirmed: true }))) return
-    for (const n of consent.networks) {
-      const result = await window.adfApi.allowNetwork(n.id!)
-      if (!result.ok) { setError(result.error); break }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.adfApi.shareRemoteAccess()
+      if (result.turnedOn) setTurnedOn(true)
+      if (result.ok) { setView(result.view); setAllowed(true) }
+      else if (result.code !== 'cancelled') setError(result.error)
+    } catch {
+      setError('Studio could not reach the server.')
+    } finally {
+      setBusy(false)
     }
-    const next = await window.adfApi.getRemoteAccess().catch(() => null)
-    if (next) setView(next)
   }
-  const renew = () => { void act(() => window.adfApi.openRemotePairing()) }
   const createToken = async () => {
     setBusy(true)
     setError(null)
@@ -365,19 +511,44 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
       setBusy(false)
     }
   }
+  /** The name devices see (the runtime alias): saved when changed, "Saved." or the refusal under the field. */
+  const saveName = async () => {
+    const next = nameDraft?.trim() ?? ''
+    if (!status || nameDraft === null) return
+    if (!next) { setNameNote({ kind: 'error', text: NAME_BLANK }); return }
+    if (next === status.name) { setNameDraft(null); setNameNote(null); return }
+    setBusy(true)
+    setNameNote(null)
+    try {
+      const result = await window.adfApi.setRemoteAccess({ name: next })
+      if (result.ok) { setView(result.view); setNameDraft(null); setNameNote({ kind: 'ok', text: 'Saved.' }) }
+      else if (result.code !== 'cancelled') setNameNote({ kind: 'error', text: nameError(result.error) })
+    } catch {
+      setNameNote({ kind: 'error', text: 'Studio could not reach the server.' })
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <SharePanelView
       view={view}
+      runtime={runtime}
       busy={busy}
       error={error}
       now={now}
+      opened={opened}
+      leave={leave}
       approved={approved}
       label={label}
       created={created}
+      nameDraft={nameDraft}
+      nameNote={nameNote}
+      onName={setNameDraft}
+      onSaveName={() => void saveName()}
       onLabel={setLabel}
       onAllow={() => void allow()}
-      onRenew={renew}
+      onRenew={openPairing}
       onCreateToken={() => void createToken()}
       onBack={onBack}
       onDone={onDone}
@@ -386,14 +557,24 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
 }
 
 /** Share's markup (static in tests). */
-export function SharePanelView({ view, busy, error, now, approved, label, created, onLabel, onAllow, onRenew, onCreateToken, onBack, onDone }: {
+export function SharePanelView({ view, runtime = null, busy, error, now, opened = false, leave = null, approved, label, created, nameDraft = null, nameNote = null, onName = () => {}, onSaveName = () => {}, onLabel, onAllow, onRenew, onCreateToken, onBack, onDone }: {
   view: RemoteAccessView | null
+  /** `<name> (Local)` while there is more than one server (review A6). */
+  runtime?: string | null
   busy: boolean
   error: string | null
   now?: number
+  /** Share opened a pairing window: once it is gone (expired, wrong codes, a failed open), Renew (review A3). */
+  opened?: boolean
+  /** What leaving does (shareLeave): `stays` shows STAYS_ON_LINE (review A5). */
+  leave?: 'off' | 'stays' | null
   approved: string | null
   label: string
   created: { label: string; token: string } | null
+  nameDraft?: string | null
+  nameNote?: { kind: 'ok' | 'error'; text: string } | null
+  onName?: (draft: string) => void
+  onSaveName?: () => void
   onLabel: (label: string) => void
   onAllow: () => void
   onRenew: () => void
@@ -402,40 +583,64 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
   onDone: () => void
 }) {
   const status = view?.status ?? null
-  const consent = status ? shareConsent(status) : null
+  const consent = status ? shareConsent(status, runtime) : null
   const pairing = status?.pairing ?? null
   const expired = !!pairing && pairingCountdown(pairing.expiresAt, now) === '0:00'
+  const firewall = status && status.firewall.state !== 'ok' && (status.firewall.message || status.firewall.commands.length > 0) ? status.firewall : null
   return (
-    <div className="space-y-3 text-[12px]">
+    <div className="space-y-4 text-[12px]">
       {!view && <p className="text-[var(--adf-ui-text-muted)]">Loading…</p>}
       {view && !view.available && <p className="text-[var(--adf-ui-text-muted)]">{view.unavailableReason}</p>}
       {view?.available && !status && <p className="text-[var(--adf-ui-danger)]">{view.error ?? 'Studio could not read remote access.'}</p>}
+      {status && <ShareNameField name={status.name} draft={nameDraft} busy={busy} note={nameNote} onDraft={onName} onSave={onSaveName} />}
       {status && consent && <ShareConsent consent={consent} busy={busy} onAllow={onAllow} />}
+      {status?.networks.filter((n) => !n.id).map((n) => (
+        <p key={`unidentified:${n.kind}:${n.ifaces.join(',')}`} className="text-[var(--adf-ui-text-muted)]">
+          {unidentifiedText(n.problem)}<DocsLink href={DOCS.unidentifiedNetwork} label="Help" className="ml-1.5 !text-[11px]" />
+        </p>
+      ))}
       {status && !consent && (
         <>
-          {approved
-            ? <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">{approved}</p>
-            : pairing && !expired
-              ? <PairingCodePanel pairing={pairing} fingerprint={status.fingerprint} now={now} />
-              : canAddDevice(status)
-                ? <div className="flex items-center justify-between gap-2"><span className="text-[var(--adf-ui-text-muted)]">{pairing ? 'The code expired.' : 'Opening…'}</span>{pairing && <Button size="compact" disabled={busy} onClick={onRenew}>Renew</Button>}</div>
-                : <p className="text-[var(--adf-ui-text-muted)]">{remoteStatusLine(status)}</p>}
-          <div>
-            <div className="mb-1 text-[13px] font-medium text-[var(--adf-ui-text)]">Addresses</div>
-            <GroupedAddresses status={status} />
-          </div>
+          <Block title="Code">
+            {approved
+              ? <p className="rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] px-4 py-3 text-[13px] font-medium text-[var(--adf-ui-text)]">{approved}</p>
+              : pairing && !expired
+                ? <PairingCodePanel pairing={pairing} fingerprint={status.fingerprint} now={now} />
+                : canAddDevice(status)
+                  ? (
+                    <div className="flex items-center justify-between gap-2 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] px-4 py-3">
+                      <span className="text-[var(--adf-ui-text-muted)]">{pairing ? 'The code expired.' : opened ? 'No code.' : 'Opening…'}</span>
+                      {(pairing || opened) && <Button size="compact" disabled={busy} onClick={onRenew}>Renew</Button>}
+                    </div>
+                  )
+                  : <p className="text-[var(--adf-ui-text-muted)]">{remoteStatusLine(status)}</p>}
+          </Block>
+          {firewall && (
+            <Block title="Firewall">
+              <div className={`space-y-1 text-[11px] ${firewall.state === 'blocked' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-subtle)]'}`}>
+                {firewall.message && <p>{firewall.message}</p>}
+                {firewall.commands.length > 0 && <ul className="space-y-0.5 rounded border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] px-2 py-1 font-mono text-[var(--adf-ui-text)]">{firewall.commands.map((c) => <li key={c} className="break-all">{c}</li>)}</ul>}
+              </div>
+            </Block>
+          )}
+          <Block title="Addresses">
+            <AddressTable status={status} />
+          </Block>
           {!approved && (
             <details className="text-[12px]">
-              <summary className="cursor-pointer select-none text-[var(--adf-ui-text-muted)]">Details</summary>
+              <summary className="cursor-pointer select-none font-semibold text-[var(--adf-ui-text)]">Token</summary>
               <div className="mt-2 space-y-2">
                 {created ? <NewTokenPanel label={created.label} token={created.token} onDone={onDone} /> : (
-                  <div className="flex items-end gap-2">
-                    <label className="block flex-1 space-y-1">
-                      <span className="text-[var(--adf-ui-text)]">Device name</span>
-                      <TextInput value={label} onChange={(e) => onLabel(e.target.value)} placeholder="Device name" aria-label="Device name" maxLength={64} />
-                    </label>
-                    <Button disabled={busy} onClick={onCreateToken}>Create</Button>
-                  </div>
+                  <>
+                    <p className="text-[var(--adf-ui-text-muted)]">A token connects without a code. Scripts and the ADF CLI use tokens.</p>
+                    <div className="flex items-end gap-2">
+                      <label className="block flex-1 space-y-1">
+                        <span className="font-medium text-[var(--adf-ui-text)]">Device</span>
+                        <TextInput value={label} onChange={(e) => onLabel(e.target.value)} placeholder="laptop-1" aria-label="Device name" maxLength={64} />
+                      </label>
+                      <Button disabled={busy} onClick={onCreateToken}>Create</Button>
+                    </div>
+                  </>
                 )}
               </div>
             </details>
@@ -443,9 +648,10 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
         </>
       )}
       {error && <p role="status" className="text-[var(--adf-ui-danger)]">{error}</p>}
-      <div className="flex justify-end gap-2 pt-1">
-        <Button onClick={onBack}>Back</Button>
-        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone}>Cancel</Button>}
+      {leave === 'stays' && <p className="text-[var(--adf-ui-text-muted)]">{STAYS_ON_LINE}</p>}
+      <div className="flex justify-end gap-2 border-t border-[var(--adf-ui-separator)] pt-3">
+        <Button onClick={onBack} disabled={busy} data-share-leave="">Back</Button>
+        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone} disabled={busy} data-share-leave="">Cancel</Button>}
       </div>
     </div>
   )
@@ -455,10 +661,10 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
 
 /**
  * Devices: the Remote access switch (turning it on asks in a native dialog,
- * remote-access.md §7) and the computers using this runtime, each with
- * Revoke. Only in local mode; otherwise the reason.
+ * remote-access.md §7) and the devices that can access the local server,
+ * each with Revoke. Only in Local mode; otherwise the reason.
  */
-export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning: () => Promise<void>; className?: string }) {
+export function DevicesGroup({ runtime = null }: { runtime?: string | null }) {
   const [view, setView] = useState<RemoteAccessView | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
@@ -492,7 +698,7 @@ export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning:
       if (result.ok) setView(result.view)
       else if (result.code !== 'cancelled') setMessage({ kind: 'error', text: result.error })
     } catch {
-      setMessage({ kind: 'error', text: 'Studio could not reach the ADF daemon.' })
+      setMessage({ kind: 'error', text: 'Studio could not reach the server.' })
     } finally {
       setBusy(false)
     }
@@ -500,57 +706,49 @@ export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning:
 
   return (
     <DevicesGroupView
-      className={className}
+      runtime={runtime}
       view={view}
       busy={busy}
       message={message}
       now={now}
       onSwitch={(next) => void act(() => window.adfApi.setRemoteAccess({ enabled: next }))}
-      onKeepRunning={() => void onKeepRunning().then(() => window.adfApi.getRemoteAccess()).then(setView).catch(() => {})}
       onRevoke={(d) => void act(() => window.adfApi.removeRemoteDevice(d.id))}
     />
   )
 }
 
-/** Devices' markup (static in tests). */
-export function DevicesGroupView({ view, busy, message, now, onSwitch, onKeepRunning, onRevoke, className = '' }: {
+/** Devices' markup (static in tests): collapsed while remote access is off and no device is listed. */
+export function DevicesGroupView({ view, runtime = null, busy, message, now, onSwitch, onRevoke }: {
   view: RemoteAccessView | null
+  /** The local server, `<name> (Local)`. */
+  runtime?: string | null
   busy: boolean
   message: { kind: 'ok' | 'error'; text: string } | null
   now?: number
   onSwitch: (next: boolean) => void
-  onKeepRunning: () => void
   onRevoke: (device: RemoteDevice) => void
-  className?: string
 }) {
   if (!view) return null
   const status = view.status
   const enabled = status?.enabled === true
+  const open = enabled || (status?.devices.length ?? 0) > 0
   return (
-    <SettingsGroup title="Devices" hint="Computers using this runtime." docs={DOCS.remoteAccessDevices} className={className}>
-      <SettingsRow
-        label="Remote access"
-        description="Computers you add use this runtime."
-        help={view.available ? (status ? remoteStatusLine(status) : undefined) : view.unavailableReason ?? undefined}
-        error={view.error ?? undefined}
-      >
-        <Switch label="Remote access" checked={enabled} disabled={!view.available || busy || !status} onChange={onSwitch} />
-      </SettingsRow>
-      {enabled && view.stopsWithStudio && (
-        <SettingsRow separator label="On quit" description="Devices lose the connection when Studio quits.">
-          <Button size="compact" disabled={busy} onClick={onKeepRunning}>Keep running</Button>
-        </SettingsRow>
-      )}
-      {status && (
-        <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2">
-          <RemoteDeviceList devices={status.devices} busy={busy} now={now} onRemove={onRevoke} />
-        </div>
-      )}
+    <PageSection id="devices" title="Devices" help={devicesHint(runtime)} summary={devicesSummary(view)} docs={DOCS.remoteAccessDevices} collapsible open={open}>
+      <SectionRow actions={<Switch label="Remote access" checked={enabled} disabled={!view.available || busy || !status} onChange={onSwitch} />}>
+        <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">Remote access</div>
+        <div className="mt-0.5 leading-5 text-[var(--adf-ui-text-muted)]">Devices that you pair can connect to {sharedRuntime(runtime)}.</div>
+        {(view.available ? (status ? remoteStatusLine(status) : null) : view.unavailableReason) && (
+          <div className="mt-1 text-[11px] text-[var(--adf-ui-text-subtle)]">{view.available ? (status ? remoteStatusLine(status) : null) : view.unavailableReason}</div>
+        )}
+        {view.error && <div className="mt-1 text-[11px] text-[var(--adf-ui-danger)]">{view.error}</div>}
+        {enabled && view.stopsWithStudio && <div className="mt-1 text-[11px] text-[var(--adf-ui-text-muted)]" data-stops-with-studio="">{STOPS_WITH_STUDIO}</div>}
+      </SectionRow>
+      {status && <RemoteDeviceList devices={status.devices} busy={busy} now={now} onRemove={onRevoke} />}
       {message && (
-        <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5">
-          <span role="status" className={`text-[12px] ${message.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`}>{message.text}</span>
-        </div>
+        <SectionRow>
+          <span role="status" className={message.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}>{message.text}</span>
+        </SectionRow>
       )}
-    </SettingsGroup>
+    </PageSection>
   )
 }

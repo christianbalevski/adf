@@ -29,7 +29,7 @@ const KIND_LABEL: Record<string, string> = {
   imessage: 'channel adapter',
   slack: 'channel adapter',
   web: 'web gateway — sys_fetch + WS links',
-  peer: 'peer runtime'
+  peer: 'peer server'
 }
 
 /** How this peer was reached — the same routes shown in Settings. */
@@ -143,7 +143,7 @@ export const FleetStationCard = memo(function FleetStationCard({
           {station.kind === 'peer' && (station.detail?.isSelfOwned || station.detail?.ownerAlias) && (
             <div className="text-[11px] text-neutral-500 dark:text-neutral-400 truncate">
               {station.detail.isSelfOwned
-                ? '✓ your runtime'
+                ? '✓ your server'
                 : station.detail.ownerVerified
                   ? `owned by ${station.detail.ownerAlias}`
                   : `${station.detail.ownerAlias} · unverified`}

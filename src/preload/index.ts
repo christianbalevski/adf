@@ -725,7 +725,9 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
 
   // Remote access (remote-access.md)
   getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
-  setRemoteAccess: (request: { enabled?: boolean; name?: string; confirmed?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  shareRemoteAccess: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SHARE),
+  leaveRemoteShare: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SHARE_LEAVE),
   addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
   removeRemoteDevice: (id: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_REMOVE, id),
   openRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_OPEN),

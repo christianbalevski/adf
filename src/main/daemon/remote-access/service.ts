@@ -37,8 +37,8 @@ import {
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
 import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
-import { NetworkWatcher } from './network-key'
-import { readGatewayIdentities, readOsCategories, readWifiNames } from './network-category'
+import { NetworkWatcher, type GatewayMap } from './network-key'
+import { readGatewayReadings, readOsCategories, readWifiNames } from './network-category'
 import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
 import type { RequestAuth } from './request-auth'
 import { TailscaleClient, tailnetNameOf, type TailscaleSelf, type TailscaleServe } from './tailscale'
@@ -82,7 +82,7 @@ export interface RemoteAccessServiceOptions {
   // Seams (tests).
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown); read every check. */
-  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
+  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<GatewayMap>
   /** Per LAN interface, the Wi-Fi name (Linux; none where it needs a permission). */
   wifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
   /** Windows' network category per interface: shown as a warning only, never consent. */
@@ -190,7 +190,7 @@ export class RemoteAccessService {
   private readonly log: (line: string) => void
   private readonly emitEvent: (event: RemoteAccessEvent) => void
   private readonly interfaces: () => NodeJS.Dict<NetworkInterfaceInfo[]>
-  private readonly readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
+  private readonly readGateways: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<GatewayMap>
   private readonly tailscale: TailscaleLike
   private readonly announcer: Announcer
   private readonly probeFirewall: (input: FirewallProbeInput) => Promise<FirewallView>
@@ -207,13 +207,14 @@ export class RemoteAccessService {
     this.emitEvent = opts.emit ?? (() => {})
     this.interfaces = opts.interfaces ?? networkInterfaces
     this.platform = opts.platform ?? process.platform
-    this.readGateways = opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces, { platform: this.platform }))
+    this.readGateways = opts.gateways ?? ((ifaces, interfaces) => readGatewayReadings(ifaces, interfaces, { platform: this.platform }))
     this.watcher = new NetworkWatcher({
       readGateways: (ifaces, interfaces) => this.readGateways(ifaces, interfaces),
       readWifiNames: opts.wifiNames ?? ((ifaces) => readWifiNames(ifaces, { platform: this.platform })),
       readOsCategories: opts.osCategories ?? ((ifaces) => readOsCategories(ifaces, { platform: this.platform })),
       slowCheckMs: opts.slowCheckMs ?? SLOW_CHECK_MS,
       now: () => this.now(),
+      log: (line) => this.log(`[remote-access] ${line}`),
     })
     this.tailscale = opts.tailscale ?? new TailscaleClient()
     this.announcer = opts.announcer ?? NO_ANNOUNCER
@@ -433,7 +434,7 @@ export class RemoteAccessService {
     if (key === this.networksKey) return
     this.networksKey = key
     const waiting = networks.filter(n => !n.allowed)
-    if (waiting.length) this.log(`[remote-access] not allowed on: ${waiting.map(n => `${n.label}${n.id ? ` (${n.id})` : ' (cannot be identified yet)'}`).join(', ')}`)
+    if (waiting.length) this.log(`[remote-access] not allowed on: ${waiting.map(n => `${n.label}${n.id ? ` (${n.id})` : ` (cannot be identified: ${n.problem?.step ?? 'unknown'})`}`).join(', ')}`)
     this.emit({ type: 'networks_changed' })
   }
 
