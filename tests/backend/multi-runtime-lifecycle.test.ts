@@ -245,6 +245,27 @@ describe('the main window\'s open runtime (§4.3, §4.4)', () => {
     expect(t.local.requests.filter((r) => r.path.endsWith('/files/raw')).map((r) => r.auth)).toEqual([`Bearer ${TOKEN}`])
   })
 
+  // R2A-5: main decides at call time and applies at resolve time only for the latest main-window open.
+  it('a slow open on host-1 overtaken by a fast open on This computer: the main window stays on This computer', async () => {
+    const t = await connected()
+    const slow = hold()
+    t.host1.gates.set('/files/agent', slow.promise)
+    const remoteOpen = t.invoke(IPC.FILE_OPEN, 1, { $runtime: 'remote:host-1' }, { filePath: REMOTE_FILE_2 }) as Promise<unknown>
+    await tick(20)
+    // The later open, on the runtime the main window is on already (local): it re-asserts local.
+    await t.invoke(IPC.FILE_OPEN, 1, { filePath: FILE_1 })
+    slow.release()
+    await remoteOpen
+    await tick(20)
+    expect(t.handle.runtimes.mainOpenRuntime().id).toBe('local')
+    expect(await (await t.handle.adfFile(image())).text()).toBe('local-image')
+    expect(t.host1.daemon.requests.filter((r) => r.path.endsWith('/files/raw'))).toEqual([])
+    expect(await t.invoke(IPC.FILE_GET_CURRENT, 1)).toEqual({ filePath: FILE_1, agentRunning: false })
+    // A later open on host-1 still moves it there.
+    await t.invoke(IPC.FILE_OPEN, 1, { $runtime: 'remote:host-1' }, { filePath: REMOTE_FILE_2 })
+    await until(() => t.handle.runtimes.mainOpenRuntime().id === 'remote:host-1')
+  })
+
   it('an agent window\'s FILE_OPEN does not move the main window\'s open runtime', async () => {
     const t = await connected()
     t.handle.windows.open({ id: WINDOW, send: () => {}, focused: () => false }, 'remote:host-1')
