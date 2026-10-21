@@ -18111,7 +18111,7 @@ Example 200 (`application/json`):
 
 **Who is this daemon (no token)**
 
-The mDNS announcement's content, for clients that cannot hear mDNS (tailnet peers, a typed address). No secret. 30 per minute per source address. With `nonce`, `device` and `origin` (all three, or none) it is the authenticated hello (docs/design/remote-access.md §5.2.1): the answer proves this daemon holds that device's record, and a client sends a saved device token, or saves a pairing, only after checking the proof.
+The mDNS announcement's content, for clients that cannot hear mDNS (tailnet peers, a typed address). No secret. 30 per minute per source address. With `nonce`, `device` and `origin` (all three, or none) it is the authenticated hello (docs/design/remote-access.md §5.2.1): the answer proves this daemon holds that device's record, and a client sends a saved device token, or saves a pairing, only after checking the proof. The proof is made only for an origin this request reached the daemon at, judged by its socket (a remote listener: its local address and port, or one of this computer's names; the loopback listener: a loopback origin with no proxy between, the tailscale serve URL, or an ADF_DAEMON_ALLOWED_HOSTS name). An authenticated hello for a known device counts in its own limit: 120 per minute per source and device.
 
 Operation `remoteHello` · no authentication
 
@@ -23144,7 +23144,7 @@ Type: object \| object
 | `clientApiVersion` | integer | yes |  |
 | `helloProof` | `1` |  | This daemon answers the authenticated hello. Absent: an older ADF, which clients refuse before they send a saved token or pair. |
 | `device` | `"known"` \| `"unknown"` \| `"revoked"` |  | Only with nonce, device and origin: whether this daemon holds the device's record (revoked: removed in the last 30 days). |
-| `proof` | string \| null |  | Only with nonce, device and origin: base64url(HMAC-SHA256(key = SHA-256 of the device secret, message = "adf-remote-hello-v1", nonce, fingerprint, origin and device joined by newlines)); null unless device is known. |
+| `proof` | string \| null |  | Only with nonce, device and origin: base64url(HMAC-SHA256(key = SHA-256 of the device secret, message = "adf-remote-hello-v1", nonce, fingerprint, origin and device joined by newlines)); null unless device is known and origin is where this request reached the daemon. |
 
 <a id="schema-pairclaimrequest"></a>
 
