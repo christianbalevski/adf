@@ -164,12 +164,16 @@ export interface RemoteProxy {
   refuse: boolean
   /** Requests are accepted and never answered (a computer that went away without closing its connections). */
   blackhole: boolean
+  /** Every new connection is closed at once (nothing listens there any more). */
+  refuseConnections: boolean
+  /** Every request but /health answers 502 (a proxy whose daemon behind it is down). */
+  gateway: boolean
   /** /remote/hello goes to the daemon, whose remote access is on (`deviceToken`); `hello` then records what it answered. */
   forwardHello: boolean
 }
 
 async function startProxy(upstream: number, hello: RemoteProxy['hello'], forwardHello = false): Promise<RemoteProxy> {
-  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, refuse: false, blackhole: false, forwardHello }
+  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, refuse: false, blackhole: false, refuseConnections: false, gateway: false, forwardHello }
   proxy.server = createHttpServer(async (req, res) => {
     const path = (req.url ?? '').split('?')[0]
     const headers = { ...req.headers }
@@ -179,6 +183,12 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
     }
     if (proxy.blackhole) { req.resume(); return }
     if (headers.authorization) proxy.authorized.push(`${proxy.upstream} ${req.method} ${path}`)
+    if (proxy.gateway && path !== '/health') {
+      req.resume()
+      res.writeHead(502, { 'Content-Type': 'text/plain' })
+      res.end('Bad Gateway')
+      return
+    }
     if (req.method === 'GET' && path === '/remote/hello' && !proxy.forwardHello) {
       req.resume()
       // The daemon that answers at the address shows the hello: nothing answers while it is down.
@@ -214,6 +224,7 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
     req.pipe(up)
     res.on('close', () => up.destroy())
   })
+  proxy.server.on('connection', (socket) => { if (proxy.refuseConnections) socket.destroy() })
   await new Promise<void>((done) => proxy.server.listen(0, '127.0.0.1', () => done()))
   const address = proxy.server.address()
   proxy.port = typeof address === 'object' && address ? address.port : 0
@@ -241,6 +252,14 @@ export interface BootedMultiBackend extends BootedBackend {
   readonly closedAgentWindows: Array<{ id: number; keep: boolean }>
   /** hooks.runtimeConnected calls, in order. */
   readonly connectedRuntimes: string[]
+  /** `thisComputerOnly`: the tagged pushes left out of the recording, as they arrived (their channel and tag). */
+  readonly droppedTagged: Array<{ channel: string; runtimeId: string }>
+  /**
+   * The remote stops answering mid-run: its open connections close and every
+   * new one is never answered (`blackhole`), closed at once
+   * (`refuseConnections`) or answered 502 (`gateway`).
+   */
+  stopRemote(how: 'blackhole' | 'refuseConnections' | 'gateway'): void
   /** Save the remote's connection (Studio's Add, `adf pair`): the cache follows the file. */
   saveRemote(): Promise<void>
   /** Forget it (Studio's Remove, `adf remotes forget`). */
@@ -373,6 +392,7 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
       const resources = createRunResources()
       const closedAgentWindows: Array<{ id: number; keep: boolean }> = []
       const connectedRuntimes: string[] = []
+      const droppedTagged: Array<{ channel: string; runtimeId: string }> = []
       let booted = false
       const killAll = async () => {
         for (const c of children) await killTree(c.child, c.exited)
@@ -424,6 +444,8 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         if (options.thisComputerOnly) {
           electron.onPush((record) => {
             if (!runtimeTag.isRuntimeTag(record.args[0])) return
+            // Counted before it leaves the recording: the test checks what was left out.
+            droppedTagged.push({ channel: record.channel, runtimeId: record.args[0].$runtime })
             const i = electron.pushes.lastIndexOf(record)
             if (i >= 0) electron.pushes.splice(i, 1)
           })
@@ -461,6 +483,11 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
         remotesEnv,
         closedAgentWindows,
         connectedRuntimes,
+        droppedTagged,
+        stopRemote(how) {
+          proxy[how] = true
+          proxy.server.closeAllConnections()
+        },
         until: untilFn,
         async saveRemote() {
           await connections.saveConnection(remotesEnv, { url: proxyUrl, token: savedToken, fingerprint, hostName: remoteName, deviceId: device?.id ?? 'device-1', label: 'Studio' }, { confirmFile: async () => true })

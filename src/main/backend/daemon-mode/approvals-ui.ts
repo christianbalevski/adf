@@ -25,14 +25,16 @@ export interface ApprovalsUiDeps {
   /** Read per notification: the client key nativeNotificationsEnabled. */
   notificationsEnabled: () => boolean
   menuBarEnabled: () => boolean
-  /** Running agents and their display states (the event bridge's view). */
-  agents: () => ReadonlyArray<{ filePath: string; state: AgentState; activeLoops?: number }>
+  /** Running agents and their display states (the event bridge's view); `runtimeId` for a runtime other than This computer. */
+  agents: () => ReadonlyArray<{ filePath: string; state: AgentState; activeLoops?: number; runtimeId?: string }>
   /** The open file and its display state, shown as the foreground agent. */
-  foreground: () => { filePath: string; state: AgentState } | null
+  foreground: () => { filePath: string; state: AgentState; runtimeId?: string } | null
   /** Today's token totals (cached from the daemon; read synchronously when the menu opens). */
   tokensToday: () => { input: number; output: number }
   showMainWindow?: () => BrowserWindow | null
   openFile?: (filePath: string) => void
+  /** Open `filePath` on another runtime than This computer, in the main window (multi-runtime.md §6.6). */
+  openFileOn?: (runtimeId: string, filePath: string) => void
   /** The main window; default the first window. */
   mainWindow?: () => BrowserWindow | null
   /**
@@ -119,12 +121,15 @@ export class ApprovalsUi {
   }
 
   private menuBarSnapshot(): MenuBarSnapshot {
+    // Keyed by runtime and path: equal paths on two computers are two agents.
     const agents = new Map<string, MenuBarAgent>()
+    const key = (a: { filePath: string; runtimeId?: string }): string => `${a.runtimeId ?? ''}\n${a.filePath}`
+    const on = (a: { runtimeId?: string }) => (a.runtimeId ? { runtimeId: a.runtimeId } : {})
     for (const a of this.deps.agents()) {
-      agents.set(a.filePath, { filePath: a.filePath, name: basename(a.filePath, '.adf'), state: a.state, activeLoops: a.activeLoops })
+      agents.set(key(a), { filePath: a.filePath, name: basename(a.filePath, '.adf'), state: a.state, activeLoops: a.activeLoops, ...on(a) })
     }
     const fg = this.deps.foreground()
-    if (fg) agents.set(fg.filePath, { filePath: fg.filePath, name: basename(fg.filePath, '.adf'), state: fg.state, foreground: true })
+    if (fg) agents.set(key(fg), { filePath: fg.filePath, name: basename(fg.filePath, '.adf'), state: fg.state, foreground: true, ...on(fg) })
     return { surface: 'ADF Studio', pending: this.pending, agents: [...agents.values()], tokensToday: this.deps.tokensToday() }
   }
 
@@ -134,7 +139,9 @@ export class ApprovalsUi {
         this.sendReveal(revealOf(action.notification))
         return
       case 'open-agent':
-        this.deps.openFile?.(action.filePath)
+        // Another runtime's path is on that computer: opened there, never as a path on This computer.
+        if (action.runtimeId) this.deps.openFileOn?.(action.runtimeId, action.filePath)
+        else this.deps.openFile?.(action.filePath)
         return
       case 'show':
         this.focusMainWindow() ?? this.deps.showMainWindow?.()

@@ -161,6 +161,14 @@ let startupComplete = false
 // shutdowns shrink to a fast budget that still leaves room for app.exit.
 const SHUTDOWN_BUDGET_MS = 8_000
 const FAST_SHUTDOWN_BUDGET_MS = 3_000
+/**
+ * Restart with Inside Studio saved: the quit waits this long for This
+ * computer's daemon to exit, so embedded Studio can move the sign-ins back
+ * and start its agents (handover.ts toEmbedded refuses while it runs).
+ */
+const EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS = 22_000
+/** The mode studio-backend.json holds now (the next launch's), once the backend settings store exists. */
+let savedBackendMode: (() => string) | null = null
 let shutdownBudgetMs = SHUTDOWN_BUDGET_MS
 
 // Re-entrant-safe cleanup: the first caller starts cleanup and stores the
@@ -188,13 +196,15 @@ function runShutdownCleanup(): Promise<void> {
       // Daemon mode runs no agents here: quitting ends the client sessions and,
       // per keepDaemonRunning, stops the daemon Studio started (§8.3).
       remoteAccess?.dispose()
+      const toEmbedded = !!daemonMode && isRelaunching() && savedBackendMode?.() === 'embedded' && budget === SHUTDOWN_BUDGET_MS
       const cleanup = daemonMode
         ? daemonMode.shutdown({
           // "Keep Running" in the question about connected computers: this quit only.
           ...(remoteAccess?.quitGate.keepDaemonForThisQuit ? { keepDaemonRunning: true } : {}),
+          ...(toEmbedded ? { waitForDaemonExitMs: EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS } : {}),
         })
         : embeddedIpc ? embeddedIpc.cleanupAllProcesses(cleanupOpts) : Promise.resolve()
-      const { timedOut } = await withDeadline(cleanup, budget, () => {
+      const { timedOut } = await withDeadline(cleanup, toEmbedded ? EMBEDDED_RESTART_DAEMON_EXIT_WAIT_MS + 3_000 : budget, () => {
         console.error(`[App] Cleanup exceeded ${budget}ms budget — forcing exit`)
       })
       if (timedOut) console.error('[App] Shutdown proceeded past incomplete cleanup')
@@ -740,11 +750,19 @@ app.whenReady().then(async () => {
   let connections: Connections | null = null
   // Every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
   // Saving a connection connects it; forgetting it disconnects it (§12 item 2). Read from the caches: no disk access.
+  // cli-remotes.json that cannot be read is not "nothing saved": the saved connections stay as they are, unknown (A11).
   const syncRuntimes = (): void => {
     const saved = savedCache.get()
-    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved))
+    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved), { savedUnknown: savedCache.unreadable !== null })
   }
+  let unreadableNoticed = false
   const savedCache = new SavedConnectionsCache(connectionsEnv, () => {
+    if (savedCache.unreadable && !unreadableNoticed) {
+      unreadableNoticed = true
+      console.warn(`[Connection] ${savedCache.unreadable}: the saved connections are left as they are until it can be read`)
+      // Settings → Connections shows it (the notices of this launch).
+      backend.notices = [...(backend.notices ?? []), `Saved connections could not be read: ${savedCache.unreadable}. Fix or remove the file; nothing was changed.`]
+    }
     connections?.changed()
     syncRuntimes()
   })
@@ -754,7 +772,9 @@ app.whenReady().then(async () => {
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
   // before any connector or client settings store exists. A launch Inside Studio leaves the file for the next one.
   let migration: RemoteModeMigration | null = null
-  if (backend.mode === 'local' && backend.config.mode === 'remote') {
+  if (backend.mode === 'local' && backend.config.mode === 'remote' && savedCache.unreadable) {
+    console.warn('[Backend] studio-backend.json is in remote mode; it migrates once the saved connections can be read')
+  } else if (backend.mode === 'local' && backend.config.mode === 'remote') {
     const legacy = backend.config
     migration = await migrateRemoteMode(backend, savedCache.get())
     await migrateRemoteModeClientFile(getUserDataPath(), legacy, migration?.runtime ?? null, savedCache.get())
@@ -835,6 +855,8 @@ app.whenReady().then(async () => {
       // kept and not opened while it is not connected.
       check: async (entry) => {
         const runtime = handle.runtimes.get(entry.runtimeId)
+        // The saved connections cannot be read: another runtime's window is neither opened nor dropped.
+        if (!runtime && entry.runtimeId && entry.runtimeId !== 'local' && savedCache.unreadable) return 'unknown'
         if (!runtime) {
           console.log(`[AgentWindows] Not reopening the window of ${entry.filePath}: ${notConnectedSentence(entry.runtimeId ?? 'local')}`)
           return 'gone'
@@ -927,6 +949,8 @@ app.whenReady().then(async () => {
     daemonStatus: () => daemonMode?.status() ?? null,
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
+  const settingsStore = backendStore
+  savedBackendMode = () => settingsStore.config().mode
   remoteAccess = registerRemoteAccessHandlers({
     mode: backend.mode,
     daemon: () => daemonMode,

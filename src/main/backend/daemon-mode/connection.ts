@@ -24,9 +24,11 @@ export interface DaemonEndpoint {
 /**
  * Finds or starts the daemon. `logFile` is known before the connector runs
  * (local mode: the controller's log path), so a failed start can still offer
- * "Open daemon log".
+ * "Open daemon log". `signal` aborts when Studio closed the connection (a
+ * runtime removed while it connects): the connector sends nothing more and
+ * rejects.
  */
-export type DaemonConnector = ((progress: (text: string) => void) => Promise<DaemonEndpoint>) & {
+export type DaemonConnector = ((progress: (text: string) => void, signal?: AbortSignal) => Promise<DaemonEndpoint>) & {
   logFile?: string | null
   /**
    * Local mode: find or start the daemon again after the one Studio used
@@ -89,6 +91,9 @@ export type ConnectionState =
 
 type Log = Pick<Console, 'log' | 'warn' | 'error'>
 
+/** Why the connector of a runtime Studio removed stopped. */
+const CLOSED_CONNECTION = 'Studio closed this connection'
+
 /**
  * Studio main's one connection to its daemon. Handlers call `client()`,
  * which waits for the connector and then always returns the client: a
@@ -114,7 +119,11 @@ export class DaemonConnection {
    */
   private listenerVerified = true
   private verifying: Promise<void> | null = null
+  /** When the listener was last verified (0: never since launch). */
+  private verifiedAt = 0
   private disposed = false
+  /** Aborted by dispose: the connector stops (remote/connector.ts checks it before every attempt). */
+  private readonly abort = new AbortController()
   private verificationTimer: ReturnType<typeof setTimeout> | null = null
   private wakeVerification: (() => void) | null = null
   private readonly verifiedListeners = new Set<(pid: number | null) => void>()
@@ -135,10 +144,12 @@ export class DaemonConnection {
       try {
         const endpoint = await connector((progress) => {
           // A runtime Studio removed stops its connector at the next step instead of retrying on (multi-runtime.md §3.3).
-          if (this.disposed && options.stopWhenDisposed) throw new Error('Studio closed this connection')
+          if (this.disposed && options.stopWhenDisposed) throw new Error(CLOSED_CONNECTION)
           this.log.log(`[Backend] ${progress}`)
           this.set({ state: 'connecting', progress })
-        })
+        }, options.stopWhenDisposed ? this.abort.signal : undefined)
+        // Removed while the connector ran: no client, so nothing is sent with its token.
+        if (this.disposed && options.stopWhenDisposed) throw new Error(CLOSED_CONNECTION)
         this.endpoint = endpoint
         // The token source of the current endpoint: a revived daemon's (revive) replaces it under the same client.
         const source = endpoint.source
@@ -155,6 +166,10 @@ export class DaemonConnection {
         return this.daemonClient
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
+        if (this.disposed && options.stopWhenDisposed) {
+          this.log.log(`[Backend] The connector stopped: ${CLOSED_CONNECTION}`)
+          throw new BackendNotConnectedError(`Studio is not connected to an ADF daemon: ${CLOSED_CONNECTION}`)
+        }
         if (err instanceof Error && err.name === 'SwitchToEmbeddedError') {
           // The user chose embedded for this session (§8.2): Studio is restarting, no failure dialog.
           this.log.log(`[Backend] ${message}`)
@@ -216,7 +231,17 @@ export class DaemonConnection {
   }
 
   markDisconnected(error?: string): void {
-    if (this.disposed || this.status.state === 'failed' || this.status.state === 'disconnected') return
+    if (this.disposed || this.status.state === 'failed') return
+    if (this.status.state === 'disconnected') {
+      // A pinned connection whose re-dial after the check failed too (an error: a failed attempt, not the start of
+      // one): whoever answers now may not be the computer that showed the fingerprint, so nothing is sent until it
+      // shows it again.
+      if (error !== undefined && this.connector.pinCheck && this.endpoint && this.listenerVerified) {
+        this.listenerVerified = false
+        void this.verifyListenerLoop()
+      }
+      return
+    }
     if ((this.connector.verifyListener || this.connector.pinCheck) && this.endpoint) {
       // The daemon may be gone and another program on its port (local: no token until the pid file names the
       // listener again), or another computer at a pinned address (remote: no request until the fingerprint matches).
@@ -259,6 +284,9 @@ export class DaemonConnection {
   private verifyListenerLoop(): Promise<void> {
     this.verifying ??= (async () => {
       let lastRefusal: string | null = null
+      // Re-armed right after a check passed (the re-dial failed at once): at most one check a second.
+      const since = Date.now() - this.verifiedAt
+      if (since < 1_000) await this.pause(1_000 - since)
       while (!this.disposed && !this.listenerVerified && this.status.state !== 'failed') {
         try {
           let pid: number | null = null
@@ -266,6 +294,7 @@ export class DaemonConnection {
           else pid = await this.connector.verifyListener!()
           if (this.disposed || (this.status as ConnectionState).state === 'failed') break
           this.listenerVerified = true
+          this.verifiedAt = Date.now()
           this.log.log(pid === null
             ? `[Backend] ${this.baseUrl} shows the fingerprint pinned when it was paired; sending the token again`
             : `[Backend] The ADF daemon on ${this.baseUrl} is pid ${pid}, as its pid file says; sending the token again`)
@@ -282,15 +311,20 @@ export class DaemonConnection {
           if (message !== lastRefusal && !message.startsWith('Nothing answers')) this.log.warn(`[Backend] Not sending the daemon token: ${message}`)
           lastRefusal = message
           if (this.disposed) break
-          await new Promise<void>((r) => {
-            this.wakeVerification = r
-            this.verificationTimer = setTimeout(() => { this.verificationTimer = null; this.wakeVerification = null; r() }, 1_000)
-            this.verificationTimer.unref?.()
-          })
+          await this.pause(1_000)
         }
       }
     })().finally(() => { this.verifying = null })
     return this.verifying
+  }
+
+  /** The pause between checks; dispose ends it. */
+  private pause(ms: number): Promise<void> {
+    return new Promise<void>((r) => {
+      this.wakeVerification = r
+      this.verificationTimer = setTimeout(() => { this.verificationTimer = null; this.wakeVerification = null; r() }, ms)
+      this.verificationTimer.unref?.()
+    })
   }
 
   /** Local mode: the daemon's process is gone. Shown as such (status line, dialog or notice) until a daemon answers again. */
@@ -331,6 +365,7 @@ export class DaemonConnection {
   /** Stop background listener verification when Studio shuts down. */
   dispose(): void {
     this.disposed = true
+    this.abort.abort(new Error(CLOSED_CONNECTION))
     if (this.verificationTimer) clearTimeout(this.verificationTimer)
     this.verificationTimer = null
     this.wakeVerification?.()

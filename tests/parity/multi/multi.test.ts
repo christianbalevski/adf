@@ -112,7 +112,8 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
 
   it('approvals from both runtimes arrive in one list and are answered from it, each on its own runtime', async () => {
     for (let run = 0; run < RUNS; run++) {
-      const t = capture({ restrictTools: ['fs_write'] })
+      // A device token, as a paired computer holds (T4).
+      const t = capture({ restrictTools: ['fs_write'], deviceToken: true })
       type Entry = { id: string; filePath: string; toolName?: string; runtimeId?: string }
       const scenario: ParityScenario = {
         name: 'multi-approvals',
@@ -177,7 +178,13 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
         },
       }
       const multi = await runScenario(scenario, t.backend)
-      expect(multi.raw.pushes.some(isTagged)).toBe(false)
+      // The recording left out the remote's tagged pushes as they came; anything else tagged would be a leak.
+      const booted = t.booted()
+      expect(booted.droppedTagged.every((p) => p.runtimeId === REMOTE)).toBe(true)
+      expect(multi.raw.pushes.some((p) => (p.args[0] as { $runtime?: unknown } | undefined)?.$runtime !== undefined)).toBe(false)
+      expect(multi.raw.pushes.some((p) => JSON.stringify(p.args).includes(booted.remoteAgents['agent-2'].filePath))).toBe(false)
+      // The remote going down is a notice and its state, never a dialog (§3.6): the comparison below leaves host-1's calls out.
+      expect(booted.electron.localCalls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
       // The application menu is rebuilt when the remote's state changes (Help names it while it is down),
       // and the remote's notices name it: both are the remote's, not This computer's.
       const thisComputer = (r: typeof multi) => {
@@ -302,7 +309,7 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
   }, 180_000)
 
   it('Remove with an agent window open on the remote: the window closes and its session ends', async () => {
-    const t = capture()
+    const t = capture({ deviceToken: true })
     const scenario: ParityScenario = {
       name: 'multi-remove-window',
       description: 'An agent window shows agent-2 on host-1; host-1 is removed.',
@@ -318,7 +325,8 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
         await b.forgetRemote()
         await b.until(() => b.handle.runtimes.get(REMOTE) === null, 'host-1 leaves the set')
         expect(b.closedAgentWindows).toEqual([{ id: win.id, keep: false }])
-        // Its session and the main window's on host-1 ended there.
+        // Its session and the main window's on host-1 ended there. host-1 leaves the set at once; its sessions end while it retires.
+        await b.until(() => ends() >= 2, 'the sessions on host-1 ended')
         expect(ends()).toBeGreaterThanOrEqual(2)
         expect(() => b.handle.runtimes.contextFor(win.id, null)).toThrow('This agent window is closed.')
       },
@@ -328,7 +336,7 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
 
   it('quit with the remote unreachable stays within the session-end budget', async () => {
     const { AGENT_SESSION_END_TIMEOUT_MS } = await import('../../../src/main/backend/daemon-mode/index')
-    const t = capture({ keepDaemonRunning: true })
+    const t = capture({ keepDaemonRunning: true, deviceToken: true })
     const scenario: ParityScenario = {
       name: 'multi-quit-unreachable',
       description: 'host-1 stops answering without closing its connections; Studio quits.',
@@ -341,6 +349,72 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
         const started = Date.now()
         await b.handle.shutdown()
         expect(Date.now() - started).toBeLessThan(AGENT_SESSION_END_TIMEOUT_MS * 2 + 2_000)
+      },
+    }
+    await runScenario(scenario, t.backend)
+  }, 180_000)
+
+  for (const how of ['blackhole', 'refuseConnections', 'gateway'] as const) {
+    it(`the remote stops answering mid-run (${how}): This computer's calls and its turn keep their cadence (T8)`, async () => {
+      const t = capture({ thisComputerOnly: true, deviceToken: true })
+      const scenario: ParityScenario = {
+        ...chatToolCallScenario,
+        name: `multi-mid-run-${how}`,
+        async run(ctx) {
+          const b = t.booted()
+          const rt = b.handle.runtimes.get(REMOTE)!
+          expect(rt.connection.state.state).toBe('connected')
+          b.stopRemote(how)
+          /** This computer's polls (the renderer's status refresh): each one answers at once while the remote does not. */
+          const poll = async () => {
+            const times: number[] = []
+            for (let i = 0; i < 5; i++) {
+              const started = Date.now()
+              await ctx.invoke(IPC.BACKGROUND_AGENT_STATUS)
+              await ctx.invoke(IPC.FILE_GET_CURRENT)
+              times.push(Date.now() - started)
+            }
+            return times
+          }
+          const before = await poll()
+          const turnStarted = Date.now()
+          await chatToolCallScenario.run(ctx)
+          const turnMs = Date.now() - turnStarted
+          const after = await poll()
+          expect(Math.max(...before, ...after)).toBeLessThan(2_000)
+          expect(turnMs).toBeLessThan(TURN_MS / 2)
+          expect(b.handle.connection.state.state).toBe('connected')
+          // The remote's trouble is its own: no dialog.
+          expect(b.electron.localCalls.filter((c) => c.api === 'dialog.showMessageBox')).toEqual([])
+          if (how !== 'blackhole') await b.until(() => rt.connection.state.state !== 'connected', 'the remote seen as down', 30_000)
+        },
+      }
+      await runScenario(scenario, t.backend)
+    }, 240_000)
+  }
+
+  it('a write on the remote while This computer is idle: no untagged workspace hint (T9)', async () => {
+    const t = capture({ deviceToken: true })
+    const scenario: ParityScenario = {
+      name: 'multi-remote-write-idle',
+      description: 'agent-2 on host-1 writes a file in its workspace; nothing is open on This computer.',
+      fixtures: [{ name: 'agent-1' }],
+      quietMs: 1000,
+      shownStream: () => false,
+      llm: (req) => {
+        if (req.isPreflight) return { text: 'ok' }
+        if (req.last?.role === 'tool') return { text: 'Wrote note.md.' }
+        return { toolCalls: [{ name: 'fs_write', arguments: { mode: 'write', path: 'note.md', content: 'from host-1' } }] }
+      },
+      async run(ctx) {
+        const b = t.booted()
+        const from = b.electron.pushes.length
+        await chat(ctx, b, true, b.remoteAgents['agent-2'].filePath, 'Write a remote note.')
+        await waitPush(b, IPC.WORKSPACE_DATA_CHANGED, true, () => true, from, 'the remote workspace hint')
+        await ctx.invoke(IPC.AGENT_STOP, TAG)
+        const hints = b.electron.pushes.slice(from).filter((p) => p.channel === IPC.WORKSPACE_DATA_CHANGED)
+        expect(hints.filter((p) => !isTagged(p))).toEqual([])
+        expect(hints.some(isTagged)).toBe(true)
       },
     }
     await runScenario(scenario, t.backend)

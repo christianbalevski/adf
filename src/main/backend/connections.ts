@@ -4,7 +4,7 @@ import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote
 import type { BackendDaemonStatus, StudioRunMode } from '../../shared/types/backend.types'
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
-import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
+import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
 import { runMode, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
@@ -41,6 +41,13 @@ export function savedConnections(env: NodeJS.ProcessEnv): Record<string, SavedRe
  */
 export class SavedConnectionsCache {
   private value: Record<string, SavedRemote> = {}
+  /**
+   * Why cli-remotes.json could not be read at the last refresh; null when it
+   * was read (or is absent: nothing saved). While set, `get()` keeps the list
+   * last read (empty at launch) and it is not "every saved connection":
+   * nothing is dropped or reordered because of it.
+   */
+  unreadable: string | null = null
   private watcher: FSWatcher | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
 
@@ -57,8 +64,16 @@ export class SavedConnectionsCache {
   }
 
   async refresh(): Promise<Record<string, SavedRemote>> {
-    const next = (await loadRemotesAsync(this.env)).remotes
-    const changed = JSON.stringify(next) !== JSON.stringify(this.value)
+    const read = await readRemotesAsync(this.env)
+    if (read.unreadable) {
+      const first = this.unreadable === null
+      this.unreadable = read.unreadable
+      if (first) this.onChange?.()
+      return this.value
+    }
+    const next = read.file.remotes
+    const changed = JSON.stringify(next) !== JSON.stringify(this.value) || this.unreadable !== null
+    this.unreadable = null
     this.value = next
     if (changed) this.onChange?.()
     return next

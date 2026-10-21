@@ -825,13 +825,20 @@ const runtimePushChannels = new Set(RUNTIME_PUSH_CHANNELS)
 const studioCallChannels = new Set(STUDIO_CALL_CHANNELS)
 const ipcChannels = new Set<string>(Object.values(IPC))
 const surfaces = new Map<RuntimeId, AdfApi>()
-/** The surface bound to `id`: `local` (This computer) sends no tag. One per runtime, made on first use. */
+// An agent window's page names its runtime (main sets `runtime=<id>` for a runtime other than This computer, §5.5).
+const windowRuntime = new URLSearchParams(globalThis.location?.search ?? '').get('runtime') || LOCAL_RUNTIME
+/**
+ * The surface bound to `id`, one per runtime, made on first use. `local`
+ * (This computer) sends no tag in This computer's pages; in a page of another
+ * runtime it tags its calls `local` (an untagged call from there is that
+ * runtime's, main §4.3).
+ */
 function apiFor(id: RuntimeId): AdfApi {
   const runtimeId = typeof id === 'string' && id ? id : LOCAL_RUNTIME
   let surface = surfaces.get(runtimeId)
   if (!surface) {
     surface = {
-      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels, studioCallChannels)),
+      ...createAdfApi(createRuntimeIpc(electronIpcRenderer, runtimeId, runtimePushChannels, studioCallChannels, { explicitLocal: windowRuntime !== LOCAL_RUNTIME })),
       runtimeId,
       runtime: apiFor,
       onAnyRuntime: (channel: string, callback: (runtimeId: RuntimeId, ...args: unknown[]) => void) => {
@@ -845,6 +852,4 @@ function apiFor(id: RuntimeId): AdfApi {
   return surface
 }
 
-// An agent window's page names its runtime (main sets `runtime=<id>` for a runtime other than This computer, §5.5).
-const windowRuntime = new URLSearchParams(globalThis.location?.search ?? '').get('runtime')
-contextBridge.exposeInMainWorld('adfApi', apiFor(windowRuntime || LOCAL_RUNTIME))
+contextBridge.exposeInMainWorld('adfApi', apiFor(windowRuntime))

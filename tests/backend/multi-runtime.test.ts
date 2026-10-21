@@ -17,165 +17,24 @@
  * user-only token file (ADF_KEYCHAIN=0, ADF_SECRET_STORE=file): the real
  * keychain is never opened. No network: every daemon is a fake fetch.
  */
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
 
 import { electronStub } from './daemon-mode-electron'
-import { createFakeClientSession, createFakeDaemon, type FakeClientSession, type FakeDaemon } from './daemon-mode-fakes'
-import { AGENT_SESSION_END_TIMEOUT_MS, registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
+import { AGENT_SESSION_END_TIMEOUT_MS } from '../../src/main/backend/daemon-mode'
 import { PinMismatchError, type DaemonConnector } from '../../src/main/backend/daemon-mode/connection'
 import { remoteDaemonConnector } from '../../src/main/backend/daemon-mode/remote/connector'
 import { refusedTokenSentence } from '../../src/main/backend/daemon-mode/remote/connector'
 import { ApprovalsAggregator } from '../../src/main/backend/daemon-mode/approvals-aggregator'
 import { runtimeOrder } from '../../src/main/backend/daemon-mode/runtime-manager'
 import { NoticeOwners } from '../../src/main/backend/daemon-mode/windows'
-import { defaultBackendConfig, type SecretCodec } from '../../src/main/backend/backend-config'
-import { loadRemotesAsync } from '../../src/main/cli/remotes'
-import { remotesEnv, saveConnection } from '../../src/main/backend/connections'
-import { SUPPORTED_CLIENT_API_VERSION } from '../../src/shared/daemon-client'
+import { defaultBackendConfig } from '../../src/main/backend/backend-config'
 import { IPC } from '../../src/shared/constants/ipc-channels'
-import type { NotificationsSnapshot, PendingNotification } from '../../src/shared/types/ipc.types'
+import type { NotificationsSnapshot } from '../../src/shared/types/ipc.types'
+import { AGENT_2, FILE_1, REMOTE_FILE_2, TOKEN, WINDOW, boot, cleanup, codec, fakeHost, pending, tick, until } from './multi-runtime-harness'
 
-const LOCAL_BASE = 'http://127.0.0.1:47380'
-const TOKEN = 'a'.repeat(43)
-const AGENT_1 = '6f1c2a4e-1b3d-4c5e-8f70-9a1b2c3d4e5f'
-const AGENT_2 = '0d9e8f7a-6b5c-4d3e-9f21-0a9b8c7d6e5f'
-const FILE_1 = join(tmpdir(), 'agents', 'agent-1.adf')
-const REMOTE_FILE_2 = '/srv/agents/agent-2.adf'
-const WINDOW = 7
-const codec: SecretCodec = { available: () => true, encrypt: (p) => `safe:${p}`, decrypt: (s) => s.slice(5) }
-
-const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms))
-async function until(check: () => boolean, ms = 3_000): Promise<void> {
-  const end = Date.now() + ms
-  while (!check()) {
-    if (Date.now() > end) throw new Error('timed out')
-    await tick()
-  }
-}
-
-function pending(id: string, filePath: string, agentName: string, requestedAt = 1): PendingNotification {
-  return { id, kind: 'approval', requestId: id, filePath, agentName, loop: 'main', toolName: 'fs_write', preview: '', requestedAt }
-}
-
-/** A remote computer: its daemon routes, its pairing hello and whether it answers at all. */
-interface FakeHost {
-  name: string
-  url: string
-  fingerprint: string
-  daemon: FakeDaemon
-  reachable: boolean
-  /** The fingerprint /remote/hello shows (another computer at the address: another one). */
-  shows: string
-  sessions: FakeClientSession[]
-  sleeps: number[]
-  fetch: typeof fetch
-}
-
-function fakeHost(name: string, port: number, fingerprint: string): FakeHost {
-  const url = `http://127.0.0.1:${port}`
-  const daemon = createFakeDaemon(url)
-  daemon.routes.set('GET /health', () => ({ ok: true }))
-  daemon.routes.set('GET /version', () => ({ version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION, pid: port, startedBy: 'cli' }))
-  daemon.routes.set('GET /agents', () => [])
-  daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
-  const host: FakeHost = {
-    name, url, fingerprint, daemon, reachable: true, shows: fingerprint, sessions: [], sleeps: [],
-    fetch: (async (input: string | URL | Request, init?: RequestInit) => {
-      if (!host.reachable) throw Object.assign(new TypeError('fetch failed'), { cause: Object.assign(new Error('connect ECONNREFUSED'), { code: 'ECONNREFUSED' }) })
-      const path = new URL(typeof input === 'string' || input instanceof URL ? String(input) : input.url).pathname
-      if (path === '/remote/hello') return new Response(JSON.stringify({ v: 1, name, fingerprint: host.shows, pairingOpen: false, api: '2' }), { status: 200, headers: { 'Content-Type': 'application/json' } })
-      return daemon.fetch(input, init)
-    }) as typeof fetch,
-  }
-  return host
-}
-
-const dirs: string[] = []
-const handles: DaemonModeHandle[] = []
-afterEach(async () => {
-  for (const h of handles.splice(0)) await h.shutdown().catch(() => {})
-  for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true })
-})
-
-async function boot(opts: { hosts: FakeHost[]; save?: FakeHost[]; hooks?: Record<string, unknown>; slot?: FakeHost }) {
-  const dir = mkdtempSync(join(tmpdir(), 'adf-multi-runtime-'))
-  dirs.push(dir)
-  // The user-only token file in the test's own folder: the OS keychain is never opened.
-  const env = { ...remotesEnv(dir), ADF_KEYCHAIN: '0', ADF_SECRET_STORE: 'file' }
-  delete (env as Record<string, string | undefined>).ADF_TEST_KEYCHAIN_FILE
-  let pairedAt = 0
-  const save = async (host: FakeHost) => {
-    await saveConnection(env, { url: host.url, token: `${TOKEN}-${host.name}`, fingerprint: host.fingerprint, hostName: host.name, deviceId: `device-${host.name}`, label: 'Studio' }, { confirmFile: async () => true, now: new Date(Date.UTC(2026, 9, 20, 12, 0, pairedAt++)) })
-  }
-  for (const host of opts.save ?? opts.hosts) await save(host)
-
-  const local = createFakeDaemon(LOCAL_BASE)
-  local.routes.set('GET /agents', () => [])
-  local.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
-  const localSessions: FakeClientSession[] = []
-  const handlers = new Map<string, (...args: unknown[]) => unknown>()
-  const logs: string[] = []
-  const log = { log: (m: string) => { logs.push(m) }, warn: (m: string) => { logs.push(String(m)) }, error: (m: string) => { logs.push(m) } }
-  const closedWindows: number[] = []
-  const keptWindows: number[] = []
-  const hostOf = (name: string) => opts.hosts.find((h) => h.name === name)!
-  const handle = registerDaemonModeHandlers({
-    mode: 'local',
-    userDataDir: dir,
-    connect: Object.assign(async () => ({ baseUrl: LOCAL_BASE, logFile: join(dir, 'adf-daemon.log'), description: 'the fake local daemon', source: { token: () => TOKEN } }), { logFile: join(dir, 'adf-daemon.log') }),
-    leases: { registerClient: async () => {} },
-    ipcMain: {
-      handle: (channel: string, fn: (...args: unknown[]) => unknown) => { handlers.set(channel, fn) },
-      on: (channel: string, fn: (...args: unknown[]) => unknown) => { handlers.set(channel, fn) },
-    } as never,
-    fetch: local.fetch,
-    createSession: () => {
-      const s = createFakeClientSession()
-      ;(s as { sessionId: string | null }).sessionId = `s-local-${localSessions.length + 1}`
-      localSessions.push(s)
-      return s
-    },
-    hooks: { closeAgentWindow: (id, keep) => { closedWindows.push(id); if (keep) keptWindows.push(id) }, ...opts.hooks },
-    keepDaemonRunning: true,
-    log,
-    runtimeSet: {
-      ...(opts.slot ? { slotConnector: () => {
-        const host = opts.slot!
-        const config = { ...defaultBackendConfig(), mode: 'remote' as const, remote: { url: host.url, token: codec.encrypt(TOKEN + '-' + host.name), allowInsecureHttp: false } }
-        return remoteDaemonConnector(config, codec, { env, fetch: host.fetch, retry: { initialMs: 2, maxMs: 8 }, sleep: async (ms) => { host.sleeps.push(ms); await tick(ms) } })
-      } } : {}),
-      connectorFor: (name) => {
-        const host = hostOf(name)
-        const config = { ...defaultBackendConfig(), mode: 'remote' as const, remote: { url: null, token: null, allowInsecureHttp: false, name } }
-        // The real connector of a saved connection; its backoff is this runtime's own.
-        return remoteDaemonConnector(config, codec, { env, fetch: host.fetch, retry: { initialMs: 2, maxMs: 8 }, sleep: async (ms) => { host.sleeps.push(ms); await tick(ms) } })
-      },
-      overrides: (name) => {
-        const host = opts.slot && opts.slot.name === name ? opts.slot : hostOf(name)
-        return {
-          fetch: host.fetch,
-          createSession: () => {
-            const s = createFakeClientSession()
-            ;(s as { sessionId: string | null }).sessionId = `s-${name}-${host.sessions.length + 1}`
-            host.sessions.push(s)
-            return s
-          },
-        }
-      },
-    },
-  })
-  handles.push(handle)
-  expect(await handle.ready).toBe(true)
-  const sync = async () => handle.runtimes.sync((await loadRemotesAsync(env)).remotes)
-  const invoke = (channel: string, sender: number | null, ...args: unknown[]) =>
-    handlers.get(channel)!(sender === null ? {} : { sender: { id: sender } }, ...args)
-  return { handle, env, local, localSessions, handlers, invoke, logs, closedWindows, keptWindows, sync, save, dir }
-}
+afterEach(cleanup)
 
 describe('RuntimeManager lifecycle', () => {
   it('saved connections join the set in pairedAt order and connect; This computer stays first', async () => {

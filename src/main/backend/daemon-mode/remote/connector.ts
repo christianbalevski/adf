@@ -49,6 +49,17 @@ export class RemoteConnectError extends Error {
 
 const HANDSHAKE_TIMEOUT_MS = 15_000
 
+/** `wait`, ended early (resolved) when `signal` aborts. */
+function abortable(wait: Promise<void>, signal?: AbortSignal): Promise<void> {
+  if (!signal) return wait
+  if (signal.aborted) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    const done = (): void => { signal.removeEventListener('abort', done); resolve() }
+    signal.addEventListener('abort', done, { once: true })
+    void wait.then(done, done)
+  })
+}
+
 /** Node/undici error codes of a failed TLS handshake or certificate check. */
 const TLS_CODE = /^(CERT_|UNABLE_TO_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|ERR_TLS_|ERR_SSL_|ERR_CERT|HOSTNAME_MISMATCH|EPROTO$)/
 /** Codes of a host that cannot be reached at all. */
@@ -226,7 +237,9 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   // Set once connected: the pin to check before every new connection (connection.ts pinCheck).
   let pin: (() => Promise<void>) | null = null
-  const connector = Object.assign(async (progress: (text: string) => void) => {
+  const connector = Object.assign(async (progress: (text: string) => void, signal?: AbortSignal) => {
+    /** Studio closed the connection (the runtime was removed): nothing more is sent. */
+    const stopIfClosed = (): void => { if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error('Studio closed this connection') }
     let url: string
     let token: string
     // A saved connection (settings-scopes.md §5.2): cli-remotes.json and the OS keychain, pinned to its fingerprint.
@@ -261,14 +274,19 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
     let info: DaemonVersion
     for (let attempt = 1; ; attempt++) {
       try {
+        stopIfClosed()
         if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, opts.fetch).catch((e) => { throw asConnectError(e) })
+        // The pin check and the handshake each wait: the token goes out only while the connection is still wanted.
+        stopIfClosed()
         info = await remoteHandshake(url, token, opts)
+        stopIfClosed()
         if (saved) pin = pinCheckFor(saved.name, saved.remote.fingerprint, url, opts.fetch)
         break
       } catch (err) {
         if (!(err instanceof RemoteConnectError) || !RETRIED.has(err.problem) || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw err
+        stopIfClosed()
         progress(`${REMOTE_WAITING_PREFIX} at ${url} (attempt ${attempt}; next in ${Math.round(delay / 1000)} s): ${err.message}`)
-        await sleep(delay)
+        await abortable(sleep(delay), signal)
         delay = Math.min(maxDelay, delay * 2)
       }
     }

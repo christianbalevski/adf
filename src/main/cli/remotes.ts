@@ -72,11 +72,32 @@ export function loadRemotes(env: NodeJS.ProcessEnv = process.env): RemotesFile {
 
 /** loadRemotes without blocking (Studio main): an absent or unreadable file is the empty list. */
 export async function loadRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<RemotesFile> {
+  return (await readRemotesAsync(env)).file
+}
+
+/**
+ * The list without blocking, telling an absent file (no connections) from one
+ * that cannot be read or is not a remotes file: `unreadable` is why, and
+ * `file` is then the empty list, which must not be taken as "nothing saved".
+ */
+export async function readRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<{ file: RemotesFile; unreadable: string | null }> {
+  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
+  const path = remotesPath(env)
+  let text: string
   try {
-    return parseRemotes(await readFile(remotesPath(env), 'utf-8'))
-  } catch {
-    return { v: 1, default: null, remotes: {} }
+    text = await readFile(path, 'utf-8')
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { file: empty, unreadable: null }
+    return { file: empty, unreadable: `${path} cannot be read (${err instanceof Error ? err.message : String(err)})` }
   }
+  let raw: unknown
+  try {
+    raw = JSON.parse(text)
+  } catch (err) {
+    return { file: empty, unreadable: `${path} is not valid JSON (${err instanceof Error ? err.message : String(err)})` }
+  }
+  if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return { file: empty, unreadable: `${path} is not a saved-connections file (v 1)` }
+  return { file: parseRemotes(text), unreadable: null }
 }
 
 /** The file's text as a RemotesFile; anything malformed is left out. */

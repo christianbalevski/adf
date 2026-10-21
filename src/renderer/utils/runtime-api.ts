@@ -10,7 +10,10 @@ import { isAgentWindow } from './window-kind'
  * is the window's own runtime, else the surface bound to `runtimeId`. With
  * This computer only, every call goes through `window.adfApi` exactly as
  * before. An agent window of another runtime reaches This computer through
- * `apiFor('local')`, untagged.
+ * `apiFor('local')`, whose calls carry an explicit `local` tag (preload):
+ * an untagged call from that window is the window's own runtime's. Main
+ * honours a tag for another runtime from an agent window on the approvals
+ * channels only; elsewhere it refuses it.
  */
 export function apiFor(runtimeId?: RuntimeId | null): AdfApi {
   const api = window.adfApi

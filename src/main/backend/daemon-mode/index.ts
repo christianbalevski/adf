@@ -120,6 +120,14 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.MENU_ACTION_TAKE_PENDING,
 ]
 
+/**
+ * The approvals list's calls (§6.1): a window answers a request of any
+ * runtime, so a tag names the asking runtime even from an agent window of
+ * another one (`local` included). Untagged, an agent window's call is its
+ * own runtime's, as every call.
+ */
+const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
+
 /** Main-window calls that open a file on their runtime: that runtime holds the main window's open agent (§4.3). */
 const MAIN_OPEN_CHANNELS: ReadonlySet<string> = new Set([IPC.FILE_OPEN, IPC.FILE_CREATE, IPC.FILE_CREATE_QUICK])
 
@@ -178,6 +186,8 @@ export interface DaemonModeDeps {
   sharedMnemonic?: () => SharedMnemonicStore | null
   /** Tests: whether the daemon's pid is alive (local mode exit detection). Default: process liveness. */
   processAlive?: (pid: number) => boolean
+  /** Tests: wait for the daemon's pid to exit (a restart into Inside Studio). Default: daemon-exit.ts waitForDaemonExit. */
+  waitForExit?: (pid: number, budgetMs: number) => Promise<boolean>
   /** Tests: the pause after the daemon exited before Studio starts it again, or shows the exit (default DAEMON_RESPAWN_DELAY_MS). */
   respawnDelayMs?: number
   /**
@@ -247,7 +257,7 @@ export interface DaemonModeHandle {
    * (remote-access.md §3.6). Every other runtime ends its sessions in
    * parallel; its daemon keeps running (multi-runtime.md §3.3).
    */
-  shutdown(opts?: { keepDaemonRunning?: boolean }): Promise<void>
+  shutdown(opts?: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number }): Promise<void>
   /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
   windows: DaemonWindows
   /** The runtime set (multi-runtime.md §3.2). */
@@ -401,19 +411,24 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     },
     showMainWindow: hooks.showMainWindow,
     openFile: hooks.openFile,
+    ...(hooks.openFileOn ? { openFileOn: hooks.openFileOn } : {}),
     log,
   })
 
+  /** `from` is the connection of runtime `runtimeId` in the set (not one that retires or was replaced). The primary's constructor runs before the manager exists. */
+  const current = (runtimeId: RuntimeId, from: DaemonConnection): boolean => !manager ? runtimeId === primaryId : manager.get(runtimeId)?.connection === from
   const shared: RuntimeShared = {
     clientSettings,
     approvals,
     hooks,
     firstWindow,
-    approvalsIn: (runtimeId, snapshot) => {
+    approvalsIn: (runtimeId, snapshot, from) => {
+      if (!current(runtimeId, from)) return
       aggregator.set(runtimeId, snapshot)
       applyMerged()
     },
-    publishApprovals: (runtimeId, snapshot) => {
+    publishApprovals: (runtimeId, snapshot, from) => {
+      if (!current(runtimeId, from)) return
       aggregator.set(runtimeId, snapshot)
       publishApprovals(aggregator.merged())
     },
@@ -469,7 +484,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
           ...set.overrides?.(name),
         },
         shared,
-        recreate: () => { void manager.replace(id) },
+        recreate: () => { void manager.replace(id, runtime) },
       })
       // Its state shows in the runtime list (CONNECTION_CHANGED, §4.5) and the Help menu (§6.6).
       let connected = false
@@ -502,7 +517,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       log.warn(`[IPC] ${channelKey(channel)} was called with a runtime tag (${runtimeId}); it is a Studio call and has no runtime`)
       throw new RuntimeRouteError(NO_RUNTIME_SENTENCE)
     }
-    return { ctx: manager.contextFor(event?.sender?.id, runtimeId), args }
+    return { ctx: manager.contextFor(event?.sender?.id, runtimeId, { anyRuntime: ANY_RUNTIME_CHANNELS.has(channel) }), args }
   }
   const isAgentWindow = (event: { sender?: { id?: number } } | undefined): boolean => {
     const id = event?.sender?.id
@@ -598,7 +613,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { keepDaemonRunning?: boolean } = {}): Promise<void> => {
+  const shutdown = (opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> => {
     shutdownPromise ??= (() => {
       const done = manager.shutdown(opts)
       approvals.dispose()
