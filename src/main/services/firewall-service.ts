@@ -94,9 +94,11 @@ function shQuote(s: string): string {
 export function lanFirewallCommands(platform: NodeJS.Platform, port: number, exePath: string, manager?: 'firewalld' | 'ufw' | null): string[] {
   if (platform === 'win32') {
     const exe = psQuote(exePath)
+    // Any rule of that name goes first: a stale one (a Block rule) would still win, and a re-run adds no duplicate.
+    const replace = (name: string) => `Get-NetFirewallRule -DisplayName ${psQuote(name)} -ErrorAction SilentlyContinue | Remove-NetFirewallRule; New-NetFirewallRule -DisplayName ${psQuote(name)}`
     return [
-      `New-NetFirewallRule -DisplayName '${FW_RULE_TCP}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${port} -Program ${exe} -Profile Private,Domain`,
-      `New-NetFirewallRule -DisplayName '${FW_RULE_UDP}' -Direction Inbound -Action Allow -Protocol UDP -LocalPort ${MDNS_PORT} -Program ${exe} -Profile Private,Domain`,
+      `${replace(FW_RULE_TCP)} -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${port} -Program ${exe} -Profile Private,Domain`,
+      `${replace(FW_RULE_UDP)} -Direction Inbound -Action Allow -Protocol UDP -LocalPort ${MDNS_PORT} -Program ${exe} -Profile Private,Domain`,
     ]
   }
   if (platform === 'darwin') {
