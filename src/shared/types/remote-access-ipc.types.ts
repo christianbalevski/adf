@@ -117,6 +117,8 @@ export interface RemotePairStartRequest {
   deviceName?: string
   /** The user ticked "I trust this network; the token is sent unencrypted." for this URL. */
   allowInsecureHttp?: boolean
+  /** The user answered Replace to `already_saved`: pairing replaces that saved connection's address and token. */
+  replace?: boolean
 }
 
 export type RemotePairStep =
@@ -151,6 +153,8 @@ export type RemotePairErrorCode =
   | 'fingerprint_mismatch'
   /** The user kept the saved remote computer. */
   | 'kept'
+  /** This computer is already a saved connection: the dialog asks Replace, then starts again with `replace`. */
+  | 'already_saved'
   | 'encryption_unavailable'
   | 'save_failed'
   | 'bad_request'

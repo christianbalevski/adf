@@ -449,6 +449,26 @@ describe('pairing from Settings → Connections', () => {
     expect(other.replaces).toEqual([])
   })
 
+  // F5 (review round 3): as `adf pair` asks, Studio never replaces a saved connection's token without asking.
+  it('a computer already saved at this address: asked before the code, nothing sent; Replace pairs again and replaces it', async () => {
+    const saved = [{ name: 'agent-1-pc', url: TAILNET, fingerprint: 'ABCD-EFGH' }]
+    const p = pairSetup({ savedConnections: saved })
+    const asked = await p.flow.start({ url: TAILNET })
+    expect(asked).toMatchObject({ step: 'failed', code: 'already_saved', message: 'agent-1-pc is already saved; replace its address and token?' })
+    expect(p.replaces).toEqual([])
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+    // The code is not taken until the user answers Replace.
+    expect(await p.flow.submitCode('654321')).toMatchObject({ code: 'not_started' })
+    expect(p.daemon.requests.some((r) => r.path === '/pair/claim')).toBe(false)
+
+    expect(await p.flow.start({ url: TAILNET, replace: true })).toMatchObject({ step: 'need_code', code: null })
+    await p.flow.submitCode('654321')
+    p.daemon.decide(true)
+    await until(() => p.last().step === 'paired')
+    expect(p.saved).toHaveLength(1)
+    expect(p.saved[0]).toMatchObject({ url: TAILNET, fingerprint: 'ABCD-EFGH' })
+  })
+
   it('re-review 3: only this tailnet\'s ts.net names and Tailscale peers qualify; without Tailscale nothing switches', async () => {
     const offered = [
       { url: 'https://evil.ts.net', kind: 'tailscale-https' as const, encrypted: true },

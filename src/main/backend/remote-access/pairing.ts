@@ -2,7 +2,7 @@ import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
 import type { RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
 import { PairingClient, RemoteAccessApiError } from './client'
-import { olderAdfSentence, verifyHello } from '../../services/remote-hello'
+import { olderAdfSentence, verifyHello, verifyHelloWaiting } from '../../services/remote-hello'
 import { UNSAFE_DISPLAY_CHARS } from '../../daemon/remote-access/config'
 import { TailscaleClient, tailnetUrlAllowed, type TailnetView } from '../../daemon/remote-access/tailscale'
 
@@ -40,6 +40,8 @@ export interface PairingFlowDeps {
   log?: Pick<Console, 'log' | 'warn'>
   /** Pause between poll retries after a network error (tests). */
   retryMs?: number
+  /** The wait for a host's Retry-After (tests). */
+  sleep?: (ms: number) => Promise<void>
   /**
    * The host offered an encrypted address of its own (a tailnet address or a
    * *.ts.net https name) that answers with the same fingerprint: save it
@@ -153,6 +155,12 @@ export class PairingFlow {
         const replace = this.deps.confirmReplace ? await this.deps.confirmReplace({ name: moved.name, from: moved.url, to: check.url }).catch(() => false) : false
         if (abort.signal.aborted) return this.current
         if (!replace) return this.fail('kept', `Kept the saved address of ${moved.name}; nothing was sent.`)
+      }
+      // Already saved at this address (F5): pairing again replaces its token, never without asking, as `adf pair` asks.
+      const same = moved ? undefined : saved.find((s) => s.fingerprint === hello.fingerprint && originOf(s.url) === originOf(check.url))
+      if (same && request.replace !== true) {
+        this.log.log(`[Remote access] Pairing with ${hello.name} (${hello.fingerprint}): already saved as ${same.name}; asking before it is replaced`)
+        return this.set({ step: 'failed', code: 'already_saved', message: `${same.name} is already saved; replace its address and token?`, host: { ...host, name: hello.name, fingerprint: hello.fingerprint } })
       }
       this.log.log(`[Remote access] Pairing with ${hello.name} (${hello.fingerprint}) at ${check.url} as "${deviceName}"`)
       return this.set({
@@ -276,14 +284,20 @@ export class PairingFlow {
       break
     }
     // A fresh pairing pins the fingerprint only after the computer at the saved address proved it issued this token.
-    const proved = await verifyHello(url, result.token, { fetch: this.deps.fetch, timeoutMs: 5_000 })
+    // A 429 here is waited out (the host already made the device), said in the dialog; the token is not sent meanwhile.
+    const proved = await verifyHelloWaiting(url, result.token, {
+      fetch: this.deps.fetch, timeoutMs: 5_000,
+      ...(this.deps.sleep ? { sleep: this.deps.sleep } : {}),
+      onWait: () => this.set({ step: 'waiting', message: `${host.name} is rate-limiting connections; retrying.` }),
+    })
     const label = result.device?.label ?? this.deviceName
     if (proved.kind !== 'verified' || proved.hello.fingerprint !== host.fingerprint) {
       const why = proved.kind === 'verified' ? `${url} answers with fingerprint ${proved.hello.fingerprint}, not ${host.fingerprint}`
         : proved.kind === 'none' ? `${url} did not answer after ${host.name} allowed this device`
+          : proved.kind === 'rate_limited' ? `${host.name} kept rate-limiting connections`
           : proved.kind === 'unsigned' ? `${host.name} runs an older ADF`
             : `${url} could not prove it is ${host.name}`
-      this.fail(proved.kind === 'unsigned' ? 'old_daemon' : proved.kind === 'none' ? 'unreachable' : 'fingerprint_mismatch', `${why}; Studio saved nothing, so remove "${label}" on ${host.name}.`)
+      this.fail(proved.kind === 'unsigned' ? 'old_daemon' : proved.kind === 'none' ? 'unreachable' : proved.kind === 'rate_limited' ? 'rate_limited' : 'fingerprint_mismatch', `${why}; Studio saved nothing, so remove "${label}" on ${host.name}.`)
       return
     }
     const insecure = checkRemoteDaemonUrl(url).kind === 'insecure-http'

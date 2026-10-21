@@ -19,7 +19,7 @@ import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/q
 import { LanReach } from '../services/lan-reach'
 import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
 import { allowNetwork, cleanDisplayName, forgetNetwork, readAllowedNetworks, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
-import type { NetworkConsentResult, NetworkNotice, NetworkStatusView } from '../../shared/types/remote-access-ipc.types'
+import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemotePairStartRequest } from '../../shared/types/remote-access-ipc.types'
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
 import { remotesEnv, SavedConnectionsCache, saveConnection } from './connections'
@@ -429,7 +429,7 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
   // --- Client: Settings → Connections ---
   ipcMain.handle(IPC.REMOTE_DISCOVERY_START, async () => { await refreshSaved(); discovery.start(); return true })
   ipcMain.handle(IPC.REMOTE_DISCOVERY_STOP, () => { discovery.stop(); return true })
-  ipcMain.handle(IPC.REMOTE_PAIR_START, async (_event, request: unknown) => { await refreshSaved(); return pairing.start((request ?? {}) as { url: string }) })
+  ipcMain.handle(IPC.REMOTE_PAIR_START, async (_event, request: unknown) => { await refreshSaved(); return pairing.start((request ?? {}) as RemotePairStartRequest) })
   ipcMain.handle(IPC.REMOTE_PAIR_SUBMIT_CODE, (_event, code: unknown) => pairing.submitCode(code))
   ipcMain.handle(IPC.REMOTE_PAIR_CANCEL, () => pairing.cancel())
 
