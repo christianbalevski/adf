@@ -274,7 +274,7 @@ The runtime's mesh server binding follows the highest declared tier:
 | At least one `lan` or `public` agent **OR** **Network** (`meshLan`) on | `127.0.0.1` plus each private and Tailscale address on a network you allowed (Settings → Networking); never `0.0.0.0` |
 | `MESH_HOST=0.0.0.0` | `0.0.0.0` (all interfaces; the operator's choice) |
 
-Flipping a single agent to `lan` or `public` is enough to make the runtime listen beyond loopback; a `public` agent needs the same consent per network as `lan`, and Settings → Networking names it until you allow the network. Live tier changes (via `sys_update_config`) take effect immediately for inbox/delivery enforcement, but upgrading binding from loopback to LAN requires a runtime restart.
+Flipping a single agent to `lan` or `public` is enough to make the runtime listen beyond loopback; a `public` agent needs the same consent per network as `lan`, and Settings → Networking names it until you allow the network. On a server with only a public address there is no network to allow; the daemon log, `adf daemon status` and the status card then say the agent listens on this computer only and name `MESH_HOST`. Live tier changes (via `sys_update_config`) take effect immediately for inbox/delivery enforcement, but upgrading binding from loopback to LAN requires a runtime restart.
 
 ### Public Reach
 

@@ -259,7 +259,7 @@ export interface AdfApi {
     adapters: { adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }
     peers: unknown[]
   }>
-  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>
+  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string; lanAddresses?: string[]; warning?: string }>
   restartMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   stopMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>

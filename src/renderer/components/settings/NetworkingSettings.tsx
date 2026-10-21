@@ -118,6 +118,16 @@ export function consentLines(view: Pick<NetworkStatusView, 'networks' | 'waiting
   })
 }
 
+/**
+ * The mesh server's warning (mesh-server.ts PUBLIC_LOOPBACK_WARNING: a public
+ * agent with no allowed network to listen on, e.g. a headless VPS), unless a
+ * consent line already offers Allow for a network here.
+ */
+export function meshWarningLine(server: { warning?: string | null }, consent: ConsentLine[]): string | null {
+  if (!server.warning) return null
+  return consent.some((c) => c.networkId) ? null : server.warning
+}
+
 /** The addresses detail under Advanced: LAN addresses, Tailscale, firewall. */
 export function networkDetailText(view: NetworkStatusView): string {
   const parts: string[] = []
@@ -187,12 +197,14 @@ function Badge({ children, tone = 'muted' }: { children: React.ReactNode; tone?:
 }
 
 /** The status card: one line, then Allow for each current network not allowed, with what waits for it. */
-export function NetworkingStatusCard({ line, consent, busy, note, firewall, onAllow }: {
+export function NetworkingStatusCard({ line, consent, busy, note, firewall, warning = null, onAllow }: {
   line: string
   consent: ConsentLine[]
   busy: boolean
   note: string | null
   firewall: string | null
+  /** meshWarningLine. */
+  warning?: string | null
   onAllow: (id: string) => void
 }) {
   return (
@@ -205,6 +217,7 @@ export function NetworkingStatusCard({ line, consent, busy, note, firewall, onAl
           {c.warning && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{c.warning}</span>}
         </div>
       ))}
+      {warning && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{warning}</span>}
       {(firewall || note) && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? firewall}</span>}
     </div>
   )
@@ -278,7 +291,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
   const [meshPort, setMeshPort] = useState(7295)
   const [manualPeers, setManualPeers] = useState<string[]>([])
   const [tailnetOn, setTailnetOn] = useState(true)
-  const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>({ running: false, port: 7295, host: '127.0.0.1' })
+  const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string; lanAddresses?: string[]; warning?: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [meshAgents, setMeshAgents] = useState<MeshAgentStatus[]>([])
   const [lanInfo, setLanInfo] = useState<{ hostname: string; addresses: Array<{ iface: string; address: string; family: 'IPv4' | 'IPv6'; mac: string }> }>({ hostname: '', addresses: [] })
   const [meshRestarting, setMeshRestarting] = useState(false)
@@ -464,6 +477,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
         busy={netBusy}
         note={netNote}
         firewall={thisComputer && netView!.firewall.state === 'blocked' ? netView!.firewall.message : null}
+        warning={meshWarningLine(meshServerStatus, consent)}
         onAllow={(id) => void changeNetwork('allow', id)}
       />
 

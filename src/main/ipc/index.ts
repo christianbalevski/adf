@@ -6134,7 +6134,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       running: meshServer?.isRunning() ?? false,
       port: meshServer?.getPort() ?? 7295,
       host: meshServer?.getHost() ?? '127.0.0.1',
-      lanAddresses: meshServer?.getLanAddresses() ?? []
+      lanAddresses: meshServer?.getLanAddresses() ?? [],
+      ...(meshServer?.getWarning() ? { warning: meshServer.getWarning() } : {}),
     }
   })
 

@@ -173,6 +173,14 @@ const LAN_CHECK_MS = 10_000
  */
 export type MeshBindMode = 'loopback' | 'lan' | 'env'
 
+/**
+ * A public agent in LAN mode with nothing listening beyond loopback (no
+ * allowed network: a headless VPS has only a public address, which never
+ * listens): logged once, and in the server status (`warning`), so
+ * `adf daemon status` and Studio's status card show it.
+ */
+export const PUBLIC_LOOPBACK_WARNING = 'Public agents listen on this computer only (no allowed network); on a server, set MESH_HOST=0.0.0.0 and restart the daemon.'
+
 export class MeshServer {
   private server: FastifyInstance | null = null
   private meshManager: MeshManager | null = null
@@ -188,6 +196,8 @@ export class MeshServer {
   private lanSnapshot: LanReachSnapshot | null = null
   private lanSyncing: Promise<void> | null = null
   private lanBindAddress: ((address: string) => string) | null = null
+  /** PUBLIC_LOOPBACK_WARNING was logged and still holds (logged again only after it cleared). */
+  private warned = false
 
   constructor(
     private codeSandboxService: CodeSandboxService,
@@ -334,6 +344,9 @@ export class MeshServer {
           const refused = snapshot.addresses.filter((a) => a.refusal).map((a) => `${a.address} (${a.iface})`)
           console.log(`[MeshServer] LAN addresses: ${listeners.addresses().join(', ') || 'none'}${refused.length ? `; on a network not allowed: ${refused.join(', ')}` : ''}`)
         }
+        const warning = this.getWarning()
+        if (warning && !this.warned) console.warn(`[MeshServer] ${warning}`)
+        this.warned = warning !== null
       } catch (err) {
         console.warn('[MeshServer] LAN address check failed:', err instanceof Error ? err.message : err)
       } finally {
@@ -349,6 +362,7 @@ export class MeshServer {
     const lan = this.lanListeners
     this.lanListeners = null
     this.lanSnapshot = null
+    this.warned = false
     if (lan) await lan.closeAll().catch(() => {})
     if (this.server) {
       try {
@@ -391,6 +405,13 @@ export class MeshServer {
 
   isLanReachable(): boolean {
     return this.getLanAddresses().length > 0
+  }
+
+  /** PUBLIC_LOOPBACK_WARNING while a public agent has no allowed network to listen on; else null. */
+  getWarning(): string | null {
+    if (!this.isLanMode() || !this.lanListeners || this.lanSnapshot === null) return null
+    if (!(this.meshManager?.hasAgentOfTier('public') ?? false)) return null
+    return this.lanListeners.addresses().length === 0 ? PUBLIC_LOOPBACK_WARNING : null
   }
 
   // ===========================================================================

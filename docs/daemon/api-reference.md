@@ -20116,7 +20116,8 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `running` | boolean | yes |  |
 | `port` | integer | yes |  |
 | `host` | string | yes |  |
-| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility. |
+| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0: the Network switch, or an agent with lan or public visibility) listens on private-network and Tailscale addresses of allowed networks only (remote-access.md §3.3, §3.3.1), never on a public address. MESH_HOST set: [MESH_HOST] unless it is loopback. |
+| `warning` | string |  | Present while an agent with public visibility has no allowed network to listen on (it is reachable from this computer only, e.g. on a headless server with only a public address). It names MESH_HOST, which binds an address of the operator's choice. |
 
 <a id="schema-meshserverstatus"></a>
 
@@ -20127,7 +20128,8 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `running` | boolean | yes |  |
 | `port` | integer | yes |  |
 | `host` | string | yes |  |
-| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0) listens on private-network and Tailscale addresses only (remote-access.md §3.3); ['0.0.0.0'] for an agent with public visibility. |
+| `lanAddresses` | string[] |  | Non-loopback addresses listening now. LAN mode (host 0.0.0.0: the Network switch, or an agent with lan or public visibility) listens on private-network and Tailscale addresses of allowed networks only (remote-access.md §3.3, §3.3.1), never on a public address. MESH_HOST set: [MESH_HOST] unless it is loopback. |
+| `warning` | string |  | Present while an agent with public visibility has no allowed network to listen on (it is reachable from this computer only, e.g. on a headless server with only a public address). It names MESH_HOST, which binds an address of the operator's choice. |
 
 <a id="schema-meshstatus"></a>
 

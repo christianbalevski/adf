@@ -39,6 +39,7 @@ import {
   firewallText,
   foundBy,
   isManaged,
+  meshWarningLine,
   networkDetailText,
   networkingStatusLine,
   NetworkingStatusCard,
@@ -328,6 +329,18 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     expect(html).toContain('Remote access paused on Unidentified network.')
     expect(html.match(/>Allow</g)).toHaveLength(1)
     expect(html).not.toContain('Allow on this network<')
+  })
+
+  it('review A8: a public agent with no allowed network to listen on (a headless VPS, any runtime): the card says so and names MESH_HOST', () => {
+    const warning = 'Public agents listen on this computer only (no allowed network); on a server, set MESH_HOST=0.0.0.0 and restart the daemon.'
+    // A remote runtime (no consent lines) or this computer with nothing to allow: the line shows.
+    expect(meshWarningLine({ warning }, [])).toBe(warning)
+    expect(meshWarningLine({ warning }, consentLines(net({ networks: [{ ...cafe, id: null, label: 'Unidentified network' }] }), ['agent-1']))).toBe(warning)
+    // A network to allow: its Allow line already says what to do.
+    expect(meshWarningLine({ warning }, consentLines(net({ networks: [cafe] }), ['agent-1']))).toBeNull()
+    expect(meshWarningLine({}, [])).toBeNull()
+    const html = renderToStaticMarkup(<NetworkingStatusCard line="Mesh on" consent={[]} busy={false} note={null} firewall={null} warning={warning} onAllow={() => {}} />)
+    expect(html).toContain(warning)
   })
 
   it('shared agents: visibility lan or public', () => {
