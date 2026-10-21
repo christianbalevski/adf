@@ -311,7 +311,9 @@ export class DaemonConnection {
           if (message !== lastRefusal && !message.startsWith('Nothing answers')) this.log.warn(`[Backend] Not sending the daemon token: ${message}`)
           lastRefusal = message
           if (this.disposed) break
-          await this.pause(1_000)
+          // A host that answered 429 (rate_limited) is asked again only after the wait it named.
+          const retryAfterMs = (err as { retryAfterMs?: unknown }).retryAfterMs
+          await this.pause(typeof retryAfterMs === 'number' ? Math.max(1_000, retryAfterMs) : 1_000)
         }
       }
     })().finally(() => { this.verifying = null })

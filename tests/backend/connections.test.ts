@@ -25,6 +25,8 @@ const quiet = { log: () => {}, warn: () => {} }
 const HUB = 'http://100.101.102.103:7385'
 const LAN = 'http://192.168.1.20:7385'
 const TOKEN = deviceToken('rawl-hub')
+/** A token that is not a device token (the host's master token, ADF_DAEMON_TOKEN): nothing can prove who answers for it. */
+const MASTER = 'm'.repeat(43)
 
 const dirs: string[] = []
 afterEach(() => { for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true }) })
@@ -49,8 +51,11 @@ const codec: SecretCodec = {
   decrypt: (stored) => Buffer.from(stored.slice(5), 'base64').toString(),
 }
 
-/** An ADF daemon stand-in: /health, /version behind the token, /remote/hello with its fingerprint (or none) and the proof for TOKEN it issued. */
-function fakeDaemon(opts: { fingerprint?: string | null; name?: string; old?: boolean } = {}) {
+/**
+ * An ADF daemon stand-in: /health, /version behind the token (TOKEN, or MASTER), /remote/hello with its fingerprint
+ * (or none: 404) and the proof for TOKEN it issued; `hello` answers the hello with that instead (429, garbage).
+ */
+function fakeDaemon(opts: { fingerprint?: string | null; name?: string; old?: boolean; hello?: 429 | 'garbage' } = {}) {
   const requests: Array<{ url: string; auth: string | null }> = []
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const url = new URL(String(input))
@@ -59,14 +64,16 @@ function fakeDaemon(opts: { fingerprint?: string | null; name?: string; old?: bo
     const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
     if (url.pathname === '/health') return json(200, { ok: true })
     if (url.pathname === '/remote/hello') {
+      if (opts.hello === 429) return new Response(JSON.stringify({ error: 'Too many requests from this address. Wait a minute.', code: 'rate_limited' }), { status: 429, headers: { 'Content-Type': 'application/json', 'Retry-After': '7' } })
+      if (opts.hello === 'garbage') return new Response('<html>hi</html>', { status: 200 })
       if (opts.fingerprint === null) return json(404, { error: 'Remote access is off on this computer.', code: 'remote_access_off' })
       return helloResponse(url, { name: opts.name ?? 'rawl-hub', fingerprint: opts.fingerprint ?? 'ABCD-EFGH', tokens: [TOKEN], old: opts.old })
     }
-    if (auth !== `Bearer ${TOKEN}`) return json(401, { error: 'Unauthorized' })
+    if (auth !== `Bearer ${TOKEN}` && auth !== `Bearer ${MASTER}`) return json(401, { error: 'Unauthorized' })
     if (url.pathname === '/version') return json(200, { version: '0.9.0', clientApiVersion: SUPPORTED_CLIENT_API_VERSION, pid: 1, startedBy: 'cli' })
     return json(404, { error: 'not found' })
   }) as typeof fetch
-  return { fetch, requests, tokenSent: () => requests.some((r) => r.auth === `Bearer ${TOKEN}`) }
+  return { fetch, requests, tokenSent: () => requests.some((r) => r.auth !== null) }
 }
 
 const daemonStatus = (connection: BackendDaemonStatus['connection']): BackendDaemonStatus => ({
@@ -332,15 +339,33 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     expect(prompts).toEqual([{ title: 'Keychain unavailable', message: 'The token can be saved in a file only you can read.', detail: 'the OS keychain is turned off (ADF_KEYCHAIN=0)', ok: 'Save to file' }])
   })
 
-  it('Add connection where nothing answers hello (remote access off): the remote URL of studio-backend.json, after asking before it replaces another', async () => {
+  // F2 (review round 3): a device token goes only where the daemon that issued it proves it; a hello that answers nothing proves nothing.
+  it('Add connection with a device token where hello answers nothing (404, 429, garbage): refused; nothing is sent or saved', async () => {
+    const old = { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } }
+    for (const daemon of [fakeDaemon({ fingerprint: null }), fakeDaemon({ hello: 'garbage' })]) {
+      const s = setup({ daemon, studioBackend: old })
+      expect(await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toEqual({ ok: false, code: 'unreachable', error: 'https://adf.example.com does not answer as an ADF computer with remote access on; Studio sent nothing.' })
+      expect(s.daemon.tokenSent()).toBe(false)
+      expect(s.confirms).toEqual([])
+      expect(s.store.config().remote).toMatchObject({ url: 'https://old.example.com' })
+      expect(loadRemotes(s.env).remotes).toEqual({})
+    }
+    // 429: not down; said as such, and nothing is sent or saved either.
+    const limited = setup({ daemon: fakeDaemon({ hello: 429 }) })
+    expect(await limited.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toEqual({ ok: false, code: 'rate_limited', error: 'adf.example.com is rate-limiting connections; Studio sent nothing, so try again in 7 s.' })
+    expect(limited.daemon.tokenSent()).toBe(false)
+    expect(limited.store.config().remote.url).toBeNull()
+  })
+
+  it('Add connection with a token that is not a device token where nothing answers hello: the remote URL of studio-backend.json, after asking before it replaces another', async () => {
     const s = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
-    const result = await s.connections.add({ url: 'https://adf.example.com', token: TOKEN })
+    const result = await s.connections.add({ url: 'https://adf.example.com', token: MASTER })
     expect(s.confirms).toEqual([{ message: 'Replace connection', detail: 'Replaces old.example.com.', ok: 'Replace' }])
     expect(result).toMatchObject({ ok: true, id: 'remote', notices: ['Saved without a fingerprint; identity not checked.'] })
     expect(s.store.config().remote).toMatchObject({ url: 'https://adf.example.com' })
     expect(loadRemotes(s.env).remotes).toEqual({})
     const declined = setup({ daemon: fakeDaemon({ fingerprint: null }), confirm: false, studioBackend: { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } } })
-    expect(await declined.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
+    expect(await declined.connections.add({ url: 'https://adf.example.com', token: MASTER })).toEqual({ ok: false, code: 'cancelled', error: 'Nothing changed.' })
   })
 
   it('Add connection refuses a bad address, unconfirmed plain http, a bad token and a token the daemon refuses', async () => {
@@ -389,7 +414,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     // No /remote/hello there: a connection without a fingerprint, in studio-backend.json.
     const daemon = fakeDaemon({ fingerprint: null })
     const s = setup({ daemon, slotChanged: () => { changes++ } })
-    const added = await s.connections.add({ url: HUB, token: TOKEN })
+    const added = await s.connections.add({ url: HUB, token: MASTER })
     expect(added).toMatchObject({ ok: true, id: 'remote' })
     expect(changes).toBe(1)
     expect(s.store.config().remote.url).toBe(HUB)
@@ -427,7 +452,7 @@ describe('Connect, Add connection and Remove (Studio main)', () => {
     const slot: string[] = []
     const old = { v: 1, mode: 'local', remote: { url: 'https://old.example.com', token: codec.encrypt('adfd_old'), allowInsecureHttp: false } }
     const replaced = setup({ daemon: fakeDaemon({ fingerprint: null }), studioBackend: old, forgetRuntimeKeys: (id) => { slot.push(id) } })
-    expect(await replaced.connections.add({ url: 'https://adf.example.com', token: TOKEN })).toMatchObject({ ok: true, id: 'remote' })
+    expect(await replaced.connections.add({ url: 'https://adf.example.com', token: MASTER })).toMatchObject({ ok: true, id: 'remote' })
     expect(slot).toEqual(['remote'])
     expect(await replaced.connections.remove('remote')).toMatchObject({ ok: true })
     expect(slot).toEqual(['remote', 'remote'])

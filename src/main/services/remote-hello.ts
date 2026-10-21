@@ -101,6 +101,8 @@ export type HelloCheck =
   | { kind: 'verified'; hello: RemoteHello }
   /** Nothing answers there as an ADF daemon with remote access on (down, off, another program). */
   | { kind: 'none' }
+  /** 429: the daemon there limits hellos from this source; ask again after `retryAfterMs` (the token was not sent). */
+  | { kind: 'rate_limited'; retryAfterMs: number }
   /** An answer without the proof: an older ADF, or anything that cannot make it. */
   | { kind: 'unsigned'; hello: RemoteHello }
   /** A proof that does not verify: not the computer that issued this token. */
@@ -131,6 +133,10 @@ export async function verifyHello(url: string, token: string, opts: { fetch?: ty
   try {
     const signals = [AbortSignal.timeout(opts.timeoutMs ?? 5_000), ...(opts.signal ? [opts.signal] : [])]
     const res = await (opts.fetch ?? fetch)(`${url.replace(/\/+$/, '')}/remote/hello?${query}`, { signal: AbortSignal.any(signals), redirect: 'manual' })
+    if (res.status === 429) {
+      void res.body?.cancel().catch(() => {})
+      return { kind: 'rate_limited', retryAfterMs: retryAfterMs(res.headers.get('retry-after')) }
+    }
     if (!res.ok) return { kind: 'none' }
     const text = await readCapped(res)
     if (text === null) return { kind: 'none' }
@@ -149,6 +155,17 @@ export async function verifyHello(url: string, token: string, opts: { fetch?: ty
   return given.length === expected.length && timingSafeEqual(given, expected) ? { kind: 'verified', hello } : { kind: 'forged', hello }
 }
 
+/** Retry-After (seconds) as a wait: 1-60 s, 10 s when absent or unreadable. */
+function retryAfterMs(header: string | null): number {
+  const seconds = Number(header)
+  return Number.isFinite(seconds) && seconds > 0 ? Math.min(60, Math.max(1, Math.ceil(seconds))) * 1000 : 10_000
+}
+
+/** The sentence of a 429 to a hello, while the client waits and asks again (the token was not sent). */
+export function rateLimitedSentence(name: string): string {
+  return `${name} is rate-limiting connections; retrying.`
+}
+
 /** The sentence of an older ADF, which cannot prove who it is: refused, never downgraded. */
 export function olderAdfSentence(name: string): string {
   return `${name} runs an older ADF; update it.`
@@ -157,7 +174,8 @@ export function olderAdfSentence(name: string): string {
 /**
  * The sentence of a hello that did not verify, for `name` (the saved
  * connection) at `url`; null for `verified` and `none` (each caller says
- * those its own way). The token was not sent in any case.
+ * those its own way). The token was not sent in any case. `rate_limited` is
+ * not a refusal: the caller waits `retryAfterMs` and asks again.
  */
 export function helloRefusal(check: HelloCheck, name: string, url: string): string | null {
   switch (check.kind) {
@@ -166,6 +184,24 @@ export function helloRefusal(check: HelloCheck, name: string, url: string): stri
     case 'unknown_device': return `${name} does not know this computer's token, which was not sent; pair it again.`
     case 'revoked': return `${name} removed this computer's access; pair it again.`
     case 'not_device_token': return `${name} can prove who it is only for a device token; pair it again.`
+    case 'rate_limited': return rateLimitedSentence(name)
     default: return null
   }
+}
+
+/**
+ * verifyHello, waiting out a 429 (`rate_limited`) up to `retries` times for
+ * the Retry-After the host named (`onWait` says so each time). For a check
+ * that cannot simply be asked again later: the save after a pairing, whose
+ * device the host already created.
+ */
+export async function verifyHelloWaiting(url: string, token: string, opts: Parameters<typeof verifyHello>[2] & { retries?: number; sleep?: (ms: number) => Promise<void>; onWait?: (retryAfterMs: number) => void } = {}): Promise<HelloCheck> {
+  const { retries = 3, sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)), onWait, ...verify } = opts
+  let check = await verifyHello(url, token, verify)
+  for (let attempt = 0; check.kind === 'rate_limited' && attempt < retries; attempt++) {
+    onWait?.(check.retryAfterMs)
+    await sleep(check.retryAfterMs)
+    check = await verifyHello(url, token, verify)
+  }
+  return check
 }

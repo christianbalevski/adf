@@ -209,6 +209,88 @@ describe('the remote connector of a saved connection gives the connection its pi
   it('the remote URL without a fingerprint has no pin', () => {
     expect(remoteDaemonConnector({ ...defaultBackendConfig(), mode: 'remote', remote: { url: URL_, token: 'safe:x', allowInsecureHttp: false } }, codec).pinCheck).toBeUndefined()
   })
+
+  // F2 (review round 3): an `adfd_` token in the remote slot, unpinned, goes only to the daemon that proves it issued it.
+  it('the remote slot with a device token: the hello must prove it, at launch and on every re-dial; nothing answering is waited for, never sent to', async () => {
+    const slot: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: URL_, token: `safe:${TOKEN}`, allowInsecureHttp: false } }
+    // An impostor at the address (it holds no record of the token): refused, the token never sent.
+    const impostor = fakeServer(() => 'ABCD-EFGH', () => ({ tokens: [] }))
+    const refused = await remoteDaemonConnector(slot, codec, { fetch: impostor.fetch, retry: { maxAttempts: 1 } })(() => {}).catch((e) => e)
+    expect(refused).toMatchObject({ problem: 'fingerprint', message: '100.101.102.103 does not know this computer\'s token, which was not sent; pair it again.' })
+    expect(impostor.withToken()).toEqual([])
+    // Nothing answers the hello: waited for as a host that is down; nothing sent.
+    const down = fakeServer(() => null)
+    const waited = await remoteDaemonConnector(slot, codec, { fetch: down.fetch, retry: { maxAttempts: 1 } })(() => {}).catch((e) => e)
+    expect(waited).toMatchObject({ problem: 'unreachable' })
+    expect(down.withToken()).toEqual([])
+    // The computer that issued it: connected, and its re-dials are checked too.
+    let fp: string | null = 'ABCD-EFGH'
+    let tokens = [TOKEN]
+    const real = fakeServer(() => fp, () => ({ tokens }))
+    const connector = remoteDaemonConnector(slot, codec, { fetch: real.fetch })
+    expect(connector.pinCheck).toBeTypeOf('function')
+    await connector(() => {})
+    expect(real.sent.map((s) => s.path)).toEqual(['/remote/hello', '/health', '/version'])
+    await expect(connector.pinCheck!()).resolves.toBeUndefined()
+    tokens = []
+    expect(await connector.pinCheck!().catch((e) => e)).toBeInstanceOf(PinMismatchError)
+    fp = null
+    const gone = await connector.pinCheck!().catch((e) => e)
+    expect(gone).not.toBeInstanceOf(PinMismatchError)
+  })
+
+  // F4 (review round 3): a 429 to the hello is "rate-limiting", waited out with its Retry-After; never "down", never a token.
+  it('a hello answered 429: said as rate-limiting, waited out for its Retry-After, the token not sent meanwhile', async () => {
+    const env = savedEnv()
+    await saveConnection(env, { url: URL_, token: TOKEN, fingerprint: 'ABCD-EFGH', hostName: 'rawl-hub', deviceId: 'd', label: 'l' })
+    const real = fakeServer(() => 'ABCD-EFGH')
+    let limited = 2
+    const fetchImpl = (async (input: string | URL | Request, init?: RequestInit) => {
+      if (new URL(String(input)).pathname === '/remote/hello' && limited > 0) {
+        limited--
+        return new Response(JSON.stringify({ error: 'Too many requests from this address. Wait a minute.', code: 'rate_limited' }), { status: 429, headers: { 'Retry-After': '9' } })
+      }
+      return real.fetch(input, init)
+    }) as typeof fetch
+    const progress: string[] = []
+    const slept: number[] = []
+    const connector = remoteDaemonConnector(config, codec, { env, fetch: fetchImpl, retry: { initialMs: 10, maxMs: 20 }, sleep: async (ms) => { slept.push(ms); expect(real.withToken()).toEqual([]) } })
+    await connector((line) => progress.push(line))
+    expect(progress.filter((l) => l.includes('rate-limiting'))).toEqual(['rawl-hub is rate-limiting connections; retrying.', 'rawl-hub is rate-limiting connections; retrying.'])
+    expect(progress.some((l) => /Waiting for the remote ADF daemon|does not answer/.test(l))).toBe(false)
+    expect(slept).toEqual([9_000, 9_000])
+    expect(real.withToken()).toEqual(['/version'])
+    // A re-dial's check: not a mismatch (the connection is not failed), it carries the wait.
+    limited = 1
+    const again = await connector.pinCheck!().catch((e) => e)
+    expect(again).not.toBeInstanceOf(PinMismatchError)
+    expect(again).toMatchObject({ message: 'rawl-hub is rate-limiting connections; retrying.', retryAfterMs: 9_000 })
+  })
+})
+
+describe('a re-dial check answered 429 (F4)', () => {
+  it('the check is asked again only after the wait the host named, not every second; the token is withheld meanwhile', async () => {
+    const calls: number[] = []
+    const connector = Object.assign(async () => ({ baseUrl: 'http://127.0.0.1:47399', logFile: null, description: 'fake', source: { token: () => TOKEN } }), {
+      logFile: null,
+      pinCheck: async () => {
+        calls.push(Date.now())
+        if (calls.length === 1) throw Object.assign(new Error('rawl-hub is rate-limiting connections; retrying.'), { retryAfterMs: 1_600 })
+      },
+    }) as unknown as DaemonConnector
+    const c = new DaemonConnection(connector, quiet, (async () => new Response('{}')) as typeof fetch)
+    await c.client()
+    c.markConnected()
+    c.markDisconnected('the stream dropped')
+    await until(() => calls.length === 1)
+    await tick(1_100)
+    // A plain refusal would be asked again after 1 s; this one waits the 1.6 s it was given.
+    expect(calls).toHaveLength(1)
+    expect(c.tokenAllowed).toBe(false)
+    expect(c.state.state).not.toBe('failed')
+    await until(() => c.tokenAllowed, 3_000)
+    expect(calls[1] - calls[0]).toBeGreaterThanOrEqual(1_500)
+  })
 })
 
 describe('a second drop before the stream opened again (A8)', () => {

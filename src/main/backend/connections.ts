@@ -5,7 +5,7 @@ import type { BackendDaemonStatus, StudioRunMode } from '../../shared/types/back
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import { forgetRemote, loadRemotes, readRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
-import { helloRefusal, verifyHello } from '../services/remote-hello'
+import { helloRefusal, rateLimitedSentence, verifyHello } from '../services/remote-hello'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { runMode, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
@@ -107,9 +107,13 @@ export class SavedConnectionsCache {
   }
 }
 
-/** Ends a connection attempt with a sentence the user can act on; never holds a token. */
+/**
+ * Ends a connection attempt with a sentence the user can act on; never holds
+ * a token. `rate_limited` (the host answered the hello 429) is waited out:
+ * `retryAfterMs` says how long.
+ */
 export class ConnectionError extends Error {
-  constructor(readonly code: 'not_configured' | 'transport' | 'no_token' | 'keychain' | 'pinned' | 'unreachable' | 'unreadable', message: string) {
+  constructor(readonly code: 'not_configured' | 'transport' | 'no_token' | 'keychain' | 'pinned' | 'unreachable' | 'unreadable' | 'rate_limited', message: string, readonly retryAfterMs: number | null = null) {
     super(message)
     this.name = 'ConnectionError'
   }
@@ -164,6 +168,8 @@ export async function checkPinnedFingerprint(name: string, remote: Pick<SavedRem
   const check = await verifyHello(url, token, { fetch: fetchImpl, timeoutMs: 5_000 })
   // Down, or remote access off there: the token is not sent; the connector retries a host that is down.
   if (check.kind === 'none') throw new ConnectionError('unreachable', `${url} does not answer as ${name}; the token was not sent.`)
+  // Too many hellos from here: not down, not refused; waited out, and the token is not sent meanwhile.
+  if (check.kind === 'rate_limited') throw new ConnectionError('rate_limited', rateLimitedSentence(name), check.retryAfterMs)
   if (check.kind !== 'not_device_token' && check.hello.fingerprint !== remote.fingerprint) {
     throw new ConnectionError('pinned', pinMismatchSentence(name, url, check.hello.fingerprint, remote.fingerprint))
   }
@@ -171,11 +177,42 @@ export async function checkPinnedFingerprint(name: string, remote: Pick<SavedRem
   if (refusal) throw new ConnectionError('pinned', refusal)
 }
 
-/** The connection's pinCheck (DaemonConnection): PinMismatchError for another computer, any other error while nothing answers. */
+/**
+ * The connection's pinCheck (DaemonConnection): PinMismatchError for another
+ * computer, any other error while nothing answers (a 429 carries
+ * `retryAfterMs`: the check waits that long before it asks again).
+ */
 export function pinCheckFor(name: string, fingerprint: string, url: string, token: string, fetchImpl?: typeof fetch): () => Promise<void> {
   return async () => {
     try {
       await checkPinnedFingerprint(name, { fingerprint }, url, token, fetchImpl)
+    } catch (err) {
+      if (err instanceof ConnectionError && err.code === 'pinned') throw new PinMismatchError(err.message)
+      throw err
+    }
+  }
+}
+
+/**
+ * Before an unpinned token of the remote slot goes to `url`: a device token
+ * (`adfd_…`) is sent only after the daemon there proved, by the
+ * authenticated hello (remote-access.md §5.2.1), that it issued it, as for a
+ * saved connection; there is no fingerprint to compare. Any other token is
+ * the user's own choice and is not checked. Throws as checkPinnedFingerprint.
+ */
+export async function checkSlotToken(name: string, url: string, token: string, fetchImpl?: typeof fetch): Promise<void> {
+  const check = await verifyHello(url, token, { fetch: fetchImpl, timeoutMs: 5_000 })
+  if (check.kind === 'not_device_token' || check.kind === 'verified') return
+  if (check.kind === 'none') throw new ConnectionError('unreachable', `${url} does not answer as ${name}; the token was not sent.`)
+  if (check.kind === 'rate_limited') throw new ConnectionError('rate_limited', rateLimitedSentence(name), check.retryAfterMs)
+  throw new ConnectionError('pinned', helloRefusal(check, name, url) ?? `${url} could not prove it is ${name}; the token was not sent.`)
+}
+
+/** checkSlotToken as the connection's pinCheck (every re-dial asks it again). */
+export function slotCheckFor(name: string, url: string, token: string, fetchImpl?: typeof fetch): () => Promise<void> {
+  return async () => {
+    try {
+      await checkSlotToken(name, url, token, fetchImpl)
     } catch (err) {
       if (err instanceof ConnectionError && err.code === 'pinned') throw new PinMismatchError(err.message)
       throw err

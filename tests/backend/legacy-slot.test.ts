@@ -86,11 +86,14 @@ describe('the paired remote URL of studio-backend.json', () => {
     expect((await remoteDaemonConnector(s.boot.config, codec, { env: s.env, fetch: real.fetch })(() => {})).baseUrl).toBe(URL_)
   })
 
-  it('a pasted token (no pairing) stays as it is', async () => {
+  it('a pasted token (no pairing) stays as it is; a device token there is still checked by the hello, a master token is not (F2, review round 3)', async () => {
     const s = setup('remote')
     s.boot.config = { ...s.boot.config, remote: { ...s.boot.config.remote, paired: null } }
     mkdirSync(join(s.env.ADF_DAEMON_SETTINGS!, '..'), { recursive: true })
     expect(await migratePairedSlot(s.boot, codec, s.env, quiet)).toBeNull()
-    expect(remoteDaemonConnector(s.boot.config, codec).pinCheck).toBeUndefined()
+    // The pasted `adfd_` token: no fingerprint to pin, but every dial and re-dial asks the authenticated hello first.
+    expect(remoteDaemonConnector(s.boot.config, codec).pinCheck).toBeTypeOf('function')
+    const master = { ...s.boot.config, remote: { ...s.boot.config.remote, token: codec.encrypt('m'.repeat(43)) } }
+    expect(remoteDaemonConnector(master, codec).pinCheck).toBeUndefined()
   })
 })

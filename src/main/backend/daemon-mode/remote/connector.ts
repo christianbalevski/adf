@@ -2,8 +2,9 @@ import { SUPPORTED_CLIENT_API_VERSION, type DaemonVersion } from '../../../../sh
 import { checkRemoteDaemonUrl } from '../../../../shared/utils/remote-backend-url'
 import { readRemoteToken, remoteTransportRefusal, type SecretCodec, type StudioBackendConfig } from '../../backend-config'
 import type { DaemonConnector } from '../connection'
-import { ConnectionError, checkPinnedFingerprint, pinCheckFor, savedConnectionTarget } from '../../connections'
+import { ConnectionError, checkPinnedFingerprint, checkSlotToken, pinCheckFor, savedConnectionTarget, slotCheckFor, slotName } from '../../connections'
 import type { SavedRemote } from '../../../cli/remotes'
+import { parseDeviceToken } from '../../../daemon/remote-access/device-store'
 
 /**
  * Remote mode's connector (design §9, tracker W4-B): the URL and the `safe:`
@@ -41,9 +42,11 @@ export type RemoteConnectProblem =
   | 'keychain'
   /** cli-remotes.json cannot be read: the saved connection is not known until it is fixed (waited for). */
   | 'unreadable'
+  /** The host answered the hello 429: waited out (`retryAfterMs`), the token not sent meanwhile. */
+  | 'rate_limited'
 
 export class RemoteConnectError extends Error {
-  constructor(readonly problem: RemoteConnectProblem, message: string) {
+  constructor(readonly problem: RemoteConnectProblem, message: string, readonly retryAfterMs: number | null = null) {
     super(message)
     this.name = 'RemoteConnectError'
   }
@@ -152,7 +155,7 @@ export interface HandshakeOptions {
 }
 
 /** A daemon that is not there yet (server booting, tunnel or tailnet still coming up) is retried; anything else is a configuration problem. */
-const RETRIED: ReadonlySet<RemoteConnectProblem> = new Set(['unreachable', 'proxy'])
+const RETRIED: ReadonlySet<RemoteConnectProblem> = new Set(['unreachable', 'proxy', 'rate_limited'])
 
 export interface RemoteConnectorOptions extends HandshakeOptions {
   /** Backoff between attempts while the daemon cannot be reached: from `initialMs`, doubling up to `maxMs`. */
@@ -170,10 +173,11 @@ const CONNECTION_PROBLEM: Record<ConnectionError['code'], RemoteConnectProblem> 
   pinned: 'fingerprint',
   unreachable: 'unreachable',
   unreadable: 'unreadable',
+  rate_limited: 'rate_limited',
 }
 
 function asConnectError(err: unknown): unknown {
-  return err instanceof ConnectionError ? new RemoteConnectError(CONNECTION_PROBLEM[err.code], err.message) : err
+  return err instanceof ConnectionError ? new RemoteConnectError(CONNECTION_PROBLEM[err.code], err.message, err.retryAfterMs) : err
 }
 
 /** The progress line while cli-remotes.json cannot be read (R2A-3): the attempt waits for it, as for a host that is down. */
@@ -239,6 +243,16 @@ export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCo
   return { url: check.url, token }
 }
 
+/** The remote slot holds a device token (`adfd_…`): its re-dials are checked as a pinned connection's (§5.2.1). */
+function slotHasDeviceToken(config: StudioBackendConfig, codec: SecretCodec): boolean {
+  try {
+    const token = config.remote.url ? readRemoteToken(config, codec) : null
+    return !!token && parseDeviceToken(token) !== null
+  } catch {
+    return false
+  }
+}
+
 export function remoteDaemonConnector(config: StudioBackendConfig, codec: SecretCodec, opts: RemoteConnectorOptions = {}): DaemonConnector {
   const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((r) => setTimeout(r, ms)))
   // Set once connected: the pin to check before every new connection (connection.ts pinCheck).
@@ -293,17 +307,27 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       try {
         stopIfClosed()
         if (saved) await checkPinnedFingerprint(saved.name, saved.remote, url, token, opts.fetch).catch((e) => { throw asConnectError(e) })
+        // The unpinned slot's device token goes only to the daemon that proves it issued it (§5.2.1); any other token is not checked.
+        else await checkSlotToken(slotName(config.remote), url, token, opts.fetch).catch((e) => { throw asConnectError(e) })
         // The pin check and the handshake each wait: the token goes out only while the connection is still wanted.
         stopIfClosed()
         info = await remoteHandshake(url, token, opts)
         stopIfClosed()
         if (saved) pin = pinCheckFor(saved.name, saved.remote.fingerprint, url, token, opts.fetch)
+        else if (parseDeviceToken(token)) pin = slotCheckFor(slotName(config.remote), url, token, opts.fetch)
         break
       } catch (err) {
         if (!(err instanceof RemoteConnectError) || !RETRIED.has(err.problem) || attempt >= (opts.retry?.maxAttempts ?? Infinity)) throw err
         stopIfClosed()
-        progress(`${REMOTE_WAITING_PREFIX} at ${url} (attempt ${attempt}; next in ${Math.round(delay / 1000)} s): ${err.message}`)
-        await abortable(sleep(delay), signal)
+        if (err.problem === 'rate_limited') {
+          // Not down: the host limits hellos from here. Its own sentence; the wait is at least what it asked.
+          const wait = Math.max(delay, err.retryAfterMs ?? 0)
+          progress(err.message)
+          await abortable(sleep(wait), signal)
+        } else {
+          progress(`${REMOTE_WAITING_PREFIX} at ${url} (attempt ${attempt}; next in ${Math.round(delay / 1000)} s): ${err.message}`)
+          await abortable(sleep(delay), signal)
+        }
         delay = Math.min(maxDelay, delay * 2)
       }
     }
@@ -315,7 +339,7 @@ export function remoteDaemonConnector(config: StudioBackendConfig, codec: Secret
       source: { token: () => token },
     }
   }, { logFile: null })
-  // A pinned connection is checked again before every new connection, not only at launch.
-  if (!config.remote.name && !config.remote.paired) return connector
+  // A pinned connection is checked again before every new connection, not only at launch; so is the slot's device token.
+  if (!config.remote.name && !config.remote.paired && !slotHasDeviceToken(config, codec)) return connector
   return Object.assign(connector, { pinCheck: () => pin ? pin() : Promise.resolve() })
 }

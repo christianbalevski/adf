@@ -129,20 +129,27 @@ export function createConnections(deps: ConnectionsDeps): Connections {
     // Who answers there, before any token is sent (trust on first use, as Pair): the authenticated hello
     // (remote-access.md §5.2.1) proves the computer there issued this device token.
     let hello: { name: string; fingerprint: string } | null = null
-    const proved = await verifyHello(check.url, token, { fetch: deps.fetch, timeoutMs: 5_000 })
-    if (proved.kind === 'not_device_token') {
-      // Not an `adfd_` token: nothing can prove who answers, so it is never saved pinned to a fingerprint.
-      const answer = await fetchHello(check.url, deps.fetch, 5_000)
-      if (answer) return fail('not_device_token', `${answer.name} takes a device token here; make one there with: adf daemon devices add <label>.`)
-    } else if (proved.kind !== 'none') {
-      hello = { name: proved.hello.name, fingerprint: proved.hello.fingerprint }
-    }
     const all = saved()
     // An address a saved computer was paired at: no token until it shows that fingerprint (trust on first use).
     const pinnedHere = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin)
       ?? (deps.backend.config().remote.paired && remoteUrlOrigin(deps.backend.config().remote.url) === origin
         ? [deps.backend.config().remote.paired!.name, { fingerprint: deps.backend.config().remote.paired!.fingerprint }] as const
         : undefined)
+    const proved = await verifyHello(check.url, token, { fetch: deps.fetch, timeoutMs: 5_000 })
+    if (proved.kind === 'not_device_token') {
+      // Not an `adfd_` token: nothing can prove who answers, so it is never saved pinned to a fingerprint.
+      const answer = await fetchHello(check.url, deps.fetch, 5_000)
+      if (answer) return fail('not_device_token', `${answer.name} takes a device token here; make one there with: adf daemon devices add <label>.`)
+    } else if (proved.kind === 'rate_limited') {
+      // Not down: the host limits hellos from here. Nothing was sent or saved; Add again shortly.
+      return fail('rate_limited', `${hostOf(check.url)} is rate-limiting connections; Studio sent nothing, so try again in ${Math.ceil(proved.retryAfterMs / 1000)} s.`)
+    } else if (proved.kind === 'none') {
+      // A device token goes only where the daemon that issued it proves it (§5.2.1): nothing answered, so nothing is sent or saved.
+      if (pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
+      return fail('unreachable', `${check.url} does not answer as an ADF computer with remote access on; Studio sent nothing.`)
+    } else {
+      hello = { name: proved.hello.name, fingerprint: proved.hello.fingerprint }
+    }
     if (!hello && pinnedHere) return fail('fingerprint_mismatch', `${check.url} is where ${pinnedHere[0]} was paired, but it shows no fingerprint now; Studio sent nothing.`)
     if (hello) {
       const pinned = Object.entries(all).find(([, s]) => remoteUrlOrigin(s.url) === origin && s.fingerprint !== hello!.fingerprint)
