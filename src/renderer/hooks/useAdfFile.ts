@@ -48,7 +48,15 @@ async function leaveOtherRuntime(target: RuntimeId): Promise<boolean> {
 }
 
 /** W3-F: what an agent switch answers when the user kept unsaved text under a "changed elsewhere" notice. */
-const KEPT_UNSAVED = { success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
+/** What an open answers when a later open replaced it: nothing of it is shown, and nothing is to be said. */
+export const OVERTAKEN = { success: false, overtaken: true, error: 'A later open replaced this one.' } as const
+
+export interface OpenOptions {
+  /** The unsaved editors are already kept as recovery copies: no question before they go. */
+  kept?: boolean
+}
+
+const KEPT_UNSAVED ={ success: false, error: 'Kept your unsaved changes open; the agent was not switched.' } as const
 
 /**
  * Files opened in the editor when an agent has no saved tab set: its document,
@@ -404,8 +412,11 @@ export function useAdfFile() {
   /**
    * `runtimeId`: the agent's runtime (docs/design/multi-runtime.md §5.2);
    * omitted, this window's own (This computer in the main window).
+   * `options.kept`: the caller already kept the unsaved editors as recovery
+   * copies (a reconnect's reopen): nothing is asked before they go.
+   * Answers OVERTAKEN when a later open replaced this one.
    */
-  const openFile = useCallback(async (filePath?: string, runtimeId: RuntimeId = windowRuntime) => {
+  const openFile = useCallback(async (filePath?: string, runtimeId: RuntimeId = windowRuntime, options: OpenOptions = {}) => {
     // An agent window keeps its agent (agent-windows.md): another agent opens in its own window.
     if (isAgentWindow) {
       const current = useDocumentStore.getState().filePath
@@ -418,7 +429,7 @@ export function useAdfFile() {
     const keyOf = (fp: string) => windowAgentKey(runtimeId, fp)
     const tTotal = performance.now()
     // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
-    if (!confirmDiscardConflicts()) return
+    if (!options.kept && !confirmDiscardConflicts()) return
     const generation = ++openGeneration
     latestOpenRuntime = runtimeId
     /**
@@ -472,7 +483,7 @@ export function useAdfFile() {
       const leftOther = await leaveOtherRuntime(runtimeId)
       const result = await api.openFile(filePath)
       console.log(`[PERF:renderer] openFile.openFile IPC: ${(performance.now() - t1).toFixed(1)}ms`)
-      if (await overtaken(!!result.success)) return result
+      if (await overtaken(!!result.success)) return { ...OVERTAKEN }
 
       if (result.success && result.filePath) {
         // Blank the previous agent's UI before parking on a gate dialog
@@ -519,7 +530,7 @@ export function useAdfFile() {
         t1 = performance.now()
         const contents = await fetchFileContents(result.filePath, api, runtimeId)
         console.log(`[PERF:renderer] openFile.fetchFileContents: ${(performance.now() - t1).toFixed(1)}ms`)
-        if (await overtaken(true)) return result
+        if (await overtaken(true)) return { ...OVERTAKEN }
 
         // Reset agent state and update filePath, then apply the contents, all
         // in this one synchronous stretch. filePath still changes before any

@@ -27,6 +27,17 @@ function runtimeField(): { runtimeId?: string } {
 }
 type Api = { recoveryStash?: (stash: Stash) => Promise<unknown> }
 
+/** The key of a copy on disk: runtime, agent and path. */
+const copyKey = (runtimeId: string | undefined, agentFilePath: string, path: string): string => `${runtimeId ?? ''}\0${agentFilePath}\0${path}`
+
+/**
+ * Copies stashUnsavedEditors kept (a restart, a reconnect, Remove): they are
+ * the recovery copies now, listed at the next launch, so when the notice on
+ * the same file goes with its editor its copy is not removed. A later notice
+ * on that file writes over the copy, and the copy is that notice's again.
+ */
+const handedOff = new Set<string>()
+
 export function startEditRecovery(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined, delayMs = 500): () => void {
   if (!api?.recoveryStash) return () => {}
   const stash = (s: Stash) => { void api.recoveryStash!(s).catch((err) => console.error('[Recovery] Could not keep a copy of unsaved text:', err)) }
@@ -47,14 +58,14 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
       const owner = tabOwner.get(tab.path)
       if (owner) {
         const rt = runtimeField()
-        want.set(`${rt.runtimeId ?? ''}\0${owner}\0${tab.path}`, { agentFilePath: owner, path: tab.path, content: tab.content, ...rt })
+        want.set(copyKey(rt.runtimeId, owner, tab.path), { agentFilePath: owner, path: tab.path, content: tab.content, ...rt })
       }
     }
     for (const path of [...tabOwner.keys()]) if (!conflicted.has(path)) tabOwner.delete(path)
     const config = useAgentStore.getState().configConflict
     if (config?.owner) {
       const rt = runtimeField()
-      want.set(`${rt.runtimeId ?? ''}\0${config.owner}\0${CONFIG_RECOVERY_PATH}`, { agentFilePath: config.owner, path: CONFIG_RECOVERY_PATH, content: `${JSON.stringify(config.mine, null, 2)}\n`, ...rt })
+      want.set(copyKey(rt.runtimeId, config.owner, CONFIG_RECOVERY_PATH), { agentFilePath: config.owner, path: CONFIG_RECOVERY_PATH, content: `${JSON.stringify(config.mine, null, 2)}\n`, ...rt })
     }
 
     for (const [key, entry] of want) {
@@ -63,6 +74,7 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
       clearTimeout(timers.get(key))
       timers.delete(key)
       if (!have) {
+        handedOff.delete(key)
         kept.set(key, entry)
         stash(entry)
       } else {
@@ -78,6 +90,8 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
       clearTimeout(timers.get(key))
       timers.delete(key)
       kept.delete(key)
+      // Kept for recovery by stashUnsavedEditors: the copy stays for the next launch.
+      if (handedOff.has(key)) continue
       stash({ ...entry, content: null })
     }
   }
@@ -110,7 +124,8 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
  * for This Session, after the connection failed): keep every unsaved editor
  * of the open agent as a recovery copy, listed at the next launch. The
  * README tab or the document, every dirty text tab, and the config panel's
- * version under a conflict. Answers how many copies were written.
+ * version under a conflict. Answers how many copies were written. The
+ * copies are handed off: closing their editors does not remove them.
  */
 export async function stashUnsavedEditors(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined): Promise<number> {
   const agentFilePath = useDocumentStore.getState().filePath
@@ -125,6 +140,8 @@ export async function stashUnsavedEditors(api: Api | undefined = typeof window !
   if (doc.isDirty && !copies.has('README.md')) copies.set('README.md', doc.documentContent)
   const config = useAgentStore.getState().configConflict
   if (config?.owner === agentFilePath) copies.set(CONFIG_RECOVERY_PATH, `${JSON.stringify(config.mine, null, 2)}\n`)
+  // Before the first write: an editor reset meanwhile must not remove what is being kept.
+  for (const path of copies.keys()) handedOff.add(copyKey(rt.runtimeId, agentFilePath, path))
   let written = 0
   for (const [path, content] of copies) {
     try {

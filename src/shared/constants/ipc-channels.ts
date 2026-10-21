@@ -466,6 +466,9 @@ export const IPC = {
   CONNECTION_ADD: 'adf:connection:add',
   CONNECTION_REMOVE: 'adf:connection:remove',
   CONNECTION_CHANGED: 'adf:connection:changed',
+  // A runtime of the set is the same computer under another id now (a rename, the remote slot cleared), or another
+  // computer under the same id; pushed before the runtime set that follows it (multi-runtime.md §17).
+  RUNTIMES_MOVED: 'adf:connection:runtimes-moved',
   // Settings → Networking's status line: network category, LAN and tailnet address, firewall (lan-reach.ts).
   NETWORK_STATUS_GET: 'adf:network:status',
   NETWORK_ALLOW: 'adf:network:allow',

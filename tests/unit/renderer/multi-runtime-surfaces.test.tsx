@@ -194,6 +194,8 @@ describe('a runtime that leaves the set (§3.3)', () => {
     syncRuntimeFeeds([LOCAL, { ...REMOTE, state: 'retrying' }])
     useDocumentStore.setState({ filePath: '/srv/agents/agent-1.adf', runtimeId: HOST_1 })
     syncRuntimeFeeds([LOCAL])
+    // It closes once its unsaved editors are kept (multi-runtime.md §17 item 10).
+    await new Promise((resolve) => setTimeout(resolve, 0))
     expect(useDocumentStore.getState().filePath).toBeNull()
     useDocumentStore.setState({ filePath: '/agents/agent-1.adf', runtimeId: 'local' })
     syncRuntimeFeeds([LOCAL])

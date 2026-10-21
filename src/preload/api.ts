@@ -15,7 +15,7 @@ import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
 import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
-import type { ConnectionAddRequest, ConnectionResult, ConnectionsView } from '../shared/types/connection.types'
+import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimesMoved } from '../shared/types/connection.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
 export interface ClaudeAuthStatusView {
@@ -768,6 +768,8 @@ export interface AdfApi {
   /** Remove a saved connection (confirmed first in a native dialog). */
   removeConnection: (id: string) => Promise<ConnectionResult>
   onConnectionChanged: (callback: (view: ConnectionsView) => void) => () => void
+  /** Ids of the set that are the same computer under another id now (`moves`), or another computer (`replaced`). */
+  onRuntimesMoved: (callback: (change: RuntimesMoved) => void) => () => void
   /** Look for ADF computers (mDNS, tailnet) while the Connection page is open. */
   startRemoteDiscovery: () => Promise<boolean>
   stopRemoteDiscovery: () => Promise<boolean>

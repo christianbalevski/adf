@@ -18,6 +18,7 @@ import {
   runtimeRegionRoot,
   selectMapAgents,
   setStoredRuntimeFleet,
+  storedRuntimeFleetOf,
   splitGroups,
   splitRecord,
 } from '../../../src/renderer/components/mesh/runtime-fleet'
@@ -125,14 +126,15 @@ describe('per-runtime client keys', () => {
     expect(mergeGroups(local, { [HOST_1]: { fleetGroups: remote[HOST_1] } })).toEqual(groups)
   })
 
-  it('with two runtimes a save writes runtimeFleet, keeping runtimes not in the set', () => {
+  it('with two runtimes a save writes runtimeFleet for the runtimes of the set only; main keeps the others (mergeRuntimeFleet)', () => {
     const patch = fleetSettingsPatch({ fleetGroups: {} }, { [HOST_1]: { fleetGroups: { team: ['/srv/agent-2.adf'] } } }, TWO)
     expect(patch).toEqual({
       fleetGroups: {},
       runtimeFleet: {
-        'remote:host-2': { fleetGroups: { kept: ['/srv/agent-1.adf'] } },
         [HOST_1]: { fleetGroups: { team: ['/srv/agent-2.adf'] } },
       },
     })
+    // The copy here keeps the runtime not in the set, as main does.
+    expect(storedRuntimeFleetOf()['remote:host-2']).toEqual({ fleetGroups: { kept: ['/srv/agent-1.adf'] } })
   })
 })

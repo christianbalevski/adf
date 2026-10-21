@@ -236,38 +236,12 @@ import type { ProviderConfig, McpServerRegistration, AdapterRegistration, System
 import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
-import { invalidateProviderModels } from '../../hooks/useProviderModels'
 import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
 import { openApi, openSliceRuntime, useOpenRuntime } from '../../utils/runtime-api'
 
-// Module-level caches to avoid redundant IPC calls on every tab switch, one
-// set per runtime: an agent of another runtime sees that runtime's settings.
-interface ConfigCaches {
-  providers: ProviderConfig[] | null
-  mcpRegistrations: McpServerRegistration[] | null
-  adapterRegistrations: AdapterRegistration[] | null
-  toolDefs: Record<string, unknown> | null
-}
-const _caches = new Map<string, ConfigCaches>()
-
-function cachesOf(runtimeId: string): ConfigCaches {
-  let caches = _caches.get(runtimeId)
-  if (!caches) {
-    caches = { providers: null, mcpRegistrations: null, adapterRegistrations: null, toolDefs: null }
-    _caches.set(runtimeId, caches)
-  }
-  return caches
-}
-
-/** Call this when settings change (e.g. from SettingsPage) to bust stale caches */
-export function invalidateConfigCaches(): void {
-  for (const caches of _caches.values()) {
-    caches.providers = null
-    caches.mcpRegistrations = null
-    caches.adapterRegistrations = null
-  }
-  invalidateProviderModels()
-}
+// The config caches, one set per runtime (utils/config-caches.ts). Re-exported: SettingsPage busts them.
+import { cachesOf, invalidateConfigCaches } from '../../utils/config-caches'
+export { invalidateConfigCaches }
 
 // ---------------------------------------------------------------------------
 // Sandbox Package Install Modal — install missing packages on agent open
