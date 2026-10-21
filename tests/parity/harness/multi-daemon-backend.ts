@@ -218,8 +218,13 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
       res.end(JSON.stringify({ error: 'Unauthorized' }))
       return
     }
-    headers.host = REMOTE_PROXY_HOST
-    headers['x-forwarded-for'] = '198.51.100.7'
+    // A forwarded hello reaches the remote daemon as through an SSH tunnel (a port forward: the Host dialed, no
+    // forwarding header): the daemon proves only an origin it is reached at (remote-access.md §5.2.1), and a loopback
+    // origin only when no proxy stands between. Every other request arrives as through a proxy, from another computer.
+    if (!(req.method === 'GET' && path === '/remote/hello' && proxy.forwardHello)) {
+      headers.host = REMOTE_PROXY_HOST
+      headers['x-forwarded-for'] = '198.51.100.7'
+    }
     if (proxy.issued && headers.authorization === `Bearer ${proxy.issued.token}`) headers.authorization = `Bearer ${proxy.issued.upstreamToken}`
     const up = httpRequest({ host: '127.0.0.1', port: proxy.upstream, method: req.method, path: req.url, headers }, (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers)

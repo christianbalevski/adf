@@ -18,15 +18,15 @@
  */
 
 import { networkInterfaces, hostname as osHostname, type NetworkInterfaceInfo } from 'node:os'
-import type { Socket } from 'node:net'
+import { isIP, type Socket } from 'node:net'
 import type { IncomingMessage } from 'node:http'
 import type {
   NetworkView, PairClaimAccepted, PairClaimResult, PairingWindowView, RemoteAccessEvent, RemoteAccessPatch,
   RemoteAccessStatus, RemoteAddress, RemoteDevice, RemoteHello, RemoteHelloProved, RemoteUrl,
 } from '../../../shared/types/remote-access.types'
-import type { DeviceTokenAuthority } from '../request-guard'
+import { isLoopbackName, parseAllowedHostsEnv, parseHostHeader, type DeviceTokenAuthority } from '../request-guard'
 import type { ClientSessionRegistry } from '../client-sessions'
-import { isLoopbackAddress } from '../local-access'
+import { hasProxyHeaders, isLoopbackAddress } from '../local-access'
 import { urlHost, type AddressCandidate } from './addresses'
 import { NO_ANNOUNCER, type Announcer } from './announcer'
 import { BoundedMap, SOURCE_TRACKING_CAP } from './bounded-map'
@@ -48,6 +48,8 @@ export const ADDRESS_CHECK_MS = 10_000
 export const SLOW_CHECK_MS = 60_000
 export const CONNECTED_WINDOW_MS = 60_000
 export const HELLO_PER_MINUTE = 30
+/** Authenticated hellos for a device this daemon knows: their own bucket per (source, device); every dial and re-dial asks one. */
+export const HELLO_PROOF_PER_MINUTE = 120
 export const WRONG_CODE_DELAY_MS = 1_000
 
 export class RemoteAccessError extends Error {
@@ -107,6 +109,12 @@ export interface RemoteAccessServiceOptions {
   /** Test seam: the address a candidate is actually bound to (tests map a private address to loopback). */
   bindAddress?: (address: string) => string
   /**
+   * ADF_DAEMON_ALLOWED_HOSTS entries (`name`, `name:port`): names a proxy on
+   * this host serves the daemon at. The authenticated hello proves them on
+   * the loopback listener (§5.2.1). Default: that env var.
+   */
+  allowedHosts?: string[]
+  /**
    * The runtime alias (settings `runtimeAlias`): this computer's one name for
    * other computers (mDNS, hello, pairing). Set: PUT name writes it. Absent or
    * blank: remote-access.json's `name` (the host name by default).
@@ -127,6 +135,26 @@ function plainAddress(address: string | undefined): string {
 function single(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
 }
+
+/** An IP address as one spelling: no brackets or zone, lower case, IPv4-mapped IPv6 as IPv4; null when not an IP. */
+export function canonicalIp(raw: string | undefined): string | null {
+  if (!raw) return null
+  let a = raw.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '')
+  if (isIP(a) === 4) return a
+  if (isIP(a) !== 6) return null
+  try { a = new URL(`http://[${a}]/`).hostname.slice(1, -1) } catch { return null }
+  const mapped = /^::ffff:(?:(\d{1,3}(?:\.\d{1,3}){3})|([0-9a-f]{1,4}):([0-9a-f]{1,4}))$/.exec(a)
+  if (mapped) {
+    if (mapped[1]) return mapped[1]
+    const hi = parseInt(mapped[2], 16)
+    const lo = parseInt(mapped[3], 16)
+    return `${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`
+  }
+  return a
+}
+
+/** Headers tailscale serve sets (besides X-Forwarded-*): a request carrying one came through a proxy. */
+const SERVE_HEADERS = ['tailscale-user-login', 'tailscale-user-name'] as const
 
 export class RemoteAccessService {
   readonly port: number
@@ -152,6 +180,9 @@ export class RemoteAccessService {
   private firewallView: FirewallView | null = null
   private readonly connections = new Map<string, DeviceConnection>()
   private readonly helloHits = new BoundedMap<string, number[]>(SOURCE_TRACKING_CAP)
+  /** Authenticated hellos of known devices, per `<source>|<device id>` (HELLO_PROOF_PER_MINUTE). */
+  private readonly proofHits = new BoundedMap<string, number[]>(SOURCE_TRACKING_CAP)
+  private readonly allowedHosts: Array<{ host: string; port?: number }>
   private timer: ReturnType<typeof setInterval> | null = null
   private flushTimer: ReturnType<typeof setInterval> | null = null
   private applying: Promise<void> = Promise.resolve()
@@ -192,6 +223,9 @@ export class RemoteAccessService {
     this.slowCheckMs = opts.slowCheckMs ?? SLOW_CHECK_MS
     this.wrongCodeDelayMs = opts.wrongCodeDelayMs ?? WRONG_CODE_DELAY_MS
     this.now = opts.now ?? Date.now
+    this.allowedHosts = (opts.allowedHosts ?? parseAllowedHostsEnv(process.env.ADF_DAEMON_ALLOWED_HOSTS))
+      .map(entry => parseHostHeader(entry))
+      .filter((rule): rule is { host: string; port?: number } => rule !== null)
     const loaded = loadRemoteAccessConfig(opts.settingsDir, cleanDisplayName(this.hostName(), 63) ?? undefined)
     this.config = loaded.config
     this.configProblem = loaded.problem
@@ -828,23 +862,84 @@ export class RemoteAccessService {
    * client dialed; remote-access.md §5.2.1) the answer also says whether the
    * device is known and, when it is, proves this daemon holds its record:
    * the MAC of the message keyed by the SHA-256 of the device secret it
-   * keeps. The client checks it before its token goes out.
+   * keeps. The client checks it before its token goes out. The proof is
+   * made only for an origin this request reached the daemon at
+   * (originReached); for any other, `proof` is null.
+   *
+   * Rate limits: 30 a minute per source; an authenticated hello for a known
+   * device has its own bucket per (source, device), 120 a minute, so one
+   * device's dials never use up another's, nor plain hellos theirs.
    */
   async hello(raw: IncomingMessage, prove?: { nonce: string; device: string; origin: string }): Promise<RemoteHello | RemoteHelloProved> {
     this.requireOn()
     const { key } = await this.caller(raw, { whois: false })
-    const now = this.now()
-    const hits = (this.helloHits.get(key) ?? []).filter(t => now - t < 60_000)
-    if (hits.length >= HELLO_PER_MINUTE) throw new RemoteAccessError('Too many requests from this address. Wait a minute.', 429, 'rate_limited', { retryAfter: Math.ceil((60_000 - (now - hits[0])) / 1000) })
-    hits.push(now)
-    this.helloHits.set(key, hits)
+    const found = prove ? this.store.lookup(prove.device) : null
+    if (prove && found?.kind === 'device') this.countHello(this.proofHits, `${key}|${prove.device}`, HELLO_PROOF_PER_MINUTE)
+    else this.countHello(this.helloHits, key, HELLO_PER_MINUTE)
     const fingerprint = this.fingerprint as string
     const hello: RemoteHello = { v: 1, name: this.computerName, fingerprint, pairingOpen: this.pairing.isOpen, clientApiVersion: this.opts.clientApiVersion, helloProof: 1 }
-    if (!prove) return hello
-    const found = this.store.lookup(prove.device)
+    if (!prove || !found) return hello
     if (found.kind !== 'device') return { ...hello, helloProof: 1, device: found.kind, proof: null }
+    if (!this.originReached(raw, prove.origin)) {
+      this.log(`[remote-access] hello: no proof for ${prove.origin} (device ${prove.device}): the request reached this daemon on the ${this.reachedDescription(raw)}`)
+      return { ...hello, helloProof: 1, device: 'known', proof: null }
+    }
     const proof = helloProofMac(Buffer.from(found.device.secretSha256, 'hex'), helloProofMessage({ nonce: prove.nonce, fingerprint, origin: prove.origin, device: prove.device }))
     return { ...hello, helloProof: 1, device: 'known', proof }
+  }
+
+  private countHello(hitsOf: BoundedMap<string, number[]>, key: string, perMinute: number): void {
+    const now = this.now()
+    const hits = (hitsOf.get(key) ?? []).filter(t => now - t < 60_000)
+    if (hits.length >= perMinute) throw new RemoteAccessError('Too many requests from this address. Wait a minute.', 429, 'rate_limited', { retryAfter: Math.ceil((60_000 - (now - hits[0])) / 1000) })
+    hits.push(now)
+    hitsOf.set(key, hits)
+  }
+
+  /**
+   * Whether `origin` is where this request reached the daemon (§5.2.1),
+   * judged by its socket, never by what the client says:
+   * - a remote listener: plain http on the socket's local port, to the
+   *   socket's local address (IPv4-mapped IPv6 as IPv4) or to one of this
+   *   computer's names (§3.5: the host name, `<name>.local`, MagicDNS);
+   * - the loopback listener: a loopback origin when no proxy stands between
+   *   (no forwarding or tailscale serve header, a loopback Host, not proxy
+   *   mode), as through an SSH tunnel; the `tailscale serve` https URL while
+   *   serve is on; a name of ADF_DAEMON_ALLOWED_HOSTS.
+   * A hello relayed to this daemon by another route (another address, a
+   * tunnel into serve) is not proved for the address the client dialed.
+   */
+  private originReached(raw: IncomingMessage, origin: string): boolean {
+    let url: URL
+    try { url = new URL(origin) } catch { return false }
+    const host = url.hostname.toLowerCase().replace(/^\[|\]$/g, '')
+    const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
+    const socket = raw.socket
+    const listener = remoteListenerOf(socket)
+    if (listener) {
+      if (url.protocol !== 'http:' || port !== socket?.localPort) return false
+      const ip = canonicalIp(host)
+      if (ip === null) return this.hostNames().includes(host)
+      // The address the socket is bound to; under the bindAddress test seam also the candidate it stands for.
+      const reached = new Set([canonicalIp(socket?.localAddress), ...(this.opts.bindAddress ? [canonicalIp(listener)] : [])])
+      return reached.has(ip)
+    }
+    if (isLoopbackName(host)) {
+      if (url.protocol !== 'http:' || this.opts.behindProxy) return false
+      if (hasProxyHeaders(raw.headers) || SERVE_HEADERS.some(name => raw.headers[name] !== undefined)) return false
+      const hostHeader = parseHostHeader(single(raw.headers.host) ?? '')
+      return !!hostHeader && isLoopbackName(hostHeader.host)
+    }
+    const serve = this.tailscaleServe.serve === 'on' ? this.tailscaleServe.httpsUrl : null
+    if (serve) {
+      try { if (new URL(serve).origin === url.origin) return true } catch { /* not a URL */ }
+    }
+    return this.allowedHosts.some(rule => rule.host === host && (rule.port === undefined || rule.port === port))
+  }
+
+  private reachedDescription(raw: IncomingMessage): string {
+    const listener = remoteListenerOf(raw.socket)
+    return listener ? `remote listener ${urlHost(listener)}:${raw.socket?.localPort ?? '?'}` : 'loopback listener'
   }
 
   async claim(raw: IncomingMessage, body: { code: string; deviceName: string; clientKind: 'studio' | 'cli' }): Promise<PairClaimAccepted> {
