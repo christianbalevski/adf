@@ -167,59 +167,33 @@ export interface MapPeer {
 }
 
 /**
- * What ties a peer of a poll to a runtime of the set (§6.4). Built per poll;
- * `learned` is kept across polls, so a record that lacks the runtime DID is
- * still known by its runtime_id once any record of it matched.
+ * What ties a peer of a poll to a runtime of the set (§6.4), built per poll
+ * from what each runtime's connection checked: nothing a peer record says
+ * by itself (address, directory, an earlier match) counts.
  */
 export interface PeerMatch {
-  /** Runtime DID per runtime of the set, as read so far (null: not read). */
+  /** Runtime DID per runtime of the set, read over its connection (GET /identity; null: not read). */
   dids: Readonly<Record<RuntimeId, string | null | undefined>>
-  /** The remote runtimes of the set: address, and the fingerprint they were paired with. */
-  remotes: ReadonlyArray<{ id: RuntimeId; url: string | null; fingerprint: string | null }>
-  /** Peer runtime_id → runtime of the set, learned from an earlier match. */
-  learned: Readonly<Record<string, RuntimeId>>
-  /** Agent DID → the runtime of the set whose tile it is. */
+  /** The remote runtimes of the set, with the fingerprint pinned when they were paired (the authenticated hello checks it). */
+  remotes: ReadonlyArray<{ id: RuntimeId; fingerprint: string | null }>
+  /** Agent DID → the runtime of the set whose tile it is (only to drop those stubs from a station). */
   agentDids: ReadonlyMap<string, RuntimeId>
-}
-
-const cleanHost = (host: string): string => host.replace(/^\[|\]$/g, '').replace(/\.$/, '').toLowerCase()
-
-const hostPort = (url: string | null | undefined): { host: string; port: string } | null => {
-  if (!url) return null
-  try {
-    const u = new URL(url)
-    return { host: cleanHost(u.hostname), port: u.port }
-  } catch {
-    return null
-  }
 }
 
 /**
  * The runtime of the set a peer is, or null for a peer the map does not
- * manage: by runtime DID, by a runtime_id matched before, by fingerprint, by
- * address (host and daemon port; the host alone when one remote has it), and
- * last by its directory (every stub with a DID is a tile of one runtime).
+ * manage: its runtime DID is the one read over that runtime's connection, or
+ * its fingerprint is the one pinned for it. An address, a directory of the
+ * map's agent DIDs or a match in an earlier poll is not enough: any host on
+ * the LAN can announce those.
  */
 export function managedRuntimeOf(p: MapPeer, m: PeerMatch): RuntimeId | null {
   if (p.runtime_did) {
     for (const [id, did] of Object.entries(m.dids)) if (did && did === p.runtime_did) return id
   }
-  const learned = m.learned[p.runtime_id]
-  if (learned) return learned
   if (p.fingerprint) {
     const hit = m.remotes.find((r) => r.fingerprint && r.fingerprint === p.fingerprint)
     if (hit) return hit.id
-  }
-  const at = hostPort(p.url) ?? (p.host ? { host: cleanHost(p.host), port: '' } : null)
-  if (at) {
-    const sameHost = m.remotes.filter((r) => hostPort(r.url)?.host === at.host)
-    const exact = p.daemon_port ? sameHost.filter((r) => hostPort(r.url)?.port === String(p.daemon_port)) : sameHost
-    if (exact.length === 1) return exact[0].id
-  }
-  const stubs = (p.agents ?? []).filter((a) => a.did)
-  if (stubs.length > 0) {
-    const owners = new Set(stubs.map((a) => m.agentDids.get(a.did!) ?? null))
-    if (owners.size === 1 && !owners.has(null)) return [...owners][0]!
   }
   return null
 }
@@ -234,7 +208,7 @@ function withoutManagedStubs<P extends MapPeer>(p: P, agentDids: ReadonlyMap<str
 function matchOfDids(setDids: ReadonlySet<string>): PeerMatch {
   const dids: Record<string, string> = {}
   for (const did of setDids) dids[did] = did
-  return { dids, remotes: [], learned: {}, agentDids: new Map() }
+  return { dids, remotes: [], agentDids: new Map() }
 }
 
 /**
@@ -242,7 +216,9 @@ function matchOfDids(setDids: ReadonlySet<string>): PeerMatch {
  * of the set (managedRuntimeOf) is drawn as that runtime's region, not as a
  * station; every other peer is one station per runtime id, the first poll
  * that reports it winning, without the stubs that are tiles of the map.
- * `onMatch` hears each runtime_id matched, so the next poll knows it.
+ * A runtime_id matched in one list is that runtime in every list of the
+ * same poll. `onMatch` hears each runtime_id matched (for traffic and
+ * regionFromStation; the next poll matches afresh).
  */
 export function mergePeers<P extends MapPeer>(
   polls: ReadonlyArray<readonly P[]>,
@@ -294,6 +270,46 @@ let peerRuntimes: Readonly<Record<string, RuntimeId>> = {}
 
 export function setPeerRuntimes(next: Readonly<Record<string, RuntimeId>>): void {
   peerRuntimes = next
+}
+
+/** What a Mesh view's polls keep per runtime id (MeshGraphView's RemotePollState). */
+export interface PeerMatchState {
+  seq: Record<string, number>
+  errors: Record<string, string>
+  dids: Record<string, string | null>
+  didRetry?: Record<string, { at: number; wait: number }>
+  learned?: Record<string, string>
+}
+
+/** The poll states of the mounted Mesh views. */
+const matchStates = new Set<PeerMatchState>()
+
+/** A Mesh view's poll state, until the returned function is called (unmount). */
+export function trackPeerMatchState(state: PeerMatchState): () => void {
+  matchStates.add(state)
+  return () => { matchStates.delete(state) }
+}
+
+/**
+ * Ids that are another computer now, or moved (RUNTIMES_MOVED, §17): their
+ * runtime DID, its retry, the log cursor and every match to them go, so the
+ * next poll reads and matches them again.
+ */
+export function forgetRuntimeMatches(ids: Iterable<RuntimeId>): void {
+  const gone = new Set(ids)
+  if (gone.size === 0) return
+  for (const state of matchStates) {
+    for (const id of gone) {
+      delete state.dids[id]
+      delete state.seq[id]
+      delete state.errors[id]
+      if (state.didRetry) delete state.didRetry[id]
+    }
+    if (state.learned) for (const [rid, id] of Object.entries(state.learned)) if (gone.has(id)) delete state.learned[rid]
+  }
+  if (Object.values(peerRuntimes).some((id) => gone.has(id))) {
+    peerRuntimes = Object.fromEntries(Object.entries(peerRuntimes).filter(([, id]) => !gone.has(id)))
+  }
 }
 
 /** Per agent list: DID and handle → path (DIDs first; a handle never hides a DID). */

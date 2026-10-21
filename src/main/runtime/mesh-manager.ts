@@ -784,6 +784,12 @@ export class MeshManager extends EventEmitter {
         return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}`, statusCode: ingressResult.rejected.code }
       }
       message = ingressResult.data
+      // The sender is verified when the message signature checked against its
+      // DID (the pipeline stamps message_verified on every message), or the
+      // transport authenticated that same DID. Only then does the fleet map
+      // name it (emitPeerStationIngress): `from` alone is wire data.
+      const senderVerified = typeof senderDid === 'string' && senderDid.startsWith('did:') && message.from === senderDid &&
+        (message.meta?.message_verified === true || (transport?.identityVerified === true && transport.remoteDid === senderDid))
 
       // Transport identity stamps are runtime facts, never wire data: discard
       // whatever arrived and re-stamp only what this transport verified itself.
@@ -859,11 +865,13 @@ export class MeshManager extends EventEmitter {
 
       // Fleet map: draw the incoming trace from the sender's base station.
       // returnPath carries the transport-observed origin; reply_to is the
-      // WS cold path's fallback (no HTTP transport context there).
+      // WS cold path's fallback (no HTTP transport context there). The sender
+      // is named only when verified, so an unsigned message cannot be drawn
+      // from a managed runtime's tile; it stays on the peer station.
       this.emitPeerStationIngress(
         recipientFilePath,
         returnPath ?? (typeof message.reply_to === 'string' ? message.reply_to : undefined),
-        typeof senderDid === 'string' && senderDid ? senderDid : undefined
+        senderVerified ? senderDid : undefined
       )
 
       return { success: true, messageId: inboxId }
@@ -1354,6 +1362,7 @@ export class MeshManager extends EventEmitter {
    * sender's map); without this only the sender ever sees the message fly.
    * Matched by the ingress return path's host against the discovered peer
    * list; host-only fallback covers port drift. Best-effort and decorative.
+   * `senderId` is a verified sender DID only (processIngressMessage).
    */
   private emitPeerStationIngress(recipientFilePath: string, fromUrl?: string, senderId?: string): void {
     if (!this.mdnsService || !fromUrl) return
@@ -1382,8 +1391,8 @@ export class MeshManager extends EventEmitter {
         payload: {
           filePath: `station:peer:${peer.runtime_id}`,
           toFilePaths: [recipientFilePath],
-          // The sender DID, so a map that manages the sending runtime draws
-          // the trace from the sender's own tile (mirror of toPeerAgent).
+          // The verified sender DID, so a map that manages the sending runtime
+          // draws the trace from the sender's own tile (mirror of toPeerAgent).
           ...(senderId ? { fromPeerAgent: { runtimeId: peer.runtime_id, id: senderId } } : {})
         },
         timestamp: Date.now()

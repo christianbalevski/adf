@@ -6,7 +6,7 @@ import { useMeshStore, selectMeshSlice } from '../stores/mesh.store'
 import { useAppStore } from '../stores/app.store'
 import { reportFailure, agentNameOf, useFailureNoticesStore } from '../stores/failure-notices.store'
 import { useFleetStore } from '../stores/fleet.store'
-import { forgetRuntimeFleet, moveRuntimeFleet, reloadRuntimeFleet } from '../components/mesh/runtime-fleet'
+import { forgetRuntimeFleet, forgetRuntimeMatches, moveRuntimeFleet, reloadRuntimeFleet } from '../components/mesh/runtime-fleet'
 import { trackedDirsActions } from './useTrackedDirs'
 import { openingFilePaths, useAdfFile, type OpenOptions } from './useAdfFile'
 import { dropProviderModels } from './useProviderModels'
@@ -327,16 +327,20 @@ async function closeRemovedAgent(id: RuntimeId, filePath: string): Promise<{ clo
 /**
  * RUNTIMES_MOVED (main, §17), before the runtime set that follows it: a
  * moved id is re-keyed when it leaves the set; an id that is another
- * computer now loses its caches at once.
+ * computer now loses its caches at once. Both lose the Mesh view's runtime
+ * DID and peer matches at once (read and matched again on the next poll).
  */
 export function noteRuntimeMoves(change: RuntimesMoved): void {
+  const stale: RuntimeId[] = []
   for (const [from, to] of Object.entries(change.moves ?? {})) {
-    if (from && to && from !== to) pendingMoves.set(from, to)
+    if (from && to && from !== to) { pendingMoves.set(from, to); stale.push(from) }
   }
   for (const id of change.replaced ?? []) {
-    console.log(`[Runtimes] ${id} is another computer now: its cached settings, model lists and templates go`)
+    console.log(`[Runtimes] ${id} is another computer now: its cached settings, model lists, templates and fleet map matches go`)
     dropRuntimeCaches(id)
+    stale.push(id)
   }
+  forgetRuntimeMatches(stale)
 }
 
 /**

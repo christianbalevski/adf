@@ -2,9 +2,10 @@
  * The Mesh view with more than one runtime (docs/design/multi-runtime.md
  * §6.4): a message between two runtimes of the set is drawn tile to tile,
  * both ways and once; a handle on two runtimes is two agents; a runtime of
- * the set is never also drawn as a peer station, whatever its peer record
- * lacks; a peer paired since takes its station's ground; managed regions are
- * solid, peer stations dashed ("Peer").
+ * the set is not also drawn as a peer station when its peer record carries
+ * what its connection checked (the pinned fingerprint, the runtime DID read
+ * over it), and only then; a peer paired since takes its station's ground;
+ * managed regions are solid, peer stations dashed ("Peer").
  *
  * No jsdom: the hook's one effect runs inline in a static render, frames are
  * flushed by hand. Every runtime surface is a stub (no keychain, no settings
@@ -228,14 +229,21 @@ describe('a runtime of the set is not also a peer station', () => {
     expect((await fleetPeers(own, [], match())).map((p) => p.runtime_id)).toEqual([RT_PEER])
   })
 
-  it('a peer record without runtime_did or fingerprint, by address (host and daemon port)', async () => {
-    await page([LOCAL, REMOTE], { fingerprint: null })
+  it('by the runtime DID read over its connection', async () => {
+    await page([LOCAL, REMOTE], { fingerprint: null, remote: { getOwnerIdentityStatus: async () => ({ runtimeDid: 'did:key:rt-host-1' }) } })
     const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
-    const own = [{ runtime_id: RT_HOST_1, url: 'http://192.168.1.20:7295', daemon_port: 7386 }, { runtime_id: RT_PEER, url: 'http://192.168.1.30:7295' }]
+    const own = [{ runtime_id: RT_HOST_1, runtime_did: 'did:key:rt-host-1' }, { runtime_id: RT_PEER, runtime_did: 'did:key:rt-peer' }]
     expect((await fleetPeers(own, [], match())).map((p) => p.runtime_id)).toEqual([RT_PEER])
   })
 
-  it('a peer record with nothing but its directory, by its agents\' DIDs; a stub that is a tile is not drawn', async () => {
+  it('B4: an address alone (host and daemon port, copyable on the LAN) is not a match: the record stays a station', async () => {
+    await page([LOCAL, REMOTE], { fingerprint: null })
+    const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
+    const own = [{ runtime_id: RT_HOST_1, url: 'http://192.168.1.20:7295', daemon_port: 7386 }, { runtime_id: RT_PEER, url: 'http://192.168.1.30:7295' }]
+    expect((await fleetPeers(own, [], match())).map((p) => p.runtime_id)).toEqual([RT_HOST_1, RT_PEER])
+  })
+
+  it('B4: a directory listing the map\'s agent DIDs is not a match; a stub that is a tile is still not drawn', async () => {
     await page([LOCAL, REMOTE], { fingerprint: null })
     const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
     const own = [
@@ -243,15 +251,19 @@ describe('a runtime of the set is not also a peer station', () => {
       { runtime_id: RT_PEER, agents: [{ handle: 'agent-9', did: 'did:key:peer-agent' }, { handle: 'agent-1', did: DID_A1 }] },
     ]
     const shown = await fleetPeers(own, [], match())
-    expect(shown).toEqual([{ runtime_id: RT_PEER, agents: [{ handle: 'agent-9', did: 'did:key:peer-agent' }] }])
+    expect(shown).toEqual([{ runtime_id: RT_HOST_1, agents: [] }, { runtime_id: RT_PEER, agents: [{ handle: 'agent-9', did: 'did:key:peer-agent' }] }])
   })
 
-  it('once matched, a record of the same runtime_id without any of it is still that runtime', async () => {
+  it('B4: the matches are rebuilt every poll: a record that copied the fingerprint once does not hide its station for the session', async () => {
     await page([LOCAL, REMOTE])
     const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
-    const state = match()
-    await fleetPeers([{ runtime_id: RT_HOST_1, fingerprint: FP_1 }], [], state)
-    expect(await fleetPeers([], [{ peers: [{ runtime_id: RT_HOST_1 }] }], state)).toEqual([])
+    const state = match() as ReturnType<typeof match> & { learned?: Record<string, string> }
+    expect(await fleetPeers([{ runtime_id: RT_PEER, fingerprint: FP_1 }], [], state)).toEqual([])
+    expect(state.learned).toEqual({ [RT_PEER]: HOST_1 })
+    expect(await fleetPeers([{ runtime_id: RT_PEER }], [], state)).toEqual([{ runtime_id: RT_PEER }])
+    expect(state.learned).toEqual({})
+    // Within one poll a record of a matched runtime_id is that runtime, whichever list reports it.
+    expect(await fleetPeers([{ runtime_id: RT_HOST_1, fingerprint: FP_1 }], [{ peers: [{ runtime_id: RT_HOST_1 }] }], state)).toEqual([])
   })
 
   it('a DID read that fails, or answers none, is read again with backoff, not once', async () => {
@@ -280,24 +292,25 @@ describe('a runtime of the set is not also a peer station', () => {
 
 describe('a peer that becomes a runtime of the set', () => {
   it('its station goes in the render its tiles land in, and its region takes the station\'s ground', async () => {
-    await page([LOCAL, REMOTE], { fingerprint: null })
+    await page([LOCAL])
     const { useMeshStore } = await import('../../../src/renderer/stores/mesh.store')
     const { useFleetStore } = await import('../../../src/renderer/stores/fleet.store')
+    const { useConnectionStore } = await import('../../../src/renderer/stores/connection.store')
     const { useRuntimesStore } = await import('../../../src/renderer/stores/runtimes.store')
     const { fleetPeers, peerMatchOf, regionFromStation } = await import('../../../src/renderer/components/mesh/MeshGraphView')
     const { mergePeers, selectMapAgents, runtimeRegionRoot } = await import('../../../src/renderer/components/mesh/runtime-fleet')
     const { computeFleetLayout } = await import('../../../src/renderer/components/mesh/fleet-layout')
-    // host-1 just paired: no agents on the map yet, its DID not read, its peer record bare but for its directory.
-    useMeshStore.setState({ byRuntime: {} })
-    const peer = { runtime_id: RT_HOST_1, agents: [{ handle: 'agent-1', did: DID_B1 }, { handle: 'agent-2', did: DID_B2 }] }
+    // host-1 is a peer, not paired yet: a station; its record carries its remote-access fingerprint.
+    const peer = { runtime_id: RT_HOST_1, fingerprint: FP_1, agents: [{ handle: 'agent-1', did: DID_B1 }, { handle: 'agent-2', did: DID_B2 }] }
     const state = { seq: {}, errors: {}, dids: {} as Record<string, string | null> }
     const lanPeers = await fleetPeers([peer], [], state)
     expect(lanPeers).toEqual([peer])
     const shown = () => mergePeers([lanPeers], peerMatchOf(state, useRuntimesStore.getState().runtimes, selectMapAgents(useMeshStore.getState())))
     expect(shown()).toEqual([peer])
 
-    // Its station was frozen on the ring; its agents land.
+    // Its station was frozen on the ring; host-1 is paired (that fingerprint pinned) and its agents land.
     useFleetStore.getState().setPlacement({ regionOrigins: {}, cellPins: {}, stationPins: { [`station:peer:${RT_HOST_1}`]: { q: 40, r: -6, auto: true } } })
+    useConnectionStore.getState().setView(view([LOCAL, REMOTE]))
     useMeshStore.getState().setAgents([agent(B1, DID_B1, HOST_ROOT), agent(B2, DID_B2, HOST_ROOT)], HOST_1)
     // The station ring of the same render, before the next poll: no station.
     expect(shown()).toEqual([])
@@ -309,6 +322,53 @@ describe('a peer that becomes a runtime of the set', () => {
     expect(useFleetStore.getState().placement!.regionOrigins[root]).toEqual({ q: 40, r: -6 })
     const layout = computeFleetLayout(selectMapAgents(useMeshStore.getState()), useFleetStore.getState().placement!)
     expect(layout.regionOrigins[root]).toEqual({ q: 40, r: -6 })
+  })
+})
+
+describe('B5: a runtime id that is another computer now, or moved, loses its matches', () => {
+  const state = () => ({
+    seq: { [HOST_1]: 9 } as Record<string, number>, errors: { [HOST_1]: 'unreachable' } as Record<string, string>,
+    dids: { local: 'did:key:rt-local', [HOST_1]: 'did:key:rt-host-1' } as Record<string, string | null>,
+    didRetry: { [HOST_1]: { at: 1, wait: 5_000 } } as Record<string, { at: number; wait: number }>,
+    learned: { [RT_LOCAL]: 'local', [RT_HOST_1]: HOST_1 } as Record<string, string>,
+  })
+  const kept = { seq: {}, errors: {}, dids: { local: 'did:key:rt-local' }, didRetry: {}, learned: { [RT_LOCAL]: 'local' } }
+
+  it('replaced (RUNTIMES_MOVED): its runtime DID, retry, cursor and matches go, the traffic match too', async () => {
+    await page([LOCAL, REMOTE])
+    const { trackPeerMatchState, setPeerRuntimes, peerAgentTile } = await import('../../../src/renderer/components/mesh/runtime-fleet')
+    const { noteRuntimeMoves } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const { useMeshStore, selectMeshSlice } = await import('../../../src/renderer/stores/mesh.store')
+    const agentsOf = (rt: string) => selectMeshSlice(useMeshStore.getState(), rt).agents
+    const s = state()
+    const untrack = trackPeerMatchState(s)
+    setPeerRuntimes({ [RT_HOST_1]: HOST_1 })
+    expect(peerAgentTile(RT_HOST_1, DID_B1, agentsOf)).toBe(KEY_B1)
+    noteRuntimeMoves({ moves: {}, replaced: [HOST_1] })
+    expect(s).toEqual(kept)
+    expect(peerAgentTile(RT_HOST_1, DID_B1, agentsOf)).toBeNull()
+    untrack()
+  })
+
+  it('moved: the old id\'s matches go; a state no longer tracked is left alone', async () => {
+    await page([LOCAL, REMOTE])
+    const { trackPeerMatchState } = await import('../../../src/renderer/components/mesh/runtime-fleet')
+    const { noteRuntimeMoves } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const s = state()
+    const gone = state()
+    trackPeerMatchState(gone)()
+    const untrack = trackPeerMatchState(s)
+    noteRuntimeMoves({ moves: { [HOST_1]: 'remote:host-1b' }, replaced: [] })
+    expect(s).toEqual(kept)
+    expect(gone).toEqual(state())
+    untrack()
+  })
+
+  it('the Mesh view tracks its poll state', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { join } = await import('node:path')
+    const src = readFileSync(join(__dirname, '../../../src/renderer/components/mesh/MeshGraphView.tsx'), 'utf-8')
+    expect(src).toContain('trackPeerMatchState(remotePolls.current)')
   })
 })
 
