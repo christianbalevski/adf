@@ -4,7 +4,7 @@ import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote
 import type { BackendDaemonStatus, StudioRunMode } from '../../shared/types/backend.types'
 import type { ConnectionCurrent, ConnectionRow, ConnectionsView } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
-import { deleteRemoteToken, loadRemotes, loadRemotesAsync, readRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
+import { forgetRemote, loadRemotes, loadRemotesAsync, readRemotesAsync, readRemoteToken, remoteNameFor, remotesFilePath, storeRemoteToken, updateRemotes, type SavedRemote, type TokenStoreChoice } from '../cli/remotes'
 import { awaitKeychainAccess } from './daemon-secrets'
 import { PairingClient } from './remote-access/client'
 import { runMode, type BackendSettingsStore, type BootBackend, type SecretCodec, type StudioBackendConfig } from './backend-config'
@@ -49,6 +49,8 @@ export class SavedConnectionsCache {
    * nothing is dropped or reordered because of it.
    */
   unreadable: string | null = null
+  /** The names of malformed entries at the last read (cli/remotes.ts keeps them on every write). */
+  malformed: string[] = []
   private watcher: FSWatcher | null = null
   private timer: ReturnType<typeof setTimeout> | null = null
 
@@ -73,8 +75,9 @@ export class SavedConnectionsCache {
       return this.value
     }
     const next = read.file.remotes
-    const changed = JSON.stringify(next) !== JSON.stringify(this.value) || this.unreadable !== null
+    const changed = JSON.stringify(next) !== JSON.stringify(this.value) || this.unreadable !== null || JSON.stringify(read.malformed) !== JSON.stringify(this.malformed)
     this.unreadable = null
+    this.malformed = read.malformed
     this.value = next
     if (changed) this.onChange?.()
     return next
@@ -198,9 +201,10 @@ export async function saveConnection(env: NodeJS.ProcessEnv, input: SaveConnecti
   // The keychain, or the user-only file only after the user chose it (KEYCHAIN_FILE_COPY).
   const store = await storeRemoteToken(input.fingerprint, input.token, env, opts.confirmFile)
   // Under the lock adf takes too (updateRemotes): neither loses the other's change.
-  const name = await updateRemotes(env, (file) => {
+  const name = await updateRemotes(env, (file, malformed) => {
     const same = Object.entries(file.remotes).find(([, r]) => r.fingerprint === input.fingerprint)
-    const name = same?.[0] ?? remoteNameFor(input.hostName, file.remotes)
+    // A malformed entry's name is taken too: the user fixes or forgets it.
+    const name = same?.[0] ?? remoteNameFor(input.hostName, { ...malformed, ...file.remotes })
     // A token added by hand knows no device id or label: the pairing's stay.
     file.remotes[name] = {
       url: input.url,
@@ -291,18 +295,11 @@ export async function clearTwinSlot(store: Pick<BackendSettingsStore, 'config' |
   return name
 }
 
-/** Forget a saved connection and its token (`adf remotes forget`). The host still lists the device. */
+/** Forget a saved connection and its token, as `adf remotes forget` does (forgetRemote). The host still lists the device. */
 export async function forgetConnection(env: NodeJS.ProcessEnv, name: string): Promise<boolean> {
-  const removed = await updateRemotes(env, (file) => {
-    const remote = file.remotes[name]
-    if (!remote) return null
-    delete file.remotes[name]
-    if (file.default === name) file.default = null
-    // Another name may hold the same computer; its token stays.
-    return { remote, shared: Object.values(file.remotes).some((r) => r.fingerprint === remote.fingerprint) }
-  })
-  if (!removed) return false
-  if (!removed.shared) deleteRemoteToken(removed.remote.fingerprint, env)
+  const forgot = await forgetRemote(env, name)
+  if (!forgot) return false
+  if (forgot.tokenError) throw new Error(`${name} was removed, but its token could not be: ${forgot.tokenError}`)
   return true
 }
 
