@@ -7,7 +7,8 @@
  *   agents shared") and the only per-network consent action, Allow on the
  *   current network, with the service that waits for it named.
  * - Sharing: Mesh, Network (the mesh's LAN mode) and the shared Agents.
- * - Networks: the allowed networks, each with Remove.
+ * - Networks: the allowed networks, each with Remove, then each current
+ *   network that cannot be identified, with why and Help (no Allow: §3.3.1).
  * - Runtimes: the runtimes found on the LAN, the tailnet or at an address,
  *   with Add for an address; Managed when Connections has that computer.
  * - Advanced, collapsed but never hidden: Autostart, Port, Server,
@@ -29,7 +30,7 @@ import type { NetworkView } from '../../../shared/types/remote-access.types'
 import type { NetworkStatusView, RemoteAccessView } from '../../../shared/types/remote-access-ipc.types'
 import type { ConnectionRow } from '../../../shared/types/connection.types'
 import type { RuntimeId } from '../../../shared/runtime-tag'
-import { pausedText, publicNetworkWarning } from '../../../shared/utils/network-consent-text'
+import { pausedText, publicNetworkWarning, unidentifiedText } from '../../../shared/utils/network-consent-text'
 import { selectMeshSlice, useMeshStore } from '../../stores/mesh.store'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useMesh } from '../../hooks/useMesh'
@@ -92,6 +93,10 @@ export interface ConsentLine {
   networkId: string | null
   lines: string[]
   warning: string | null
+  /** An unidentified network: why, one sentence each ("Studio cannot identify this network. The router does not answer."). */
+  reason: string | null
+  /** The failed step's technical detail (tooltip), or null. */
+  detail: string | null
 }
 
 /**
@@ -114,8 +119,27 @@ export function consentLines(view: Pick<NetworkStatusView, 'networks' | 'waiting
       networkId: n.id,
       lines,
       warning: exposed && (services.remoteAccess || services.mesh) ? publicNetworkWarning(services) : null,
+      reason: n.id ? null : unidentifiedText(n.problem),
+      detail: n.id ? null : n.problem?.detail ?? null,
     }
   })
+}
+
+/** The current networks that cannot be identified (never allowed, so never in the allowed list). */
+export function unidentifiedNetworks(networks: NetworkView[]): NetworkView[] {
+  return networks.filter((n) => !n.id)
+}
+
+/** Why a network cannot be identified, with Help (the guide) and the technical detail as its tooltip. */
+export function UnidentifiedReason({ reason, detail }: { reason: string; detail: string | null }) {
+  return (
+    <span className="block">
+      {reason}
+      {detail
+        ? <Tooltip tip={detail} className="inline-flex"><DocsLink href={DOCS.unidentifiedNetwork} label="Help" className="ml-1.5 !text-[11px]" /></Tooltip>
+        : <DocsLink href={DOCS.unidentifiedNetwork} label="Help" className="ml-1.5 !text-[11px]" />}
+    </span>
+  )
 }
 
 /** The addresses detail under Advanced: LAN addresses, Tailscale, firewall. */
@@ -200,7 +224,10 @@ export function NetworkingStatusCard({ line, consent, busy, note, firewall, onAl
       <span>{line}<LearnMore href={DOCS.networkingStatus} /></span>
       {consent.map((c) => (
         <div key={c.key} className="flex w-full flex-wrap items-center justify-between gap-2">
-          <span className="space-y-0.5">{c.lines.map((l) => <span key={l} className="block">{l}</span>)}</span>
+          <span className="space-y-0.5">
+            {c.lines.map((l) => <span key={l} className="block">{l}</span>)}
+            {c.reason && <UnidentifiedReason reason={c.reason} detail={c.detail} />}
+          </span>
           {c.networkId && <Button size="compact" disabled={busy} onClick={() => onAllow(c.networkId!)}>Allow</Button>}
           {c.warning && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{c.warning}</span>}
         </div>
@@ -507,13 +534,23 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
       <SettingsGroup title="Networks">
         {remote
           ? <SettingsRow label="Networks" description={changeOn(runtimeName)} />
-          : !netView?.available || netView.allowedNetworks.length === 0
+          : !netView?.available || (netView.allowedNetworks.length === 0 && unidentifiedNetworks(netView.networks).length === 0)
             ? <SettingsRow label="None" />
-            : netView.allowedNetworks.map((n, i) => (
-              <SettingsRow key={n.id} separator={i > 0} label={n.label} description={netView.networks.some((c) => c.id === n.id) ? 'Current' : undefined}>
-                <Button size="compact" disabled={netBusy} onClick={() => void changeNetwork('forget', n.id)}>Remove</Button>
-              </SettingsRow>
-            ))}
+            : <>
+              {netView.allowedNetworks.map((n, i) => (
+                <SettingsRow key={n.id} separator={i > 0} label={n.label} description={netView.networks.some((c) => c.id === n.id) ? 'Current' : undefined}>
+                  <Button size="compact" disabled={netBusy} onClick={() => void changeNetwork('forget', n.id)}>Remove</Button>
+                </SettingsRow>
+              ))}
+              {unidentifiedNetworks(netView.networks).map((n, i) => (
+                <SettingsRow
+                  key={`unidentified:${n.kind}:${n.ifaces.join(',')}`}
+                  separator={netView.allowedNetworks.length > 0 || i > 0}
+                  label={n.label}
+                  description={<UnidentifiedReason reason={unidentifiedText(n.problem)} detail={n.problem?.detail ?? null} />}
+                />
+              ))}
+            </>}
       </SettingsGroup>
 
       <SettingsGroup title="Runtimes" hint="Runtimes found on this network, on your tailnet, or at an address you added. Agent counts come from each runtime's directory.">

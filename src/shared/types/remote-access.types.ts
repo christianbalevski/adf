@@ -18,6 +18,8 @@ export type RemoteAccessState = 'off' | 'on' | 'paused' | 'no_address' | 'env_bi
 export interface NetworkView {
   /** Null: the network cannot be identified yet (no gateway MAC known); it cannot be allowed. */
   id: string | null
+  /** Set only when `id` is null: the step that failed. */
+  problem?: NetworkProblem
   kind: 'lan' | 'tailnet'
   label: string
   allowed: boolean
@@ -25,6 +27,20 @@ export interface NetworkView {
   osCategory: 'private' | 'public' | 'unknown'
   ifaces: string[]
   addresses: string[]
+}
+
+/**
+ * Why a LAN cannot be identified (docs/design/remote-access.md §3.3.1), by
+ * the step that failed: the route table could not be read, the interface
+ * has no default gateway, the ARP table could not be read, the gateway gave
+ * no MAC after the probes, or the interface has no subnet.
+ */
+export type NetworkProblemStep = 'route_read' | 'no_gateway' | 'arp_read' | 'no_answer' | 'no_subnet'
+
+export interface NetworkProblem {
+  step: NetworkProblemStep
+  /** The technical detail (the command and its error), or null. For the log and the tooltip. */
+  detail: string | null
 }
 
 /** A network the user allowed (remote-access.json `allowedNetworks`; the mesh's LAN mode reads the same list). */

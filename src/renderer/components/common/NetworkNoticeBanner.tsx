@@ -62,7 +62,7 @@ export function NetworkNoticeList({ notices, busy, error, onAllow, onDismiss, on
     <div role="status" aria-live="polite" className="w-full shrink-0">
       {notices.map((n) => (
         <div key={n.key} className="w-full flex flex-wrap items-center justify-center gap-x-3 gap-y-1 px-3 py-1.5 border-b border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] text-[11px] text-[var(--adf-ui-warning)]">
-          <span>{n.message}</span>
+          <span>{n.message}{n.reason ? ` ${n.reason}` : ''}</span>
           {n.canAllow && (
             <button type="button" disabled={busy === n.key} onClick={() => onAllow(n)} className="font-medium underline cursor-pointer disabled:opacity-60">
               Allow

@@ -86,6 +86,8 @@ export interface NetworkNotice {
   /** On a LAN the OS reports Public or does not report: "Public network. The token is sent unencrypted." (remote access), else the mesh's sentence. */
   warning: string | null
   canAllow: boolean
+  /** An unidentified network: why ("Studio cannot identify this network. The router does not answer."); else null. */
+  reason?: string | null
 }
 
 /** NETWORK_ALLOW / NETWORK_FORGET. */

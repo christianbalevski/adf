@@ -312,6 +312,24 @@ describe('Settings → Networking (owner decision 2026-10-21)', () => {
     expect(consentLines(net({ networks: [{ ...cafe, osCategory: 'private' }], waiting: { remoteAccess: true, mesh: false } }), [])[0].warning).toBeNull()
   })
 
+  it('an unidentified network never dead-ends: the card and Share say why, with Help; no Allow', () => {
+    const unknown: NetworkView = { id: null, problem: { step: 'no_answer', detail: 'no ARP entry for 192.168.1.1 on en0 after 3 probe(s)' }, kind: 'lan', label: 'Unidentified network', allowed: false, osCategory: 'unknown', ifaces: ['en0'], addresses: ['192.168.1.20'] }
+    const lines = consentLines(net({ networks: [unknown], waiting: { remoteAccess: false, mesh: true } }), ['agent-1'])
+    expect(lines).toEqual([{
+      key: 'unidentified:en0', networkId: null, lines: ['Agent sharing paused on Unidentified network.'], warning: null,
+      reason: 'Studio cannot identify this network. The router does not answer.', detail: 'no ARP entry for 192.168.1.1 on en0 after 3 probe(s)',
+    }])
+    // Nothing waits: still the reason.
+    expect(consentLines(net({ networks: [unknown] }), [])[0].reason).toBe('Studio cannot identify this network. The router does not answer.')
+    const html = card(lines)
+    expect(html).toContain('Studio cannot identify this network. The router does not answer.')
+    expect(html).toContain(`href="${DOCS.unidentifiedNetwork}"`)
+    expect(html).toContain('>Help<')
+    expect(html).not.toContain('>Allow<')
+    const share = renderToStaticMarkup(<SharePanelView view={{ available: true, status: status({ networks: [unknown] }) } as RemoteAccessView} busy={false} error={null} approved={null} label="" created={null} onLabel={() => {}} onAllow={() => {}} onRenew={() => {}} onCreateToken={() => {}} onBack={() => {}} onDone={() => {}} />)
+    expect(share).toContain('Studio cannot identify this network. The router does not answer.')
+  })
+
   it('a public agent asks for the same consent per network, visibly: "agent-1 is public; Allow on this network to share it."', () => {
     expect(publicAgentsLine(['agent-1'])).toBe('agent-1 is public; Allow on this network to share it.')
     expect(publicAgentsLine(['agent-1', 'agent-2'])).toBe('agent-1 and agent-2 are public; Allow on this network to share them.')

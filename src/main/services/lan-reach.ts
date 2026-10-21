@@ -24,8 +24,8 @@ import type { Duplex } from 'node:stream'
 import type { AllowedNetwork, NetworkView } from '../../shared/types/remote-access.types'
 import type { AddressCandidate } from '../daemon/remote-access/addresses'
 import { readAllowedNetworks } from '../daemon/remote-access/config'
-import { readGatewayIdentities, readOsCategories, readWifiNames } from '../daemon/remote-access/network-category'
-import { NetworkWatcher } from '../daemon/remote-access/network-key'
+import { readGatewayReadings, readOsCategories, readWifiNames } from '../daemon/remote-access/network-category'
+import { NetworkWatcher, type GatewayMap } from '../daemon/remote-access/network-key'
 import { TailscaleClient, tailnetNameOf, type TailscaleSelf } from '../daemon/remote-access/tailscale'
 
 const SLOW_REFRESH_MS = 60_000
@@ -46,11 +46,13 @@ export interface LanReachOptions {
   interfaces?: () => NodeJS.Dict<NetworkInterfaceInfo[]>
   /** The allowed networks. Default: read from remote-access.json on every call. */
   allowed?: () => Promise<AllowedNetwork[]>
-  /** Per LAN interface, `<gateway IP>|<gateway MAC>` ('' unknown). Default: readGatewayIdentities. */
-  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<Map<string, string>>
+  /** Per LAN interface, the gateway reading (or `<gateway IP>|<gateway MAC>`, '' unknown). Default: readGatewayReadings. */
+  gateways?: (ifaces: readonly string[], interfaces: NodeJS.Dict<NetworkInterfaceInfo[]>) => Promise<GatewayMap>
   wifiNames?: (ifaces: readonly string[]) => Promise<Map<string, string>>
   osCategories?: (ifaces: readonly string[]) => Promise<Map<string, 'private' | 'public'>>
   tailscale?: () => Promise<TailscaleSelf>
+  /** Where a network that cannot be identified is logged (with the failed step). Default: console.warn. */
+  log?: (line: string) => void
   now?: () => number
 }
 
@@ -63,10 +65,11 @@ export class LanReach {
 
   constructor(private readonly opts: LanReachOptions) {
     this.watcher = new NetworkWatcher({
-      readGateways: this.opts.gateways ?? ((ifaces, interfaces) => readGatewayIdentities(ifaces, interfaces)),
+      readGateways: this.opts.gateways ?? ((ifaces, interfaces) => readGatewayReadings(ifaces, interfaces)),
       readWifiNames: this.opts.wifiNames ?? ((ifaces) => readWifiNames(ifaces)),
       readOsCategories: this.opts.osCategories ?? ((ifaces) => readOsCategories(ifaces)),
       slowCheckMs: SLOW_REFRESH_MS,
+      log: this.opts.log ?? ((line) => console.warn(`[Networking] ${line}`)),
       ...(this.opts.now ? { now: this.opts.now } : {}),
     })
   }

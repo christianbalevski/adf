@@ -6,6 +6,7 @@
  */
 
 import type { PairingWindowView, RemoteAccessStatus, RemoteDevice } from '../../shared/types/remote-access.types'
+import { unidentifiedText } from '../../shared/utils/network-consent-text'
 import { readDaemonToken } from '../daemon/daemon-token'
 import { readLocalProof } from '../daemon/local-access'
 import { DEFAULT_DAEMON_PORT, loopbackPort } from './daemon-url'
@@ -105,7 +106,7 @@ export function formatRemoteStatus(s: RemoteAccessStatus): string {
     lines.push('Networks now:')
     for (const n of s.networks) {
       const warn = n.kind === 'lan' && !n.allowed && n.osCategory !== 'private' ? ' Public network. The token is sent unencrypted.' : ''
-      lines.push(`  ${n.label}  ${n.allowed ? 'allowed' : n.id ? `not allowed (allow: adf daemon remote allow-network ${n.id})${warn}` : 'not allowed (its router did not answer)'}`)
+      lines.push(`  ${n.label}  ${n.allowed ? 'allowed' : n.id ? `not allowed (allow: adf daemon remote allow-network ${n.id})${warn}` : `not allowed. ${unidentifiedText(n.problem, 'ADF')}${n.problem?.detail ? ` (${n.problem.detail})` : ''}`}`)
     }
   }
   lines.push(`Allowed networks (${s.allowedNetworks.length}):`)
@@ -152,7 +153,7 @@ async function remoteCommand(args: string[], io: HostCliIo, target: HostTarget):
       const candidates = current.networks.filter(n => n.id && (!which ? !n.allowed : n.id === which || n.label === which))
       if (candidates.length !== 1) {
         io.stderr(candidates.length === 0
-          ? `${which ? `No current network "${which}".` : 'No network waiting to be allowed.'} Networks now: ${current.networks.map(n => `${n.label} (${n.id ?? 'cannot be identified yet'}${n.allowed ? ', allowed' : ''})`).join(', ') || 'none'}\n`
+          ? `${which ? `No current network "${which}".` : 'No network waiting to be allowed.'} Networks now: ${current.networks.map(n => `${n.label} (${n.id ?? unidentifiedText(n.problem, 'ADF')}${n.allowed ? ', allowed' : ''})`).join(', ') || 'none'}\n`
           : `More than one network is not allowed; name one: ${candidates.map(n => n.id).join(', ')}\n`)
         return 1
       }

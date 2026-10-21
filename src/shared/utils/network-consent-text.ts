@@ -5,6 +5,8 @@
  * names the service that waits for the network, never another one.
  */
 
+import type { NetworkProblem, NetworkProblemStep } from '../types/remote-access.types'
+
 /** The services that listen beyond loopback once the network is allowed. */
 export interface WaitingServices {
   /** Remote access is on (other computers use this runtime). */
@@ -33,4 +35,19 @@ export function pausedText(services: WaitingServices, networkLabel: string): str
 /** The warning for a network not reported Private, by the services that wait. */
 export function publicNetworkWarning(services: WaitingServices): string {
   return services.remoteAccess ? PUBLIC_WARNING : PUBLIC_MESH_WARNING
+}
+
+/** The reason a network cannot be identified, one sentence per step (ASD-STE100 style). */
+export const NETWORK_PROBLEM_TEXT: Record<NetworkProblemStep, string> = {
+  route_read: 'It cannot read the route table.',
+  no_gateway: 'It cannot find the router address.',
+  arp_read: 'It cannot read the address table.',
+  no_answer: 'The router does not answer.',
+  no_subnet: 'It cannot find the subnet.',
+}
+
+/** "Studio cannot identify this network. The router does not answer." (`who`: "Studio", or "ADF" in the CLI). */
+export function unidentifiedText(problem: NetworkProblem | undefined, who = 'Studio'): string {
+  const head = `${who} cannot identify this network.`
+  return problem ? `${head} ${NETWORK_PROBLEM_TEXT[problem.step]}` : head
 }

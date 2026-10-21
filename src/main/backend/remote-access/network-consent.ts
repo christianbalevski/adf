@@ -15,7 +15,7 @@
 
 import type { NetworkView } from '../../../shared/types/remote-access.types'
 import type { NetworkNotice } from '../../../shared/types/remote-access-ipc.types'
-import { PUBLIC_MESH_WARNING, PUBLIC_WARNING, pausedText, publicNetworkWarning, waitingServicesText, type WaitingServices } from '../../../shared/utils/network-consent-text'
+import { PUBLIC_MESH_WARNING, PUBLIC_WARNING, pausedText, publicNetworkWarning, unidentifiedText, waitingServicesText, type WaitingServices } from '../../../shared/utils/network-consent-text'
 
 export interface NetworkConsentDeps {
   /**
@@ -48,6 +48,7 @@ export function networkQuestion(network: NetworkView, services: WaitingServices 
     message: pausedText(services, network.label),
     warning: exposed ? publicNetworkWarning(services) : null,
     canAllow: !!network.id,
+    ...(network.id ? {} : { reason: unidentifiedText(network.problem) }),
   }
 }
 
@@ -80,7 +81,7 @@ export class NetworkConsentPrompt {
         this.shown.add(key)
         this.visible.add(key)
         const notice = networkQuestion(network, read.services)
-        this.deps.log?.log(`[Remote access] ${notice.message}${notice.warning ? ` ${notice.warning}` : ''}`)
+        this.deps.log?.log(`[Remote access] ${notice.message}${notice.warning ? ` ${notice.warning}` : ''}${notice.reason ? ` ${notice.reason}${network.problem?.detail ? ` (${network.problem.detail})` : ''}` : ''}`)
         this.deps.show(notice)
       }
     } finally {

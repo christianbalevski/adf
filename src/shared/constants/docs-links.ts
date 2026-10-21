@@ -104,7 +104,8 @@ export const DOCS = {
   remoteAccess: guideUrl('studio-backend', 'remote-access'),
   remoteAccessPair: guideUrl('studio-backend', 'share'),
   remoteAccessDevices: guideUrl('studio-backend', 'devices'),
-  networkingStatus: guideUrl('settings', 'network-status')
+  networkingStatus: guideUrl('settings', 'network-status'),
+  unidentifiedNetwork: guideUrl('settings', 'unidentified-network')
 } as const
 
 export type DocsKey = keyof typeof DOCS

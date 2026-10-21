@@ -379,6 +379,20 @@ Nothing listens beyond `127.0.0.1` on a network until you allow it, once per net
 
 **Allow** is the only place on this page that gives consent. An unidentified network has no **Allow**: nothing can listen there. When a firewall block is known, the card says how to fix it.
 
+#### Unidentified network
+
+Studio identifies a network by its router. When it cannot read the router, the network is "Unidentified network". The status card and **Networks** say why, in one sentence, with **Help** (this section). Hold the pointer on **Help** to see the step that failed. The same line is in `main.log` (`[Networking]`) and in the daemon log (`[remote-access]`).
+
+| Reason | What to do |
+|---|---|
+| "It cannot read the route table." | The command that reads the route table failed (macOS `/usr/sbin/netstat`, Windows `route`, Linux `/proc/net/route`). Send the log line with a bug report. |
+| "It cannot find the router address." | This interface has no default route. Connect it to a network with a router. A link without a router (a cable between two computers) cannot be allowed. |
+| "It cannot read the address table." | The command that reads the ARP table failed (macOS `/usr/sbin/arp`, Windows `arp`, Linux `/proc/net/arp`). Send the log line with a bug report. |
+| "The router does not answer." | The router gave no MAC address after 3 tries. Some guest networks and hotspots block this. Use another network, or use Tailscale. |
+| "It cannot find the subnet." | The interface has no netmask. Reconnect to the network. |
+
+You cannot allow an unidentified network. When the router answers, the card shows **Allow**. Why there is no **Allow**: [Remote access › Consent per network](../design/remote-access.md#331-consent-per-network-owner-decision-2026-10-18-b).
+
 ### Sharing
 
 | Row | Effect | Setting |
