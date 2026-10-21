@@ -38,8 +38,8 @@ export interface PairIo {
 const PAIR_USAGE = `Usage: adf pair [<host>[:<port>] | <url>] [--name <this computer's name>] [--as <remote name>] [--yes] [--default | --no-default]
 
 Pairs this computer with another computer's ADF daemon. On that computer,
-open a pairing window first: ADF Studio → Settings → Networking → Remote access
-→ Add device, or adf daemon pair. Type the 6-digit code it shows; it
+open a pairing window first: ADF Studio → Settings → Connections → Add →
+Share, or adf daemon pair. Type the 6-digit code it shows; it
 then asks whether to allow this computer.
 
 Without a host, adf lists the ADF computers it finds on this network and on
@@ -125,7 +125,7 @@ async function chooseDaemon(io: PairIo): Promise<{ url: string; hello: RemoteHel
   // The one discovery feed (remote-access.md §5.1): this computer's daemon's when it runs, else this process's.
   const found = await (io.discover ?? ((ms: number) => discoverDaemons(ms, { localDaemon: localDaemonOf(io.env ?? process.env), fetch: io.fetch, env: io.env ?? process.env })))(3_000)
   if (found.length === 0) {
-    io.stderr('No ADF computer found. On the other computer turn on Remote access (Settings → Networking, or adf daemon remote on), then run adf pair <its address>.\n')
+    io.stderr('No ADF computer found. On the other computer turn on remote access (Settings → Connections → Add → Share, or adf daemon remote on), then run adf pair <its address>.\n')
     return null
   }
   found.forEach((d, i) => io.stderr(`  ${i + 1}. ${d.name}  ${d.fingerprint}  ${d.url}  (${d.kind === 'tailnet' ? 'tailnet' : 'this network'}${d.pairingOpen ? ', ready to pair' : ''})\n`))
@@ -238,7 +238,7 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     url = hostToUrl(parsed.host)
     const h = await fetchHello(url, io.fetch)
     if (!h) {
-      io.stderr(`${url} does not answer as an ADF daemon with remote access on. On that computer turn on Remote access (Settings → Networking, or adf daemon remote on); an older ADF version cannot pair.\n`)
+      io.stderr(`${url} does not answer as an ADF daemon with remote access on. On that computer turn on remote access (Settings → Connections → Add → Share, or adf daemon remote on); an older ADF version cannot pair.\n`)
       return 1
     }
     hello = h

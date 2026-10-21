@@ -12,8 +12,8 @@ Today (remote-daemon.md Option 2) a user who wants a second computer to reach th
 
 After this change:
 
-- Host: Settings → Networking → **Remote access** (or `adf daemon remote on`). The section shows the addresses (Copy), **Add device** (a token shown once), **Devices** with who is connected now and **Revoke**, and **Pair device** (6-digit code). Settings → Backend → *name* (Local) shows one line, "Remote access: On · *N* devices", with a link to Networking.
-- Client: Settings → Backend → Remote computer → **Discovered** lists the ADF computers found on the LAN and the tailnet. Choose one, type the code shown on the host, the host confirms, done. Or paste address and token. `adf pair` does the same in the terminal.
+- Host: Settings → Connections → **Add** → **Share** (or `adf daemon remote on`, `adf daemon pair`): consent inline, the addresses (Copy), the 6-digit code; **Devices** on the same page lists who is connected now, with **Revoke** (owner decision 2026-10-21, §13).
+- Client: Settings → Connections → **Add** → **Connect** lists the ADF computers found on the LAN and the tailnet. Choose one, type the code shown on the host, the host confirms, done. Or a token under **Details**. `adf pair` does the same in the terminal.
 - No environment variable, no foreground daemon, no hand-made firewall rule on Windows or macOS.
 
 Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less than full) tokens; access from the internet; more than one OS user per daemon.
@@ -92,7 +92,7 @@ Consent applies on every network, the tailnet and a Windows Private network incl
 Consent:
 
 - `POST /remote-access/networks {id}` allows a network this computer is on now; `DELETE /remote-access/networks/:id` removes one and its listeners close at once. Both are management routes (§11.2): local caller, local proof, never a device token. They work while remote access is off. Each change is logged, emits `networks_changed`, and the daemon's mesh re-syncs its LAN listeners at once.
-- Studio, when remote access or the mesh's LAN mode is on and this computer is on a network not allowed, shows a non-modal strip in the window, never a dialog (consent review 3): "Remote access paused on <network label>." with **Allow on this network** and **Not now** (an unidentified network: **Open Networking** instead of Allow). On a LAN the OS reports Public, or does not report (macOS, Linux), one more line: "Public network. The token is sent unencrypted." It shows once per network identity per Studio session: Wi-Fi that drops and comes back never shows it again; the status line keeps showing the state. Allow, Not now or leaving the network takes the strip away. Settings → Networking lists **Allowed networks** with **Remove**.
+- Studio, when remote access or the mesh's LAN mode is on and this computer is on a network not allowed, shows a non-modal strip in the window, never a dialog (consent review 3): "<Service> paused on <network label>.", where the service is the one that waits: "Remote access", "Agent sharing" (the mesh only) or "Remote access and agent sharing" (owner decision 2026-10-21: never "Remote access" when only the mesh waits), with **Allow** and **Dismiss** (an unidentified network: **Networking** instead of Allow). On a LAN the OS reports Public, or does not report (macOS, Linux), one more line: "Public network. The token is sent unencrypted." when remote access waits, else "Public network. Anyone on it can reach the agents you share." It shows once per network identity per Studio session: Wi-Fi that drops and comes back never shows it again; the status card keeps showing the state. Allow, Dismiss or leaving the network takes the strip away. Settings → Networking lists **Networks** with **Remove**; Settings → Connections → Add → Share asks the same consent inline.
 - The CLI shows the networks in `adf daemon remote status` and changes consent with `adf daemon remote allow-network [<id|label>]` and `forget-network <id|label>`.
 
 Windows' category (`Get-NetConnectionProfile`, no elevation, re-read every 60 s and on a network change) is read only for the warning line (`NetworkView.osCategory`).
@@ -357,17 +357,16 @@ A host cannot test its own firewall by connecting to its own LAN address (that t
 
 ## 7. What the host panel shows
 
-Settings → Networking (Studio in `local` mode; in `embedded` or `remote` the toggle is disabled with the reason). Copy rule (owner, 2026-10-18): headings, labels, buttons and dialog titles are plain nouns or short verb phrases; at most one short sentence under a heading.
+Settings → Connections (Studio in `local` mode; in `embedded` the Share choice and the switch are disabled with the reason), owner decision 2026-10-21. Copy rule (owner): labels, buttons and dialog titles are one word or a noun, with a tooltip at most; at most one help or effect sentence.
 
-0. The tab's status line, shared with the mesh: the networks (each allowed or not), LAN address, Tailscale, firewall; "Remote access paused on <network>." with **Allow on this network** (and the Public warning, §3.3.1) for each network not allowed; then **Allowed networks**, each with **Remove**.
-1. Section and toggle **Remote access**, with "A device token is as powerful as your seed phrase." and the **On quit** row (§3.6).
-2. Status line under the toggle (§8): "Listening on …", "Off.", "Paused on <network>.".
-3. Name: the runtime alias (settings `runtimeAlias`), else the host name; one name in mDNS, hello, pairing and device lists. **Fingerprint** `XXXX-XXXX` in the Pair device window.
-4. **Addresses**: each URL with Copy and its encryption label (§5.7): Tailscale https, tailnet IP, each LAN IP, `<host>.local`; **Enable Tailscale https**.
-5. **Pair device**: opens the **Pair device** window; shows the code in large digits, a countdown, attempts left; then the **Allow device** dialog.
-6. **Add device** (§4.6): a token shown once, Copy, Done.
-7. **Devices**: label, Paired / Token, last seen (address), Connected now, **Revoke** (dialog **Revoke device**: "*label* is disconnected now and its token stops working.").
-8. Firewall row when it has something to say.
+1. **Add** → **Share** ("Let another computer use this runtime."). With remote access off, or a current network not allowed: one sentence, "Computers you pair on <network> get full control of this runtime, as powerful as your seed phrase.", the Public warning (§3.3.1) and one **Allow**, which turns remote access on (no second dialog: `REMOTE_ACCESS_SET {confirmed: true}`) and allows each network named. Nothing listens before it.
+2. Then the code in large digits (Share opens the pairing window, §5.3), a countdown, attempts left, the **Fingerprint** `XXXX-XXXX`, **Renew** after expiry; the claim still raises the **Allow device** dialog (§5.4); then "Approved: <label>.".
+3. **Addresses**, grouped: Tailscale (the `tailscale serve` https URL, then the tailnet IP), each LAN by its network label, then the others (`<host>.local`); each with Copy and its encryption label (§5.7).
+4. **Details**: a token shown once (§4.6), Copy, Done.
+5. **Devices** (a list on the page): the **Remote access** switch ("Turn on remote access" asked once), its status line (§8): "Listening on …", "Off.", "Paused on <network>."; the **On quit** row (§3.6); each device: label, Paired / Token, last seen (address), Connected now, **Revoke** (dialog **Revoke device**: "*label* is disconnected now and its token stops working.").
+6. Name: the runtime alias (settings `runtimeAlias`), else the host name; one name in mDNS, hello, pairing and device lists.
+
+Settings → Networking keeps the status card (the networks, each allowed or not, and **Allow** with the waiting service named), **Networks** with **Remove**, and under Advanced **HTTPS** (`tailscale serve`) and **Firewall**.
 
 `adf daemon remote status` prints the same items as text (`--json`: the status object).
 
@@ -600,6 +599,7 @@ The owner answered the questions of the first draft on 2026-10-18.
 | O2 | Turn remote access off on networks not seen before? | (Replaced by O2 b below.) No listener on a network the OS marks Public; remote access stays on and only private and Tailscale addresses listen. Status: "Not reachable on this network (Public)." Windows uses the NetConnectionProfile category; macOS and Linux use the documented conservative rule, unsure = not private (§3.3.1). |
 | O3 | Paired devices keep a Studio-started daemon alive after Studio quits? | No. Studio's quit asks every time a device is connected: "*N* computers are connected. Keep the daemon running for them, or stop it?" Nothing is remembered (§3.6). |
 | O4 | Token shown once, or a standing token with Show? | Shown once at creation; only the hash is stored (§4.3, §4.6). |
+| O5 (2026-10-21) | One Add flow; Networking about messaging | Settings → Connections has one **Add** with **Connect** and **Share** and lists **Remotes** and **Devices**; Add device, the address list and the switch leave Networking (§7). A `public` agent needs the same consent per network as `lan`: the mesh never binds `0.0.0.0` for it (mesh-server.ts; only `MESH_HOST` does). The notice names the service that waits (§3.3.1). The mesh firewall row shows the exact commands and never adds a rule (R9). |
 | O2 b (2026-10-18) | The network rule, redefined | Never listen without the user's consent, given once per network, the same on every OS; it replaces "never on Public" (O2). The OS category, macOS/Linux heuristics and the tailnet are not consent. LAN identity: gateway MAC + subnet (+ Wi-Fi name where readable without a prompt); tailnet: its name. Consent lives in `remote-access.json` `allowedNetworks`, shared with the mesh; consent routes are local-only (§3.3.1). |
 
 Contract changes made with these decisions (additive, against 1c2e5441): optional `enabled` in `PUT /remote-access`; event type `networks_changed`; the device-token refusal list of §4.5 spelled out per route. O2 b replaced O2's `RemoteAddress.network`, `trustNetwork`, `409 network_category_os`, `409 network_unidentified`, `firewall.state: 'public_network'` and `privateNetworks` with `RemoteAddress.networkId`/`allowed`, state `paused`, `networks`, `allowedNetworks`, `meshLan`, `POST`/`DELETE /remote-access/networks` and `404 network_not_found`.

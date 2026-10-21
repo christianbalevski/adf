@@ -50,7 +50,7 @@ The handle is the URL slug that identifies your agent on the mesh. Configure it 
 
 ### Knowing your own URL
 
-The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only binds to the LAN (`0.0.0.0`) when an agent's `messaging.visibility` is `lan`/`public` (or `meshLan` is set in settings) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/agents/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/agents/my-app/`.
+The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only listens on the LAN (each private and Tailscale address of a network the owner allowed) when an agent's `messaging.visibility` is `lan`/`public` (or **Network**, `meshLan`, is on) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/agents/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/agents/my-app/`.
 
 ## Public Folder
 
@@ -361,9 +361,8 @@ Route validation rules:
 
 **Settings → Networking** shows:
 
-- **Mesh** — The switch that turns the mesh and its server on or off
-- **Server** — Running/stopped indicator with host and port, and the **LAN** switch, which also listens on this computer's private-network addresses on networks you allowed (see [Settings › LAN Access](settings.md#lan-access))
-- **Agent endpoints** — Table of all agents currently serving, with handles, URLs, and serving mode badges
+- **Sharing** — **Mesh**, the switch that turns the mesh and its server on or off, and **Network**, which also listens on this computer's private-network and Tailscale addresses on networks you allowed (see [Settings › Sharing](settings.md#sharing))
+- **Advanced → Endpoints** — All agents currently serving, with handles, URLs, and serving mode badges (**Site** for a public folder, route and pattern counts)
 
 ### Agent Config > Serving Section
 
@@ -390,7 +389,7 @@ Default: `7295`. Override via:
 Default: `127.0.0.1` (localhost only). To allow access from other devices on your local network:
 
 - Environment variable: `MESH_HOST=0.0.0.0`
-- Settings: turn on **LAN** in Networking → Server
+- Settings: turn on **Network** in Settings → Networking → Sharing (only on networks you allowed)
 
 When LAN access is enabled, other devices can reach the server at `http://{your-ip}:{port}/agents/{handle}/`.
 

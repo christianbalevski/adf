@@ -289,7 +289,7 @@ export interface AdfApi {
     | { ok: true; status?: string; state?: string }
     | { ok: false; error: string }
   >
-  /** Inspect LAN-reachability preconditions: server binding + inbound firewall rule (read-only). */
+  /** Inspect LAN-reachability preconditions: server binding + inbound firewall rule (read-only; never adds a rule). */
   checkLanFirewall: () => Promise<{
     platform: string
     supported: boolean
@@ -297,12 +297,12 @@ export interface AdfApi {
     reachable: boolean | null
     lanIp: string | null
     detail: string
+    /** The exact commands that add the rules, for the user to run in an elevated shell; Studio never runs them. */
+    commands: string[]
     port: number
     serverLanBound: boolean
     verified: boolean
   }>
-  /** Create/repair the inbound firewall rule, prompting for elevation (UAC/admin). */
-  applyLanFirewall: () => Promise<{ success: boolean; error?: string; declined?: boolean }>
   getMeshRecentTools: () => Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>
   getMeshPendingInteractions: () => Promise<FleetPendingInteraction[]>
   messageFleetAgents: (filePaths: string[], content: string) => Promise<FleetMessageResult>
@@ -743,11 +743,15 @@ export interface AdfApi {
    */
   restartStudio: (kind?: 'reconnect' | 'embedded-session') => Promise<void>
 
-  // Remote access (remote-access.md §7, §9.1). Host: Settings → Networking → Remote access.
+  // Remote access (remote-access.md §7, §9.1). Host: Settings → Connections → Add → Share, and Devices.
   /** The host panel: the daemon's remote-access status, in local mode only. */
   getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
-  /** The toggle (turning it on is confirmed in a native dialog first) and the name. Networks: allowNetwork / forgetNetwork. */
-  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => Promise<RemoteAccessResult>
+  /**
+   * The switch (turning it on is confirmed in a native dialog first) and the
+   * name. `confirmed`: the user pressed Allow under the same sentence in
+   * Add → Share, so no second dialog. Networks: allowNetwork / forgetNetwork.
+   */
+  setRemoteAccess: (request: { enabled?: boolean; name?: string; confirmed?: boolean }) => Promise<RemoteAccessResult>
   /** "Add a computer": a device token, returned this once. */
   addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
   /** Remove a computer (confirmed first): disconnected now, its token stops working. */
@@ -779,15 +783,15 @@ export interface AdfApi {
   submitRemotePairingCode: (code: string) => Promise<RemotePairState>
   cancelRemotePairing: () => Promise<RemotePairState>
   onRemotePairingState: (callback: (state: RemotePairState) => void) => () => void
-  /** Settings → Networking's status line: the networks and whether each is allowed, LAN address, Tailscale, firewall. */
+  /** Settings → Networking's status card: the networks and whether each is allowed, LAN address, Tailscale, firewall. */
   getNetworkStatus: () => Promise<NetworkStatusView>
-  /** Allow on this network (remote access and the mesh's LAN mode listen there). */
+  /** Allow (remote access and the mesh's LAN mode listen there). */
   allowNetwork: (id: string) => Promise<NetworkConsentResult>
   /** Remove an allowed network: its listeners close now. */
   forgetNetwork: (id: string) => Promise<NetworkConsentResult>
-  /** "Remote access paused on <network>." notices on screen now (non-modal, in the window). */
+  /** "<Service> paused on <network>." notices on screen now (non-modal, in the window). */
   getNetworkNotices: () => Promise<NetworkNotice[]>
-  /** Not now: the notice goes and is not shown again this session. */
+  /** Dismiss: the notice goes and is not shown again this session. */
   dismissNetworkNotice: (key: string) => Promise<boolean>
   onNetworkNoticesChanged: (callback: (notices: NetworkNotice[]) => void) => () => void
 

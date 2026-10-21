@@ -142,7 +142,7 @@ let embeddedIpc: EmbeddedIpc | null = null
 let agentWindows: AgentWindows | null = null
 // Queued messages of agent windows, handed to the main window when one closes.
 const queueHandover = new QueueHandover()
-// Settings → Networking → Remote access, discovery, pairing and the quit question (remote-access.md).
+// Remote access (Settings → Connections: Add → Share, Devices), discovery, pairing and the quit question (remote-access.md).
 let remoteAccess: RemoteAccessIpc | null = null
 // A quit from a signal is not held for the question about connected computers.
 let quitUnasked = false

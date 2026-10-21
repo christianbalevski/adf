@@ -371,7 +371,6 @@ export const IPC = {
   MESH_PEER_SHARED_FILE: 'adf:mesh:peer-shared-file',
   MESH_PEER_AGENT_HEALTH: 'adf:mesh:peer-agent-health',
   MESH_FIREWALL_CHECK: 'adf:mesh:firewall-check',
-  MESH_FIREWALL_APPLY: 'adf:mesh:firewall-apply',
 
   // Agent review (file open flow)
   FILE_CHECK_REVIEW: 'adf:file:check-review',
@@ -439,7 +438,7 @@ export const IPC = {
   BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
 
   // Remote access (docs/design/remote-access.md §9.1).
-  // Host side: Settings → Networking → Remote access, local mode, proxied to
+  // Host side: Settings → Connections (Add → Share, Devices), local mode, proxied to
   // the daemon's /remote-access routes. Client side: Settings → Connections,
   // discovery and pairing in Studio main. Registered in every mode
   // (backend/remote-access-ipc.ts).
@@ -469,7 +468,7 @@ export const IPC = {
   // A runtime of the set is the same computer under another id now (a rename, the remote slot cleared), or another
   // computer under the same id; pushed before the runtime set that follows it (multi-runtime.md §17).
   RUNTIMES_MOVED: 'adf:connection:runtimes-moved',
-  // Settings → Networking's status line: network category, LAN and tailnet address, firewall (lan-reach.ts).
+  // Settings → Networking's status card: network category, LAN and tailnet address, firewall (lan-reach.ts).
   NETWORK_STATUS_GET: 'adf:network:status',
   NETWORK_ALLOW: 'adf:network:allow',
   NETWORK_FORGET: 'adf:network:forget',

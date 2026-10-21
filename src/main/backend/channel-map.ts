@@ -505,11 +505,7 @@ export const CHANNEL_MAP = {
   [IPC.MESH_PEER_AGENT_HEALTH]: proxied('invoke', ['GET /network/peers/health']),
   [IPC.MESH_FIREWALL_CHECK]: local('invoke', 'The port and LAN binding come from the daemon mesh server, not from Studio main.', {
     reads: ['GET /network/server'],
-    remote: 'Labelled, not hidden: the check answers supported: false with a sentence (the firewall is the laptop\'s, the mesh server the server\'s; §9.4); the panel shows it without a fix button.',
-  }),
-  [IPC.MESH_FIREWALL_APPLY]: local('invoke', 'Elevation prompt from Studio; the port comes from the daemon mesh server.', {
-    reads: ['GET /network/server'],
-    remote: 'Refused with the sentence of MESH_FIREWALL_CHECK (success: false).',
+    remote: 'Labelled, not hidden: the check answers supported: false with a sentence (the firewall is the laptop\'s, the mesh server the server\'s; §9.4); the panel shows it without commands.',
   }),
 
   // --- Agent review ----------------------------------------------------------
@@ -548,7 +544,7 @@ export const CHANNEL_MAP = {
   // the master token and the local proof (routes listed in the notes until
   // the routes are in openapi.json).
   [IPC.REMOTE_ACCESS_GET]: local('invoke', 'Local mode: GET /remote-access[?refresh=1]. A pairing window open is re-read every second.'),
-  [IPC.REMOTE_ACCESS_SET]: local('invoke', 'Local mode: PUT /remote-access after a native confirmation when turning on.'),
+  [IPC.REMOTE_ACCESS_SET]: local('invoke', 'Local mode: PUT /remote-access after a native confirmation when turning on, unless the request says the user already pressed Allow on the same sentence in Settings → Connections → Add → Share (`confirmed`).'),
   [IPC.REMOTE_ACCESS_DEVICE_ADD]: local('invoke', 'Local mode: POST /remote-access/devices; the token is returned once to the renderer and never logged.'),
   [IPC.REMOTE_ACCESS_DEVICE_REMOVE]: local('invoke', 'Local mode: DELETE /remote-access/devices/:id after a native confirmation.'),
   [IPC.REMOTE_ACCESS_PAIRING_OPEN]: local('invoke', 'Local mode: POST /remote-access/pairing. A claim raises the native "Allow <device>?" dialog, answered with POST /remote-access/pairing/claims/:claimId.'),
@@ -570,8 +566,8 @@ export const CHANNEL_MAP = {
   [IPC.RUNTIMES_MOVED]: local('push', 'The ids of the set that are the same computer under another id now, and those that are another computer, from cli-remotes.json; sent before the list that follows, so the main window re-keys what it keeps per agent.'),
   [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
   [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
-  [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),
-  [IPC.NETWORK_NOTICE_DISMISS]: local('invoke', 'Not now on a notice: it goes and is not shown again this session.'),
+  [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "<Service> paused on <network>." notices on screen now, for a window that opens after they were pushed.'),
+  [IPC.NETWORK_NOTICE_DISMISS]: local('invoke', 'Dismiss on a notice: it goes and is not shown again this session.'),
   [IPC.NETWORK_NOTICES_CHANGED]: local('push', 'The notices list, pushed when one is shown, dismissed, allowed or withdrawn; non-modal, never a dialog.'),
   [IPC.WINDOW_OPEN_AGENT]: local('invoke', 'Registered in main/index.ts in daemon mode only: opens or focuses the agent\'s window (agent-windows.md), its own client session. Inside Studio never offers it.'),
   [IPC.WINDOW_CLOSE]: local('invoke', 'Registered in main/index.ts in daemon mode: closes the asking agent window (Close Agent, a cancelled open); the main window is never closed this way.'),

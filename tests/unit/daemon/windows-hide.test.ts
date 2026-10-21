@@ -23,8 +23,6 @@ const ALLOW = new Set([
   'src/main/tui/util/editor.ts:spawn(bin, [...args, file]',           // POSIX branch; win32 branch sets windowsHide: false on purpose
   'src/main/utils/login-shell-path.ts:execFileSync(shell, args',      // darwin/linux only
   "src/main/cli/daemon-control.ts:execFileSync('pgrep'",              // darwin/linux only
-  "src/main/services/firewall-service.ts:execFileAsync('osascript'",  // darwin only
-  "src/main/services/firewall-service.ts:execFileAsync('pkexec'",     // linux only
   "scripts/generate-icons.mjs:execFileSync('actool'",                 // darwin only
   'scripts/install-mac-x64-deps.mjs:execFileSync("npm"',              // darwin x64 CI only
   "scripts/electron-smoke.mjs:spawn(binary, [...args, '--inspect=0']", // darwin only; launches the packaged GUI app

@@ -6,6 +6,9 @@ const execFileAsync = promisify(execFile)
 
 /**
  * Inbound firewall rules that make this runtime reachable by LAN peers.
+ * Read-only: Studio never adds a rule itself (docs/design/remote-access.md
+ * R9). The check says what blocks and gives the exact commands to run by
+ * hand (`commands`); the user runs them in an elevated shell.
  *
  * Two rules, because LAN discovery uses two independent network paths and each
  * needs its own allowance:
@@ -15,7 +18,7 @@ const execFileAsync = promisify(execFile)
  *   - UDP 5353 — mDNS multicast itself. Usually already open (that's why the
  *     runtime is discoverable at all) but we assert it for completeness.
  *
- * Rules are named so the runtime check, the elevated apply, and the NSIS
+ * Rules are named so the runtime check, the commands shown, and the NSIS
  * installer all address the same records. Keep these strings in sync with
  * `build/installer.nsh`.
  */
@@ -25,7 +28,7 @@ export const MDNS_PORT = 5353
 
 export interface LanFirewallState {
   platform: NodeJS.Platform
-  /** True when the runtime can create/repair rules itself (with elevation). */
+  /** True when the rule state can be read on this platform. */
   supported: boolean
   /**
    * Whether an inbound Allow rule for this runtime is present + enabled.
@@ -44,6 +47,8 @@ export interface LanFirewallState {
   detail: string
   /** Active Linux firewall manager, when one was detected. */
   manager?: 'firewalld' | 'ufw' | null
+  /** The exact commands that add the rules, for an elevated shell (R9: shown, never run). Empty when none is needed. */
+  commands: string[]
 }
 
 /** Pick the first RFC1918 IPv4 address — the one a LAN peer would reach us on. */
@@ -54,11 +59,6 @@ export function firstLanIpv4(): string | null {
     if (a.family === 'IPv4' && isRfc1918(a.address)) return a.address
   }
   return null
-}
-
-/** Encode a PowerShell script as a UTF-16LE base64 blob for `-EncodedCommand`. */
-export function encodePwsh(script: string): string {
-  return Buffer.from(script, 'utf16le').toString('base64')
 }
 
 /**
@@ -74,39 +74,37 @@ export function buildWindowsCheckScript(): string {
   ].join('; ')
 }
 
-/**
- * PowerShell that (re)creates the inbound Allow rules. Idempotent: removes any
- * prior rule of the same name — including a stale Block rule that would shadow
- * the Allow — before recreating. Program-scoped (`-Program`) so we open the
- * port only for this binary, not for every process. Requires elevation.
- */
-export function buildWindowsApplyScript(port: number, exePath: string): string {
-  const esc = (s: string): string => s.replace(/'/g, "''")
-  const exe = esc(exePath)
-  return [
-    `$ErrorActionPreference = 'Stop'`,
-    `foreach ($n in @('${FW_RULE_TCP}','${FW_RULE_UDP}')) {`,
-    `  Get-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue`,
-    `}`,
-    `New-NetFirewallRule -DisplayName '${FW_RULE_TCP}' -Description 'ADF Studio mesh directory + inbox (LAN peers)' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${port} -Program '${exe}' -Profile Private,Domain | Out-Null`,
-    `New-NetFirewallRule -DisplayName '${FW_RULE_UDP}' -Description 'ADF Studio mDNS discovery' -Direction Inbound -Action Allow -Protocol UDP -LocalPort ${MDNS_PORT} -Program '${exe}' -Profile Private,Domain | Out-Null`,
-  ].join('\n')
+/** Quote a path for PowerShell: single quotes, a quote doubled. */
+function psQuote(s: string): string {
+  return `'${s.replace(/'/g, "''")}'`
+}
+
+/** Quote a path for a POSIX shell. */
+function shQuote(s: string): string {
+  return `'${s.replace(/'/g, "'\\''")}'`
 }
 
 /**
- * Wrap an inner (elevated) script in a non-elevated launcher that triggers the
- * UAC prompt via `Start-Process -Verb RunAs`, waits for it, and propagates its
- * exit code. A cancelled UAC prompt makes `Start-Process` throw — we map that
- * to ERROR_CANCELLED (1223) so the caller can report "declined" distinctly.
+ * The commands that add the inbound Allow rules, shown for the user to run
+ * in an elevated shell (R9: Studio never runs them). Windows: program-scoped
+ * rules on the Private and Domain profiles, never Public. macOS: the
+ * application firewall's allow for this binary. Linux: the active manager's
+ * ports; none when no firewall is active.
  */
-export function buildWindowsElevatedLauncher(innerScript: string): string {
-  const b64 = encodePwsh(innerScript)
-  return [
-    `try {`,
-    `  $p = Start-Process powershell -Verb RunAs -PassThru -Wait -WindowStyle Hidden -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand','${b64}'`,
-    `  exit $p.ExitCode`,
-    `} catch { exit 1223 }`,
-  ].join('\n')
+export function lanFirewallCommands(platform: NodeJS.Platform, port: number, exePath: string, manager?: 'firewalld' | 'ufw' | null): string[] {
+  if (platform === 'win32') {
+    const exe = psQuote(exePath)
+    return [
+      `New-NetFirewallRule -DisplayName '${FW_RULE_TCP}' -Direction Inbound -Action Allow -Protocol TCP -LocalPort ${port} -Program ${exe} -Profile Private,Domain`,
+      `New-NetFirewallRule -DisplayName '${FW_RULE_UDP}' -Direction Inbound -Action Allow -Protocol UDP -LocalPort ${MDNS_PORT} -Program ${exe} -Profile Private,Domain`,
+    ]
+  }
+  if (platform === 'darwin') {
+    const fw = '/usr/libexec/ApplicationFirewall/socketfilterfw'
+    return [`sudo ${fw} --add ${shQuote(exePath)}`, `sudo ${fw} --unblockapp ${shQuote(exePath)}`]
+  }
+  if (platform === 'linux' && manager) return buildLinuxApplyCommand(manager, port).split(' && ').map((c) => `sudo ${c}`)
+  return []
 }
 
 /** Probe the mesh server's LAN address to confirm it's up and LAN-bound. */
@@ -154,7 +152,8 @@ export async function checkLanFirewall(port: number): Promise<LanFirewallState> 
         lanIp,
         detail: ruleConfigured
           ? 'Inbound firewall rule present.'
-          : 'No inbound firewall rule — peers cannot fetch this runtime\'s agents.',
+          : 'No inbound firewall rule: peers cannot fetch this runtime\'s agents.',
+        commands: ruleConfigured ? [] : lanFirewallCommands(platform, port, process.execPath),
       }
     } catch (err) {
       return {
@@ -164,6 +163,7 @@ export async function checkLanFirewall(port: number): Promise<LanFirewallState> 
         reachable,
         lanIp,
         detail: `Could not query Windows Firewall: ${err instanceof Error ? err.message : String(err)}`,
+        commands: lanFirewallCommands(platform, port, process.execPath),
       }
     }
   }
@@ -172,14 +172,15 @@ export async function checkLanFirewall(port: number): Promise<LanFirewallState> 
     // The macOS application firewall is per-app and off by default. When it's
     // off, inbound is allowed and no rule is needed; when on, the app must be
     // added + unblocked. We can't reliably read per-app state without the exact
-    // bundle path, so we surface capability and let apply handle it.
+    // bundle path, so we show the commands for when it is on.
     return {
       platform,
       supported: true,
       ruleConfigured: null,
       reachable,
       lanIp,
-      detail: 'macOS application firewall is per-app; use "Allow incoming" if it is enabled.',
+      detail: 'The macOS application firewall is per app. If it is on, allow incoming connections for ADF Studio.',
+      commands: lanFirewallCommands(platform, port, process.execPath),
     }
   }
 
@@ -193,7 +194,8 @@ export async function checkLanFirewall(port: number): Promise<LanFirewallState> 
     ruleConfigured: null,
     reachable,
     lanIp,
-    detail: 'Automatic firewall configuration is not available on this platform; open the mesh port manually.',
+    detail: `Open TCP port ${port} and UDP port ${MDNS_PORT} for ADF Studio in this computer's firewall.`,
+    commands: [],
   }
 }
 
@@ -213,8 +215,8 @@ async function tryExec(cmd: string, args: string[]): Promise<{ code: number; std
  * Detect the active Linux firewall manager and (for firewalld) whether our
  * ports are already open. Read-only — `firewall-cmd --state`/`--query-port` and
  * `systemctl is-active` all work without root. ufw rule state can't be read
- * without root, so it reports `ruleConfigured: null` (offer apply anyway;
- * `ufw allow` is idempotent).
+ * without root, so it reports `ruleConfigured: null` (the commands are shown
+ * anyway; `ufw allow` is idempotent).
  */
 async function checkLinuxFirewall(
   port: number,
@@ -236,7 +238,8 @@ async function checkLinuxFirewall(
       ruleConfigured,
       detail: ruleConfigured
         ? 'firewalld is active and the ports are open.'
-        : 'firewalld is active but the mesh ports are closed — peers cannot fetch this runtime\'s agents.',
+        : 'firewalld is active but the mesh ports are closed: peers cannot fetch this runtime\'s agents.',
+      commands: ruleConfigured ? [] : lanFirewallCommands('linux', port, '', 'firewalld'),
     }
   }
 
@@ -249,6 +252,7 @@ async function checkLinuxFirewall(
       manager: 'ufw',
       ruleConfigured: null,
       detail: 'ufw is active. Allow the mesh ports so peers can fetch this runtime\'s agents.',
+      commands: lanFirewallCommands('linux', port, '', 'ufw'),
     }
   }
 
@@ -258,91 +262,15 @@ async function checkLinuxFirewall(
     supported: true,
     manager: null,
     ruleConfigured: true,
-    detail: 'No active firewall detected — inbound LAN connections are open.',
+    detail: 'No active firewall detected: inbound LAN connections are open.',
+    commands: [],
   }
 }
 
-/** Build the elevated shell command that opens the ports for a Linux manager. */
+/** The shell command that opens the ports for a Linux manager (run as root, by the user). */
 export function buildLinuxApplyCommand(manager: 'firewalld' | 'ufw', port: number): string {
   if (manager === 'firewalld') {
     return `firewall-cmd --permanent --add-port=${port}/tcp --add-port=${MDNS_PORT}/udp && firewall-cmd --reload`
   }
   return `ufw allow ${port}/tcp && ufw allow ${MDNS_PORT}/udp`
-}
-
-export interface ApplyResult {
-  success: boolean
-  /** Present on failure. `'declined'` = user cancelled the elevation prompt. */
-  error?: string
-  declined?: boolean
-}
-
-/**
- * Create/repair the inbound Allow rules, prompting for elevation. On Windows a
- * single UAC prompt covers both rules; on macOS a single admin prompt covers
- * the app add + unblock. Returns `declined` when the user cancels the prompt.
- */
-export async function applyLanFirewall(port: number): Promise<ApplyResult> {
-  const platform = process.platform
-  const exePath = process.execPath
-
-  if (platform === 'win32') {
-    const inner = buildWindowsApplyScript(port, exePath)
-    const launcher = buildWindowsElevatedLauncher(inner)
-    try {
-      await execFileAsync(
-        'powershell',
-        ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', launcher],
-        { timeout: 120_000, windowsHide: true }
-      )
-      return { success: true }
-    } catch (err) {
-      // execFileAsync rejects with `.code` = the process exit code.
-      const code = (err as { code?: number }).code
-      if (code === 1223) return { success: false, declined: true, error: 'Elevation was declined.' }
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  }
-
-  if (platform === 'darwin') {
-    const fw = '/usr/libexec/ApplicationFirewall/socketfilterfw'
-    // Escape for embedding inside an AppleScript double-quoted shell string.
-    const shExe = exePath.replace(/(["\\])/g, '\\$1')
-    const shellCmd = `'${fw}' --add '${shExe}' && '${fw}' --unblockapp '${shExe}'`
-    const appleScript = `do shell script "${shellCmd.replace(/(["\\])/g, '\\$1')}" with administrator privileges`
-    try {
-      await execFileAsync('osascript', ['-e', appleScript], { timeout: 120_000 })
-      return { success: true }
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : String(err)
-      if (/User canceled|-128/.test(msg)) return { success: false, declined: true, error: 'Elevation was declined.' }
-      return { success: false, error: msg }
-    }
-  }
-
-  if (platform === 'linux') {
-    // Re-detect the manager (state may have changed since the check) and apply
-    // via pkexec, which raises the desktop's polkit password prompt. `ufw allow`
-    // and `firewall-cmd --add-port` are both idempotent.
-    const state = await checkLinuxFirewall(port, null, null)
-    if (!state.manager) {
-      return { success: false, error: 'No active firewall detected — nothing to configure.' }
-    }
-    const shellCmd = buildLinuxApplyCommand(state.manager, port)
-    try {
-      await execFileAsync('pkexec', ['sh', '-c', shellCmd], { timeout: 120_000 })
-      return { success: true }
-    } catch (err) {
-      const code = (err as { code?: number }).code
-      // pkexec: 126 = dismissed / not authorized, 127 = auth failed or missing.
-      if (code === 126) return { success: false, declined: true, error: 'Authentication was declined.' }
-      const enoent = (err as { code?: string }).code === 'ENOENT'
-      if (enoent) {
-        return { success: false, error: `pkexec not found. Run manually: sudo ${shellCmd}` }
-      }
-      return { success: false, error: err instanceof Error ? err.message : String(err) }
-    }
-  }
-
-  return { success: false, error: 'Automatic firewall configuration is not supported on this platform.' }
 }

@@ -71,6 +71,7 @@ export const DOCS = {
   fleetMap: guideUrl('fleet-map'),
   agentStates: guideUrl('agent-states'),
   lanDiscovery: guideUrl('lan-discovery'),
+  meshFirewall: guideUrl('lan-discovery', 'firewalls'),
 
   // Settings tabs
   settings: guideUrl('settings'),
@@ -99,9 +100,10 @@ export const DOCS = {
   backendEmbedded: guideUrl('studio-backend', 'run-agents-inside-studio-when-the-daemon-does-not-work'),
   backendRemote: guideUrl('studio-backend', 'remote-computer'),
 
-  // Remote access (Runtime → Networking; client side in Studio → Connection)
+  // Remote access (Studio → Connections: Add → Share, Devices; the client side is Add → Connect)
   remoteAccess: guideUrl('studio-backend', 'remote-access'),
-  remoteAccessPair: guideUrl('studio-backend', 'add-device'),
+  remoteAccessPair: guideUrl('studio-backend', 'share'),
+  remoteAccessDevices: guideUrl('studio-backend', 'devices'),
   networkingStatus: guideUrl('settings', 'network-status')
 } as const
 

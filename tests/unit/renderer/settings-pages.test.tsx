@@ -28,7 +28,7 @@ describe('the Switch', () => {
 })
 
 describe('the Settings pages', () => {
-  const files = ['SettingsPage.tsx', 'ConnectionSettings.tsx', 'RemoteAccessSettings.tsx', 'AgentTemplatesTab.tsx', 'ContainerDestroyDialog.tsx']
+  const files = ['SettingsPage.tsx', 'NetworkingSettings.tsx', 'ConnectionSettings.tsx', 'RemoteAccessSettings.tsx', 'AgentTemplatesTab.tsx', 'ContainerDestroyDialog.tsx']
 
   it('no text under 11px', () => {
     for (const file of files) expect(read(file), file).not.toMatch(/text-\[(\d|10)(\.\d+)?px\]/)
@@ -36,18 +36,29 @@ describe('the Settings pages', () => {
 
   it('every on/off setting is a Switch; checkboxes only in forms (a trust tick, Pin this container ID)', () => {
     const page = read('SettingsPage.tsx')
+    const networking = read('NetworkingSettings.tsx')
     expect(page.match(/type="checkbox"/g) ?? []).toHaveLength(1)
+    expect(networking).not.toContain('type="checkbox"')
     expect(page).toContain('checked={targetDraft.pinId}')
-    for (const label of ['Mesh', 'Autostart', 'LAN', 'Tailscale', 'Sharing', 'Host access', 'Auto-update', 'System notifications', 'Automatic checks', 'Models', 'Live catalogs']) {
+    for (const label of ['Sharing', 'Host access', 'Auto-update', 'System notifications', 'Automatic checks', 'Models', 'Live catalogs']) {
       expect(page, label).toMatch(new RegExp(`<Switch\\s+label="${label}"`))
     }
+    // Networking (owner decision 2026-10-21): Network replaces LAN.
+    for (const label of ['Mesh', 'Network', 'Autostart', 'Tailscale']) {
+      expect(networking, label).toMatch(new RegExp(`<Switch\\s+label="${label}"`))
+    }
+    expect(networking).not.toMatch(/<Switch\s+label="LAN"/)
   })
 
   it('sentence case titles on the former hand-built pages', () => {
     const page = read('SettingsPage.tsx')
-    for (const title of ['title="Owner identity"', 'title="Runtime key"', 'title="Agent identities"', 'title="Back up seed phrase"', 'title="Packages"', 'title="Installed by agents"', 'title="Server"', 'title="Discovery"', 'title="Agent endpoints"', 'title="Containers"', 'title="Default container"', 'title="Host"', 'title="Custom containers"']) {
+    for (const title of ['title="Owner identity"', 'title="Runtime key"', 'title="Agent identities"', 'title="Back up seed phrase"', 'title="Packages"', 'title="Installed by agents"', 'title="Containers"', 'title="Default container"', 'title="Host"', 'title="Custom containers"']) {
       expect(page, title).toContain(title)
     }
+    // Networking: the status card, Sharing, Networks, Runtimes, then Advanced (collapsed, never hidden).
+    const networking = read('NetworkingSettings.tsx')
+    for (const title of ['title="Sharing"', 'title="Networks"', 'title="Runtimes"', '>Advanced</summary>']) expect(networking, title).toContain(title)
+    for (const old of ['title="Discovery"', 'title="Server"', 'title="Agent endpoints"', 'title="Remote access"']) expect(networking, old).not.toContain(old)
     for (const old of ['Owner Identity', 'Agent Identities', 'Back Up Seed Phrase', 'Runtime Packages', 'Agent-Installed Packages', 'Agent Endpoints', 'Approved Host Servers', 'Setup Required', 'Enable host access</span>']) {
       expect(page, old).not.toContain(old)
     }

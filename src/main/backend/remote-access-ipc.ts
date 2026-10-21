@@ -96,7 +96,7 @@ export function runtimeName(settingsDir: string | undefined): string {
 }
 
 /** The status line's view of a snapshot (pure). */
-export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapshot']>>, firewall: FirewallView, allowedNetworks: AllowedNetwork[]): NetworkStatusView {
+export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapshot']>>, firewall: FirewallView, allowedNetworks: AllowedNetwork[], waiting: NetworkStatusView['waiting'] = { remoteAccess: false, mesh: false }): NetworkStatusView {
   const lan = snapshot.addresses.filter((a) => a.kind === 'lan').map((a) => ({ address: a.address, iface: a.iface, allowed: a.refusal === null }))
   const tailnet = snapshot.addresses.find((a) => a.kind === 'tailnet' && a.family === 'IPv4')
   return {
@@ -107,6 +107,7 @@ export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapsho
     tailscale: snapshot.tailscale,
     tailnetAddress: tailnet?.address ?? null,
     firewall: { state: firewall.state, message: firewall.message },
+    waiting,
   }
 }
 
@@ -320,29 +321,33 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
     log,
   })
 
-  // --- Host: Settings → Networking → Remote access ---
+  // --- Host: Settings → Connections (Add → Share, Devices) ---
   ipcMain.handle(IPC.REMOTE_ACCESS_GET, (_event, opts?: { refresh?: unknown }) => host.get({ refresh: opts?.refresh === true }))
-  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown }) => host.set(request ?? {}))
+  ipcMain.handle(IPC.REMOTE_ACCESS_SET, (_event, request: { enabled?: unknown; name?: unknown; confirmed?: unknown }) => host.set(request ?? {}))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_ADD, (_event, label: unknown) => host.addDevice(label))
   ipcMain.handle(IPC.REMOTE_ACCESS_DEVICE_REMOVE, (_event, id: unknown) => host.removeDevice(id))
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_OPEN, () => host.openPairing())
   ipcMain.handle(IPC.REMOTE_ACCESS_PAIRING_CLOSE, () => host.closePairing())
   ipcMain.handle(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, (_event, enabled: unknown) => host.tailscaleServe(enabled))
 
-  // --- Settings → Networking: the status line ---
+  // --- Settings → Networking: the status card ---
   const reach = o.reach ?? new LanReach({ settingsDir: deps.settingsDir ?? null })
   const platform = o.platform ?? process.platform
   let firewallCache: { at: number; view: FirewallView } | null = null
   ipcMain.handle(IPC.NETWORK_STATUS_GET, async (): Promise<NetworkStatusView> => {
     if (deps.mode === 'remote') {
-      return { available: false, lan: [], networks: [], allowedNetworks: [], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'unknown', message: '' } }
+      return { available: false, lan: [], networks: [], allowedNetworks: [], tailscale: 'absent', tailnetAddress: null, firewall: { state: 'unknown', message: '' }, waiting: { remoteAccess: false, mesh: false } }
     }
+    // Which services listen beyond loopback once a network is allowed: the status card names them.
+    const waiting = deps.mode === 'local'
+      ? await host.get().then((v) => ({ remoteAccess: v.status?.enabled === true, mesh: v.status?.meshLan === true }), () => ({ remoteAccess: false, mesh: false }))
+      : { remoteAccess: false, mesh: deps.meshLan?.()?.on === true }
     const snapshot = await reach.snapshot()
     if (!firewallCache || Date.now() - firewallCache.at > 60_000) {
       const view = await (o.firewall ?? (() => probeFirewall({ port: 7385, platform })))().catch((err): FirewallView => ({ state: 'unknown', message: err instanceof Error ? err.message : String(err), commands: [] }))
       firewallCache = { at: Date.now(), view }
     }
-    return networkStatusView(snapshot, firewallCache.view, await readAllowedNetworks(deps.settingsDir ?? null))
+    return networkStatusView(snapshot, firewallCache.view, await readAllowedNetworks(deps.settingsDir ?? null), waiting)
   })
 
   // --- Consent per network (owner decision 2026-10-18 b) ---
@@ -396,11 +401,11 @@ export function registerRemoteAccessHandlers(deps: RemoteAccessIpcDeps): RemoteA
       if (deps.mode === 'remote') return null
       if (deps.mode === 'local') {
         const status = (await host.get()).status
-        return status ? { active: status.enabled || status.meshLan, networks: status.networks } : null
+        return status ? { active: status.enabled || status.meshLan, networks: status.networks, services: { remoteAccess: status.enabled, mesh: status.meshLan } } : null
       }
       const mesh = deps.meshLan?.() ?? null
       if (!mesh?.on) return { active: false, networks: [] }
-      return { active: true, networks: (await reach.snapshot()).networks }
+      return { active: true, networks: (await reach.snapshot()).networks, services: { remoteAccess: false, mesh: true } }
     },
     show: (notice) => {
       notices.set(notice.key, notice)

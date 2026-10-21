@@ -114,6 +114,96 @@ describe('mesh server bind', () => {
   })
 })
 
+/** A mesh with one agent of `tier` (mesh-manager's hasAgentOfTier). */
+function withAgent(server: MeshServer, tier: 'lan' | 'public'): MeshServer {
+  server.setMeshManager({
+    hasAnyReachableAgent: () => true,
+    hasAgentOfTier: (t: string) => t === tier,
+    setMeshServerAddress: () => {},
+    getServableAgents: () => [],
+  } as never)
+  return server
+}
+
+describe('owner decision 2026-10-21: a public agent needs the same consent per network as LAN', () => {
+  it('a public agent, Network off, on a network not allowed: no wildcard bind, nothing beyond loopback', async () => {
+    const port = await freePort()
+    const server = withAgent(meshServer(port, false), 'public')
+    server.setLanReach(reach({
+      addresses: [{ address: '192.168.1.20', family: 'IPv4', kind: 'lan', iface: 'Wi-Fi', networkId: 'lan-0123456789abcdef', refusal: 'Not allowed on this network.' }],
+      listenable: [],
+    }))
+    try {
+      await server.start()
+      expect(server.getBindMode()).toBe('lan')
+      expect(boundAddress(server)).toBe('127.0.0.1')
+      expect(server.getLanAddresses()).toEqual([])
+      expect(server.isLanReachable()).toBe(false)
+      // The status reports LAN mode, so Studio shows the consent strip for it.
+      expect(server.isLanMode()).toBe(true)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it.skipIf(process.platform === 'darwin')('a public agent on an allowed network listens on that network address only, never 0.0.0.0', async () => {
+    const port = await freePort()
+    const server = withAgent(meshServer(port, false), 'public')
+    server.setLanReach(reach({ listenable: ['127.0.0.2'] }))
+    try {
+      await server.start()
+      expect(boundAddress(server)).toBe('127.0.0.1')
+      expect(server.getLanAddresses()).toEqual(['127.0.0.2'])
+      expect(server.getLanAddresses()).not.toContain('0.0.0.0')
+      expect(await health('127.0.0.2', port)).toBe(200)
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it.skipIf(process.platform === 'darwin')('a public agent: allowing the network opens its listener, removing it closes it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-mesh-public-'))
+    const port = await freePort()
+    const lanReach = new LanReach({
+      settingsDir: dir,
+      interfaces: () => ({ 'Wi-Fi': [{ address: '192.168.77.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' } as never] }),
+      tailscale: async () => ({ state: 'absent', ips: [], dnsName: null }),
+      gateways: async (ifaces) => new Map(ifaces.map((i) => [i, '192.168.77.1|aa:bb:cc:dd:ee:01'])),
+      wifiNames: async () => new Map(),
+      osCategories: async (ifaces) => new Map(ifaces.map((i) => [i, 'private' as const])),
+    })
+    const server = withAgent(meshServer(port, false), 'public')
+    server.setLanReach(lanReach, { bindAddress: () => '127.0.0.2' })
+    try {
+      await server.start()
+      expect(server.getLanAddresses()).toEqual([])
+      expect(await health('127.0.0.2', port)).toBe(0)
+      allowNetwork(dir, { id: HOME, kind: 'lan', label: 'Wi-Fi (192.168.77.0/24)' })
+      await server.syncLan(true)
+      expect(server.getLanAddresses()).toEqual(['192.168.77.10'])
+      forgetNetwork(dir, HOME)
+      await server.syncLan(true)
+      expect(server.getLanAddresses()).toEqual([])
+    } finally {
+      await server.stop()
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  it('a lan agent alone turns on LAN mode too', async () => {
+    const port = await freePort()
+    const server = withAgent(meshServer(port, false), 'lan')
+    server.setLanReach(reach({ listenable: [] }))
+    try {
+      await server.start()
+      expect(server.getBindMode()).toBe('lan')
+      expect(boundAddress(server)).toBe('127.0.0.1')
+    } finally {
+      await server.stop()
+    }
+  })
+})
+
 describe('LanReach (the rule both the mesh and remote access use)', () => {
   const ifaces = {
     'Wi-Fi': [{ address: '192.168.77.10', family: 'IPv4', internal: false, netmask: '255.255.255.0' } as never],

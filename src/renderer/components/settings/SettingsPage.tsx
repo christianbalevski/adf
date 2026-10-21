@@ -7,7 +7,7 @@ import { PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefau
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS } from '../../../shared/constants/adf-defaults'
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
-import type { ProviderConfig, McpServerRegistration, AdapterRegistration, MeshAgentStatus, MeshEvent } from '../../../shared/types/ipc.types'
+import type { ProviderConfig, McpServerRegistration, AdapterRegistration } from '../../../shared/types/ipc.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
@@ -18,7 +18,8 @@ import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
 import { SettingsRuntimeProvider, useSettingsApi } from './settings-runtime'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
-import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
+import { changeOn } from './RemoteAccessSettings'
+import { NetworkingSettings } from './NetworkingSettings'
 import { runtimeDown, useCurrentConnection } from '../../stores/connection.store'
 import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
 import { RemoteMark } from '../common/RemoteMark'
@@ -30,15 +31,11 @@ import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestro
 import { Dialog } from '../common/Dialog'
 import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { Tooltip } from '../common/Tooltip'
-import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
-import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
-import { selectMeshSlice, useMeshStore } from '../../stores/mesh.store'
-import { useMesh } from '../../hooks/useMesh'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
-import { CommitInput, checkPeerAddress, checkWholeNumber } from './settings-inputs'
+import { CommitInput, checkWholeNumber } from './settings-inputs'
 import { PromptEditor, PromptSectionRows } from './PromptEditor'
 import { SaveIndicator, SettingsSaveProvider, SettingsToasts, settingsWriteOutcome, useSettingsSave } from './settings-save'
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
@@ -66,19 +63,6 @@ export function setupLogTone(log: string): string {
  * instructions; No base prompt and Bare leave both out.
  */
 export const PROMPTS_COMPOSITION = 'Every agent gets the system prompt and tool instructions before its own instructions, unless its System prompt setting is No base prompt or Bare.'
-
-/** The Mesh switch's note: what turning it off interrupts. */
-export const MESH_OFF_NOTE = 'Off stops agent messaging, agent websites and APIs, and delivery from peer runtimes.'
-
-/** Mesh events that change what the Networking tab shows. `message_routed`
- *  fires per message and is deliberately absent. */
-const MESH_STATUS_EVENTS = new Set<MeshEvent['type']>([
-  'agent_state_changed',
-  'agent_joined',
-  'agent_left',
-  'lan_peer_discovered',
-  'lan_peer_expired',
-])
 
 const SETTINGS_NAV_ITEMS = [...STUDIO_NAV_ITEMS, ...RUNTIME_NAV_ITEMS]
 
@@ -363,7 +347,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
             in place of the hostname mDNS/Tailscale would otherwise share. */}
         <SettingsRow
           separator
-          label={<>Alias<InfoHint tip="Shown to peers when this runtime is discoverable (Networking, LAN or Tailscale). Blank: the hostname." /></>}
+          label={<>Alias<InfoHint tip="Shown to peers when this runtime is discoverable (Networking → Network, or Tailscale). Blank: the hostname." /></>}
         >
           <TextInput
             aria-label="Runtime alias"
@@ -830,343 +814,6 @@ function PackagesTab({
 }
 
 /**
- * Live list of agents declaring LAN-scope visibility. Reused by both the meshLan
- * toggle description and (future) the mDNS advertisement toggle — same predicate
- * drives both: any lan-tier agent flips binding/announcement on.
- */
-function LanAgentsList({ agents }: { agents: MeshAgentStatus[] }) {
-  const lanAgents = agents.filter((a) => a.visibility === 'lan')
-  return (
-    <div className="text-[11px]">
-      {lanAgents.length === 0 ? (
-        <p className="text-[var(--adf-ui-text-subtle)]">
-          No agent has <code>lan</code> visibility, so the server listens on loopback unless LAN is on.
-        </p>
-      ) : (
-        <>
-          <p className="mb-1 text-[var(--adf-ui-text-muted)]">
-            {lanAgents.length === 1 ? '1 agent is' : `${lanAgents.length} agents are`} exposed on the LAN:
-          </p>
-          <ul className="space-y-0.5">
-            {lanAgents.map((a) => (
-              <li key={a.filePath} className="flex items-center gap-2 font-mono text-[var(--adf-ui-text)]">
-                <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} icon={a.icon} iconSeed={a.agentId || a.filePath} size={14} emojiSize={12} />
-                <span>{a.handle}</span>
-                <span className="truncate text-[var(--adf-ui-text-subtle)]">{a.filePath}</span>
-              </li>
-            ))}
-          </ul>
-        </>
-      )}
-    </div>
-  )
-}
-
-interface LanFirewallState {
-  platform: string
-  supported: boolean
-  ruleConfigured: boolean | null
-  reachable: boolean | null
-  lanIp: string | null
-  detail: string
-  port: number
-  serverLanBound: boolean
-  verified: boolean
-}
-
-/**
- * Gates the "Visible on LAN" claim on an actual precondition check rather than
- * on the toggle alone. LAN discovery has two independent network paths — mDNS
- * multicast (discovery) and a TCP directory fetch (the agent list) — and a
- * firewall commonly lets the first through while blocking the second, so a
- * runtime advertises itself yet peers see "0 agents". This surfaces that gap
- * and offers a one-click, elevation-prompted fix.
- *
- * Rechecks when LAN access turns on and after a mesh restart settles.
- */
-function LanReachabilityStatus({ enabled, restarting, hostName }: { enabled: boolean; restarting: boolean; hostName?: string | null }) {
-  const [fw, setFw] = useState<LanFirewallState | null>(null)
-  const [applying, setApplying] = useState(false)
-  const [note, setNote] = useState<string | null>(null)
-
-  const check = useCallback(async () => {
-    if (!window.adfApi?.checkLanFirewall) return
-    try {
-      const res = await window.adfApi.checkLanFirewall()
-      setFw(res as LanFirewallState)
-    } catch {
-      setFw(null)
-    }
-  }, [])
-
-  // Recheck when LAN access is on and the server has settled (not mid-restart).
-  useEffect(() => {
-    if (enabled && !restarting) void check()
-  }, [enabled, restarting, check])
-
-  const apply = useCallback(async () => {
-    if (!window.adfApi?.applyLanFirewall) return
-    setApplying(true)
-    setNote(null)
-    try {
-      const res = await window.adfApi.applyLanFirewall()
-      if (res.success) {
-        setNote('Firewall rule added.')
-        await check()
-      } else if (res.declined) {
-        setNote('Elevation was declined; the rule was not added.')
-      } else {
-        setNote(res.error ?? 'Could not add the firewall rule.')
-      }
-    } finally {
-      setApplying(false)
-    }
-  }, [check])
-
-  if (!enabled) return null
-  // A remote runtime's firewall is its own computer's (settings-scopes.md §7).
-  if (hostName) return <p className="text-[11px] text-[var(--adf-ui-text-muted)]">{changeOn(hostName)}</p>
-
-  // First check hasn't resolved yet — a bare "checking" beats flashing a scare.
-  if (!fw) {
-    return <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">Checking LAN reachability…</p>
-  }
-
-  if (fw.verified) {
-    return (
-      <div className="flex items-center gap-2 text-[11px] text-[var(--adf-ui-success)]">
-        <span>✓ Visible on LAN</span>
-        {fw.lanIp && <span className="font-mono text-[var(--adf-ui-text-subtle)]">{fw.lanIp}:{fw.port}</span>}
-      </div>
-    )
-  }
-
-  // Not verified — explain the specific gap.
-  let message: string
-  let showFix = false
-  if (!fw.serverLanBound) {
-    message = 'The mesh server is not LAN-bound yet; it may still be starting.'
-  } else if (fw.supported && fw.ruleConfigured === false) {
-    message = 'Peers see this runtime but list 0 agents until a firewall rule lets them fetch its agents.'
-    showFix = true
-  } else if (fw.supported && fw.ruleConfigured === null) {
-    message = fw.detail
-    showFix = true
-  } else if (!fw.supported) {
-    message = fw.detail
-  } else {
-    message = `The firewall rule is there, but the server did not answer on ${fw.lanIp ?? 'the LAN address'}; check that this network is Private, not Public.`
-  }
-
-  return (
-    <div>
-      <p className="text-[11px] text-[var(--adf-ui-warning)]">⚠ {message}</p>
-      {showFix && (
-        <Button
-          onClick={() => void apply()}
-          disabled={applying}
-          loading={applying}
-          size="compact"
-          className="mt-1 text-[var(--adf-ui-warning)]"
-        >
-          {applying ? 'Requesting permission…' : 'Enable in firewall'}
-        </Button>
-      )}
-      {note && <p className="mt-1 text-[11px] text-[var(--adf-ui-text-muted)]">{note}</p>}
-    </div>
-  )
-}
-
-interface DiscoveredRuntime {
-  runtime_id: string
-  runtime_did?: string
-  proto: string
-  directory_path: string
-  host: string
-  port: number
-  url: string
-  first_seen: number
-  last_seen: number
-  /** undefined = peer announced itself but its directory endpoint is unreachable */
-  agent_count?: number
-  /** How the peer was found: mDNS broadcast, tailnet sweep, or manual entry */
-  source?: 'mdns' | 'tailnet' | 'manual'
-}
-
-/**
- * Settings → Networking → Discovery: the runtimes found (mDNS, the tailnet
- * sweep, the manual list; live via MESH_EVENT), the Tailscale sweep switch,
- * and the manual peer list. Manual entries accept "host:port" (or a bare
- * host, which uses the mesh port) and are probed on the same cycle as the
- * tailnet sweep; matches appear in the list within seconds.
- */
-function DiscoveryGroup() {
-  const api = useSettingsApi()
-  const [peers, setPeers] = useState<DiscoveredRuntime[]>([])
-  const [rechecking, setRechecking] = useState(false)
-  const refresh = useCallback(async () => {
-    const list = await api?.getDiscoveredRuntimes?.()
-    if (list) setPeers(list)
-  }, [])
-  // Manual recheck: force an immediate tailnet/manual re-probe (no staleness
-  // gate) and refetch every peer's directory before repainting.
-  const recheck = useCallback(async () => {
-    setRechecking(true)
-    try {
-      const list = await api?.getDiscoveredRuntimes?.(true)
-      if (list) setPeers(list)
-    } finally {
-      setRechecking(false)
-    }
-  }, [])
-
-  useEffect(() => {
-    void refresh()
-    const unsub = api?.onMeshEvent?.((event: { type?: string }) => {
-      if (event?.type === 'lan_peer_discovered' || event?.type === 'lan_peer_expired') {
-        void refresh()
-      }
-    })
-    return unsub
-  }, [refresh])
-
-  return (
-    <SettingsGroup title="Discovery" hint="Agent counts are fetched live from each peer's directory. Tier changes apply to inbox enforcement at once.">
-      <SettingsRow
-        label="Runtimes"
-        stacked
-      >
-        <div className="flex items-start justify-between gap-3">
-          {peers.length === 0 ? (
-            <p className="text-[12px] text-[var(--adf-ui-text-subtle)]">No other ADF runtimes visible on your network.</p>
-          ) : (
-            <ul className="min-w-0 space-y-1">
-              {peers.map((p) => (
-                <li key={p.runtime_id} className="flex flex-wrap items-center gap-2 font-mono text-[11px] text-[var(--adf-ui-text)]">
-                  <span>{p.host}</span>
-                  {/* Every row states its route: LAN = heard via mDNS on the
-                      broadcast domain; TAILNET = swept via the tailscale CLI;
-                      MANUAL = from the peer list below. */}
-                  <span className="rounded bg-[var(--adf-ui-surface-hover)] px-1 text-[11px] uppercase tracking-wide text-[var(--adf-ui-text-muted)]">
-                    {(p.source ?? 'mdns') === 'mdns' ? 'lan' : p.source}
-                  </span>
-                  {p.url && <span className="text-[var(--adf-ui-text-subtle)]">{p.url.replace(/^https?:\/\//, '')}</span>}
-                  {p.agent_count === undefined ? (
-                    <Tooltip tip="The runtime announced itself but its directory did not answer: a firewall, the wrong interface, or its mesh server is down.">
-                      <span className="text-[var(--adf-ui-warning)]">Directory unreachable</span>
-                    </Tooltip>
-                  ) : (
-                    <span className="text-[var(--adf-ui-text-subtle)]">{p.agent_count} {p.agent_count === 1 ? 'agent' : 'agents'}</span>
-                  )}
-                </li>
-              ))}
-            </ul>
-          )}
-          <Tooltip tip="Probe the tailnet and manual peers now, then refetch each runtime's directory">
-            <Button onClick={() => void recheck()} disabled={rechecking} loading={rechecking} size="compact">
-              {rechecking ? 'Rechecking…' : 'Recheck'}
-            </Button>
-          </Tooltip>
-        </div>
-      </SettingsRow>
-      <ManualPeersRows />
-    </SettingsGroup>
-  )
-}
-
-/** The Tailscale sweep switch and the manual peer list, as rows of Discovery. */
-function ManualPeersRows() {
-  const api = useSettingsApi()
-  const [peers, setPeers] = useState<string[]>([])
-  const [tailnetOn, setTailnetOn] = useState(true)
-  const [draft, setDraft] = useState('')
-  const [draftError, setDraftError] = useState<string | null>(null)
-
-  useEffect(() => {
-    void (async () => {
-      const s = (await api?.getSettings?.()) as unknown as {
-        meshManualPeers?: string[]
-        tailnetDiscovery?: boolean
-      }
-      setPeers(s?.meshManualPeers ?? [])
-      setTailnetOn(s?.tailnetDiscovery !== false)
-    })()
-  }, [])
-
-  const { commit, offerUndo } = useSettingsSave()
-  const save = useCallback(async (next: string[]) => {
-    const prev = peers
-    setPeers(next)
-    await commit({ meshManualPeers: next }, () => setPeers(prev))
-  }, [commit, peers])
-
-  const add = useCallback(async () => {
-    const checked = checkPeerAddress(draft)
-    if (!checked.ok) { setDraftError(checked.error); return }
-    setDraft('')
-    setDraftError(null)
-    await save([...peers.filter((p) => p !== checked.value), checked.value])
-  }, [draft, peers, save])
-
-  return (
-    <>
-      <SettingsRow separator label={<>Tailscale<InfoHint tip="Probe the computers on your tailnet for ADF runtimes." /></>}>
-        <Switch
-          label="Tailscale"
-          checked={tailnetOn}
-          onChange={(next) => {
-            setTailnetOn(next)
-            void commit({ tailnetDiscovery: next }, () => setTailnetOn(!next))
-          }}
-        />
-      </SettingsRow>
-      <SettingsRow
-        separator
-        stacked
-        label={<>Peers<InfoHint tip="Any runtime reachable by address: on the LAN, the tailnet, or a public server. A bare host uses the mesh port. Probed on the same cycle as discovery; matches appear under Runtimes." /></>}
-        error={draftError ?? undefined}
-      >
-        {peers.length > 0 && (
-          <ul className="mb-2 space-y-1">
-            {peers.map((p) => (
-              <li key={p} className="flex items-center gap-2 font-mono text-[12px] text-[var(--adf-ui-text)]">
-                <span>{p}</span>
-                <IconButton
-                  onClick={() => {
-                    const before = peers
-                    void save(peers.filter((x) => x !== p)).then(() => offerUndo(`Removed peer ${p}.`, () => void save(before)))
-                  }}
-                  aria-label={`Remove peer ${p}`}
-                  variant="danger"
-                  title="Remove"
-                >
-                  ✕
-                </IconButton>
-              </li>
-            ))}
-          </ul>
-        )}
-        <div className="flex items-center gap-1.5">
-          <TextInput
-            aria-label="Peer address"
-            value={draft}
-            aria-invalid={!!draftError}
-            onChange={(e) => { setDraft(e.target.value); setDraftError(null) }}
-            onKeyDown={(e) => { if (e.key === 'Enter') void add() }}
-            placeholder="host:port, e.g. 100.101.102.103:7295"
-            spellCheck={false}
-            className="!w-72 font-mono !text-[12px]"
-          />
-          <Button onClick={() => void add()} size="compact">
-            Add
-          </Button>
-        </div>
-      </SettingsRow>
-    </>
-  )
-}
-
-/**
  * Settings, with its one save model (settings-save.tsx): "Saved" in the
  * header, refusals and Undo as toasts. Multi-runtime (multi-runtime.md
  * §6.3): the runtime pages show the runtime the picker names; the body is
@@ -1276,61 +923,6 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
   const [spellcheckDownloads, setSpellcheckDownloads] = useState(false)
   const [spellcheckStatus, setSpellcheckStatus] = useState<string | null>(null)
   const [spellcheckBusy, setSpellcheckBusy] = useState(false)
-  const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>({ running: false, port: 7295, host: '127.0.0.1' })
-  const [meshAutoStart, setMeshAutoStart] = useState(true)
-  const [meshLan, setMeshLan] = useState(false)
-  const [meshPort, setMeshPort] = useState(7295)
-  const [meshAgents, setMeshAgents] = useState<MeshAgentStatus[]>([])
-  const [lanInfo, setLanInfo] = useState<{ hostname: string; addresses: Array<{ iface: string; address: string; family: 'IPv4' | 'IPv6'; mac: string }> }>({ hostname: '', addresses: [] })
-  const [meshRestarting, setMeshRestarting] = useState(false)
-  // The Port field is a draft: leaving it changes nothing; Apply saves it and restarts a running server.
-  const [meshPortDraft, setMeshPortDraft] = useState('7295')
-  const [meshPortError, setMeshPortError] = useState<string | null>(null)
-  useEffect(() => { setMeshPortDraft(String(meshPort)); setMeshPortError(null) }, [meshPort])
-  const restartMeshServer = async () => {
-    setMeshRestarting(true)
-    try {
-      const res = await api?.restartMeshServer()
-      if (res) {
-        setMeshServerStatus({ running: res.running ?? false, port: res.port ?? meshPort, host: res.host ?? (meshLan ? '0.0.0.0' : '127.0.0.1') })
-      }
-    } finally {
-      setMeshRestarting(false)
-    }
-  }
-  const applyMeshPort = async () => {
-    const checked = checkWholeNumber(meshPortDraft, 1, 65535)
-    if (!checked.ok) { setMeshPortError(checked.error); return }
-    if (checked.value === meshPort) return
-    // Commit before the restart — main reads the saved port back.
-    const saved = await persist({ meshPort: checked.value }, setMeshPort, checked.value, meshPort)
-    if (saved && meshServerStatus.running && checked.value !== meshServerStatus.port) await restartMeshServer()
-  }
-  const meshEnabled = useMeshStore((s) => selectMeshSlice(s, pickedMesh).enabled)
-  const { enableMesh, disableMesh } = useMesh(pickedMesh)
-  const [meshSwitching, setMeshSwitching] = useState(false)
-  const [meshSwitchError, setMeshSwitchError] = useState<string | null>(null)
-  /** The Mesh switch: the mesh and its server together, now; Autostart is separate (meshEnabled). */
-  const switchMesh = async (on: boolean) => {
-    setMeshSwitching(true)
-    setMeshSwitchError(null)
-    try {
-      const result = on ? await enableMesh() : await disableMesh()
-      if (!result.success) {
-        setMeshSwitchError(result.error ?? `Mesh ${on ? 'start' : 'stop'} failed.`)
-        return
-      }
-      const server = on ? await api?.startMeshServer() : await api?.stopMeshServer()
-      if (server) {
-        setMeshServerStatus({ running: server.running ?? false, port: server.port ?? meshServerStatus.port, host: server.host ?? meshServerStatus.host })
-        if (!server.success && server.error) setMeshSwitchError(server.error)
-      }
-    } catch (err) {
-      setMeshSwitchError(err instanceof Error ? err.message : String(err))
-    } finally {
-      setMeshSwitching(false)
-    }
-  }
   const [sandboxPackages, setSandboxPackages] = useState<Array<{ name: string; version: string }>>([])
   /** 0 = automatic (CPU-derived). The main process applies it to the sandbox
    *  service the moment the debounced save lands — no restart needed. */
@@ -1486,9 +1078,6 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
       )
       setAutoApplyPromptUpdates(settings[PROMPT_AUTO_UPDATE_KEY] === true)
       if (runtimeId === LOCAL_RUNTIME) studioKeys(settings as unknown as Record<string, unknown>)
-      setMeshAutoStart(settings.meshEnabled !== false)
-      setMeshLan(!!settings.meshLan)
-      setMeshPort((settings.meshPort as number) ?? 7295)
       setSandboxPackages((settings.sandboxPackages as Array<{ name: string; version: string }>) ?? [])
       setSandboxMaxWorkers((settings.sandboxMaxWorkers as number) ?? 0)
       setAgentsFolder((settings.agentsFolder as string) ?? '')
@@ -1513,31 +1102,6 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
       setSettingsLoaded(true)
     })
   }, [])
-
-  // Fetch mesh server status + agent list for "Networking" tab
-  useEffect(() => {
-    if (activeTab !== 'networking') return
-    const refresh = () => {
-      api?.getMeshServerStatus().then(setMeshServerStatus)
-      api?.getMeshStatus().then((s) => setMeshAgents(s.agents))
-    }
-    refresh()
-    api?.getMeshServerLanIps().then(setLanInfo)
-    // Subscribe to mesh events for live updates. Only lifecycle/peer events
-    // change what this tab shows — `message_routed` fires per message and would
-    // otherwise cost two IPC round-trips each. The rest coalesce behind a
-    // trailing debounce.
-    let refreshTimer: ReturnType<typeof setTimeout> | undefined
-    const unsub = api?.onMeshEvent((event: MeshEvent) => {
-      if (!MESH_STATUS_EVENTS.has(event.type)) return
-      clearTimeout(refreshTimer)
-      refreshTimer = setTimeout(refresh, 500)
-    })
-    return () => {
-      clearTimeout(refreshTimer)
-      unsub?.()
-    }
-  }, [activeTab, meshEnabled])
 
   // Auto-save on change (debounced) — flushes immediately on unmount.
   //
@@ -2297,180 +1861,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
             />
           )}
 
-          {/* Networking tab */}
-          {activeTab === 'networking' && <>
-          {/* This computer's network, which the mesh and remote access follow (lan-reach.ts); not a remote runtime's. */}
-          {!remote && <NetworkStatusLine />}
-          {/* Mesh: one switch for the live state (mesh and its server), and whether it starts with the runtime. */}
-          <SettingsGroup title="Mesh" docs={DOCS.lanDiscovery}>
-            <SettingsRow
-              label="Mesh"
-              description="Agents message each other and peer runtimes, and serve their cards and APIs."
-              help={MESH_OFF_NOTE}
-              error={meshSwitchError ?? undefined}
-            >
-              <Switch label="Mesh" checked={meshEnabled} disabled={meshSwitching} onChange={(next) => void switchMesh(next)} />
-            </SettingsRow>
-            <SettingsRow separator label={<>Autostart<InfoHint tip="Start the mesh when the runtime starts. The Mesh switch above does not change this." /></>}>
-              <Switch label="Autostart" checked={meshAutoStart} onChange={(next) => void persist({ meshEnabled: next }, setMeshAutoStart, next, meshAutoStart)} />
-            </SettingsRow>
-          </SettingsGroup>
-
-          {/* The server: its state, port and LAN binding; what it exposes. */}
-          <SettingsGroup title="Server">
-            <SettingsRow
-              label="Status"
-              description={meshServerStatus.running
-                ? `Running on ${meshServerHosts(meshServerStatus)}, port ${meshServerStatus.port}`
-                : 'Stopped'}
-              help={meshServerStatus.running
-                ? <span className="font-mono">http://{meshServerStatus.host === '0.0.0.0' ? '0.0.0.0' : '127.0.0.1'}:{meshServerStatus.port}</span>
-                : undefined}
-            >
-              <span aria-hidden="true" className={`block size-2 rounded-full ${meshServerStatus.running ? 'bg-[var(--adf-ui-success)]' : 'bg-[var(--adf-ui-danger)]'}`} />
-            </SettingsRow>
-            <SettingsRow
-              separator
-              label="Port"
-              description={meshServerStatus.running ? 'Apply restarts the server on the new port.' : 'Used when the server starts.'}
-              error={meshPortError ?? undefined}
-            >
-              <div className="flex items-center gap-2">
-                <TextInput
-                  aria-label="Port"
-                  inputMode="numeric"
-                  value={meshPortDraft}
-                  disabled={meshRestarting}
-                  aria-invalid={!!meshPortError}
-                  onChange={(e) => { setMeshPortDraft(e.target.value); setMeshPortError(null) }}
-                  onKeyDown={(e) => { if (e.key === 'Enter') void applyMeshPort() }}
-                  className="!w-24 !text-[12px]"
-                />
-                <Button size="compact" disabled={meshRestarting || meshPortDraft.trim() === String(meshPort)} onClick={() => void applyMeshPort()}>
-                  Apply
-                </Button>
-              </div>
-            </SettingsRow>
-            <SettingsRow
-              separator
-              label={<>LAN<InfoHint tip={'Listen on private networks and Tailscale too, never on a Public network. Also on while an agent has messaging.visibility = "lan".'} /></>}
-              description={meshRestarting ? 'Restarting…' : 'Reachable from other devices on your network.'}
-              help={<LanReachabilityStatus enabled={meshLan} restarting={meshRestarting} hostName={remote ? runtimeName : null} />}
-            >
-              <Switch
-                label="LAN"
-                checked={meshLan}
-                disabled={meshRestarting}
-                onChange={async (lan) => {
-                  const saved = await persist({ meshLan: lan }, setMeshLan, lan, meshLan)
-                  if (saved && meshServerStatus.running) await restartMeshServer()
-                }}
-              />
-            </SettingsRow>
-
-            {/* LAN addresses — reachable URLs when bound to 0.0.0.0 */}
-            {lanInfo.addresses.length > 0 && (
-              <SettingsRow
-                separator
-                stacked
-                label="Addresses"
-                description={lanInfo.hostname ? <span className="font-mono">{lanInfo.hostname}</span> : undefined}
-                help={!meshLan ? 'The server listens on 127.0.0.1; turn on LAN to reach these from other devices.' : undefined}
-              >
-                <div className="space-y-1">
-                  {lanInfo.addresses.map((addr) => {
-                    const display = addr.family === 'IPv6' ? `[${addr.address}]` : addr.address
-                    const url = `http://${display}:${meshServerStatus.port}`
-                    return (
-                      <div key={`${addr.iface}-${addr.address}`} className="flex items-center gap-2">
-                        <span className="max-w-[140px] truncate rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 font-mono text-[11px] text-[var(--adf-ui-text-muted)]" title={addr.iface}>
-                          {addr.iface}
-                        </span>
-                        <span className="text-[11px] uppercase text-[var(--adf-ui-text-subtle)]">{addr.family}</span>
-                        {meshServerStatus.running && meshLan ? (
-                          <a href={url} target="_blank" rel="noopener noreferrer" className="truncate font-mono text-xs text-[var(--adf-ui-accent)] hover:underline">
-                            {url}
-                          </a>
-                        ) : (
-                          <span className="truncate font-mono text-xs text-[var(--adf-ui-text-muted)]">{addr.address}</span>
-                        )}
-                        <button
-                          onClick={() => navigator.clipboard?.writeText(meshServerStatus.running && meshLan ? url : addr.address)}
-                          className="ml-auto text-[11px] text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-text)]"
-                          title="Copy"
-                        >
-                          Copy
-                        </button>
-                      </div>
-                    )
-                  })}
-                </div>
-              </SettingsRow>
-            )}
-
-            {/* Agents by visibility (the LanAgentsList predicate), then the LAN ones. */}
-            <SettingsRow separator stacked label="Visibility" description={meshVisibilityLine(meshAgents)}>
-              <LanAgentsList agents={meshAgents} />
-            </SettingsRow>
-          </SettingsGroup>
-
-          {/* Other runtimes: found on the network, the tailnet sweep, the manual list. */}
-          <DiscoveryGroup />
-
-          {/* Agent endpoints: loopback URLs of the runtime's computer, so not with a remote runtime. */}
-          {meshEnabled && !remote && (
-          <SettingsGroup title="Agent endpoints" description={`${meshAgents.length} serving.`}>
-            {meshAgents.length === 0 ? (
-              <p className="px-4 pb-3 text-[12px] text-[var(--adf-ui-text-subtle)]">
-                No agents serving. Start agents in a tracked directory to see them here.
-              </p>
-            ) : (
-              <ul className="border-t border-[var(--adf-ui-separator)]">
-                {meshAgents.map((agent) => {
-                  const url = meshServerStatus.running
-                    ? `http://127.0.0.1:${meshServerStatus.port}/agents/${agent.handle ?? ''}`
-                    : null
-                  return (
-                    <li key={agent.filePath} className="flex items-center justify-between gap-2 border-b border-[var(--adf-ui-separator)] px-4 py-2 last:border-b-0">
-                      <div className="min-w-0">
-                        <div className="flex items-center gap-2">
-                          <OrbitalAvatar seed={orbitalSeedFor({ did: agent.did, filePath: agent.filePath })} icon={agent.icon} iconSeed={agent.agentId || agent.filePath} size={16} emojiSize={14} />
-                          <span className="truncate text-[13px] font-medium text-[var(--adf-ui-text)]">{agent.handle}</span>
-                        </div>
-                        {url && (
-                          <a href={url} target="_blank" rel="noopener noreferrer" className="block truncate font-mono text-[11px] text-[var(--adf-ui-accent)] hover:underline">
-                            {url}
-                          </a>
-                        )}
-                      </div>
-                      <div className="flex shrink-0 items-center gap-1.5">
-                        {agent.publicEnabled && (
-                          <span className="rounded bg-[var(--adf-ui-success-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-success)]">Public</span>
-                        )}
-                        {(agent.apiRouteCount ?? 0) > 0 && (
-                          <span className="rounded bg-[var(--adf-ui-accent-subtle)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-accent)]">
-                            {agent.apiRouteCount} route{agent.apiRouteCount !== 1 ? 's' : ''}
-                          </span>
-                        )}
-                        {(agent.sharedCount ?? 0) > 0 && (
-                          <span className="rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[11px] text-[var(--adf-ui-text-muted)]">
-                            {agent.sharedCount} shared
-                          </span>
-                        )}
-                      </div>
-                    </li>
-                  )
-                })}
-              </ul>
-            )}
-          </SettingsGroup>
-          )}
-
-          {/* Remote access: other devices use this computer's daemon (remote-access.md §7); host-only with a remote runtime. */}
-          {remote
-            ? <HostOnlyRemoteAccess name={runtimeName} />
-            : <RemoteAccessGroup onKeepRunning={async () => { await track(window.adfApi.setBackendSettings({ keepDaemonRunning: true }).then((r) => r.ok ? { ok: true as const } : { ok: false as const, error: r.error })) }} />}
-          </>}
+          {/* Networking tab: agent messaging (NetworkingSettings.tsx); remote access is in Connections. */}
+          {activeTab === 'networking' && <NetworkingSettings remote={remote} runtimeName={runtimeName} pickedMesh={pickedMesh} />}
 
           {/* Compute tab */}
           {activeTab === 'compute' && <>

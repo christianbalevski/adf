@@ -51,7 +51,7 @@ describe('the Connection page rows', () => {
   it('an empty network search says what to do on the other computer; nothing while a computer is listed or the search has a problem', () => {
     const local = row({ state: 'connected', action: null })
     const searching = { browsing: true, problem: null }
-    expect(emptyDiscoveryLine({ rows: [local], discovery: searching })).toBe('None found yet; turn on Remote access on the other computer.')
+    expect(emptyDiscoveryLine({ rows: [local], discovery: searching })).toBe('None found yet. On the other computer: Add, then Share.')
     expect(emptyDiscoveryLine({ rows: [local], discovery: null })).toBeNull()
     expect(emptyDiscoveryLine({ rows: [local], discovery: { browsing: false, problem: 'mDNS is blocked.' } })).toBeNull()
     expect(emptyDiscoveryLine({ rows: [local, row({ id: 'found:F@u', kind: 'found', name: 'desk', action: 'pair' })], discovery: searching })).toBeNull()
@@ -225,7 +225,7 @@ describe('Connection page docs links', () => {
   })
 })
 
-describe('local only: Connections is one line', () => {
+describe('local only: Remotes is "None."', () => {
   const saved = row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connected', action: null, removable: true })
   const found = row({ id: 'found:F@u', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair' })
 
@@ -236,12 +236,12 @@ describe('local only: Connections is one line', () => {
     expect(remoteConnectionsSaved({ rows: [row({ state: 'connected', action: null }), saved] })).toBe(true)
   })
 
-  it('one line and Add; This computer and Inside Studio (legacy) under Details', () => {
-    const html = renderToStaticMarkup(<SimpleConnections busy={false} message={null} onAdd={() => {}} onLegacy={() => {}} details={<span>daemon-row</span>} />)
-    // One word; "Runtimes on other computers." is its tooltip.
+  it('Remotes, "None."; This computer and Inside Studio (legacy) under Details; Add is not in it', () => {
+    const html = renderToStaticMarkup(<SimpleConnections busy={false} onLegacy={() => {}} details={<span>daemon-row</span>} />)
+    // One word; "Runtimes this Studio uses." is its tooltip.
     expect(html).toContain('>Remotes<')
-    expect(html).not.toContain('>Runtimes on other computers<')
-    expect(html).toContain('>Add<')
+    expect(html).toContain('>None.<')
+    expect(html).not.toContain('>Add<')
     expect(html).toContain('<details')
     expect(html).toContain('>Details</summary>')
     expect(html).toContain('daemon-row')
@@ -280,5 +280,48 @@ describe('pairing a computer already saved', () => {
     const source = readFileSync(join(__dirname, '../../../src/renderer/components/settings/ConnectionSettings.tsx'), 'utf8')
     expect(source).toContain("useConfirm")
     expect(source).not.toMatch(/window\.confirm|\bconfirm\(['"`]/)
+  })
+})
+
+// Owner decision 2026-10-21: one Add; it asks Connect or Share.
+describe('Connections: one Add, two choices, two lists', () => {
+  it('Add opens Connect ("Use a runtime on another computer.") and Share ("Let another computer use this runtime.")', async () => {
+    const { AddChoice, AddBar, CONNECT_HELP, SHARE_HELP } = await import('../../../src/renderer/components/settings/ConnectionSettings')
+    expect(CONNECT_HELP).toBe('Use a runtime on another computer.')
+    expect(SHARE_HELP).toBe('Let another computer use this runtime.')
+    const html = renderToStaticMarkup(<AddChoice share={{ available: true, reason: null }} onConnect={() => {}} onShare={() => {}} />)
+    expect(html).toContain('>Connect<')
+    expect(html).toContain(CONNECT_HELP)
+    expect(html).toContain('>Share<')
+    expect(html).toContain(SHARE_HELP)
+    expect(html).not.toContain('disabled=""')
+    // Inside Studio (legacy): Share needs this computer's daemon.
+    expect(renderToStaticMarkup(<AddChoice share={{ available: false, reason: 'Remote access needs Local as the connection (Settings → Connections).' }} onConnect={() => {}} onShare={() => {}} />)).toContain('disabled=""')
+    expect(renderToStaticMarkup(<AddBar busy={false} message={null} onAdd={() => {}} />).match(/>Add</g)).toHaveLength(1)
+  })
+
+  it('the page has one Add; the lists are Remotes and Devices; found computers are listed in Connect, not on the page', () => {
+    const source = readFileSync(join(__dirname, '../../../src/renderer/components/settings/ConnectionSettings.tsx'), 'utf8')
+    // The page's one Add is AddBar; the page body has no other.
+    expect(source.slice(source.indexOf('export function ConnectionSettings()'))).not.toContain('>Add</Button>')
+    expect(source).toContain('title="Remotes"')
+    expect(source).toContain('<DevicesGroup')
+    expect(source).toContain("view.rows.filter((r) => r.kind !== 'found')")
+    // No phrase labels in the dialogs.
+    for (const old of ['Use a token instead', 'Use a code instead', 'Add device', 'Create token']) expect(source, old).not.toContain(old)
+  })
+
+  it('Connect lists the computers found, each with its address and fingerprint; a token is under Details', async () => {
+    const { FoundList, foundTargets } = await import('../../../src/renderer/components/settings/ConnectionSettings')
+    const targets = foundTargets([
+      row({ state: 'connected', action: null }),
+      row({ id: 'found:NEWW-2345@http://192.168.1.44:7385', kind: 'found', name: 'desk', state: 'not-paired', action: 'pair', url: 'http://192.168.1.44:7385', address: '192.168.1.44', fingerprint: 'NEWW-2345', pairingOpen: true, encrypted: false }),
+    ])
+    expect(targets).toEqual([expect.objectContaining({ name: 'desk', url: 'http://192.168.1.44:7385', address: '192.168.1.44', fingerprint: 'NEWW-2345', pairingOpen: true })])
+    const html = renderToStaticMarkup(<FoundList targets={targets} selected={null} disabled={false} onPick={() => {}} />)
+    expect(html).toContain('desk')
+    expect(html).toContain('192.168.1.44 · NEWW-2345 · Pairing open')
+    expect(html).toContain('>Not encrypted<')
+    expect(renderToStaticMarkup(<FoundList targets={[]} selected={null} disabled={false} onPick={() => {}} />)).toBe('')
   })
 })

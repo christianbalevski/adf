@@ -38,7 +38,8 @@ describe('ConfirmDialog', () => {
     expect(page).toContain('confirm(HOST_ACCESS_CONFIRM)')
     expect(page).toContain("confirmLabel: 'Revoke'")
     // Low-risk removals: Undo, not a question.
-    expect(page).toContain('offerUndo(`Removed peer')
+    const networking = readFileSync(join(SETTINGS_DIR, 'NetworkingSettings.tsx'), 'utf-8')
+    expect(networking).toContain('offerUndo(`Removed ${address}')
     expect(page).toContain('offerUndo(`Removed ${source}')
   })
 })

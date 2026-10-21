@@ -122,7 +122,7 @@ async function bodyOf(res: Response): Promise<Record<string, unknown> | null> {
  */
 export function refusedTokenSentence(url: string): string {
   const host = (() => { try { return new URL(url).hostname.replace(/^\[|\]$/g, '') } catch { return url } })()
-  return `The ADF daemon at ${url} refused the token; choose Add device on ${host} and pair again.`
+  return `The ADF daemon at ${url} refused the token; on ${host} choose Add, then Share, and pair again.`
 }
 
 /** An answer that is not the daemon's success: one sentence per known case. */

@@ -213,7 +213,7 @@ export class DaemonRequestGuard {
       // 'unknown' falls through: an operator-chosen ADF_DAEMON_TOKEN may start with the prefix too.
       if (result.kind === 'device') {
         if (!devices.enabled()) {
-          return { rejection: { status: 401, body: { error: `Remote access is turned off on ${devices.computerName()}. Turn it on there (Settings → Networking → Remote access, or adf daemon remote on).`, code: 'remote_access_off' } }, auth: none }
+          return { rejection: { status: 401, body: { error: `Remote access is turned off on ${devices.computerName()}. Turn it on there (Settings → Connections → Add → Share, or adf daemon remote on).`, code: 'remote_access_off' } }, auth: none }
         }
         if (isDeviceRefusedRoute(method, path)) return { rejection: forbidden(DEVICE_TOKEN_REFUSED_MESSAGE, 'device_token_refused'), auth: none }
         return { rejection: null, auth: { kind: 'device', deviceId: result.id, label: result.label } }

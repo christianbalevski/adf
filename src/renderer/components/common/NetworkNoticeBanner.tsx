@@ -3,11 +3,12 @@ import { useAppStore } from '../../stores/app.store'
 import type { NetworkNotice } from '../../../shared/types/remote-access-ipc.types'
 
 /**
- * "Remote access paused on <network>." as a strip in the window, never a
- * dialog (docs/design/remote-access.md §3.3.1, consent review 3). Studio
- * main shows one per network per session; Allow on this network, Not now,
- * or leaving the network takes it away. Settings → Networking's status line
- * shows the same state.
+ * "<Service> paused on <network>." ("Remote access", "Agent sharing", or
+ * both) as a strip in the window, never a dialog
+ * (docs/design/remote-access.md §3.3.1, consent review 3). Studio main
+ * shows one per network per session; Allow, Dismiss, or leaving the
+ * network takes it away. Settings → Networking's status card shows the
+ * same state.
  */
 export function NetworkNoticeBanner() {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
@@ -64,13 +65,13 @@ export function NetworkNoticeList({ notices, busy, error, onAllow, onDismiss, on
           <span>{n.message}</span>
           {n.canAllow && (
             <button type="button" disabled={busy === n.key} onClick={() => onAllow(n)} className="font-medium underline cursor-pointer disabled:opacity-60">
-              Allow on this network
+              Allow
             </button>
           )}
           {!n.canAllow && (
-            <button type="button" onClick={onOpenNetworking} className="underline cursor-pointer">Open Networking</button>
+            <button type="button" onClick={onOpenNetworking} className="underline cursor-pointer">Networking</button>
           )}
-          <button type="button" onClick={() => onDismiss(n)} className="underline cursor-pointer">Not now</button>
+          <button type="button" onClick={() => onDismiss(n)} className="underline cursor-pointer">Dismiss</button>
           {n.warning && <span className="w-full text-center">{n.warning}</span>}
           {error && busy === null && <span className="w-full text-center text-[var(--adf-ui-danger)]">{error}</span>}
         </div>
