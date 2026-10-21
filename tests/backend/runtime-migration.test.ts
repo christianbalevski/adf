@@ -5,12 +5,25 @@
  * client keys and saved agent windows move to its runtime id; a file of a
  * local-only install, or of Inside Studio, is never touched.
  */
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => (await import('./daemon-mode-electron')).electronStub.module)
+// A write that fails (EACCES) on every platform: a read-only mode does not stop the atomic rename over a file on POSIX.
+const blockedWrites = vi.hoisted(() => new Set<string>())
+vi.mock('../../src/main/utils/atomic-json', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/utils/atomic-json')>()
+  const { resolve } = await import('node:path')
+  return {
+    ...actual,
+    writeJsonAtomicAsync: async (path: string, data: unknown) => {
+      if (blockedWrites.has(resolve(path))) throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })
+      return actual.writeJsonAtomicAsync(path, data)
+    },
+  }
+})
 
 import { resolveBootBackend } from '../../src/main/backend/backend-config'
 import { AGENT_WINDOWS_KEY, AgentWindows, parseSavedAgentWindows, type AgentWindowHandle, type SavedAgentWindow } from '../../src/main/backend/agent-windows'
@@ -243,10 +256,10 @@ describe('write order: the client keys first, then studio-backend.json', () => {
   it('the client keys cannot be written: studio-backend.json still says remote, Connections says so, the next launch migrates both', async () => {
     const dir = userData({ 'studio-backend.json': REMOTE, [CLIENT_SETTINGS_FILE]: CLIENT })
     const clientPath = join(dir, CLIENT_SETTINGS_FILE)
-    chmodSync(clientPath, 0o444)
+    blockedWrites.add(resolve(clientPath))
     const boot = resolveBootBackend(join(dir, 'studio-backend.json'), {}, quiet)
     const migration = await migrateRemoteModeInstall(boot, dir, { 'host-1': HOST_1 }, quiet)
-    chmodSync(clientPath, 0o644)
+    blockedWrites.clear()
     expect(migration).toMatchObject({ written: false, notice: 'host-1 is in Settings → Connections.' })
     expect(boot.config.mode).toBe('local')
     expect(boot.notices?.join(' ')).toMatch(/still says remote/)

@@ -5,12 +5,25 @@
  * are written before studio-backend.json, so studio-backend.json still says
  * remote and the next launch migrates both. This launch runs This computer.
  */
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { afterAll, expect, it, vi } from 'vitest'
 
 vi.mock('electron', async () => (await import('./main-boot-harness')).h.electron)
+// A write that fails (EACCES) on every platform: a read-only mode does not stop the atomic rename over a file on POSIX.
+const blockedWrites = vi.hoisted(() => new Set<string>())
+vi.mock('../../src/main/utils/atomic-json', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/utils/atomic-json')>()
+  const { resolve } = await import('node:path')
+  return {
+    ...actual,
+    writeJsonAtomicAsync: async (path: string, data: unknown) => {
+      if (blockedWrites.has(resolve(path))) throw Object.assign(new Error(`EACCES: permission denied, open '${path}'`), { code: 'EACCES' })
+      return actual.writeJsonAtomicAsync(path, data)
+    },
+  }
+})
 vi.mock('../../src/main/ipc/index', async () => {
   const { h } = await import('./main-boot-harness')
   h.calls.push('load ipc/index')
@@ -64,10 +77,10 @@ writeFileSync(join(h.state.userData, 'studio-backend.json'), BACKEND)
 writeFileSync(join(h.state.userData, 'cli-remotes.json'), JSON.stringify({ v: 1, default: null, remotes: { 'host-1': { url: 'http://100.101.102.103:7385', fingerprint: 'ABCD-EFGH', deviceId: 'd1', label: 'l', pairedAt: '2026-10-18T10:00:00Z', hostName: 'host-1' } } }))
 const clientPath = join(h.state.userData, 'studio-client-settings.json')
 writeFileSync(clientPath, CLIENT)
-// Read-only: every write of it fails.
-chmodSync(clientPath, 0o444)
+// Every write of it fails.
+blockedWrites.add(resolve(clientPath))
 let restore = () => {}
-afterAll(() => { chmodSync(clientPath, 0o644); restore() })
+afterAll(() => { blockedWrites.clear(); restore() })
 
 it('the client keys cannot be written: studio-backend.json still says remote, so the next launch migrates both', async () => {
   restore = await bootMain()
