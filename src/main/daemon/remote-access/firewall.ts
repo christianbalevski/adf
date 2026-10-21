@@ -19,7 +19,8 @@ export function linuxFirewallCommands(port: number): string[] {
 
 /** PowerShell: the number of enabled inbound Block rules for `program`. */
 export function windowsBlockQuery(program: string): string {
-  const quoted = program.replace(/'/g, "''")
+  // PowerShell ends a single-quoted string at ' and at U+2018, U+2019, U+201A, U+201B: double each (S3).
+  const quoted = program.replace(/['‘’‚‛]/g, '$&$&')
   return `@(Get-NetFirewallApplicationFilter -Program '${quoted}' -ErrorAction SilentlyContinue | Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.Direction -eq 'Inbound' -and $_.Action -eq 'Block' }).Count`
 }
 

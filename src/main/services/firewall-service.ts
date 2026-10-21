@@ -74,9 +74,13 @@ export function buildWindowsCheckScript(): string {
   ].join('; ')
 }
 
-/** Quote a path for PowerShell: single quotes, a quote doubled. */
-function psQuote(s: string): string {
-  return `'${s.replace(/'/g, "''")}'`
+/**
+ * Quote a path for PowerShell: single quotes, each quote doubled. PowerShell
+ * also ends a single-quoted string at U+2018, U+2019, U+201A and U+201B, so
+ * those are doubled too (S3).
+ */
+export function psQuote(s: string): string {
+  return `'${s.replace(/['‘’‚‛]/g, '$&$&')}'`
 }
 
 /** Quote a path for a POSIX shell. */
