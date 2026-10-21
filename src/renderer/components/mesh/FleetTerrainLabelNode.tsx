@@ -11,6 +11,8 @@ import { hueFromPath, isDarkMode, truncate, formatTokens, PIP_COLOR, MUTED_REGIO
 import { OrbitalSvgImage } from '../orbital/OrbitalSvgImage'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
 import { selectMapAgents } from './runtime-fleet'
+import { RemoteIcon } from '../common/RemoteMark'
+import { REMOTE_TIP } from '../../../shared/runtime-name'
 
 /**
  * Text layer of a territory — identity (icon/name/status/vitals), badges,
@@ -92,7 +94,7 @@ export const FleetTerrainLabelNode = memo(function FleetTerrainLabelNode(props: 
 })
 
 function FleetTerrainLabelNodeFull({ data }: NodeProps) {
-  const { label, dirPath, width, height, cells, members, districts } =
+  const { label, dirPath, width, height, cells, members, districts, remote } =
     data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
   const dark = isDarkMode()
@@ -238,7 +240,7 @@ function FleetTerrainLabelNodeFull({ data }: NodeProps) {
           (The voice chip floats over the capital plot now.) Anchored to the
           cells' centroid and bottom edge, not the bounding box, so the
           label visibly belongs to its cluster. */}
-      <TerritoryBanner label={label} hue={hue} own={own}
+      <TerritoryBanner label={label} remote={remote === true} hue={hue} own={own}
         pendingCount={memberPending.filter(Boolean).length}
         anchor={{ ...bannerAnchor, y: bannerY }} nameSize={bannerNameSize}
         dark={dark} zoom={zoom} dir={dirPath} />
@@ -538,6 +540,7 @@ const UnitLayer = memo(function UnitLayer({
 
 function TerritoryBanner({
   label,
+  remote,
   hue,
   own,
   pendingCount,
@@ -548,6 +551,8 @@ function TerritoryBanner({
   dir
 }: {
   label: string
+  /** A runtime on another computer: the remote icon before the name (multi-runtime.md §1.3). */
+  remote: boolean
   hue: number
   own: Map<string, FleetAgentStatus>
   pendingCount: number
@@ -597,7 +602,8 @@ function TerritoryBanner({
         opacity: bannerOpacity
       }}
     >
-      <span className="font-semibold tracking-wide whitespace-nowrap leading-none" style={{ color: nameColor, fontSize: nameSize }}>
+      <span className="flex items-center font-semibold tracking-wide whitespace-nowrap leading-none" style={{ color: nameColor, fontSize: nameSize, gap: nameSize * 0.25 }}>
+        {remote && <span role="img" aria-label={REMOTE_TIP} className="flex"><RemoteIcon size={Math.round(nameSize * 0.8)} /></span>}
         {label}
       </span>
       <div className="flex items-center mt-2" style={{ gap: pipSize * 0.8, fontSize: subSize }}>

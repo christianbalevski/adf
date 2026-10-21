@@ -92,7 +92,7 @@ describe('the connections view lists the runtime set (§4.5)', () => {
       runtimes: () => runtimes,
     })
   }
-  const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+  const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
   const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'retrying' }
 
   it('with This computer only, the view has no runtime list: the one sent before', () => {
@@ -134,9 +134,9 @@ describe('OS notifications (§6.1)', () => {
   })
 
   it('names the runtime before the agent, and equal ids on two runtimes are two notifications', () => {
-    const { n, titles } = notifier((e) => (e.runtimeId === HOST_1 ? 'host-1' : 'This computer'))
+    const { n, titles } = notifier((e) => (e.runtimeId === HOST_1 ? 'host-1' : 'host-0 (Local)'))
     n.apply({ pending: [entry('n1')], history: [] })
     n.apply({ pending: [entry('n1'), entry('n1', HOST_1)], history: [] })
-    expect(titles).toEqual(['This computer · agent-1 needs approval', 'host-1 · agent-1 needs approval'])
+    expect(titles).toEqual(['host-0 (Local) · agent-1 needs approval', 'host-1 · agent-1 needs approval'])
   })
 })

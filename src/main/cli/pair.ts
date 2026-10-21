@@ -13,6 +13,9 @@ import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { olderAdfSentence, verifyHello, verifyHelloWaiting } from '../services/remote-hello'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
+import { daemonPaths } from './daemon-control'
+import { machineNameFromFile } from '../backend/local-runtime-name'
+import { localRuntimeName } from '../../shared/runtime-name'
 import {
   deleteRemoteToken, forgetRemote, type ForgotRemote, KEYCHAIN_FILE_COPY, malformedRemoteSentence, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
 } from './remotes'
@@ -405,6 +408,11 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
   return 0
 }
 
+/** This computer's runtime as Studio names it (multi-runtime.md §1.3): `<name> (Local)`, from the daemon's settings. */
+export function localRemoteName(env: NodeJS.ProcessEnv): string {
+  return localRuntimeName(machineNameFromFile(daemonPaths(DEFAULT_DAEMON_PORT, env).settingsFile))
+}
+
 export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 'stderr' | 'env'>, json = false): Promise<number> {
   const io = terminalSafe(rawIo)
   const env = io.env ?? process.env
@@ -423,7 +431,7 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
     }
     const rows = Object.entries(file.remotes)
     // A default naming a malformed entry is not "local": adf refuses until it is fixed (selectedRemote).
-    io.stdout(`${file.default === null && !read.malformedDefault ? '*' : ' '} local  this computer's daemon\n`)
+    io.stdout(`${file.default === null && !read.malformedDefault ? '*' : ' '} local  ${printable(localRemoteName(env))}\n`)
     for (const [n, r] of rows) io.stdout(`${file.default === n ? '*' : ' '} ${n}  ${r.url}  ${r.hostName ?? ''}  ${r.fingerprint}  as "${r.label}"\n`)
     for (const n of read.malformed) io.stderr(`${n === read.malformedDefault ? '* ' : ''}${malformedRemoteSentence(remotesFilePath(env), n)}\n`)
     if (rows.length === 0 && read.malformed.length === 0) io.stderr('No saved remotes. Pair one with: adf pair\n')

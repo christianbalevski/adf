@@ -10,7 +10,8 @@ import { useApprovalsStore } from '../../stores/approvals.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useTrackedDirs } from '../../hooks/useTrackedDirs'
 import { collectSwitcherAgents, rankAgents, type SwitcherAgent, type SwitcherMatch } from '../../utils/agent-switcher'
-import { runtimeName, useMultiRuntime, useRuntimeLabel, useRuntimes } from '../../stores/runtimes.store'
+import { runtimeName, runtimeRemote, useMultiRuntime, useRuntimeLabel, useRuntimes } from '../../stores/runtimes.store'
+import { RemoteMark } from './RemoteMark'
 import { selectTrackedSlice } from '../../stores/tracked-dirs.store'
 import { selectBackgroundAgents } from '../../stores/background-agents.store'
 import { agentKey } from '../../../shared/types/agent-ref'
@@ -266,7 +267,7 @@ function SwitcherOption({ id, match, selected, isOpen, onHover, onChoose }: {
       <span className="min-w-0 truncate">
         <Highlighted text={agent.name} matched={matched} />
       </span>
-      {agent.runtimeName && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-muted)]">{agent.runtimeName}</span>}
+      {agent.runtimeName && <span className="flex shrink-0 items-center gap-1 text-[11px] text-[var(--adf-ui-text-muted)]">{runtimeRemote(agent.runtimeId) && <RemoteMark size={11} />}{agent.runtimeName}</span>}
       {agent.folder && <span className="min-w-0 shrink truncate text-[11px] text-[var(--adf-ui-text-subtle)]">{agent.folder}</span>}
       <span className="flex-1" />
       {isOpen && <span className="shrink-0 text-[11px] text-[var(--adf-ui-text-muted)]">Open</span>}

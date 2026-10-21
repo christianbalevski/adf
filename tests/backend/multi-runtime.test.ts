@@ -252,7 +252,7 @@ describe('runtime-aware IPC routing (§4.3)', () => {
     expect(() => t.invoke(IPC.FILE_GET_CURRENT, WINDOW, { $runtime: 'local' })).toThrow('This window shows an agent on host-1.')
     // A window of This computer, tagged with the remote.
     t.handle.windows.open({ id: WINDOW + 1, send: () => {}, focused: () => false })
-    expect(() => t.invoke(IPC.FILE_GET_CURRENT, WINDOW + 1, { $runtime: 'remote:host-1' })).toThrow('This window shows an agent on This computer.')
+    expect(() => t.invoke(IPC.FILE_GET_CURRENT, WINDOW + 1, { $runtime: 'remote:host-1' })).toThrow('This window shows an agent on Local.')
     expect(t.handle.windows.runtimeOf(WINDOW + 1)).toBeNull()
   })
 
@@ -385,7 +385,7 @@ describe('phase 3: saving connects, Reconnect reopens, the slot, recent files (m
     t.handle.runtimes.sync({}, { name: 'office', url: office.url })
     const slot = t.handle.runtimes.get('remote')!
     expect(await slot.ready).toBe(true)
-    expect(t.handle.runtimes.runtimes().map((r) => [r.id, r.name()])).toEqual([['local', 'This computer'], ['remote', 'office']])
+    expect(t.handle.runtimes.runtimes().map((r) => [r.id, r.name()])).toEqual([['local', 'Local'], ['remote', 'office']])
     expect(office.daemon.requests.find((r) => r.path === '/agents')?.auth).toBe(`Bearer ${TOKEN}-office`)
     expect(t.local.requests.some((r) => r.auth === `Bearer ${TOKEN}-office`)).toBe(false)
   })

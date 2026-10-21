@@ -5,6 +5,8 @@ import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
 import { Tooltip } from '../common/Tooltip'
+import { RemoteMark } from '../common/RemoteMark'
+import { LOCAL_LABEL } from '../../../shared/runtime-name'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
@@ -34,7 +36,7 @@ export function killResultLabel(result: { success: boolean; stoppedAgents?: numb
 
 /** Kill's tooltip; it names the runtime it acts on only while runtime names show (more than one runtime). */
 export function killTooltip(current: Pick<ConnectionCurrent, 'name'> | null, named: boolean): string {
-  return named ? `Stops all agents and mesh on ${current?.name ?? 'This computer'}` : 'Stops all agents and mesh'
+  return named ? `Stops all agents and mesh on ${current?.name ?? LOCAL_LABEL}` : 'Stops all agents and mesh'
 }
 
 /**
@@ -415,7 +417,7 @@ function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
         aria-label={`Runtime: ${header}`}
         className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${down ? 'text-[var(--adf-ui-danger)]' : ''}`}
       >
-        {runtime.kind === 'remote' && <RemoteIcon />}
+        {runtime.kind === 'remote' && <RemoteMark />}
         <span className="max-w-[180px] truncate">{header}</span>
       </button>
       <Tooltip tip={meshLabel} className="flex">
@@ -459,20 +461,10 @@ function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
   )
 }
 
-function RemoteIcon() {
-  return (
-    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <rect x="3" y="4" width="18" height="12" rx="2" />
-      <path d="M8 20h8M12 16v4" />
-      <path d="m15 8-3 3-3-3" />
-    </svg>
-  )
-}
-
 /**
  * The runtime this window uses (settings-scopes.md §4.1), first in the
  * runtime group right of the version, before its mesh and Kill. Nothing for
- * This computer while it is connected; a remote's name with the remote icon;
+ * the local runtime while it is connected; a remote's name with the remote icon;
  * the state while not connected. The tooltip is the address. A click opens
  * Settings → Connections.
  */
@@ -486,7 +478,7 @@ export function RuntimeIndicator({ current, showName = true, onOpen }: { current
       aria-label={showName ? `Runtime: ${shown.text}` : shown.text}
       className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${shown.problem ? 'text-[var(--adf-ui-danger)]' : ''}`}
     >
-      {shown.remote && <RemoteIcon />}
+      {shown.remote && <RemoteMark />}
       <span className="max-w-[220px] truncate">{shown.text}</span>
     </button>
   )

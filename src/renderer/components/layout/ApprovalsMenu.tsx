@@ -5,7 +5,8 @@ import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store
 import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useJumpToAgent } from '../../hooks/useJumpToAgent'
-import { runtimeDown, runtimeLabel, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
+import { runtimeDown, runtimeLabel, runtimeRemote, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
+import { RemoteMark } from '../common/RemoteMark'
 import { apiFor } from '../../utils/runtime-api'
 import { noticeKey } from '../../../shared/runtime-tag'
 import { loopColor } from '../../utils/loop-color'
@@ -138,7 +139,7 @@ export function ApprovalRow({
             {isAsk ? <AskIcon /> : <ShieldIcon />}
           </span>
           <span className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
-            {runtimeLabel ? `${runtimeLabel} · ` : ''}{approval.agentName}
+            {runtimeLabel && runtimeRemote(approval.runtimeId) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel ? `${runtimeLabel} · ` : ''}{approval.agentName}
           </span>
           {approval.loop !== 'main' && (
             <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>
@@ -235,7 +236,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
           {isAsk ? <AskIcon /> : <ShieldIcon />}
         </span>
         <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300 truncate">
-          {runtimeLabel ? `${runtimeLabel} · ` : ''}{entry.agentName}
+          {runtimeLabel && runtimeRemote(entry.runtimeId) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel ? `${runtimeLabel} · ` : ''}{entry.agentName}
         </span>
         {entry.loop !== 'main' && (
           <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>
@@ -486,7 +487,7 @@ function ApprovalDetailModal({
       headerLead={
         <span className="flex items-center gap-1.5 min-w-0 shrink-0">
           <span className="text-[13px] font-semibold text-neutral-800 dark:text-neutral-100 truncate max-w-40">
-            {runtimeLabel ? `${runtimeLabel} · ` : ''}{approval.agentName}
+            {runtimeLabel && runtimeRemote(approval.runtimeId) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel ? `${runtimeLabel} · ` : ''}{approval.agentName}
           </span>
           {approval.loop !== 'main' && (
             <span className={`shrink-0 px-1 rounded text-[10px] leading-4 ${colors.badge}`}>{approval.loop}</span>
@@ -564,7 +565,7 @@ export function ApprovalToasts() {
             </span>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
-                {runtimeLabel(toast.runtimeId, runtimes) ? `${runtimeLabel(toast.runtimeId, runtimes)} · ` : ''}{toast.agentName} {toast.kind === 'ask' ? 'has a question' : 'needs approval'}
+                {runtimeLabel(toast.runtimeId, runtimes) && runtimeRemote(toast.runtimeId, runtimes) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel(toast.runtimeId, runtimes) ? `${runtimeLabel(toast.runtimeId, runtimes)} · ` : ''}{toast.agentName} {toast.kind === 'ask' ? 'has a question' : 'needs approval'}
               </div>
               <div className={`text-[11px] text-neutral-500 dark:text-neutral-400 truncate ${toast.kind === 'ask' ? '' : 'font-mono'}`}>
                 {toast.detail}{toast.loop !== 'main' ? ` · ${toast.loop}` : ''}

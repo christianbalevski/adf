@@ -49,7 +49,8 @@ import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, ty
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
 import { samePath } from './backend/daemon-mode/session'
-import { actsOnFocusedWindow, deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
+import { actsOnFocusedWindow, buildApplicationMenu, deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
+import { LocalRuntimeName } from './backend/local-runtime-name'
 
 // A console.log after the parent's stdout pipe is gone (app quitting, or the
 // dev harness restarting the main process underneath us) emits EIO/EPIPE on
@@ -809,6 +810,10 @@ app.whenReady().then(async () => {
   lastSaved = savedCache.get()
   savedCache.watch()
   app.once('before-quit', () => savedCache.dispose())
+  // The local runtime's name, `<name> (Local)` (multi-runtime.md §1.3): read once here, then followed off the main thread.
+  const localName = new LocalRuntimeName(getUserDataPath())
+  localName.watch(() => { connections?.changed(); buildApplicationMenu() })
+  app.once('before-quit', () => localName.dispose())
   // An older Studio's remote mode becomes This computer with that connection in the set (multi-runtime.md §7.3 to §7.5),
   // before any connector or client settings store exists: the client keys first, then studio-backend.json.
   // A launch Inside Studio leaves the files for the next one; one that cannot read the saved connections migrates the
@@ -831,6 +836,7 @@ app.whenReady().then(async () => {
     daemonMode = registerDaemonModeHandlers({
       mode: 'local',
       userDataDir,
+      localName: () => localName.display(),
       // The client keys of an older remote mode that could not be written at boot: migrated as the file loads.
       ...(migration?.clientKeys ? { clientSettingsMigration: migration.clientKeys } : {}),
       connect: localDaemonConnector({
@@ -1035,6 +1041,7 @@ app.whenReady().then(async () => {
     push: pushConnections,
     // The runtime set (multi-runtime.md §4.5), listed only while it has more than one runtime.
     runtimes: runtimeViews,
+    localName: () => localName.display(),
     // Remove says how many agent windows of that runtime it closes (§6.5).
     agentWindowsOn: (id) => daemonMode?.runtimes.get(id)?.windows.ids().length ?? 0,
     // The remote slot was added, replaced or removed: it joins or leaves the set at once.

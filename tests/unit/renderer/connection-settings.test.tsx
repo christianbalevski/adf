@@ -22,7 +22,7 @@ import type { ConnectionRow } from '../../../src/shared/types/connection.types'
 ;(globalThis as { React?: typeof React }).React = React
 
 const row = (over: Partial<ConnectionRow>): ConnectionRow => ({
-  id: 'local', kind: 'local', name: 'This computer', state: null, action: 'connect', url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false, ...over,
+  id: 'local', kind: 'local', name: 'host-0 (Local)', state: null, action: 'connect', url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false, ...over,
 })
 const rows = (list: ConnectionRow[]) => renderToStaticMarkup(<ConnectionRows rows={list} busy={false} onConnect={() => {}} onAdd={() => {}} onRemove={() => {}} />)
 
@@ -55,6 +55,15 @@ describe('the Connection page rows', () => {
     expect(emptyDiscoveryLine({ rows: [local], discovery: null })).toBeNull()
     expect(emptyDiscoveryLine({ rows: [local], discovery: { browsing: false, problem: 'mDNS is blocked.' } })).toBeNull()
     expect(emptyDiscoveryLine({ rows: [local, row({ id: 'found:F@u', kind: 'found', name: 'desk', action: 'pair' })], discovery: searching })).toBeNull()
+  })
+
+  it('the local row is `<name> (Local)`; a saved row has the remote icon before its name, and no "(Remote)"', () => {
+    const html = rows([row({ state: 'connected', action: null }), row({ id: 'remote:rawl-hub', kind: 'saved', name: 'rawl-hub', state: 'connected', action: null, removable: true })])
+    const [local, saved] = html.split('data-connection="remote:rawl-hub"')
+    expect(local).toContain('host-0 (Local)')
+    expect(local).not.toContain('data-remote-mark')
+    expect(saved).toContain('data-remote-mark')
+    expect(html).not.toContain('(Remote)')
   })
 
   it('a saved row never shows Pair, Add or Connect', () => {

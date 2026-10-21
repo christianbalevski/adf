@@ -61,7 +61,7 @@ function manager(opts: { initialOrder?: string[]; windowsOf?: Record<string, num
   const orders: string[][] = []
   const closed: Array<[number, boolean]> = []
   const m = new RuntimeManager({
-    primary: fakeRuntime('local', 'This computer'),
+    primary: fakeRuntime('local', 'host-0 (Local)'),
     closedWindows: new Set(),
     log: quiet,
     create: (id, name) => { created.push(`${id}=${name}`); return fakeRuntime(id, name, opts.windowsOf?.[id] ?? []) },
@@ -239,14 +239,14 @@ const menuRuntime = (id: string, name: string, problem: string | null, reconnect
 
 describe('Help (§6.6)', () => {
   it('one runtime: the menu of before', () => {
-    expect(helpTemplate([menuRuntime('local', 'This computer', null)], 'ADF daemon: not connected, retrying').map((i) => i.label))
+    expect(helpTemplate([menuRuntime('local', 'host-0 (Local)', null)], 'ADF daemon: not connected, retrying').map((i) => i.label))
       .toEqual(['<separator>', 'Open Daemon Log', 'ADF daemon: not connected, retrying', 'Reconnect to the ADF Daemon'])
   })
 
   it('names each runtime that is down; Reconnect acts on it', () => {
     let reconnected = ''
     const items = helpTemplate([
-      menuRuntime('local', 'This computer', null),
+      menuRuntime('local', 'host-0 (Local)', null),
       menuRuntime('remote:host-1', 'host-1', 'ADF daemon: not connected (https://host-1.example:7385), retrying', () => { reconnected = 'host-1' }),
     ])
     expect(items.map((i) => i.label)).toEqual(['<separator>', 'Open Daemon Log', 'host-1: not connected (https://host-1.example:7385), retrying', 'Reconnect'])
@@ -257,13 +257,13 @@ describe('Help (§6.6)', () => {
 
   it('more than one down: Reconnect is a submenu of their names; none down: no status line', () => {
     const down = helpTemplate([
-      menuRuntime('local', 'This computer', 'ADF daemon: not connected, retrying'),
+      menuRuntime('local', 'host-0 (Local)', 'ADF daemon: not connected, retrying'),
       menuRuntime('remote:host-1', 'host-1', 'ADF daemon: connecting…'),
       menuRuntime('remote:host-2', 'host-2', null),
     ])
-    expect(down.map((i) => i.label)).toEqual(['<separator>', 'Open Daemon Log', 'This computer: not connected, retrying', 'host-1: connecting…', 'Reconnect'])
-    expect(down[4].submenu).toEqual(['This computer', 'host-1'])
-    expect(helpTemplate([menuRuntime('local', 'This computer', null), menuRuntime('remote:host-1', 'host-1', null)]).map((i) => i.label)).toEqual(['<separator>', 'Open Daemon Log'])
+    expect(down.map((i) => i.label)).toEqual(['<separator>', 'Open Daemon Log', 'host-0 (Local): not connected, retrying', 'host-1: connecting…', 'Reconnect'])
+    expect(down[4].submenu).toEqual(['host-0 (Local)', 'host-1'])
+    expect(helpTemplate([menuRuntime('local', 'host-0 (Local)', null), menuRuntime('remote:host-1', 'host-1', null)]).map((i) => i.label)).toEqual(['<separator>', 'Open Daemon Log'])
   })
 })
 
@@ -284,7 +284,7 @@ describe('Open Recent per runtime (§6.6, §7.4)', () => {
     })
     return { store, opened }
   }
-  const set = [menuRuntime('local', 'This computer', null), menuRuntime('remote:host-1', 'host-1', null)]
+  const set = [menuRuntime('local', 'host-0 (Local)', null), menuRuntime('remote:host-1', 'host-1', null)]
 
   it('a remote\'s files go to runtimeRecentFiles under its id and show under its name; a click opens it on that runtime', () => {
     const { store, opened } = menuWith(set)
@@ -310,7 +310,7 @@ describe('Open Recent per runtime (§6.6, §7.4)', () => {
     clear.click()
     expect(store.get('runtimeRecentFiles')).toEqual({ 'remote:gone': ['/x/agent-9.adf'] })
 
-    menuWith([menuRuntime('local', 'This computer', null)])
+    menuWith([menuRuntime('local', 'host-0 (Local)', null)])
     buildApplicationMenu()
     expect(openRecent().map((i) => i.label)).toEqual(['Clear Menu'])
   })

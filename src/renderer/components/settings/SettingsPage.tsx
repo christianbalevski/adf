@@ -21,6 +21,7 @@ import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor,
 import { changeOn, HostOnlyRemoteAccess, NetworkStatusLine, RemoteAccessGroup, meshServerHosts, meshVisibilityLine } from './RemoteAccessSettings'
 import { runtimeDown, useCurrentConnection } from '../../stores/connection.store'
 import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
+import { RemoteMark } from '../common/RemoteMark'
 import { initialSettingsRuntime, useSettingsRuntimeStore } from '../../stores/settings-runtime.store'
 import { apiFor } from '../../utils/runtime-api'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
@@ -1454,7 +1455,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
     }
     if (runtimeId !== LOCAL_RUNTIME) {
       window.adfApi?.getSettings().then((settings) => studioKeys(settings as unknown as Record<string, unknown>))
-        .catch((err: unknown) => console.warn('[Settings] The settings of This computer were not read:', err))
+        .catch((err: unknown) => console.warn('[Settings] The settings of the local runtime were not read:', err))
     }
     api?.getSettings().then((settings) => {
       const loadedProviders = (settings.providers as ProviderConfig[]) ?? []
@@ -1830,14 +1831,17 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
                 // §6.3: the runtime pages follow the picked runtime; Studio pages do not.
                 <div className="mb-1.5 px-2" data-runtime-picker>
                   <div className="mb-1 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]">Runtime</div>
-                  <Select
-                    value={runtimeId}
-                    onChange={(event) => onPick(event.target.value)}
-                    aria-label="Runtime"
-                    className="h-7 text-xs"
-                  >
-                    {runtimes.map((r) => <option key={r.id} value={r.id}>{runtimeHeader(r)}</option>)}
-                  </Select>
+                  <div className="flex items-center gap-1.5">
+                    {remote && <RemoteMark />}
+                    <Select
+                      value={runtimeId}
+                      onChange={(event) => onPick(event.target.value)}
+                      aria-label="Runtime"
+                      className="h-7 min-w-0 flex-1 text-xs"
+                    >
+                      {runtimes.map((r) => <option key={r.id} value={r.id}>{runtimeHeader(r)}</option>)}
+                    </Select>
+                  </div>
                 </div>
               ) : group.label && (
                 <div className="mb-1 truncate px-2 text-[11px] font-semibold uppercase tracking-[0.12em] text-[var(--adf-ui-text-subtle)]" title={group.label}>

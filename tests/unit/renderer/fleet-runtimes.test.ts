@@ -39,7 +39,7 @@ const LOCAL_ROOT = '/home/u/agents'
 const AGENT_1 = agent(`${LOCAL_ROOT}/agent-1.adf`, AGENT_1_ID, LOCAL_ROOT)
 const AGENT_2 = agent(`${LOCAL_ROOT}/agent-2.adf`, AGENT_2_ID, LOCAL_ROOT)
 
-const ONE: RuntimeView[] = [{ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }]
+const ONE: RuntimeView[] = [{ id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }]
 const TWO: RuntimeView[] = [...ONE, { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7385', state: 'connected' }]
 
 const meshNodes = (nodes: { type?: string; id: string }[]) => nodes.filter((n) => n.type === 'meshNode').map((n) => n.id).sort()

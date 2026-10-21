@@ -12,7 +12,7 @@ Open Settings with the gear in the title bar, Edit → Settings… (ADF Studio �
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
 - **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever runtime it connects to.
-- The runtime's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. With This computer only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Runtime** with a picker of the runtime names ("This computer", and each saved connection such as `rawl-hub`), and the pages show the settings of the runtime picked there. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else This computer; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
+- The runtime's pages: Prompts, Agent templates, Providers, Packages, MCP servers, Skills, Channels, Files, Identity, Networking, Compute, Usage. These are the daemon's settings. With the local runtime only, the group has no heading. Once a connection is saved in [Connections](#connection), the group is headed **Runtime** with a picker of the runtime names ("*name* (Local)", and each saved connection such as `rawl-hub`), and the pages show the settings of the runtime picked there. Settings opens on the runtime of the open agent (from an agent window: that window's runtime), else the local runtime; the choice is not saved. A picked runtime that is not connected shows "Not connected to *name*." with its controls disabled. With another computer picked, controls only its own computer can change (Remote access, owner identity, the firewall) say "Change on *name*." The Studio pages do not change with the picker.
 
 ## Saving
 
@@ -115,7 +115,7 @@ Setup:
 4. Select a model from the dropdown (e.g., `gpt-6-sol`, `gpt-5.6-luna`)
 
 Notes:
-- Authentication is app-wide within Studio — all agents using this provider share the same session. A Studio in Inside Studio mode and the daemon keep separate sessions; in This computer mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
+- Authentication is app-wide within Studio — all agents using this provider share the same session. A Studio in Inside Studio mode and the daemon keep separate sessions; in Local mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
@@ -135,7 +135,7 @@ Setup:
 5. Select a model from the dropdown (e.g., `grok-4.5`, `grok-4.3`)
 
 Notes:
-- Authentication is app-wide within Studio — all agents using this provider share the same session. A Studio in Inside Studio mode and the daemon keep separate sessions; in This computer mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
+- Authentication is app-wide within Studio — all agents using this provider share the same session. A Studio in Inside Studio mode and the daemon keep separate sessions; in Local mode the session moves to the daemon (see [Where subscription sessions are stored](#where-subscription-sessions-are-stored))
 - Tokens are encrypted at rest via the system keychain (macOS Keychain, Windows DPAPI, etc.)
 - Token refresh is automatic; if your session expires, click **Sign In** again
 - xAI decides which accounts are eligible for OAuth API tokens — if sign-in succeeds but requests fail with 403, check your subscription tier on xAI's side (or use an `openai-compatible` provider with a `console.x.ai` API key instead)
@@ -180,7 +180,7 @@ Sessions are **per-surface**: Studio and the daemon each own a token file and ne
 
 `<provider>` is `chatgpt-subscription` or `grok-subscription`.
 
-**Signing in to Studio in Inside Studio mode does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case. At the first launch with This computer, Studio moves its session file to `auth.daemon.json` (and back at the first launch Inside Studio), so one session follows the mode; see [Studio backend › What moves](studio-backend.md#what-moves-during-a-switch).
+**Signing in to Studio in Inside Studio mode does not sign in the daemon.** They are separate sessions — sign in to each surface once. See [`adf auth login`](../daemon/cli.md#auth) for the daemon side, including the remote-daemon case. At the first launch in Local mode, Studio moves its session file to `auth.daemon.json` (and back at the first launch Inside Studio), so one session follows the mode; see [Studio backend › What moves](studio-backend.md#what-moves-during-a-switch).
 
 **Why split them?** `safeStorage` is only callable from inside Electron, so anything it encrypts is opaque to a plain-Node daemon. Sharing one file would mean dropping Studio to an encryption scheme the daemon can also open — trading the OS keychain for a key file sitting beside the ciphertext. The split keeps Studio's keychain protection intact.
 
@@ -562,7 +562,7 @@ Once a connection is saved, the page lists the runtimes Studio connects to:
 
 | Row | State | Action |
 |---|---|---|
-| This computer | Connected, or its state while it is not connected; none while Inside Studio runs | None; **Inside Studio (legacy)** in its **More** menu (⋯); **Connect** while Inside Studio runs |
+| *name* (Local) | Connected, or its state while it is not connected; none while Inside Studio runs | None; **Inside Studio (legacy)** in its **More** menu (⋯); **Connect** while Inside Studio runs |
 | Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
 | A saved connection (shared with `adf`) | Connected, Connecting, Not connected, retrying, or Not connected | None; **Remove** in its **More** menu |
 | A computer found on this network or the tailnet, not saved | Not paired | **Add** |
@@ -571,16 +571,16 @@ Once a connection is saved, the page lists the runtimes Studio connects to:
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
-| This computer | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. Each saved connection is connected too. |
+| Local | `local` | A background service on this computer (the ADF daemon), using Studio's settings and agent files. The default. Each saved connection is connected too. |
 | Inside Studio (legacy) | `embedded` | Studio. Removed in the next release. |
 
-**Connect** on This computer (while Inside Studio runs) or on Inside Studio (legacy) saves the mode for the next launch. Studio does not restart; the page shows "Next launch: *name*." with **Restart**. While Inside Studio runs, saved connections are listed with no state and connect at the next launch with This computer.
+**Connect** on *name* (Local) (while Inside Studio runs) or on Inside Studio (legacy) saves the mode for the next launch. Studio does not restart; the page shows "Next launch: *name*." with **Restart**. While Inside Studio runs, saved connections are listed with no state and connect at the next launch in Local mode.
 
 A `studio-backend.json` saved by an earlier release with `"mode": "remote"` is migrated at the first launch of this release: it becomes `"mode": "local"`, and that connection stays saved and connects (see [Upgrading from remote mode](studio-backend.md#upgrading-from-remote-mode)).
 
-Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies at the next launch. Without the file, Studio runs This computer: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as any first launch with This computer does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
+Studio stores the choice in `studio-backend.json` in its user data directory (`%APPDATA%\ADF Studio` on Windows, `~/Library/Application Support/ADF Studio` on macOS, `~/.config/ADF Studio` on Linux) and reads it once at launch, so a change applies at the next launch. Without the file, Studio runs in Local mode: at that launch it saves `"mode": "local"` and moves its ChatGPT and Grok sessions, and its MCP sign-ins when the keychain can be opened, to the daemon, as any first launch in Local mode does (see [Upgrading from 0.7.x](studio-backend.md#upgrading-from-07x)). Deleting `studio-backend.json` is therefore not a way back to Inside Studio.
 
-While This computer is in use, the page also shows **This computer**: the daemon (state, pid, who started it; URL and version under **Details**) and **Background** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. Inside Studio neither shows.
+In Local mode, the page also shows ***name* (Local)**: the daemon (state, pid, who started it; URL and version under **Details**) and **Background** (`keepDaemonRunning`, default off). Off: quitting Studio stops a daemon that Studio started. On: the daemon keeps running, and the ADF CLI manages it. Inside Studio neither shows.
 
 - An address must be `https://`, or `http://` to loopback (an SSH tunnel) or a Tailscale address (`100.64.0.0/10`, `fd7a:115c:a1e0::/48`). Any other `http://` address needs the confirmation that the token is sent unencrypted.
 - Tokens are in the OS keychain (shared with `adf`), sent only to their connection's address, and never shown again.
@@ -588,11 +588,11 @@ While This computer is in use, the page also shows **This computer**: the daemon
 
 ### Go back to running agents inside Studio
 
-In **Settings → Connections**, choose **Inside Studio (legacy)** in This computer's **More** menu (or **Connect** under **Details**), then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
+In **Settings → Connections**, choose **Inside Studio (legacy)** in the Local row's **More** menu (or **Connect** under **Details**), then **Restart**. This is the persistent way back: the next launch moves the ChatGPT and Grok sessions back and deletes the keychain copy of the runtime identity. MCP sign-ins move back except those the daemon had before the first switch; when that switch could not read the daemon's keychain entries and a daemon had already run on these settings, only the ones Studio moved come back (see [What moves during a switch](studio-backend.md#what-moves-during-a-switch)). See [Run agents inside Studio when the daemon does not work](studio-backend.md#run-agents-inside-studio-when-the-daemon-does-not-work).
 
 ### Run agents inside Studio for one launch
 
-If Studio does not start with This computer, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connections shows "Inside Studio (legacy) because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connections as above.
+If Studio does not start in Local mode, set `ADF_STUDIO_BACKEND=embedded` for one launch. It overrides `studio-backend.json` and leaves the file unchanged. Nothing moves back: sign-ins and the runtime identity stay where the saved backend keeps them, so ChatGPT, Grok and MCP sign-ins held by the daemon are not available in that launch. Settings → Connections shows "Inside Studio (legacy) because ADF_STUDIO_BACKEND is set." Do not use the variable as the way back; use Settings → Connections as above.
 
 ```powershell
 # Windows (PowerShell)

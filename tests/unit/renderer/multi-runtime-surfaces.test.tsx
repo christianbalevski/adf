@@ -28,12 +28,12 @@ vi.mock('zustand', async (importOriginal) => {
 
 const HOST_1 = 'remote:host-1'
 const HOST_2 = 'remote:host-2'
-const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'connected' }
 const REMOTE_2: RuntimeView = { id: HOST_2, kind: 'remote', name: 'host-2', url: 'https://host-2.example:7386', state: 'retrying' }
 
 function view(runtimes?: RuntimeView[]): ConnectionsView {
-  return { current: { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
+  return { current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
 }
 
 /** A fresh page with the runtime set; `search` is the page query (an agent window's). */
@@ -63,7 +63,7 @@ describe('status bar (§6.2)', () => {
     const one = await (await page([LOCAL])).statusBar()
     expect(one).toBe(none)
     expect(groups(one)).toEqual(['true'])
-    expect(one).not.toContain('This computer')
+    expect(one).not.toContain('host-0 (Local)')
     expect(one).not.toContain('Runtimes')
     expect(one).toContain('aria-label="Kill: nothing running"')
   })
@@ -71,15 +71,29 @@ describe('status bar (§6.2)', () => {
   it('more than one runtime: one group per runtime, This computer first, each named, with its own Mesh and Kill', async () => {
     const html = await (await page([LOCAL, REMOTE, REMOTE_2])).statusBar()
     expect(groups(html)).toEqual(['local', HOST_1, HOST_2])
-    expect(html).toContain('aria-label="Runtime: This computer"')
+    expect(html).toContain('aria-label="Runtime: host-0 (Local)"')
     expect(html).toContain('aria-label="Runtime: host-1"')
     expect(html).toContain('title="https://host-1.example:7386"')
     // A runtime that is down: its state, and its Kill disabled with the state as tooltip.
     expect(html).toContain('aria-label="Runtime: host-2 · Not connected, retrying"')
     expect(html).toContain('aria-label="Kill on host-2: Not connected, retrying"')
-    expect(html).toContain('aria-label="Kill on This computer: nothing running"')
+    expect(html).toContain('aria-label="Kill on host-0 (Local): nothing running"')
     expect(html.match(/>Kill</g)).toHaveLength(3)
     expect(html.match(/Mesh off/g)?.length).toBeGreaterThanOrEqual(3)
+  })
+
+  it('the local runtime is `<name> (Local)` with no mark; a remote is its saved name with the remote icon, never "(Remote)"', async () => {
+    const html = await (await page([LOCAL, REMOTE])).statusBar()
+    const group = (id: string) => html.slice(html.indexOf(`data-runtime-group="${id}"`)).split('data-runtime-group=')[1]
+    expect(group('local')).toContain('host-0 (Local)')
+    expect(group('local')).not.toContain('data-remote-mark')
+    expect(group(HOST_1)).toContain('data-remote-mark')
+    expect(html).not.toContain('(Remote)')
+    const { RemoteMark } = await import('../../../src/renderer/components/common/RemoteMark')
+    const { Tooltip } = await import('../../../src/renderer/components/common/Tooltip')
+    const mark = (RemoteMark as (p: object) => React.ReactElement<{ tip: string }>)({})
+    expect(mark.type).toBe(Tooltip)
+    expect(mark.props.tip).toBe('Remote')
   })
 
   it('Kill names the runtime it stops once something runs there', async () => {
@@ -89,7 +103,7 @@ describe('status bar (§6.2)', () => {
     const { StatusBar } = await import('../../../src/renderer/components/layout/StatusBar')
     const html = renderToStaticMarkup(<StatusBar />)
     expect(html).toContain('aria-label="Stops all agents and mesh on host-1"')
-    expect(html).toContain('aria-label="Kill on This computer: nothing running"')
+    expect(html).toContain('aria-label="Kill on host-0 (Local): nothing running"')
   })
 
   it('an agent window shows its own runtime\'s group only', async () => {
@@ -163,7 +177,7 @@ describe('Settings runtime picker (§6.3)', () => {
     const two = await render([LOCAL, REMOTE_2])
     expect(two).toContain('data-runtime-picker')
     expect(two).toContain('aria-label="Runtime"')
-    expect(two).toContain('>This computer</option>')
+    expect(two).toContain('>host-0 (Local)</option>')
     expect(two).toContain('>host-2 · Not connected, retrying</option>')
     // Studio pages come first, unaffected by the picker.
     expect(two.indexOf('data-settings-scope="studio"')).toBeLessThan(two.indexOf('data-runtime-picker'))

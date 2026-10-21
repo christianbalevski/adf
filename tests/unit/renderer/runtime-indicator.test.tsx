@@ -14,7 +14,7 @@ import type { ConnectionCurrent } from '../../../src/shared/types/connection.typ
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
 
-const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected', ...over })
+const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected', ...over })
 
 describe('the runtime indicator (settings-scopes.md §4.1)', () => {
   it('nothing for This computer or Inside Studio while connected', () => {
@@ -34,7 +34,7 @@ describe('the runtime indicator (settings-scopes.md §4.1)', () => {
 
   it('a problem shows in the same spot with the status line\'s words, This computer included', () => {
     expect(runtimeIndicator(current({ kind: 'remote', name: 'rawl-hub', state: 'retrying' }))?.text).toBe('rawl-hub · Not connected, retrying')
-    expect(runtimeIndicator(current({ state: 'connecting' }))).toEqual({ text: 'This computer · Connecting', remote: false, tooltip: null, problem: true })
+    expect(runtimeIndicator(current({ state: 'connecting' }))).toEqual({ text: 'host-0 (Local) · Connecting', remote: false, tooltip: null, problem: true })
     expect(renderToStaticMarkup(<RuntimeIndicator current={current({ state: 'not-connected' })} onOpen={() => {}} />)).not.toContain('<svg')
   })
 
@@ -43,7 +43,7 @@ describe('the runtime indicator (settings-scopes.md §4.1)', () => {
     expect(runtimeIndicator(current({ state: 'retrying' }), false)).toEqual({ text: 'Not connected, retrying', remote: false, tooltip: null, problem: true })
     const html = renderToStaticMarkup(<RuntimeIndicator current={current({ state: 'connecting' })} showName={false} onOpen={() => {}} />)
     expect(html).toContain('>Connecting<')
-    expect(html).not.toContain('This computer')
+    expect(html).not.toContain('host-0 (Local)')
     expect(html).not.toContain('Runtime:')
   })
 })

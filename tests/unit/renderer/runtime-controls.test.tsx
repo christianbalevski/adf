@@ -11,16 +11,16 @@ import { killResultLabel, killTooltip } from '../../../src/renderer/components/l
 import { MESH_OFF_NOTE, OUTDATED_CONTAINER_ADVISORY, setupLogTone } from '../../../src/renderer/components/settings/SettingsPage'
 import type { ConnectionCurrent } from '../../../src/shared/types/connection.types'
 
-const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected', ...over })
+const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected', ...over })
 const settingsPage = () => readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
 
 describe('Kill', () => {
   it('the tooltip names the runtime only once a remote connection is saved', () => {
     expect(killTooltip(current(), false)).toBe('Stops all agents and mesh')
     expect(killTooltip(null, false)).toBe('Stops all agents and mesh')
-    expect(killTooltip(current(), true)).toBe('Stops all agents and mesh on This computer')
+    expect(killTooltip(current(), true)).toBe('Stops all agents and mesh on host-0 (Local)')
     expect(killTooltip(current({ id: 'remote:rawl-hub', kind: 'remote', name: 'rawl-hub' }), true)).toBe('Stops all agents and mesh on rawl-hub')
-    expect(killTooltip(null, true)).toBe('Stops all agents and mesh on This computer')
+    expect(killTooltip(null, true)).toBe('Stops all agents and mesh on Local')
   })
 
   it('says what it stopped, so the stop is never silent', () => {

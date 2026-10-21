@@ -142,9 +142,11 @@ describe('an unreadable cli-remotes.json', () => {
     const { resolveDaemonUrl } = await import('../../src/main/cli/daemon-url')
     expect(() => resolveDaemonUrl(undefined, s.env)).toThrow(sentence)
 
+    // The local row is named as in Studio: the runtime alias of the daemon's settings, `<name> (Local)`.
+    writeFileSync(s.env.ADF_DAEMON_SETTINGS!, JSON.stringify({ runtimeAlias: 'host-0' }))
     const list = io(s.env)
     expect(await runRemotes([], list.io)).toBe(0)
-    expect(list.out.join('')).toContain('  local  this computer\'s daemon\n')
+    expect(list.out.join('')).toContain('  local  host-0 (Local)\n')
     expect(list.out.join('')).not.toContain('* local')
     expect(list.err.join('')).toBe(`* ${sentence}\n`)
 

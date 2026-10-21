@@ -257,7 +257,7 @@ describe('host panel (Settings → Networking → Remote access)', () => {
     expect(await other.host.set({ enabled: true })).toMatchObject({ ok: false, code: 'unavailable' })
     expect(await other.host.addDevice('x')).toMatchObject({ ok: false, code: 'unavailable' })
     expect(other.daemon.requests).toEqual([])
-    expect(unavailableReason('embedded')).toContain('This computer')
+    expect(unavailableReason('embedded')).toContain('needs Local as the connection')
   })
 
   it('Allow on this network posts the network id; Remove deletes it; set() has no trustNetwork', async () => {

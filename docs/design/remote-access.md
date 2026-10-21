@@ -12,7 +12,7 @@ Today (remote-daemon.md Option 2) a user who wants a second computer to reach th
 
 After this change:
 
-- Host: Settings → Networking → **Remote access** (or `adf daemon remote on`). The section shows the addresses (Copy), **Add device** (a token shown once), **Devices** with who is connected now and **Revoke**, and **Pair device** (6-digit code). Settings → Backend → This computer shows one line, "Remote access: On · *N* devices", with a link to Networking.
+- Host: Settings → Networking → **Remote access** (or `adf daemon remote on`). The section shows the addresses (Copy), **Add device** (a token shown once), **Devices** with who is connected now and **Revoke**, and **Pair device** (6-digit code). Settings → Backend → *name* (Local) shows one line, "Remote access: On · *N* devices", with a link to Networking.
 - Client: Settings → Backend → Remote computer → **Discovered** lists the ADF computers found on the LAN and the tailnet. Choose one, type the code shown on the host, the host confirms, done. Or paste address and token. `adf pair` does the same in the terminal.
 - No environment variable, no foreground daemon, no hand-made firewall rule on Windows or macOS.
 
@@ -583,7 +583,7 @@ Parts A and B run in parallel against §11 after step 0.
 | A4 | Daemon | Firewall probes (Windows PowerShell, macOS `socketfilterfw`), `tailscale serve` on/off and status, `tailscale whois` | 4/10 |
 | A5 | CLI | `adf daemon remote on/off/status`, `adf daemon devices [list/add/revoke]`, `adf daemon pair`; `adf pair`, `adf remotes`, `cli-remotes.json`, keychain storage, resolution order, help text | 5/10 |
 | A6 | Daemon | Tests: listener binding and address filter (fake interfaces), token matrix of §4.4 on real sockets, revocation closes SSE, pairing (expiry, 5 wrong codes, busy, deny, single delivery), rate limits, CLI flows against a spawned daemon | 5/10 |
-| B1 | Studio | This computer panel (§7), claim modal and OS notification, status-bar indicator, notices, quit confirmation (§3.6), New token dialog | 5/10 |
+| B1 | Studio | *name* (Local) panel (§7), claim modal and OS notification, status-bar indicator, notices, quit confirmation (§3.6), New token dialog | 5/10 |
 | B2 | Studio | Main: mDNS browse + tailnet hello probe, pairing client (claim, poll, cancel), storage (`remote.paired`), relocation offer; renderer: discovered list and pairing dialog | 5/10 |
 | B3 | Studio | `Info.plist` keys (§6), handler tests against a fake daemon, parity of the IPC map | 3/10 |
 | C | Lead | Docs: remote-daemon.md "Option 0: Allow other computers to connect", studio-backend.md sections, daemon-backend.md §9.2 (device tokens), operations.md files list; manual checklist on Windows, macOS, Linux (firewall prompts, Local Network prompt, Wi-Fi change, sleep) | 3/10 |

@@ -96,8 +96,8 @@ export function fileProblemOptions(boot: BootBackend): MessageBoxOptions {
       ? `${boot.configPath}: ${boot.fileProblem}.\n\n${boot.writeBlocked}\n\nYour choice applies to this launch only, and no sign-in moves.`
       : `${boot.configPath}: ${boot.fileProblem}.\n\nStudio saves your choice, then moves your sign-ins to that side. Inside Studio is legacy and removed in the next release.`,
     buttons: blocked
-      ? ['Run on This Computer for This Launch', 'Run Inside Studio for This Launch']
-      : ['Run on This Computer (Recommended)', 'Run Inside Studio (Legacy)'],
+      ? ['Run Locally for This Launch', 'Run Inside Studio for This Launch']
+      : ['Run Locally (Recommended)', 'Run Inside Studio (Legacy)'],
     defaultId: 0,
     cancelId: 0,
     noLink: true,
@@ -322,7 +322,7 @@ export function firstLaunchNoticeOptions(notice: FirstLaunchNotice, connected: b
   parts.push('Settings → Connections has the details.')
   return {
     type: record.notDone.length > 0 || !connected ? 'warning' : 'info',
-    title: 'Backend: This computer',
+    title: 'Backend: Local',
     message: connected ? 'Agents now run in a background service on this computer (the ADF daemon).' : 'Agents now run in a background service on this computer (the ADF daemon), but Studio could not connect to it.',
     detail: parts.join('\n\n'),
     buttons: ['OK', 'Open the Guide'],

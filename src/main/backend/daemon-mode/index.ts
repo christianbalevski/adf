@@ -24,6 +24,7 @@ import { createRuntimeConnection, type QuitOptions, type RuntimeConnection, type
 import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manager'
 import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
+import { LOCAL_LABEL } from '../../../shared/runtime-name'
 
 export { RECOVERY_HINT, remoteWaitingNotice } from './hints'
 export {
@@ -208,6 +209,8 @@ export interface DaemonModeDeps {
   stashWaitMs?: number
   /** The daemon's `remote_access` push (remote-access.md §8), for Settings → Networking → Remote access. */
   onRemoteAccessEvent?: (payload: unknown) => void
+  /** Local mode: the local runtime's name, `<name> (Local)` (local-runtime-name.ts); default "Local". */
+  localName?: () => string
   /** A remote primary (tests only): the connection's name, for "Stored on <name>." and "Open on <name>." (settings-scopes.md §7). */
   runtimeName?: () => string | null
   /** A remote primary's id (tests only; multi-runtime.md §1.3): `remote:<name>`, or `remote` (the default). */
@@ -456,7 +459,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
     id: primaryId,
     kind: deps.mode,
     primary: true,
-    name: () => deps.mode === 'local' ? 'This computer' : deps.runtimeName?.() || primaryId,
+    name: () => deps.mode === 'local' ? deps.localName?.() || LOCAL_LABEL : deps.runtimeName?.() || primaryId,
     deps,
     shared,
   })

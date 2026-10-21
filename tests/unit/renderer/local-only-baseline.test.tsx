@@ -58,7 +58,7 @@ const WRITE = process.env.T6_WRITE
 const AGENT_1 = { id: '5b0f3c3e-6c1d-4f5a-9a51-2f7c0a3d9e11', path: '/agents/agent-1.adf' }
 const AGENT_2 = { id: '8e2d4b7a-1f3c-4e9b-b2a6-7c5d9f0e3a22', path: '/agents/agent-2.adf' }
 
-const CURRENT = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+const CURRENT = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const LOCAL = { ...CURRENT }
 
 /** Date.now for surfaces that show an age (the approvals panel). */

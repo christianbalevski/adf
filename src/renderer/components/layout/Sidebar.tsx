@@ -16,6 +16,7 @@ import { useKeyboardContextMenu } from '../../hooks/useKeyboardContextMenu'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
 import { Tooltip } from '../common/Tooltip'
+import { RemoteMark } from '../common/RemoteMark'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
 import { Button } from '../ui'
@@ -48,7 +49,7 @@ type RowRuntime = RuntimeId | undefined
 const rowKey = (runtimeId: RowRuntime, filePath: string): string => agentKey({ runtimeId, filePath })
 
 /** Why another runtime's row does not drag out (multi-runtime.md §8.3): a drag-out is a file of this computer. */
-export const REMOTE_DRAG_TIP = 'Drag out: This computer only'
+export const REMOTE_DRAG_TIP = 'Drag out: Local only'
 
 /**
  * Keep only entries whose name (file name, agent display name, or path
@@ -938,6 +939,7 @@ function RuntimeGroup({ runtime, onTrack, children }: { runtime: RuntimeView; on
         className="w-full pl-3 pr-1.5 py-[3px] text-[11px] leading-4 text-left flex items-center gap-1.5 text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] cursor-pointer select-none"
       >
         <Chevron expanded={expanded} />
+        {runtime.kind === 'remote' && <RemoteMark size={11} />}
         <Tooltip tip={runtime.url ?? runtime.name} className="flex-1 min-w-0">
           <span className={`block font-semibold truncate ${runtime.state === 'connected' ? '' : 'text-[var(--adf-ui-text-subtle)]'}`}>{runtimeHeader(runtime)}</span>
         </Tooltip>

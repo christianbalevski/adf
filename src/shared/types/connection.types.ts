@@ -26,7 +26,7 @@ export interface ConnectionCurrent {
   /** `local` or `embedded`: the mode this launch runs (a remote is a runtime of the set, never the current connection). */
   id: string
   kind: ConnectionKind
-  /** "This computer" or "Inside Studio". */
+  /** `<runtime name> (Local)` (shared/runtime-name.ts) or "Inside Studio". */
   name: string
   /** Remote: the address in use (the indicator's tooltip). */
   url: string | null
@@ -90,7 +90,7 @@ export interface RuntimeView {
   /** `local`, `remote:<name>` or `remote`. */
   id: string
   kind: 'local' | 'remote'
-  /** "This computer", or the saved connection's name. */
+  /** `<runtime name> (Local)` (shared/runtime-name.ts), or the saved connection's name. */
   name: string
   /** Remote: the address (the tooltip). */
   url: string | null
