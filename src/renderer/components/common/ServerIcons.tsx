@@ -5,8 +5,9 @@
  * - `ServerIcon` (24 grid): an agent server, two stacked units. It is the
  *   Connections nav icon too.
  * - `ConnectIcon` and `ShareIcon` (48 grid): the two choices of Add.
- *   Connect: this computer, an arrow out to one server. Share: three
- *   computers, an arrow in from each to this server.
+ *   Connect: this computer, an arrow out to one server. Share: this
+ *   computer on the left, three computers on the right, an arrow in from
+ *   each.
  */
 
 const STROKE = { fill: 'none', stroke: 'currentColor', strokeLinecap: 'round', strokeLinejoin: 'round' } as const
@@ -38,25 +39,24 @@ export function ConnectIcon({ size = 40 }: { size?: number }) {
   )
 }
 
-/** Three computers with an arrow in from each to a server: Share. */
+/** This computer on the left, three computers on the right, an arrow in from each: Share. */
 export function ShareIcon({ size = 40 }: { size?: number }) {
   return (
     <svg width={size} height={size} viewBox="0 0 48 48" strokeWidth="1.8" {...STROKE} aria-hidden="true" data-choice-icon="share">
-      {/* The computers */}
-      <rect x="3" y="5" width="11" height="7" rx="1.5" />
-      <path d="M6 15h5" />
-      <rect x="3" y="20.5" width="11" height="7" rx="1.5" />
-      <path d="M6 30.5h5" />
-      <rect x="3" y="36" width="11" height="7" rx="1.5" />
-      <path d="M6 46h5" />
-      {/* In */}
-      <path d="M17.5 10 29 18.5m-.4-3.5.4 3.5-3.5.5" />
-      <path d="M17.5 24H29m-3-3 3 3-3 3" />
-      <path d="M17.5 38 29 29.5m-3.5-.5 3.5.5-.4 3.5" />
-      {/* This server */}
-      <rect x="33" y="13" width="12" height="9.5" rx="1.5" />
-      <rect x="33" y="25.5" width="12" height="9.5" rx="1.5" />
-      <path d="M36.5 17.75h.01M36.5 30.25h.01" />
+      {/* This computer */}
+      <rect x="2" y="16.5" width="16" height="12" rx="2" />
+      <path d="M0.5 32.5h19" />
+      {/* In, from each computer */}
+      <path d="M33 9.5 21.5 18.5M25 18.3l-3.5.2 1-3.35" />
+      <path d="M33 24H21.5m3-3-3 3 3 3" />
+      <path d="M33 38.5 21.5 29.5m1 3.35-1-3.35 3.5.2" />
+      {/* The other computers */}
+      <rect x="36" y="6" width="10" height="7" rx="1.5" />
+      <path d="M34.5 15.5h13" />
+      <rect x="36" y="20.5" width="10" height="7" rx="1.5" />
+      <path d="M34.5 30h13" />
+      <rect x="36" y="35" width="10" height="7" rx="1.5" />
+      <path d="M34.5 44.5h13" />
     </svg>
   )
 }
