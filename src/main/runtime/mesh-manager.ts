@@ -862,7 +862,8 @@ export class MeshManager extends EventEmitter {
       // WS cold path's fallback (no HTTP transport context there).
       this.emitPeerStationIngress(
         recipientFilePath,
-        returnPath ?? (typeof message.reply_to === 'string' ? message.reply_to : undefined)
+        returnPath ?? (typeof message.reply_to === 'string' ? message.reply_to : undefined),
+        typeof senderDid === 'string' && senderDid ? senderDid : undefined
       )
 
       return { success: true, messageId: inboxId }
@@ -1354,7 +1355,7 @@ export class MeshManager extends EventEmitter {
    * Matched by the ingress return path's host against the discovered peer
    * list; host-only fallback covers port drift. Best-effort and decorative.
    */
-  private emitPeerStationIngress(recipientFilePath: string, fromUrl?: string): void {
+  private emitPeerStationIngress(recipientFilePath: string, fromUrl?: string, senderId?: string): void {
     if (!this.mdnsService || !fromUrl) return
     try {
       const source = new URL(fromUrl)
@@ -1378,7 +1379,13 @@ export class MeshManager extends EventEmitter {
       if (!peer) return
       this.emit('mesh_event', {
         type: 'message_routed',
-        payload: { filePath: `station:peer:${peer.runtime_id}`, toFilePaths: [recipientFilePath] },
+        payload: {
+          filePath: `station:peer:${peer.runtime_id}`,
+          toFilePaths: [recipientFilePath],
+          // The sender DID, so a map that manages the sending runtime draws
+          // the trace from the sender's own tile (mirror of toPeerAgent).
+          ...(senderId ? { fromPeerAgent: { runtimeId: peer.runtime_id, id: senderId } } : {})
+        },
         timestamp: Date.now()
       })
     } catch { /* station lighting is decorative */ }

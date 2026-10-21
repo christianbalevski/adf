@@ -22,6 +22,8 @@ export interface StationNodeData {
   detail?: { host?: string; agentCount?: number; firstSeen?: number; url?: string; source?: string; ownerAlias?: string; ownerVerified?: boolean; isSelfOwned?: boolean }
   /** Peer runtimes: one platform tile per remote agent, hover for its card */
   peerAgents?: RemotePeerAgent[]
+  /** Multi-runtime: a peer the map does not manage (dashed border in the theme ink, tooltip "Peer"). */
+  peer?: boolean
   /** Far offscreen (MeshGraphView's overscan visibility pass) — render a
    *  hollow fixed-size shell instead of the full content */
   culled?: boolean
@@ -137,7 +139,7 @@ export const FleetStationNode = memo(function FleetStationNode(props: NodeProps)
 })
 
 function FleetStationNodeFull({ id, data }: NodeProps) {
-  const { kind, label, status, facing = 0, peerAgents, detail } = data as unknown as StationNodeData
+  const { kind, label, status, facing = 0, peerAgents, detail, peer } = data as unknown as StationNodeData
   const dark = document.documentElement.classList.contains('dark')
   const setPeerAgentHover = useFleetStore((s) => s.setPeerAgentHover)
   const setPeerReadout = useFleetStore((s) => s.setPeerReadout)
@@ -322,7 +324,7 @@ function FleetStationNodeFull({ id, data }: NodeProps) {
       : null
 
   return (
-    <div className="relative pointer-events-none" style={{ width: STATION_W, height: STATION_H }} title={`${label} — ${status}`}>
+    <div className="relative pointer-events-none" style={{ width: STATION_W, height: STATION_H }} title={peer ? 'Peer' : `${label} — ${status}`}>
       <Handle type="target" position={Position.Top} style={handleStyle} />
       <Handle type="source" position={Position.Bottom} style={handleStyle} />
       <svg width={STATION_W} height={STATION_H} className="absolute inset-0 overflow-visible">
@@ -570,6 +572,7 @@ function FleetStationNodeFull({ id, data }: NodeProps) {
           strokeWidth={3}
           strokeLinecap="round"
           strokeDasharray={kind === 'peer' ? '18 12' : undefined}
+          style={peer ? { stroke: 'var(--ink-faint)' } : undefined}
         />
         {/* Selection ring — player violet, same accent the lit traces wear */}
         {isSelected && (

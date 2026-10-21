@@ -355,6 +355,8 @@ describe('one discovery feed (remote-access.md §5.1)', () => {
     expect(changes.length).toBeGreaterThan(0)
     // The mesh list.
     expect(svc.getDiscoveredRuntimes().map((r) => [r.runtime_id, r.url])).toEqual([['peer-1', 'http://192.168.1.20:7295']])
+    // Its remote access, so a client that manages that runtime knows it (multi-runtime.md §6.4).
+    expect(svc.getDiscoveredRuntimes()[0]).toMatchObject({ fingerprint: 'ABCD-EFGH', daemon_port: 7385 })
     // The feed: one entry, both capabilities.
     expect(svc.peers()).toEqual([{
       key: 'peer-1', name: 'agent-1-pc', source: 'mdns',

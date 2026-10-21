@@ -61,7 +61,9 @@ import { useMesh } from '../../hooks/useMesh'
 import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
-import { selectMapAgents, mapTarget, mergeBurn, mergePeers, runtimeOfRegion, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, type MapPeer, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { selectMapAgents, mapTarget, mergeBurn, mergePeers, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { useConnectionStore } from '../../stores/connection.store'
+import { isRemoteAgentKey } from '../../../shared/types/agent-ref'
 import { useRuntimesStore, runtimeHeader } from '../../stores/runtimes.store'
 import { apiFor, useOpenAgentKey } from '../../utils/runtime-api'
 import { reportFailure } from '../../stores/failure-notices.store'
@@ -145,12 +147,12 @@ const CULL_THROTTLE_MS = 120
  * the memo for EVERY edge on every rebuild. Entries for vanished keys are
  * pruned; `last` lets an identical rebuild return the previous array itself.
  */
-interface EdgeCache {
+export interface EdgeCache {
   map: Map<string, { sig: string; edge: Edge }>
   last: Edge[]
 }
 
-function buildEdges(
+export function buildEdges(
   agents: FleetAgentStatus[],
   debugInfo: MeshDebugInfo | null,
   liveRoutes: Record<string, { from: string; to: string }>,
@@ -165,11 +167,14 @@ function buildEdges(
     return edge
   }
 
-  // Map agent handles to filePaths (node IDs use filePaths)
+  // Map agent handles to filePaths (node IDs use filePaths). The message log
+  // is This computer's bus, so its names are looked up among This computer's
+  // agents only: `agent-1` on another runtime is another agent (§6.4).
   const nameToPath = new Map<string, string>()
   const agentPaths = new Set<string>()
   for (const agent of agents) {
     agentPaths.add(agent.filePath)
+    if (isRemoteAgentKey(agent.filePath)) continue
     const base = pathBasename(agent.filePath).replace('.adf', '')
     if (base) nameToPath.set(base, agent.filePath)
     nameToPath.set(agent.handle, agent.filePath)
@@ -262,14 +267,23 @@ export interface RemotePollState {
   errors: Record<string, string>
   /** Runtime DID per runtime of the set (a peer with one of these is that runtime's region). */
   dids: Record<string, string | null>
+  /** A DID read that failed or came back empty: when to read again, and the wait after that. */
+  didRetry?: Record<string, { at: number; wait: number }>
+  /** Peer runtime_id → runtime of the set, as matched so far. */
+  learned?: Record<string, string>
 }
+
+/** The first wait after a DID read that failed, doubled up to the cap. */
+export const DID_RETRY_FIRST_MS = 5_000
+export const DID_RETRY_MAX_MS = 5 * 60_000
 
 /**
  * One poll of every connected runtime other than This computer: its agents
  * go to its mesh slice, its burn and peers come back. With This computer
- * only there are none and nothing is called.
+ * only there are none and nothing is called. `beforeAgents` runs before a
+ * runtime's agents land, so its region can take a peer station's ground.
  */
-async function pollRuntimes(state: RemotePollState): Promise<Array<{ runtimeId: string; burn: FleetBurnResult | null; peers: unknown[] }>> {
+async function pollRuntimes(state: RemotePollState, beforeAgents?: (runtimeId: string) => void): Promise<Array<{ runtimeId: string; burn: FleetBurnResult | null; peers: unknown[] }>> {
   const runtimes = useRuntimesStore.getState().runtimes
   if (runtimes.length < 2) return []
   const others = runtimes.filter((r) => r.id !== 'local' && r.state === 'connected')
@@ -278,7 +292,10 @@ async function pollRuntimes(state: RemotePollState): Promise<Array<{ runtimeId: 
       const poll = await apiFor(rt.id).getMeshMapPoll(state.seq[rt.id] ?? 0)
       state.seq[rt.id] = typeof poll.debug?.logSeq === 'number' ? poll.debug.logSeq : 0
       delete state.errors[rt.id]
-      if (poll.fleet.agents.length > 0) useMeshStore.getState().setAgents(poll.fleet.agents, rt.id)
+      if (poll.fleet.agents.length > 0) {
+        beforeAgents?.(rt.id)
+        useMeshStore.getState().setAgents(poll.fleet.agents, rt.id)
+      }
       return { runtimeId: rt.id, burn: poll.burn, peers: poll.peers ?? [] }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err)
@@ -292,36 +309,101 @@ async function pollRuntimes(state: RemotePollState): Promise<Array<{ runtimeId: 
   return results.filter((r): r is NonNullable<typeof r> => r !== null)
 }
 
-/** The runtime DIDs of the set, read once per runtime (GET /identity there). */
-async function setRuntimeDids(state: RemotePollState): Promise<Set<string>> {
+/**
+ * The runtime DIDs of the set (GET /identity there), read once per runtime.
+ * A read that fails, or answers no DID, is read again after a wait that
+ * doubles from 5 s to 5 min; meanwhile the runtime is still matched by its
+ * address, fingerprint and agents (managedRuntimeOf).
+ */
+export async function setRuntimeDids(state: RemotePollState, now = Date.now()): Promise<void> {
   const runtimes = useRuntimesStore.getState().runtimes
-  await Promise.all(runtimes.filter((r) => !(r.id in state.dids) && r.state === 'connected').map(async (rt) => {
+  const retry = (state.didRetry ??= {})
+  const due = runtimes.filter((r) => r.state === 'connected' && !state.dids[r.id] && (retry[r.id]?.at ?? 0) <= now)
+  await Promise.all(due.map(async (rt) => {
+    const again = (): void => {
+      const wait = retry[rt.id] ? Math.min(retry[rt.id].wait * 2, DID_RETRY_MAX_MS) : DID_RETRY_FIRST_MS
+      retry[rt.id] = { at: now + wait, wait }
+    }
     try {
       const status = await apiFor(rt.id).getOwnerIdentityStatus()
       state.dids[rt.id] = status?.runtimeDid || null
+      if (state.dids[rt.id]) delete retry[rt.id]
+      else again()
     } catch (err) {
-      console.warn(`[Fleet] ${rt.name}: its runtime DID was not read; its peer station stays on the map:`, err)
+      if (!retry[rt.id]) console.warn(`[Fleet] ${rt.name}: its runtime DID was not read; read again with backoff:`, err)
+      again()
     }
   }))
-  return new Set(runtimes.map((r) => state.dids[r.id]).filter((d): d is string => !!d))
+}
+
+/** The fingerprint each saved connection was paired with (the Connection page's rows). */
+function pairedFingerprints(): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const row of useConnectionStore.getState().view?.rows ?? []) {
+    if (row.kind === 'saved' && row.fingerprint) out.set(row.id, row.fingerprint)
+  }
+  return out
+}
+
+/** What ties a peer to a runtime of the set, as the map knows it now. */
+export function peerMatchOf(state: RemotePollState, runtimes: readonly RuntimeView[], agents: readonly FleetAgentStatus[]): PeerMatch {
+  const fps = pairedFingerprints()
+  const ids = new Set(runtimes.map((r) => r.id))
+  return {
+    dids: Object.fromEntries(Object.entries(state.dids).filter(([id]) => ids.has(id))),
+    remotes: runtimes.filter((r) => r.kind === 'remote').map((r) => ({ id: r.id, url: r.url, fingerprint: fps.get(r.id) ?? null })),
+    learned: Object.fromEntries(Object.entries(state.learned ?? {}).filter(([, id]) => ids.has(id))),
+    agentDids: agentDidsOf(agents),
+  }
 }
 
 /**
  * The peer stations the map draws, as one list: this computer's poll, then
- * each other runtime's, without the station of a runtime of the set (by the
- * runtime DIDs read so far, so a runtime that is down now is still known).
- * With This computer only, this computer's list as it is, and no call.
+ * each other runtime's, without the station of a runtime of the set (by its
+ * runtime DID, a runtime_id matched before, fingerprint, address or agents,
+ * so a runtime that is down now is still known). The matches are kept for
+ * the next poll and for drawing traffic tile to tile. With This computer
+ * only, this computer's list as it is, and no call.
  */
 export async function fleetPeers<P extends MapPeer>(own: P[], remote: ReadonlyArray<{ peers: unknown[] }>, state: RemotePollState): Promise<P[]> {
-  if (useRuntimesStore.getState().runtimes.length < 2) return own
-  return mergePeers([own, ...remote.map((r) => r.peers as P[])], await setRuntimeDids(state))
+  const runtimes = useRuntimesStore.getState().runtimes
+  if (runtimes.length < 2) {
+    setPeerRuntimes({})
+    return own
+  }
+  await setRuntimeDids(state)
+  const match = peerMatchOf(state, runtimes, selectMapAgents(useMeshStore.getState()))
+  const learned: Record<string, string> = { ...match.learned }
+  const shown = mergePeers([own, ...remote.map((r) => r.peers as P[])], match, (rid, rt) => { learned[rid] = rt })
+  state.learned = learned
+  setPeerRuntimes(learned)
+  return shown
+}
+
+/**
+ * A peer of the last poll that is a runtime of the set now (paired since):
+ * its region is founded on the ground its station held, so the stubs turn
+ * into tiles where they stood. Only for a region with no saved place yet.
+ */
+export function regionFromStation(runtimeId: string, learned: Readonly<Record<string, string>>): void {
+  const fleet = useFleetStore.getState()
+  const placement = fleet.placement
+  if (!placement) return
+  const root = runtimeRegionRoot(runtimeId)
+  if (placement.regionOrigins[root]) return
+  const rid = Object.keys(learned).find((k) => learned[k] === runtimeId && placement.stationPins?.[`station:peer:${k}`])
+  if (!rid) return
+  const pin = placement.stationPins![`station:peer:${rid}`]
+  fleet.updatePlacement({}, { [root]: { q: pin.q, r: pin.r } })
 }
 
 /** Region labels and greying for the runtimes other than This computer; undefined with This computer only. */
-function regionDecor(runtimes: readonly RuntimeView[]): Required<RegionDecor> | undefined {
+export function regionDecor(runtimes: readonly RuntimeView[]): Required<RegionDecor> | undefined {
   if (runtimes.length < 2) return undefined
   const byId = new Map(runtimes.map((r) => [r.id, r]))
   return {
+    // Every region is a runtime of the set: managed from here (solid border; peers are dashed).
+    managed: () => true,
     label: (dirPath) => {
       const id = runtimeOfRegion(dirPath)
       if (!id) return undefined
@@ -1096,6 +1178,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
 
   // The polls of the runtimes other than This computer: cursors, last errors and runtime DIDs.
   const remotePolls = useRef<RemotePollState>({ seq: {}, errors: {}, dids: {} })
+  const lastRemotePeers = useRef<ReadonlyArray<{ peers: unknown[] }>>([])
 
   // Single debug poll — shared with MeshLogDrawer; refreshes the full fleet
   // (live + on-disk ghosts), pending HIL snapshot, and token burn together.
@@ -1137,7 +1220,12 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
       const nextPeers = ((peersOverride ?? peers) as { runtime_id: string; host: string; agent_count?: number; first_seen?: number; source?: string; url?: string; runtime_alias?: string; owner_alias?: string; owner_verified?: boolean; is_self_owned?: boolean; agents?: RemotePeerAgent[] }[]) ?? []
       if (fleet.agents.length > 0) setAgents(fleet.agents)
       // Every other runtime of the set: its own poll, into its slice (multi-runtime.md §6.4).
-      const remote = await pollRuntimes(remotePolls.current)
+      // The peers are matched first (last poll's lists), so a runtime paired
+      // since takes over its station's ground when its agents land.
+      const polls = remotePolls.current
+      if (useRuntimesStore.getState().runtimes.length > 1) await fleetPeers(nextPeers as Array<(typeof nextPeers)[number] & MapPeer>, lastRemotePeers.current, polls)
+      const remote = await pollRuntimes(polls, (id) => regionFromStation(id, polls.learned ?? {}))
+      lastRemotePeers.current = remote
       if (remote.length === 0) {
         if (burn) setBurn(burn)
       } else {
@@ -1343,8 +1431,13 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
     // and existing peers keep their spot) — the sunflower trick: no two
     // peers ever land close, no matter how many machines join.
     const GOLDEN_DEG = 137.508
-    const sortedPeers = [...lanPeers].sort((a, b) => (a.first_seen ?? 0) - (b.first_seen ?? 0))
-    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number; detail?: StationNodeData['detail']; peerAgents?: RemotePeerAgent[] }[] = [
+    // Multi-runtime: a peer that is a runtime of the set, and a stub that is
+    // one of the map's tiles, are not drawn — checked against the tiles of
+    // this very render, so a runtime paired since never shows twice (§6.4).
+    const multi = runtimeList.length > 1
+    const peers = multi ? mergePeers([lanPeers as Array<(typeof lanPeers)[number] & MapPeer>], peerMatchOf(remotePolls.current, runtimeList, selectMapAgents(useMeshStore.getState()))) : lanPeers
+    const sortedPeers = [...peers].sort((a, b) => (a.first_seen ?? 0) - (b.first_seen ?? 0))
+    const kinds: { id: string; kind: string; label: string; status: string; slotDeg?: number; detail?: StationNodeData['detail']; peerAgents?: RemotePeerAgent[]; peer?: boolean }[] = [
       ...adapters.map((a) => ({ id: `station:${a.type}`, kind: a.type, label: a.type, status: a.status })),
       { id: 'station:web', kind: 'web', label: 'internet', status: 'running' },
       ...sortedPeers.map((p, pi) => ({
@@ -1358,7 +1451,8 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
           host: p.host, agentCount: p.agent_count, firstSeen: p.first_seen, url: p.url, source: p.source,
           ownerAlias: p.owner_alias, ownerVerified: p.owner_verified, isSelfOwned: p.is_self_owned
         },
-        peerAgents: p.agents
+        peerAgents: p.agents,
+        ...(multi ? { peer: true } : {})
       }))
     ]
     let minX = Infinity
@@ -1483,7 +1577,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         // Seeded like the layout nodes: keeps internals across re-adoption
         // so culling never flash-mounts an offscreen station (see layout memo)
         measured: { width: STATION_W, height: STATION_H },
-        data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail, peerAgents: k.peerAgents } satisfies StationNodeData
+        data: { kind: k.kind, label: k.label, status: k.status, facing, detail: k.detail, peerAgents: k.peerAgents, ...(k.peer ? { peer: true } : {}) } satisfies StationNodeData
       }
     })
     const cache = stationCacheRef.current
@@ -1503,7 +1597,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
     if (cache.last.length === out.length && out.every((n, i) => n === cache.last[i])) return cache.last
     cache.last = out
     return out
-  }, [layout, adapters, lanPeers, placement])
+  }, [layout, adapters, lanPeers, placement, runtimeList])
 
   // Freeze the ring: any station rendering without a pin records its cell
   // (auto flag) the moment it appears — new arrivals place via the ring

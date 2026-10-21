@@ -8,7 +8,8 @@ import {
   applyPeerAgentPing,
   type MeshGraphState
 } from '../stores/mesh-graph.store'
-import { useMeshStore } from '../stores/mesh.store'
+import { selectMeshSlice, useMeshStore } from '../stores/mesh.store'
+import { resolvePeerTraffic } from '../components/mesh/runtime-fleet'
 import { MAIN_LOOP } from '../stores/agent.store'
 import { useRuntimesStore } from '../stores/runtimes.store'
 import { apiFor, openAgentKey, openApi, useOpenRuntime } from '../utils/runtime-api'
@@ -194,7 +195,12 @@ export function useMeshGraph() {
       // values inside a single frame were never rendered anyway
       const stateFlips: Record<string, AgentState> = {}
 
-      const processMesh = (event: MeshEvent): void => {
+      const agentsOf = (runtimeId: string) => selectMeshSlice(meshStore.getState(), runtimeId).agents
+      const processMesh = (reported: MeshEvent): void => {
+        // Traffic with a peer that is a runtime of the set is drawn tile to
+        // tile, once (multi-runtime.md §6.4); every other event as it is.
+        const event = resolvePeerTraffic(reported, agentsOf)
+        if (!event) return
         if (event.type === 'message_routed') {
           const payload = event.payload as {
             filePath: string

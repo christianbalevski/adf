@@ -250,7 +250,7 @@ export const FleetTerrainNode = memo(function FleetTerrainNode(props: NodeProps)
 })
 
 function FleetTerrainNodeFull({ data }: NodeProps) {
-  const { dirPath, width, height, cells, members, districts } =
+  const { dirPath, width, height, cells, members, districts, managed } =
     data as unknown as TerrainNodeData
   const hue = useMemo(() => hueFromPath(dirPath), [dirPath])
   const dark = isDarkMode()
@@ -459,7 +459,11 @@ function FleetTerrainNodeFull({ data }: NodeProps) {
             : `hsla(${hue}, ${dark ? 32 : 36}%, ${dark ? 56 : 40}%, ${dark ? 0.55 : 0.5})`}
           strokeWidth={territoryHovered ? 3.5 : 2.5}
           strokeLinecap="round"
-          style={{ transition: 'stroke 150ms ease, stroke-width 150ms ease' }}
+          // Multi-runtime: a managed region's border is solid, in the theme's faint
+          // ink (--ink-faint); a peer's station is the same ink, dashed (§6.4).
+          style={managed && !territoryHovered
+            ? { transition: 'stroke 150ms ease, stroke-width 150ms ease', stroke: 'var(--ink-faint)' }
+            : { transition: 'stroke 150ms ease, stroke-width 150ms ease' }}
         />
         {districtBoundaryPath && (
           <path
