@@ -4,7 +4,7 @@ import { useDocumentStore } from '../../../src/renderer/stores/document.store'
 import { useAgentStore } from '../../../src/renderer/stores/agent.store'
 import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveActiveEditorTab, saveEditorTab } from '../../../src/renderer/utils/editor-save'
 import { changeAgentConfig, confirmDiscardConflicts, type SaveAnswer } from '../../../src/renderer/utils/edit-conflict'
-import { CONFIG_RECOVERY_PATH, recoveredEditsMessage, startEditRecovery, stashUnsavedEditors } from '../../../src/renderer/utils/edit-recovery'
+import { CONFIG_RECOVERY_PATH, recoveredEditsMessage, startEditRecovery, stashUnsavedEditors, watchRecoveredEdits } from '../../../src/renderer/utils/edit-recovery'
 import { setSkillMuted } from '../../../src/renderer/utils/skills-state'
 
 /**
@@ -179,9 +179,12 @@ describe('a restart main asks for after the daemon connection failed', () => {
     tabs().openTab('image.png', '', true, undefined, 1)
     useDocumentStore.getState().setDocumentContent('# unsaved readme')
     expect(await stashUnsavedEditors({ recoveryStash: stash })).toBe(2)
+    // R3B-3: one hand-off, one stamp: main keeps them in that hand-off's own folder.
+    const kept = (stash.mock.calls[0] as unknown as [{ kept?: string }])[0].kept
+    expect(kept).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d+$/)
     expect(stash.mock.calls.map((c) => c[0])).toEqual([
-      { agentFilePath: AGENT, path: 'notes.md', content: 'typed, not saved' },
-      { agentFilePath: AGENT, path: 'README.md', content: '# unsaved readme' },
+      { agentFilePath: AGENT, path: 'notes.md', content: 'typed, not saved', kept },
+      { agentFilePath: AGENT, path: 'README.md', content: '# unsaved readme', kept },
     ])
   })
 
@@ -224,5 +227,69 @@ describe('writes outside the editors', () => {
     })
     expect(await setSkillMuted('pdf', false, AGENT)).toBeNull()
     expect(JSON.parse(content).disabled).toEqual(expect.arrayContaining(['from-the-agent', 'pdf']))
+  })
+})
+
+// R3B-3 (multi-runtime.md §20 item 3): a hand-off's copies are its own, and offered in this session.
+describe('copies a hand-off keeps (a reconnect, a move, Remove)', () => {
+  const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d+$/
+  type Call = { agentFilePath: string; path: string; content: string | null; kept?: string }
+
+  it('each hand-off names its own stamp; a later notice on the file, and its removal, are the notice\'s copy only', async () => {
+    const stash = vi.fn(async (_s: Call) => ({ success: true }))
+    const stop = startEditRecovery({ recoveryStash: stash }, 500)
+    conflict('notes.md')
+    // T1 kept on Reconnect.
+    expect(await stashUnsavedEditors({ recoveryStash: stash })).toBe(1)
+    const first = stash.mock.calls.at(-1)![0]
+    expect(first).toEqual({ agentFilePath: AGENT, path: 'notes.md', content: 'mine', kept: expect.stringMatching(STAMP) })
+    // The agent reopens: its editors go, then T2 under a new notice, resolved.
+    tabs().reset()
+    conflict('notes.md')
+    tabs().updateTabContent('notes.md', 'T2')
+    tabs().resolveTabConflict('notes.md', 'reload')
+    // A second reconnect keeps another copy, under another stamp.
+    tabs().openTab('notes.md', 'base', false, undefined, 1)
+    tabs().updateTabContent('notes.md', 'T3')
+    expect(await stashUnsavedEditors({ recoveryStash: stash })).toBe(1)
+    const second = stash.mock.calls.at(-1)![0]
+    expect(second).toEqual({ agentFilePath: AGENT, path: 'notes.md', content: 'T3', kept: expect.stringMatching(STAMP) })
+    expect(second.kept).not.toBe(first.kept)
+    stop()
+    // Every removal is of a notice's copy, never of a hand-off's.
+    const removals = stash.mock.calls.map((c) => c[0]).filter((s) => s.content === null)
+    expect(removals.length).toBeGreaterThan(0)
+    expect(removals.every((s) => s.kept === undefined)).toBe(true)
+  })
+
+  it('one hand-off\'s copies share one stamp', async () => {
+    const stash = vi.fn(async (_s: Call) => ({ success: true }))
+    tabs().openTab('notes.md', 'base', false, undefined, 1)
+    tabs().updateTabContent('notes.md', 'typed')
+    useDocumentStore.getState().setDocumentContent('# unsaved readme')
+    expect(await stashUnsavedEditors({ recoveryStash: stash })).toBe(2)
+    const stamps = new Set(stash.mock.calls.map((c) => c[0].kept))
+    expect(stamps.size).toBe(1)
+    expect([...stamps][0]).toMatch(STAMP)
+  })
+
+  it('the recovered-edits notice lists them at once: the launch\'s copies and the hand-off\'s, not a notice\'s copy still in use', async () => {
+    const launch = [{ agent: 'agent-1', path: 'a.md', file: '/r/agent-1-1/a.md' }]
+    let listed: Array<{ agent: string; path: string; file: string; kept?: boolean }> = launch
+    const recoveryList = vi.fn(async () => ({ root: '/r', files: listed }))
+    const shown: Array<{ files: string[]; session: boolean }> = []
+    const stop = watchRecoveredEdits({ recoveryList }, (files, session) => { shown.push({ files: files.map((f) => `${f.agent}/${f.path}`), session }) })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(shown).toEqual([{ files: ['agent-1/a.md'], session: false }])
+
+    // A hand-off: main now also holds a notice's copy in use (b.md) and the hand-off's (notes.md).
+    listed = [...launch, { agent: 'agent-1', path: 'b.md', file: '/r/agent-1-1/b.md' }, { agent: 'agent-1', path: 'notes.md', file: '/r/agent-1-1~kept-x/notes.md', kept: true }]
+    tabs().openTab('notes.md', 'base', false, undefined, 1)
+    tabs().updateTabContent('notes.md', 'typed')
+    await stashUnsavedEditors({ recoveryStash: vi.fn(async () => ({ success: true })) })
+    await new Promise((r) => setTimeout(r, 0))
+    expect(shown.at(-1)).toEqual({ files: ['agent-1/a.md', 'agent-1/notes.md'], session: true })
+    stop()
+    expect(recoveredEditsMessage([{ agent: 'agent-1', path: 'notes.md' }], { session: true })).toBe('Studio kept your unsaved version of agent-1/notes.md.')
   })
 })

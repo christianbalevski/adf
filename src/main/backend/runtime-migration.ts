@@ -415,11 +415,38 @@ export function savedConnectionChanges(before: Record<string, Pick<SavedRemote, 
 /**
  * The client key `runtimeFingerprints`: the fingerprint of each remote
  * runtime that has keys, as last seen saved (forgetGoneRuntimeKeys writes
- * it). With it the keys follow the fingerprint when Studio did not see the
- * change, as relinkSavedAgentWindows does with the fingerprint of each
- * saved window.
+ * it; recordRuntimeFingerprintsOnWrite with a runtime's first keys). With
+ * it the keys follow the fingerprint when Studio did not see the change, as
+ * relinkSavedAgentWindows does with the fingerprint of each saved window.
  */
 export const RUNTIME_FINGERPRINTS_KEY = 'runtimeFingerprints'
+
+/**
+ * §20 item 2: a write that gives a saved connection's runtime keys for the
+ * first time records its fingerprint with them (`fingerprintOf`: from the
+ * cached saved connections, no disk access), so a rename while Studio is
+ * closed moves them at the next launch. A recorded fingerprint is left as it
+ * is (forgetGoneRuntimeKeys compares it with the saved one); a write of the
+ * record itself brings nothing.
+ */
+export function recordRuntimeFingerprintsOnWrite(store: { get(key: string): unknown; onWrite(extra: (values: Record<string, unknown>) => Record<string, unknown> | null): void }, fingerprintOf: (id: string) => string | null): void {
+  store.onWrite((values) => {
+    if (RUNTIME_FINGERPRINTS_KEY in values || !RUNTIME_KEYS.some((key) => isObject(values[key]))) return null
+    const recorded = store.get(RUNTIME_FINGERPRINTS_KEY)
+    const previous: Record<string, unknown> = isObject(recorded) ? recorded : {}
+    const added: Record<string, string> = {}
+    for (const key of RUNTIME_KEYS) {
+      const held = values[key]
+      if (!isObject(held)) continue
+      for (const id of Object.keys(held)) {
+        if (!id.startsWith('remote:') || typeof previous[id] === 'string' || added[id]) continue
+        const fp = fingerprintOf(id)
+        if (fp) added[id] = fp
+      }
+    }
+    return Object.keys(added).length > 0 ? { [RUNTIME_FINGERPRINTS_KEY]: { ...previous, ...added } } : null
+  })
+}
 
 /** `runtimeFingerprints` as a saved list, for savedConnectionChanges. */
 function recordedConnections(recorded: unknown): Record<string, { fingerprint: string }> {
@@ -474,14 +501,17 @@ export function forgetRuntimeKeysOf(settings: RuntimeKeyStore, id: string, log: 
  * read or parsed (said in the log). Never throws.
  */
 export async function forgetGoneRuntimeKeys(settings: RuntimeKeyStore, env: NodeJS.ProcessEnv, slotInSet: () => boolean, changes: { moves?: ReadonlyMap<string, string>; replaced?: ReadonlySet<string> } = {}, log: Log = console): Promise<void> {
-  const values = runtimeKeyValues(settings)
-  const recorded = settings.get(RUNTIME_FINGERPRINTS_KEY)
-  if (!RUNTIME_KEYS.some((key) => isObject(values[key]) && Object.keys(values[key] as object).length > 0) && !isObject(recorded)) return
+  const before = runtimeKeyValues(settings)
+  if (!RUNTIME_KEYS.some((key) => isObject(before[key]) && Object.keys(before[key] as object).length > 0) && !isObject(settings.get(RUNTIME_FINGERPRINTS_KEY))) return
   const read = await readRemotesAsync(env)
   if (read.unreadable) {
     log.warn(`[Connection] ${remotesFilePath(env)} could not be read; the Open Recent and Mesh view keys of every runtime are kept`)
     return
   }
+  // §20 item 4: read again after the await, and patched in the same synchronous stretch, so a window's merge meanwhile
+  // is kept; relinkRuntimeKeys changes only the ids that go or move.
+  const values = runtimeKeyValues(settings)
+  const recorded = settings.get(RUNTIME_FINGERPRINTS_KEY)
   const names = read.names
   const saved = read.file.remotes
   // What changed since the fingerprints were recorded, then what the caller saw change (it wins).

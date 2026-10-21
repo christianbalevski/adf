@@ -828,9 +828,10 @@ export interface AdfApi {
 
   // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
   /** Keep (or, with `content: null`, drop) the copy at <userData>/recovered/<agent>/<path>. */
-  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string }) => Promise<{ success: boolean }>
-  /** Copies left by a quit or crash with the notice up. */
-  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number }> }>
+  /** `kept`: a hand-off's stamp; the copy goes to that hand-off's own folder (multi-runtime.md §20 item 3). */
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string; kept?: string }) => Promise<{ success: boolean }>
+  /** Copies left by a quit or crash with the notice up, and those a hand-off kept (`kept`). */
+  recoveryList: () => Promise<{ root: string; files: Array<{ agent: string; folder: string; path: string; file: string; modifiedAt: number; runtimeId?: string; kept?: boolean }> }>
   /** Dismiss: move them under recovered/archive/<time>/. */
   recoveryArchive: () => Promise<{ moved: number }>
   recoveryReveal: () => Promise<{ success: boolean }>
