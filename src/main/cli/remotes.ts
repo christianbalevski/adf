@@ -60,51 +60,97 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === 'object' && !Array.isArray(value)
 }
 
-export function loadRemotes(env: NodeJS.ProcessEnv = process.env): RemotesFile {
-  const path = remotesPath(env)
-  if (!existsSync(path)) return { v: 1, default: null, remotes: {} }
-  try {
-    return parseRemotes(readFileSync(path, 'utf-8'))
-  } catch {
-    return { v: 1, default: null, remotes: {} }
+/**
+ * cli-remotes.json as read, by every reader (Studio and adf, sync and async):
+ * the list, every name in it (a malformed entry still counts as a name), and
+ * why it could not be read. An absent file is no saved remote; a file that
+ * cannot be read or parsed, or is not a remotes file, has `unreadable` set,
+ * and then `file` is the empty list, which must not be taken as "nothing
+ * saved" nor written back.
+ */
+export interface RemotesRead {
+  file: RemotesFile
+  names: Set<string>
+  unreadable: string | null
+}
+
+/** cli-remotes.json cannot be read: nothing was written over it. */
+export class RemotesUnreadableError extends Error {
+  constructor(readonly path: string, readonly why: string) {
+    super(`${why}. Fix or remove it; nothing was changed.`)
+    this.name = 'RemotesUnreadableError'
   }
 }
 
-/** loadRemotes without blocking (Studio main): an absent or unreadable file is the empty list. */
-export async function loadRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<RemotesFile> {
-  return (await readRemotesAsync(env)).file
+function emptyRemotes(): RemotesFile {
+  return { v: 1, default: null, remotes: {} }
 }
 
-/**
- * The list without blocking, telling an absent file (no connections) from one
- * that cannot be read or is not a remotes file: `unreadable` is why, and
- * `file` is then the empty list, which must not be taken as "nothing saved".
- */
-export async function readRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<{ file: RemotesFile; unreadable: string | null }> {
-  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
+function stripBom(text: string): string {
+  return text.charCodeAt(0) === 0xfeff ? text.slice(1) : text
+}
+
+function errorText(err: unknown): string {
+  return err instanceof Error ? err.message : String(err)
+}
+
+/** The one reading of the file's text (or of why it could not be read). */
+function readOf(path: string, text: string | null, readError?: unknown): RemotesRead {
+  if (text === null) {
+    if ((readError as NodeJS.ErrnoException)?.code === 'ENOENT') return { file: emptyRemotes(), names: new Set(), unreadable: null }
+    return { file: emptyRemotes(), names: new Set(), unreadable: `${path} cannot be read (${errorText(readError)})` }
+  }
+  let raw: unknown
+  try {
+    raw = JSON.parse(stripBom(text))
+  } catch (err) {
+    return { file: emptyRemotes(), names: new Set(), unreadable: `${path} is not valid JSON (${errorText(err)})` }
+  }
+  if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return { file: emptyRemotes(), names: new Set(), unreadable: `${path} is not a saved-connections file (v 1)` }
+  return { file: parseRemotes(text), names: new Set(Object.keys(raw.remotes)), unreadable: null }
+}
+
+/** The list, read with blocking IO (adf). */
+export function readRemotes(env: NodeJS.ProcessEnv = process.env): RemotesRead {
+  const path = remotesPath(env)
+  try {
+    return readOf(path, readFileSync(path, 'utf-8'))
+  } catch (err) {
+    return readOf(path, null, err)
+  }
+}
+
+/** The list without blocking (Studio main). */
+export async function readRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<RemotesRead> {
   const path = remotesPath(env)
   let text: string
   try {
     text = await readFile(path, 'utf-8')
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { file: empty, unreadable: null }
-    return { file: empty, unreadable: `${path} cannot be read (${err instanceof Error ? err.message : String(err)})` }
+    return readOf(path, null, err)
   }
-  let raw: unknown
-  try {
-    raw = JSON.parse(text)
-  } catch (err) {
-    return { file: empty, unreadable: `${path} is not valid JSON (${err instanceof Error ? err.message : String(err)})` }
-  }
-  if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return { file: empty, unreadable: `${path} is not a saved-connections file (v 1)` }
-  return { file: parseRemotes(text), unreadable: null }
+  return readOf(path, text)
+}
+
+/**
+ * The list where an unreadable file may count as empty: a lookup that
+ * then finds nothing (a saved token for an origin, the Connections rows).
+ * Never for a list that is written back (updateRemotes refuses one).
+ */
+export function loadRemotes(env: NodeJS.ProcessEnv = process.env): RemotesFile {
+  return readRemotes(env).file
+}
+
+/** loadRemotes without blocking. */
+export async function loadRemotesAsync(env: NodeJS.ProcessEnv = process.env): Promise<RemotesFile> {
+  return (await readRemotesAsync(env)).file
 }
 
 /** The file's text as a RemotesFile; anything malformed is left out. */
 export function parseRemotes(text: string): RemotesFile {
-  const empty: RemotesFile = { v: 1, default: null, remotes: {} }
+  const empty = emptyRemotes()
   try {
-    const raw = JSON.parse(text) as unknown
+    const raw = JSON.parse(stripBom(text)) as unknown
     if (!isRecord(raw) || raw.v !== 1 || !isRecord(raw.remotes)) return empty
     const remotes: Record<string, SavedRemote> = {}
     for (const [name, r] of Object.entries(raw.remotes)) {
@@ -160,7 +206,8 @@ export function remotesFilePath(env: NodeJS.ProcessEnv = process.env): string {
  * the file it renamed to a tombstone of its own; so two waiters that both saw
  * the stale lock never delete a new holder's lock. The lock holds the
  * holder's pid and a nonce, and a holder removes it only while it is still
- * its own.
+ * its own. A file that cannot be read or parsed is never written over
+ * (RemotesUnreadableError).
  */
 export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: RemotesFile) => T | Promise<T>, opts: {
   staleMs?: number
@@ -236,7 +283,10 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
     }
   }
   try {
-    const file = await loadRemotesAsync(env)
+    // Never written over while it cannot be read: the user's list would be lost.
+    const read = await readRemotesAsync(env)
+    if (read.unreadable) throw new RemotesUnreadableError(path, read.unreadable)
+    const file = read.file
     const before = JSON.stringify(file)
     const result = await mutate(file)
     if (JSON.stringify(file) !== before) {
@@ -348,12 +398,15 @@ export function deleteRemoteToken(fingerprint: string, env: NodeJS.ProcessEnv = 
 
 // --- resolution -----------------------------------------------------------------
 
-/** The remote `--remote` / ADF_REMOTE or the default names; null for this machine. Throws for an unknown name. */
+/** The remote `--remote` / ADF_REMOTE or the default names; null for this machine. Throws for an unknown name, or a list that cannot be read. */
 export function selectedRemote(env: NodeJS.ProcessEnv = process.env): { name: string; remote: SavedRemote } | null {
   const chosen = env[REMOTE_ENV]?.trim()
   if (chosen === 'local') return null
   if (!chosen && !existsSync(remotesPath(env))) return null
-  const file = loadRemotes(env)
+  // An unreadable list is not "no default": this computer is not used in its place.
+  const read = readRemotes(env)
+  if (read.unreadable) throw new RemotesUnreadableError(remotesPath(env), read.unreadable)
+  const file = read.file
   if (chosen) {
     const remote = file.remotes[chosen]
     if (!remote) throw new Error(`No saved remote named "${chosen}". List them with: adf remotes`)

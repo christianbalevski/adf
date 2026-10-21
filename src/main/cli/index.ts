@@ -5,7 +5,7 @@ import { createInterface } from 'readline'
 import { readFileSync } from 'fs'
 import { basename } from 'path'
 import { runPair, runRemotes, type PairIo } from './pair'
-import { pinnedRemoteRefusal } from './remotes'
+import { pinnedRemoteRefusal, RemotesUnreadableError } from './remotes'
 import { stdinPrompt, type LinePrompt } from './prompt'
 import { DEFAULT_DAEMON_URL, isLocalDaemonUrl, localProofHeaders, loopbackPort, resolveDaemonToken, resolveDaemonUrl, tunnelTokenHint } from './daemon-url'
 import {
@@ -147,8 +147,16 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   const tuiArgv = tuiInvocation(argv)
   if (tuiArgv) {
     const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
-    if (!wantsHelp && !(await pinnedRemoteOk(io, urlFromArgv(tuiArgv), tuiArgv.some(a => a === '--token' || a.startsWith('--token='))))) return 1
-    const ready = wantsHelp ? { ok: true, started: null } : await daemonReady(io, urlFromArgv(tuiArgv))
+    let tuiUrl = ''
+    try {
+      if (!wantsHelp) tuiUrl = urlFromArgv(tuiArgv)
+    } catch (err) {
+      // An unknown remote name, or a saved remotes file that cannot be read.
+      io.stderr(`${err instanceof Error ? err.message : String(err)}\n`)
+      return 1
+    }
+    if (!wantsHelp && !(await pinnedRemoteOk(io, tuiUrl, tuiArgv.some(a => a === '--token' || a.startsWith('--token='))))) return 1
+    const ready = wantsHelp ? { ok: true, started: null } : await daemonReady(io, tuiUrl)
     if (!ready.ok) return 1
     try {
       const code = await (io.launchTui ?? defaultLaunchTui)(tuiArgv)
@@ -164,6 +172,11 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   try {
     parsed = parseArgs(argv)
   } catch (err) {
+    // Not a usage mistake: the saved remotes file needs fixing.
+    if (err instanceof RemotesUnreadableError) {
+      io.stderr(`${err.message}\n`)
+      return 1
+    }
     io.stderr(`${err instanceof Error ? err.message : String(err)}\n\n${usage()}\n`)
     return 2
   }
@@ -282,7 +295,8 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
 
 function parseArgs(argv: string[]): ParsedArgs {
   const args = [...argv]
-  let daemonUrl = resolveDaemonUrl(undefined)
+  // Resolved after the loop, only without --url: a saved list that cannot be read stops no command given an address.
+  let daemonUrl: string | null = null
   let json = false
   let token: string | undefined
   const positional: string[] = []
@@ -312,7 +326,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     command: positional[0] ?? 'help',
     args: positional.slice(1),
     options: {
-      daemonUrl: daemonUrl.replace(/\/+$/, ''),
+      daemonUrl: (daemonUrl ?? resolveDaemonUrl(undefined)).replace(/\/+$/, ''),
       json,
       ...(token ? { token } : {}),
     },

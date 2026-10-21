@@ -1,5 +1,5 @@
 import { promises as fsp } from 'node:fs'
-import { remotesFilePath, type SavedRemote } from '../cli/remotes'
+import { readRemotesAsync, remotesFilePath, type SavedRemote } from '../cli/remotes'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { AGENT_WINDOWS_KEY, type SavedAgentWindow } from './agent-windows'
@@ -362,24 +362,13 @@ export function savedConnectionChanges(before: Record<string, Pick<SavedRemote, 
 }
 
 /**
- * The names in cli-remotes.json, read strictly: no file is no connection;
- * a file that cannot be read or parsed is null (unknown), and then no key is
- * forgotten. A malformed entry still counts as a name. (The cache reads such
- * a file as no connection.)
+ * The names in cli-remotes.json (readRemotesAsync, the one reader): no file
+ * is no connection; a file that cannot be read or parsed is null (unknown),
+ * and then no key is forgotten. A malformed entry still counts as a name.
  */
 export async function savedConnectionNames(env: NodeJS.ProcessEnv): Promise<Set<string> | null> {
-  let text: string
-  try {
-    text = await fsp.readFile(remotesFilePath(env), 'utf-8')
-  } catch (err) {
-    return (err as NodeJS.ErrnoException)?.code === 'ENOENT' ? new Set() : null
-  }
-  try {
-    const raw = JSON.parse(text.replace(/^﻿/, '')) as unknown
-    return isObject(raw) && raw.v === 1 && isObject(raw.remotes) ? new Set(Object.keys(raw.remotes)) : null
-  } catch {
-    return null
-  }
+  const read = await readRemotesAsync(env)
+  return read.unreadable ? null : read.names
 }
 
 type RuntimeKeyStore = { get(key: string): unknown; patch(values: Record<string, unknown>): void }

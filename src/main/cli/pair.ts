@@ -13,7 +13,7 @@ import type { TailnetView } from '../daemon/remote-access/tailscale'
 import { discoverDaemons, fetchHello, type DiscoveredDaemon } from './daemon-discovery'
 import { DEFAULT_DAEMON_PORT, localDaemonToken } from './daemon-url'
 import {
-  deleteRemoteToken, KEYCHAIN_FILE_COPY, loadRemotes, readRemoteToken, remoteNameFor, storeRemoteToken, updateRemotes,
+  deleteRemoteToken, KEYCHAIN_FILE_COPY, loadRemotes, readRemotes, readRemoteToken, remoteNameFor, remotesFilePath, RemotesUnreadableError, storeRemoteToken, updateRemotes,
 } from './remotes'
 
 export interface PairIo {
@@ -214,6 +214,12 @@ export async function runPair(args: string[], rawIo: PairIo): Promise<number> {
     io.stderr('--name must be 1-64 characters without control or bidi characters.\n')
     return 2
   }
+  // Before any computer is asked: a pairing could not be saved into a list that cannot be read.
+  const remotes = readRemotes(env)
+  if (remotes.unreadable) {
+    io.stderr(`${new RemotesUnreadableError(remotesFilePath(env), remotes.unreadable).message}\n`)
+    return 1
+  }
 
   let url: string
   let hello: RemoteHello
@@ -375,7 +381,13 @@ export async function runRemotes(args: string[], rawIo: Pick<PairIo, 'stdout' | 
   const io = terminalSafe(rawIo)
   const env = io.env ?? process.env
   const [action, name] = args
-  const file = loadRemotes(env)
+  // An unreadable list is not "no saved remotes", and is never written over.
+  const read = readRemotes(env)
+  if (read.unreadable) {
+    io.stderr(`${new RemotesUnreadableError(remotesFilePath(env), read.unreadable).message}\n`)
+    return 1
+  }
+  const file = read.file
   if (!action || action === 'list') {
     if (json) {
       io.stdout(`${JSON.stringify(file, null, 2)}\n`)
