@@ -56,3 +56,60 @@ export async function withDeadline<T>(
     if (timer) clearTimeout(timer)
   }
 }
+
+/**
+ * A deadline that can move (Studio's quit, R2A-4): it fires `onTimeout`
+ * `ms` after it starts, unless `moveTo` set it again, to that many ms from
+ * then. `race` resolves as withDeadline does. `budgetMs` is the time from
+ * the start to the deadline now, for the sentence when it fires.
+ */
+export class MovableDeadline {
+  private readonly started = Date.now()
+  private due: number
+  private timer: ReturnType<typeof setTimeout> | null = null
+  private fired = false
+  private readonly waiters = new Set<() => void>()
+
+  constructor(ms: number, private readonly onTimeout?: (budgetMs: number) => void) {
+    this.due = this.started + ms
+    this.arm(ms)
+  }
+
+  get budgetMs(): number {
+    return this.due - this.started
+  }
+
+  /** The deadline is now `ms` from this moment (later or earlier); a fired deadline stays fired. */
+  moveTo(ms: number): void {
+    if (this.fired) return
+    this.due = Date.now() + ms
+    this.arm(ms)
+  }
+
+  async race<T>(promise: Promise<T>): Promise<{ timedOut: boolean; value: T | undefined }> {
+    let wake!: () => void
+    const timeout = new Promise<{ timedOut: true; value: undefined }>((resolve) => {
+      wake = () => resolve({ timedOut: true, value: undefined })
+      if (this.fired) wake()
+      else this.waiters.add(wake)
+    })
+    try {
+      return await Promise.race([promise.then((value) => ({ timedOut: false as const, value })), timeout])
+    } finally {
+      this.waiters.delete(wake)
+      if (this.timer) clearTimeout(this.timer)
+      this.timer = null
+    }
+  }
+
+  private arm(ms: number): void {
+    if (this.timer) clearTimeout(this.timer)
+    this.timer = setTimeout(() => {
+      this.fired = true
+      this.timer = null
+      try { this.onTimeout?.(this.budgetMs) } catch { /* ignore */ }
+      for (const wake of this.waiters) wake()
+    }, Math.max(0, ms))
+    this.timer.unref?.()
+  }
+}

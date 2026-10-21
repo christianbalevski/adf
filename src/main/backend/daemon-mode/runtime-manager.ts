@@ -7,7 +7,7 @@ import {
   type RuntimeId,
 } from '../../../shared/runtime-tag'
 import type { DaemonModeContext } from './context'
-import type { RuntimeConnection } from './runtime-connection'
+import type { QuitOptions, RuntimeConnection } from './runtime-connection'
 import type { WindowTarget } from './index'
 import type { WindowView } from './windows'
 
@@ -310,7 +310,7 @@ export class RuntimeManager {
    * sessions first, then the main window's. The primary follows
    * keepDaemonRunning; a remote's daemon keeps running.
    */
-  async shutdown(opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> {
+  async shutdown(opts: QuitOptions = {}): Promise<void> {
     this.disposed = true
     // Ones still retiring too: their sessions end within the same quit.
     const others = [...new Set([...this.remotes.values(), ...this.retiring])]

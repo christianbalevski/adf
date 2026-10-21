@@ -20,7 +20,7 @@ import { channelKey, pendingWorkstream } from './pending'
 import { samePath, type DaemonModeSession } from './session'
 import { ClientSettingsStore, clientSettingsPath } from './settings'
 import { REMOTE_MODE_HANDLERS } from './remote/handlers'
-import { createRuntimeConnection, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
+import { createRuntimeConnection, type QuitOptions, type RuntimeConnection, type RuntimeShared } from './runtime-connection'
 import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manager'
 import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
@@ -257,7 +257,7 @@ export interface DaemonModeHandle {
    * (remote-access.md §3.6). Every other runtime ends its sessions in
    * parallel; its daemon keeps running (multi-runtime.md §3.3).
    */
-  shutdown(opts?: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number }): Promise<void>
+  shutdown(opts?: QuitOptions): Promise<void>
   /** Agent windows (docs/design/agent-windows.md): each one is its own client session. */
   windows: DaemonWindows
   /** The runtime set (multi-runtime.md §3.2). */
@@ -621,7 +621,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   })
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (opts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> => {
+  const shutdown = (opts: QuitOptions = {}): Promise<void> => {
     shutdownPromise ??= (() => {
       const done = manager.shutdown(opts)
       approvals.dispose()

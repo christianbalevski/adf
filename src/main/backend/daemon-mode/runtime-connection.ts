@@ -124,6 +124,19 @@ interface WindowSession {
   ctx: DaemonModeContext
 }
 
+/** How Studio's quit ends a runtime (main/index.ts runShutdownCleanup). */
+export interface QuitOptions {
+  /** "Keep Running" in the question about connected computers: this quit only. */
+  keepDaemonRunning?: boolean
+  /** A restart into Inside Studio: wait up to this long for This computer's daemon to exit once it said it stops. */
+  waitForDaemonExitMs?: number
+  /**
+   * Called when that wait starts (R2A-4): only then is the daemon's answer in, so the caller's own deadline moves
+   * to the wait plus its margin instead of cutting the wait short.
+   */
+  onExitWait?: (ms: number) => void
+}
+
 export interface RuntimeConnection {
   readonly id: RuntimeId
   readonly kind: RuntimeKind
@@ -165,7 +178,7 @@ export interface RuntimeConnection {
     send(id: number, channel: string, ...args: unknown[]): void
     stashed(id: number): void
   }
-  shutdown(opts?: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number }): Promise<void>
+  shutdown(opts?: QuitOptions): Promise<void>
 }
 
 const RESUME_HEALTH_TIMEOUT_MS = 3_000
@@ -1030,7 +1043,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   }
 
   let shutdownPromise: Promise<void> | null = null
-  const shutdown = (shutdownOpts: { keepDaemonRunning?: boolean; waitForDaemonExitMs?: number } = {}): Promise<void> => {
+  const shutdown = (shutdownOpts: QuitOptions = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       stopExitWatch()
       if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
@@ -1070,6 +1083,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       // daemon is gone (handover.ts toEmbedded), so the quit waits for its process, bounded.
       if (kind === 'local' && answer?.stopping && shutdownOpts.waitForDaemonExitMs) {
         log.log(`[Backend] Waiting up to ${Math.round(shutdownOpts.waitForDaemonExitMs / 1000)}s for the ADF daemon to stop its agents and exit`)
+        shutdownOpts.onExitWait?.(shutdownOpts.waitForDaemonExitMs)
         const gone = await waitDaemonGone(shutdownOpts.waitForDaemonExitMs)
         log.log(gone ? '[Backend] The ADF daemon exited' : '[Backend] The ADF daemon is still stopping; Studio Inside Studio leaves the sign-ins with it until the next restart')
       }
