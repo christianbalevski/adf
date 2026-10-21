@@ -23,6 +23,11 @@
  * runtime, and `<folder>.runtime` next to the folder holds the id, so the copy is
  * offered on its runtime. A copy without it is the primary runtime's, laid
  * out exactly as before.
+ *
+ * Hand-offs (multi-runtime.md §20 item 3): the copies a reconnect, a move or
+ * Remove keeps (`kept`: the hand-off's stamp) go to a folder of their own,
+ * `<agent>-<hash>~kept-<stamp>`, so a later notice on the same file, its
+ * removal, and the next hand-off never write over or remove them.
  */
 import { shell } from 'electron'
 // Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
@@ -43,6 +48,8 @@ export interface RecoveryStash {
   content: string | null
   /** The agent's runtime; omitted for the primary runtime. */
   runtimeId?: string
+  /** A hand-off's stamp (letters, digits and `-`): the copy goes to that hand-off's own folder. Never removed this way. */
+  kept?: string
 }
 
 export interface RecoveredFile {
@@ -56,6 +63,8 @@ export interface RecoveredFile {
   modifiedAt: number
   /** The agent's runtime; omitted for the primary runtime. */
   runtimeId?: string
+  /** Kept by a hand-off (a reconnect, a move, Remove), not by a notice. */
+  kept?: boolean
 }
 
 const ARCHIVE = 'archive'
@@ -65,6 +74,15 @@ export const ARCHIVE_MAX_ENTRIES = 50
 const HASH_SUFFIX = /-[0-9a-f]{8}$/
 /** `<root>/<agent folder>.runtime`: the runtime id of an agent folder of another runtime. */
 const RUNTIME_SUFFIX = '.runtime'
+/** `<agent folder>~kept-<stamp>`: a hand-off's copies. */
+const KEPT_SUFFIX = /~kept-[0-9A-Za-z-]+$/
+const KEPT_STAMP = /^[0-9A-Za-z-]{1,64}$/
+
+/** The folder of an agent's copies: the notice's, or a hand-off's (`kept`). */
+function copiesFolder(stash: Pick<RecoveryStash, 'agentFilePath' | 'runtimeId' | 'kept'>): string {
+  const folder = agentFolder(stash.agentFilePath, process.platform, stash.runtimeId)
+  return stash.kept ? `${folder}~kept-${stash.kept}` : folder
+}
 
 /**
  * The folder an agent's copies live in: its file name (readable, without
@@ -96,19 +114,22 @@ async function restrictFile(file: string): Promise<void> {
  * a file name character on macOS and Linux, but a copy named `..\x` would
  * climb out wherever it is opened on Windows.
  */
-export function recoveryFile(root: string, agentFilePath: string, path: string, runtimeId?: string): string | null {
+export function recoveryFile(root: string, agentFilePath: string, path: string, runtimeId?: string, kept?: string): string | null {
   if (!path || path.includes('\0') || /^[a-zA-Z]:|^[\\/]/.test(path)) return null
   if (path.split(/[\\/]/).includes('..')) return null
-  const folder = join(root, agentFolder(agentFilePath, process.platform, runtimeId))
+  if (kept !== undefined && !KEPT_STAMP.test(kept)) return null
+  const folder = join(root, copiesFolder({ agentFilePath, runtimeId, kept }))
   const file = resolve(folder, path)
   return file.startsWith(folder + sep) ? file : null
 }
 
 /** Write or remove one copy. Answers whether it was done. */
 export async function stashRecovery(root: string, stash: RecoveryStash): Promise<boolean> {
-  const file = recoveryFile(root, stash.agentFilePath, stash.path, stash.runtimeId)
+  // A hand-off's copy is never removed by a stash: only Dismiss moves it.
+  if (stash.kept !== undefined && stash.content === null) return false
+  const file = recoveryFile(root, stash.agentFilePath, stash.path, stash.runtimeId, stash.kept)
   if (!file) return false
-  const folder = join(root, agentFolder(stash.agentFilePath, process.platform, stash.runtimeId))
+  const folder = join(root, copiesFolder(stash))
   if (stash.content === null) {
     await rm(file, { force: true })
     // An agent folder left empty goes too (never the root, never one with other copies).
@@ -160,12 +181,13 @@ export async function listRecovered(root: string): Promise<RecoveredFile[]> {
         const rel = relative(root, full).split(sep)
         if (rel.length === 1 && rel[0].endsWith(RUNTIME_SUFFIX)) continue
         const runtimeId = rel.length > 1 ? await runtimeOf(rel[0]) : null
-        out.push({ agent: rel[0].replace(HASH_SUFFIX, ''), folder: rel[0], path: rel.slice(1).join('/'), file: full, modifiedAt: (await stat(full)).mtimeMs, ...(runtimeId ? { runtimeId } : {}) })
+        const kept = KEPT_SUFFIX.test(rel[0])
+        out.push({ agent: rel[0].replace(KEPT_SUFFIX, '').replace(HASH_SUFFIX, ''), folder: rel[0], path: rel.slice(1).join('/'), file: full, modifiedAt: (await stat(full)).mtimeMs, ...(runtimeId ? { runtimeId } : {}), ...(kept ? { kept } : {}) })
       }
     }
   }
   await walk(root)
-  return out.sort((a, b) => a.agent.localeCompare(b.agent) || a.path.localeCompare(b.path))
+  return out.sort((a, b) => a.agent.localeCompare(b.agent) || a.path.localeCompare(b.path) || a.folder.localeCompare(b.folder))
 }
 
 /** Dismiss: move every copy listed now under `archive/<time>/`. Answers how many moved. */
@@ -225,6 +247,7 @@ export function registerEditRecoveryHandlers(root: string): void {
   ipcMain.handle(IPC.RECOVERY_STASH, async (_event, stash: RecoveryStash) => {
     if (!stash || typeof stash.agentFilePath !== 'string' || typeof stash.path !== 'string' || (stash.content !== null && typeof stash.content !== 'string')) return { success: false }
     if (stash.runtimeId !== undefined && (typeof stash.runtimeId !== 'string' || !stash.runtimeId || stash.runtimeId === 'local')) return { success: false }
+    if (stash.kept !== undefined && (typeof stash.kept !== 'string' || typeof stash.content !== 'string')) return { success: false }
     try {
       return { success: await stashRecovery(root, stash) }
     } catch (err) {

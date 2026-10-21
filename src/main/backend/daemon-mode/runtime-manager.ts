@@ -58,6 +58,12 @@ export interface RuntimeManagerOptions {
   closeWindow?: (windowId: number, keep: boolean) => void
   /** A runtime left the set or was replaced: its approvals and notices go. */
   onRemoved?: (id: RuntimeId) => void
+  /**
+   * A runtime left the set because it moved to `to` (the same computer under
+   * another id, §20 item 1): its agent windows closed as for Reconnect
+   * (`keep`), and stay saved under `to`, to reopen once it connects.
+   */
+  onMoved?: (from: RuntimeId, to: RuntimeId) => void
   /** The set or its order changed. */
   onChange?: () => void
   /** The order saved at the last launch (studio-backend.json `runtimeOrder`). Ids no longer saved are dropped at the first sync. */
@@ -102,6 +108,8 @@ export class RuntimeManager {
   private mainOpen: RuntimeId
   /** The address of the remote slot's runtime: another address is another runtime. */
   private slotUrl: string | null = null
+  /** Moves told by sync (old id → new id), applied when the old id leaves the set. */
+  private readonly moves = new Map<RuntimeId, RuntimeId>()
   /** The order as last saved, or read at launch; null: none saved (nothing is written while there is no remote). */
   private savedOrder: RuntimeId[] | null
   private disposed = false
@@ -136,9 +144,14 @@ export class RuntimeManager {
    * `savedUnknown`: cli-remotes.json could not be read, so `saved` is not
    * the list: the saved connections in the set stay as they are (none
    * connects, none disconnects), and the order is not saved.
+   *
+   * `moves` (§20 item 1): ids whose computer is now saved under another id. When
+   * such an id leaves the set (now, or at a later sync: the remote slot cleared
+   * for its twin), its agent windows are kept for the new id instead of dropped.
    */
-  sync(saved: Record<string, SavedRemote>, slot: RuntimeSlot | null = null, opts: { savedUnknown?: boolean } = {}): void {
+  sync(saved: Record<string, SavedRemote>, slot: RuntimeSlot | null = null, opts: { savedUnknown?: boolean; moves?: ReadonlyMap<RuntimeId, RuntimeId> } = {}): void {
     if (this.disposed) return
+    for (const [from, to] of opts.moves ?? []) if (from !== to) this.moves.set(from, to)
     if (opts.savedUnknown) {
       // The saved connections stay as they are; the slot still follows studio-backend.json. The order keeps every id
       // it had (the ones not connected yet included), for the sync once the file reads again.
@@ -285,11 +298,16 @@ export class RuntimeManager {
     this.order = this.order.filter((o) => o !== id)
     // Out of the set at once: saved again while it retires, the id gets a new connection (sync).
     this.remotes.delete(id)
-    await this.retire(runtime, false)
+    const to = this.moves.get(id)
+    this.moves.delete(id)
+    // Moved: the same computer under another id that is in the set; its windows wait for it there.
+    const movedTo = to && to !== this.opts.primary.id && this.order.includes(to) ? to : undefined
+    if (movedTo) this.opts.log.log(`[Runtimes] ${id} is now ${movedTo}: its agent windows reopen there`)
+    await this.retire(runtime, !!movedTo, movedTo)
     this.opts.onChange?.()
   }
 
-  private async retire(runtime: RuntimeConnection, keepWindows: boolean): Promise<void> {
+  private async retire(runtime: RuntimeConnection, keepWindows: boolean, movedTo?: RuntimeId): Promise<void> {
     this.retiring.add(runtime)
     // Its approvals and notices go now; snapshots it still receives are dropped (approvalsIn).
     if (!this.get(runtime.id)) this.opts.onRemoved?.(runtime.id)
@@ -298,11 +316,14 @@ export class RuntimeManager {
       this.windowRuntime.delete(windowId)
       this.opts.closeWindow?.(windowId, keepWindows)
     }
+    if (movedTo) {
+      try { this.opts.onMoved?.(runtime.id, movedTo) } catch (err) { this.opts.log.warn(`[Runtimes] Moving the agent windows of ${runtime.id} to ${movedTo} failed:`, err) }
+    }
     if (this.mainOpen === runtime.id) this.mainOpen = this.opts.primary.id
     await runtime.shutdown().catch((err) => this.opts.log.warn(`[Runtimes] Ending the sessions of ${runtime.id} failed:`, err))
     if (this.remotes.get(runtime.id) === runtime) this.remotes.delete(runtime.id)
     this.retiring.delete(runtime)
-    this.opts.log.log(`[Runtimes] ${runtime.id} disconnected${windows.length ? `; ${windows.length} agent window(s) closed${keepWindows ? ', to reopen once it connects again' : ''}` : ''}`)
+    this.opts.log.log(`[Runtimes] ${runtime.id} disconnected${windows.length ? `; ${windows.length} agent window(s) closed${movedTo ? `, to reopen on ${movedTo}` : keepWindows ? ', to reopen once it connects again' : ''}` : ''}`)
   }
 
   /**

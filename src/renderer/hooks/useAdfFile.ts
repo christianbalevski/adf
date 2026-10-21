@@ -622,6 +622,14 @@ export function useAdfFile() {
     setStatusText('No file is open in the foreground after an incomplete file transition.')
   }, [resetDocument, resetAgent, setStatusText])
 
+  /** R3B-5: a create that failed after the open agent of another runtime was closed for it: that agent's view goes too, as in openFile. */
+  const clearLeftView = useCallback(() => {
+    resetDocument()
+    resetAgent()
+    useAppStore.getState().resetAgentReview()
+    useEditorTabsStore.getState().reset()
+  }, [resetDocument, resetAgent])
+
   /**
    * The home composer's create: a generated name in the agents folder, no
    * dialog. `firstMessage` is parked in the app store before the file
@@ -635,7 +643,7 @@ export function useAdfFile() {
     beginAgentSwitch()
     try {
       const { files, ...createOptions } = options ?? {}
-      await leaveOtherRuntime(windowRuntime)
+      const leftOther = await leaveOtherRuntime(windowRuntime)
       const result = await window.adfApi.createQuickAgent(createOptions)
       if (result.success && result.filePath) {
         setShowSettings(false)
@@ -648,12 +656,15 @@ export function useAdfFile() {
       } else if (fileOperationDetachedForeground(result)) {
         // The composer shows result.error; the stale agent still has to go.
         clearDetachedForeground()
+      } else if (leftOther) {
+        // The composer shows result.error; the agent closed on its runtime for this create goes from view.
+        clearLeftView()
       }
       return result
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground])
+  }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground, clearLeftView])
 
   const createFile = useCallback(async (name: string) => {
     if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
@@ -663,7 +674,7 @@ export function useAdfFile() {
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
     try {
-      await leaveOtherRuntime(windowRuntime)
+      const leftOther = await leaveOtherRuntime(windowRuntime)
       const result = await window.adfApi.createFile(name)
       if (result.success && result.filePath) {
         // Close settings if it's open
@@ -680,7 +691,9 @@ export function useAdfFile() {
           reportFileOperationError('create', result, alert)
         } else {
           // Collision/I/O failures occur before old cleanup and preserve the
-          // current renderer state.
+          // current renderer state, unless the open agent was on another
+          // runtime and closed there for this create: its view goes too.
+          if (leftOther) clearLeftView()
           reportFileOperationError('create', result, alert)
         }
       }
@@ -688,7 +701,7 @@ export function useAdfFile() {
     } finally {
       endAgentSwitch()
     }
-  }, [setShowSettings, setFilePath, loadFileContents, clearDetachedForeground])
+  }, [setShowSettings, setFilePath, loadFileContents, clearDetachedForeground, clearLeftView])
 
   const saveFile = useCallback(async () => {
     const result = await openApi().saveFile()

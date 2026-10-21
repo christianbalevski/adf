@@ -369,7 +369,8 @@ describe('C9 and C13: a runtime that leaves the set', () => {
     const s = await removed({ open: true })
     expect(s.useDocumentStore.getState().filePath).toBeNull()
     expect(s.useEditorTabsStore.getState().tabs).toEqual([])
-    expect(s.recoveryStash).toHaveBeenCalledWith({ agentFilePath: PATH, path: 'mind.md', content: 'unsaved text', runtimeId: HOST_1 })
+    // R3B-3: under the hand-off's own stamp.
+    expect(s.recoveryStash).toHaveBeenCalledWith({ agentFilePath: PATH, path: 'mind.md', content: 'unsaved text', runtimeId: HOST_1, kept: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d+$/) })
     expect(await notices()).toEqual(['host-1 removed; agent-1 closed; 1 queued message discarded; unsaved changes kept for recovery.'])
   })
 })
@@ -546,6 +547,9 @@ async function openWithConflict(useDocumentStore: typeof import('../../../src/re
 }
 
 const removals = (stash: ReturnType<typeof vi.fn>) => stash.mock.calls.map((c) => c[0] as { path: string; content: string | null }).filter((s) => s.content === null)
+/** The copies a hand-off kept (R3B-3: each names its hand-off's stamp). */
+const kepts = (stash: ReturnType<typeof vi.fn>) => stash.mock.calls.map((c) => c[0] as { kept?: string }).filter((s) => s.kept !== undefined)
+const STAMP = /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z-\d+$/
 
 describe('R2C-1: the open agent reopened after a reconnect, or closed by Remove, keeps its recovery copies', () => {
   it('reconnect: no confirm dialog, the agent reopens, and the copies just kept are not removed', async () => {
@@ -570,7 +574,10 @@ describe('R2C-1: the open agent reopened after a reconnect, or closed by Remove,
     stop()
     expect(confirm).not.toHaveBeenCalled()
     expect(useDocumentStore.getState()).toMatchObject({ filePath: PATH, runtimeId: HOST_1 })
-    expect(removals(recoveryStash)).toEqual([])
+    // R3B-3: the copy just kept is the hand-off's own (its stamp); the notice's copy goes with its editor, as for any
+    // resolved notice, and no removal ever names a hand-off's copy.
+    expect(kepts(recoveryStash)).toEqual([{ agentFilePath: PATH, path: 'notes.md', content: 'mine', runtimeId: HOST_1, kept: expect.stringMatching(STAMP) }])
+    expect(removals(recoveryStash)).toEqual([{ agentFilePath: PATH, path: 'notes.md', content: null, runtimeId: HOST_1 }])
     expect(await notices()).toEqual(['host-1 reconnected; agent-1 reopened; unsaved changes kept for recovery.'])
   })
 
@@ -596,7 +603,9 @@ describe('R2C-1: the open agent reopened after a reconnect, or closed by Remove,
     for (let i = 0; i < 5; i++) await flush()
     stop()
     expect(useDocumentStore.getState().filePath).toBeNull()
-    expect(removals(recoveryStash)).toEqual([])
+    // R3B-3: as for a reconnect.
+    expect(kepts(recoveryStash)).toEqual([{ agentFilePath: PATH, path: 'notes.md', content: 'mine', runtimeId: HOST_1, kept: expect.stringMatching(STAMP) }])
+    expect(removals(recoveryStash)).toEqual([{ agentFilePath: PATH, path: 'notes.md', content: null, runtimeId: HOST_1 }])
     expect(await notices()).toEqual(['host-1 removed; agent-1 closed; unsaved changes kept for recovery.'])
   })
 })
@@ -765,5 +774,57 @@ describe('R2C-4: per-runtime caches go with the runtime', () => {
     cachesOf(HOST_1).toolDefs = { fs_read: {} }
     noteRuntimeMoves({ moves: {}, replaced: [HOST_1] })
     expect(cachesOf(HOST_1).toolDefs).toBeNull()
+  })
+})
+
+describe('R3B-5: a create that fails after the open agent of another runtime was closed for it', () => {
+  async function onHost1(local: Record<string, unknown>) {
+    const closeFile = vi.fn(async () => ({ success: true }))
+    await page([LOCAL, REMOTE], { local, remote: { closeFile } })
+    const alert = vi.fn()
+    vi.stubGlobal('alert', alert)
+    const { useAdfFile } = await import('../../../src/renderer/hooks/useAdfFile')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { useEditorTabsStore } = await import('../../../src/renderer/stores/editor-tabs.store')
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    useEditorTabsStore.getState().openTab('notes.md', 'text', false, undefined, 1)
+    let api!: ReturnType<typeof useAdfFile>
+    const Probe = (): null => { api = useAdfFile(); return null }
+    renderToString(<Probe />)
+    return { api, alert, closeFile, useDocumentStore, useEditorTabsStore }
+  }
+
+  it('New agent: the closed agent\'s view goes, and the error shows', async () => {
+    const t = await onHost1({ createFile: async () => ({ success: false, error: 'agent-2.adf already exists.' }) })
+    const result = await t.api.createFile('agent-2')
+    expect(result).toMatchObject({ success: false })
+    expect(t.closeFile).toHaveBeenCalledTimes(1)
+    expect(t.useDocumentStore.getState().filePath).toBeNull()
+    expect(t.useEditorTabsStore.getState().tabs).toEqual([])
+    expect(t.alert).toHaveBeenCalledTimes(1)
+    expect(String(t.alert.mock.calls[0][0])).toContain('agent-2.adf already exists.')
+  })
+
+  it('the home composer\'s create: the closed agent\'s view goes; the composer shows the error', async () => {
+    const t = await onHost1({ createQuickAgent: async () => ({ success: false, error: 'The agents folder cannot be written.' }) })
+    const result = await t.api.createQuickAgent('hello')
+    expect(result).toMatchObject({ success: false, error: 'The agents folder cannot be written.' })
+    expect(t.closeFile).toHaveBeenCalledTimes(1)
+    expect(t.useDocumentStore.getState().filePath).toBeNull()
+    expect(t.useEditorTabsStore.getState().tabs).toEqual([])
+  })
+
+  it('a create on the runtime of the open agent that fails keeps it, as before', async () => {
+    const createFile = vi.fn(async () => ({ success: false, error: 'agent-2.adf already exists.' }))
+    await page([LOCAL, REMOTE], { local: { createFile } })
+    vi.stubGlobal('alert', vi.fn())
+    const { useAdfFile } = await import('../../../src/renderer/hooks/useAdfFile')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    useDocumentStore.getState().setFilePath('/home/agents/agent-1.adf', 'local')
+    let api!: ReturnType<typeof useAdfFile>
+    const Probe = (): null => { api = useAdfFile(); return null }
+    renderToString(<Probe />)
+    await api.createFile('agent-2')
+    expect(useDocumentStore.getState()).toMatchObject({ filePath: '/home/agents/agent-1.adf', runtimeId: 'local' })
   })
 })

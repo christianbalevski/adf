@@ -17,8 +17,11 @@ import { useDocumentStore } from '../stores/document.store'
 
 export const CONFIG_RECOVERY_PATH = 'config.json'
 
-/** `runtimeId`: the agent's runtime, omitted for This computer (docs/design/multi-runtime.md §4.5). */
-type Stash = { agentFilePath: string; path: string; content: string | null; runtimeId?: string }
+/**
+ * `runtimeId`: the agent's runtime, omitted for This computer (docs/design/multi-runtime.md §4.5).
+ * `kept`: a hand-off's stamp (§20 item 3): main keeps the copy in that hand-off's own folder.
+ */
+type Stash = { agentFilePath: string; path: string; content: string | null; runtimeId?: string; kept?: string }
 
 /** The stash fields naming the open agent's runtime: none for This computer, so its copies are the ones kept before. */
 function runtimeField(): { runtimeId?: string } {
@@ -30,13 +33,10 @@ type Api = { recoveryStash?: (stash: Stash) => Promise<unknown> }
 /** The key of a copy on disk: runtime, agent and path. */
 const copyKey = (runtimeId: string | undefined, agentFilePath: string, path: string): string => `${runtimeId ?? ''}\0${agentFilePath}\0${path}`
 
-/**
- * Copies stashUnsavedEditors kept (a restart, a reconnect, Remove): they are
- * the recovery copies now, listed at the next launch, so when the notice on
- * the same file goes with its editor its copy is not removed. A later notice
- * on that file writes over the copy, and the copy is that notice's again.
- */
-const handedOff = new Set<string>()
+/** Hand-offs so far: two in one millisecond still get two stamps. */
+let handOffs = 0
+/** Called once a hand-off kept copies: the recovered-edits notice lists them now (watchRecoveredEdits). */
+const keptListeners = new Set<() => void>()
 
 export function startEditRecovery(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined, delayMs = 500): () => void {
   if (!api?.recoveryStash) return () => {}
@@ -74,7 +74,6 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
       clearTimeout(timers.get(key))
       timers.delete(key)
       if (!have) {
-        handedOff.delete(key)
         kept.set(key, entry)
         stash(entry)
       } else {
@@ -90,8 +89,7 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
       clearTimeout(timers.get(key))
       timers.delete(key)
       kept.delete(key)
-      // Kept for recovery by stashUnsavedEditors: the copy stays for the next launch.
-      if (handedOff.has(key)) continue
+      // The notice's copy only: a hand-off's copies are in their own folder (stashUnsavedEditors).
       stash({ ...entry, content: null })
     }
   }
@@ -125,7 +123,10 @@ export function startEditRecovery(api: Api | undefined = typeof window !== 'unde
  * of the open agent as a recovery copy, listed at the next launch. The
  * README tab or the document, every dirty text tab, and the config panel's
  * version under a conflict. Answers how many copies were written. The
- * copies are handed off: closing their editors does not remove them.
+ * copies are handed off (multi-runtime.md §20 item 3): they carry this
+ * hand-off's stamp, so main keeps them in a folder of their own that no
+ * notice's copy or later hand-off writes over or removes, and the
+ * recovered-edits notice lists them at once.
  */
 export async function stashUnsavedEditors(api: Api | undefined = typeof window !== 'undefined' ? window.adfApi : undefined): Promise<number> {
   const agentFilePath = useDocumentStore.getState().filePath
@@ -140,23 +141,62 @@ export async function stashUnsavedEditors(api: Api | undefined = typeof window !
   if (doc.isDirty && !copies.has('README.md')) copies.set('README.md', doc.documentContent)
   const config = useAgentStore.getState().configConflict
   if (config?.owner === agentFilePath) copies.set(CONFIG_RECOVERY_PATH, `${JSON.stringify(config.mine, null, 2)}\n`)
-  // Before the first write: an editor reset meanwhile must not remove what is being kept.
-  for (const path of copies.keys()) handedOff.add(copyKey(rt.runtimeId, agentFilePath, path))
+  if (copies.size === 0) return 0
+  const kept = `${new Date().toISOString().replace(/[:.]/g, '-')}-${++handOffs}`
   let written = 0
   for (const [path, content] of copies) {
     try {
-      await api.recoveryStash({ agentFilePath, path, content, ...rt })
+      await api.recoveryStash({ agentFilePath, path, content, ...rt, kept })
       written++
     } catch (err) {
       console.error(`[Recovery] Could not keep a copy of unsaved ${path}:`, err)
     }
   }
+  if (written > 0) {
+    for (const listener of [...keptListeners]) {
+      try { listener() } catch (err) { console.error('[Recovery] A listener of kept copies failed:', err) }
+    }
+  }
   return written
 }
 
-/** The launch notice's sentence for the copies a quit, crash or restart left. */
-export function recoveredEditsMessage(files: ReadonlyArray<{ agent: string; path: string }>): string {
+type RecoveredEntry = { agent: string; path: string; file: string; kept?: boolean }
+type ListApi = { recoveryList?: () => Promise<{ files?: RecoveredEntry[] } | null | undefined> }
+
+/**
+ * The recovered-edits notice's list: the copies the launch found, then, after
+ * each hand-off in this session (`session`: true), those plus the hand-offs'
+ * copies. A copy a "changed elsewhere" notice holds now is not listed. Answers
+ * the unsubscribe.
+ */
+export function watchRecoveredEdits(api: ListApi | undefined, onFiles: (files: RecoveredEntry[], session: boolean) => void): () => void {
+  if (!api?.recoveryList) return () => {}
+  let alive = true
+  /** The copies the launch found; each later list waits for it, in order. */
+  let launch = new Set<string>()
+  let loads: Promise<void> = Promise.resolve()
+  const load = (session: boolean) => {
+    loads = loads.then(() => api.recoveryList!()).then((r) => {
+      if (!alive) return
+      const files = r?.files ?? []
+      if (!session) launch = new Set(files.map((f) => f.file))
+      const shown = files.filter((f) => f.kept || launch.has(f.file))
+      if (session || shown.length > 0) onFiles(shown, session)
+    }).catch(() => { /* older main */ })
+  }
+  load(false)
+  const listener = () => load(true)
+  keptListeners.add(listener)
+  return () => {
+    alive = false
+    keptListeners.delete(listener)
+  }
+}
+
+/** The notice's sentence for the copies a quit, crash or restart left; `session`: with copies a hand-off kept in this session. */
+export function recoveredEditsMessage(files: ReadonlyArray<{ agent: string; path: string }>, opts: { session?: boolean } = {}): string {
   const names = files.map((f) => `${f.agent}/${f.path}`)
   const shown = names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ')
+  if (opts.session) return `Studio kept your unsaved version of ${shown}.`
   return `Studio kept your unsaved version of ${shown} from the last session, which ended before it was saved.`
 }

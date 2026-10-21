@@ -270,6 +270,22 @@ export class AgentWindows {
     w.handle.close()
   }
 
+  /**
+   * A runtime moved (multi-runtime.md §20 item 1): the saved windows of `from`
+   * are now `to`'s, and reopen once it connects (`restore(to)`). One that `to`
+   * has saved or open already is kept once.
+   */
+  moveRuntime(from: string, to: string): void {
+    if (this.deps.runtime() === null || from === to) return
+    const moving = this.carried.filter((e) => e.runtimeId === from)
+    if (moving.length === 0) return
+    const rest = this.carried.filter((e) => e.runtimeId !== from)
+    const moved = moving.map((e) => ({ ...e, runtimeId: to })).filter((e) => !rest.some((r) => this.matches(r, e.filePath, e.agentId, e.runtimeId)))
+    this.carriedList = [...moved, ...rest]
+    this.log.log(`[AgentWindows] ${moving.length} saved agent window(s) of ${from} are now ${to}'s; they reopen once it connects`)
+    this.save()
+  }
+
   /** Open in new window: focuses the agent's window when it has one. */
   open(request: AgentWindowRequest): { id: number; created: boolean } {
     return this.openWindow(request, false)

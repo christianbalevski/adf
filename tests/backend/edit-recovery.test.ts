@@ -118,3 +118,40 @@ it('a copy of another runtime\'s agent gets its own folder and is listed with it
   expect(await listRecovered(r)).toEqual([])
   expect(existsSync(`${join(r, agentFolder(remotePath, process.platform, 'remote:host-2'))}.runtime`)).toBe(false)
 })
+
+// R3B-3 (multi-runtime.md §20 item 3): a hand-off (a reconnect, a move, Remove) keeps its copies in a folder of
+// its own, by time, which a notice's later copies and their removal never touch.
+it('a hand-off\'s copies have their own folder: a later notice on the same file and its removal leave them', async () => {
+  const r = root()
+  const runtimeId = 'remote:host-1'
+  const REMOTE = '/srv/agents/agent-1.adf'
+  // T1: kept on Reconnect.
+  expect(await stashRecovery(r, { agentFilePath: REMOTE, path: 'notes.md', content: 'T1', runtimeId, kept: '2026-10-20T12-00-00-000Z-1' })).toBe(true)
+  // T2 under a new "changed elsewhere" notice on that file, then the notice resolved.
+  expect(await stashRecovery(r, { agentFilePath: REMOTE, path: 'notes.md', content: 'T2', runtimeId })).toBe(true)
+  expect(await stashRecovery(r, { agentFilePath: REMOTE, path: 'notes.md', content: null, runtimeId })).toBe(true)
+  const files = await listRecovered(r)
+  expect(files.map((f) => ({ agent: f.agent, path: f.path, runtimeId: f.runtimeId, kept: f.kept, text: readFileSync(f.file, 'utf-8') }))).toEqual([
+    { agent: 'agent-1', path: 'notes.md', runtimeId, kept: true, text: 'T1' },
+  ])
+})
+
+it('two hand-offs of one file keep two copies; Dismiss archives both', async () => {
+  const r = root()
+  await stashRecovery(r, { agentFilePath: ONE, path: 'notes.md', content: 'first', kept: '2026-10-20T12-00-00-000Z-1' })
+  await stashRecovery(r, { agentFilePath: ONE, path: 'notes.md', content: 'second', kept: '2026-10-20T12-00-05-000Z-2' })
+  const files = await listRecovered(r)
+  expect(files.map((f) => [f.agent, f.path, f.kept, readFileSync(f.file, 'utf-8')])).toEqual([
+    ['agent-1', 'notes.md', true, 'first'],
+    ['agent-1', 'notes.md', true, 'second'],
+  ])
+  expect(await archiveRecovered(r)).toBe(2)
+  expect(await listRecovered(r)).toEqual([])
+})
+
+it('a hand-off stamp that is not a plain name, or a removal of a hand-off copy, is refused', async () => {
+  const r = root()
+  expect(await stashRecovery(r, { agentFilePath: ONE, path: 'notes.md', content: 'x', kept: '../x' })).toBe(false)
+  expect(await stashRecovery(r, { agentFilePath: ONE, path: 'notes.md', content: null, kept: '2026-10-20T12-00-00-000Z-1' })).toBe(false)
+  expect(await listRecovered(r)).toEqual([])
+})

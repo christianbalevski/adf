@@ -62,12 +62,15 @@ writeFileSync(join(h.state.userData, 'studio-backend.json'), JSON.stringify({ v:
 writeFileSync(remotesPath, JSON.stringify({ v: 1, default: null, remotes: { 'host-1': HOST_1 } }))
 const clientPath = join(h.state.userData, 'studio-client-settings.json')
 const RECENT = ['/srv/agents/agent-1.adf']
+const AGENT_1 = '6f1c2a4e-1b3d-4c5e-8f70-9a1b2c3d4e5f'
 const FLEET = { fleetGroups: { '/srv/agents': ['/srv/agents/agent-1.adf'] } }
 writeFileSync(clientPath, JSON.stringify({
   theme: 'dark', uiFontSystemDefaultApplied: true, uiFont: 'system',
   runtimeRecentFiles: { 'remote:host-1': RECENT },
   runtimeFleet: { 'remote:host-1': FLEET },
   runtimeFingerprints: { 'remote:host-1': 'ABCD-EFGH' },
+  // R3B-1: an agent window of host-1 still to reopen (host-1 never connects here).
+  agentWindows: { runtime: 'local', windows: [{ agentId: AGENT_1, filePath: '/srv/agents/agent-1.adf', runtimeId: 'remote:host-1', fingerprint: 'ABCD-EFGH' }] },
 }))
 let restore = () => {}
 afterAll(() => restore())
@@ -111,4 +114,8 @@ it('a rename sends the moves, then the runtime set, and re-keys the keys of the 
   })
   expect(Object.keys(client().runtimeRecentFiles as object)).toEqual(['remote:lab'])
   expect(Object.keys(client().runtimeFleet as object)).toEqual(['remote:lab'])
+
+  // R3B-1: the saved agent window follows too, to reopen once lab connects.
+  await until(() => JSON.stringify(client().agentWindows).includes('remote:lab'), 'the agent window moves to lab')
+  expect(client().agentWindows).toEqual({ runtime: 'local', windows: [{ agentId: AGENT_1, filePath: '/srv/agents/agent-1.adf', runtimeId: 'remote:lab', fingerprint: 'ABCD-EFGH' }] })
 })

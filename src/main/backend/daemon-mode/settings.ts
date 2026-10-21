@@ -53,6 +53,7 @@ export class ClientSettingsStore {
   private data: Record<string, unknown>
   private writeBlocked: boolean
   private pending: Promise<void> = Promise.resolve()
+  private writeExtra: ((values: Record<string, unknown>) => Record<string, unknown> | null) | null = null
 
   /**
    * `migrate`: applied to the file's values as loaded, after the client
@@ -91,8 +92,19 @@ export class ClientSettingsStore {
     this.patch({ [key]: value })
   }
 
+  /**
+   * `extra(values)`: more client keys a write of `values` brings along, written
+   * with it (main's `runtimeFingerprints` record, multi-runtime.md §20 item 2).
+   */
+  onWrite(extra: (values: Record<string, unknown>) => Record<string, unknown> | null): void {
+    this.writeExtra = extra
+  }
+
   /** Client keys only; anything else is refused (it belongs to the daemon). */
   patch(values: Record<string, unknown>): void {
+    let more: Record<string, unknown> | null = null
+    try { more = this.writeExtra?.(values) ?? null } catch (err) { this.log.warn('[Settings] The extra keys of a write could not be computed:', err) }
+    if (more) values = { ...values, ...more }
     let changed = false
     for (const [key, value] of Object.entries(values)) {
       if (!CLIENT_KEY_SET.has(key)) {

@@ -41,7 +41,7 @@ import {
 } from './backend/boot-handover'
 import { guardBoot, settleDefaultBackend, showBootNotices } from './backend/first-launch'
 import {
-  forgetGoneRuntimeKeys, forgetRuntimeKeysOf, launchRuntimeKeyChanges, migrateRemoteModeInstall, relinkSavedAgentWindows, RUNTIME_FINGERPRINTS_KEY, savedConnectionChanges,
+  forgetGoneRuntimeKeys, forgetRuntimeKeysOf, launchRuntimeKeyChanges, migrateRemoteModeInstall, recordRuntimeFingerprintsOnWrite, relinkSavedAgentWindows, RUNTIME_FINGERPRINTS_KEY, savedConnectionChanges,
   type RemoteModeMigration,
 } from './backend/runtime-migration'
 import { malformedRemoteSentence, remotesFilePath } from './cli/remotes'
@@ -762,9 +762,10 @@ app.whenReady().then(async () => {
   // Every saved connection, and the remote slot of studio-backend.json, is in the runtime set (multi-runtime.md §3.1).
   // Saving a connection connects it; forgetting it disconnects it (§12 item 2). Read from the caches: no disk access.
   // cli-remotes.json that cannot be read is not "nothing saved": the saved connections stay as they are, unknown (A11).
-  const syncRuntimes = (): void => {
+  // `moves`: ids now saved under another id (§20 item 1): their agent windows follow instead of closing for good.
+  const syncRuntimes = (moves?: ReadonlyMap<string, string>): void => {
     const saved = savedCache.get()
-    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved), { savedUnknown: savedCache.unreadable !== null })
+    daemonMode?.runtimes.sync(saved, runtimeSlot(backendStore?.config() ?? backend.config, saved), { savedUnknown: savedCache.unreadable !== null, ...(moves ? { moves } : {}) })
   }
   // What Settings → Connections says about cli-remotes.json (the notices of this launch): replaced at each read, so a
   // file fixed while Studio runs is no longer reported.
@@ -794,7 +795,7 @@ app.whenReady().then(async () => {
     // §17: the windows learn the moves before the runtime set without the old ids, so they re-key, not remove.
     if (changes) pushRuntimesMoved(changes)
     connections?.changed()
-    syncRuntimes()
+    syncRuntimes(changes?.moves)
     if (changes) runtimeKeysFollow?.(changes)
     if (twin && store) {
       void clearTwinSlot(store, lastSaved, connectionsEnv).then((name) => {
@@ -847,6 +848,11 @@ app.whenReady().then(async () => {
         runtimesChanged: () => connections?.changed(),
         // A remote's saved agent windows reopen once it connects, after the main window showed (§7.5).
         runtimeConnected: (id) => { void mainWindowFirstShown.then(() => agentWindows?.restore(id)) },
+        // A runtime renamed or cleared for its twin (§20 item 1): its windows wait for the new id, or reopen there now.
+        runtimeMoved: (from, to, connected) => {
+          agentWindows?.moveRuntime(from, to)
+          if (connected) void mainWindowFirstShown.then(() => agentWindows?.restore(to))
+        },
       },
       // Sleep and wake: the daemon is checked and the client stream re-dialed on resume.
       powerMonitor,
@@ -872,6 +878,8 @@ app.whenReady().then(async () => {
       afterOwnerImport: (phrase: string) => syncRuntimeEntryAfterImport(userDataDir, phrase),
     })
     const handle = daemonMode
+    // §20 item 2: a saved connection's keys record its fingerprint when first written (Open Recent, the Mesh view), from the cache.
+    recordRuntimeFingerprintsOnWrite(handle.clientSettings, (id) => (savedCache.unreadable ? null : savedCache.get()[id.slice('remote:'.length)]?.fingerprint ?? null))
     syncRuntimes()
     // §7.5: a saved agent window of a runtime no longer in the set moves to the saved connection with its fingerprint.
     // Never rewritten when nothing moves (a list of This computer only keeps its bytes).
@@ -1030,7 +1038,7 @@ app.whenReady().then(async () => {
     // Remove says how many agent windows of that runtime it closes (§6.5).
     agentWindowsOn: (id) => daemonMode?.runtimes.get(id)?.windows.ids().length ?? 0,
     // The remote slot was added, replaced or removed: it joins or leaves the set at once.
-    slotChanged: syncRuntimes,
+    slotChanged: () => syncRuntimes(),
     // Remove, or another computer in the remote slot: that runtime's Open Recent and Mesh view keys go (§7.4).
     forgetRuntimeKeys: (id) => { if (daemonMode) forgetRuntimeKeysOf(daemonMode.clientSettings, id) },
   })

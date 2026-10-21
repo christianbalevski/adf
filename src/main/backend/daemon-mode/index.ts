@@ -159,6 +159,8 @@ export interface DaemonModeDeps {
     runtimesChanged?: () => void
     /** A runtime other than the primary connected for the first time since its RuntimeConnection was created: its saved agent windows reopen (§7.5). */
     runtimeConnected?: (id: RuntimeId) => void
+    /** A runtime moved to `to` (§20 item 1): its saved agent windows are `to`'s now; `connected`: `to` is connected already. */
+    runtimeMoved?: (from: RuntimeId, to: RuntimeId, connected: boolean) => void
   }
   log?: Pick<Console, 'log' | 'warn' | 'error'>
   /** Agent lease registry (tests); defaults to the process registry. */
@@ -502,6 +504,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       return runtime
     },
     closeWindow: (windowId, keep) => hooks.closeAgentWindow?.(windowId, keep),
+    onMoved: (from, to) => hooks.runtimeMoved?.(from, to, manager.get(to)?.connection.state.state === 'connected'),
     onChange: () => hooks.runtimesChanged?.(),
     onRemoved: (id) => {
       if (!aggregator.delete(id)) return
@@ -586,7 +589,9 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
         const mainOpen = MAIN_OPEN_CHANNELS.has(channel) && ctx.runtime && !isAgentWindow(event) ? { id: ctx.runtime.id, seq: ++mainOpenSeq } : null
         const result = handler(ctx, event, ...args)
         if (mainOpen) {
-          void Promise.resolve(result).then(() => {
+          void Promise.resolve(result).then((r) => {
+            // R3B-5: an open or create that failed opened nothing there.
+            if ((r as { success?: unknown } | null)?.success !== true) return
             if (mainOpen.seq === mainOpenSeq) manager.setMainOpenRuntime(mainOpen.id)
             else log.log(`[Runtimes] A main-window open on ${mainOpen.id} was overtaken by a later one; the main window stays on ${manager.mainOpenRuntime().id}`)
           }, () => {})

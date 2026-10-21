@@ -213,8 +213,11 @@ describe('the main window\'s open runtime (§4.3, §4.4)', () => {
     const host1 = fakeHost('host-1', 47391, 'HOST-AAAB')
     host1.daemon.routes.set('GET /files/agent', (req) => ({ agentId: req.query.path === REMOTE_FILE_2 ? AGENT_2 : null, loaded: req.query.path === REMOTE_FILE_2 }))
     host1.daemon.routes.set(`GET /agents/${AGENT_2}/files/raw`, () => ({ raw: 'remote-image', headers: { 'Content-Type': 'image/png' } }))
+    // The opens succeed (R3B-5: only an open that succeeded moves the main window).
+    host1.daemon.routes.set(`GET /agents/${AGENT_2}/identity/password`, () => ({ agentId: AGENT_2, needsPassword: false, unlocked: true }))
     const t = await boot({ hosts: [host1] })
     t.local.routes.set('GET /files/agent', (req) => ({ agentId: req.query.path === FILE_1 ? AGENT_1 : null, loaded: req.query.path === FILE_1 }))
+    t.local.routes.set(`GET /agents/${AGENT_1}/identity/password`, () => ({ agentId: AGENT_1, needsPassword: false, unlocked: true }))
     t.local.routes.set(`GET /agents/${AGENT_1}/files/raw`, () => ({ raw: 'local-image', headers: { 'Content-Type': 'image/png' } }))
     await t.sync()
     await t.handle.runtimes.get('remote:host-1')!.ready
@@ -264,6 +267,17 @@ describe('the main window\'s open runtime (§4.3, §4.4)', () => {
     // A later open on host-1 still moves it there.
     await t.invoke(IPC.FILE_OPEN, 1, { $runtime: 'remote:host-1' }, { filePath: REMOTE_FILE_2 })
     await until(() => t.handle.runtimes.mainOpenRuntime().id === 'remote:host-1')
+  })
+
+  // R3B-5: only an open that succeeded moves the main window.
+  it('a main-window FILE_OPEN on host-1 that fails: the main window stays on This computer', async () => {
+    const t = await connected()
+    t.host1.daemon.routes.set('GET /files/agent', () => ({ status: 404, body: { code: 'not_found', error: 'No such file' } }))
+    const result = await t.invoke(IPC.FILE_OPEN, 1, { $runtime: 'remote:host-1' }, { filePath: REMOTE_FILE_2 }) as { success: boolean }
+    expect(result.success).toBe(false)
+    await tick(20)
+    expect(t.handle.runtimes.mainOpenRuntime().id).toBe('local')
+    expect(t.host1.daemon.requests.filter((r) => r.path.endsWith('/files/raw'))).toEqual([])
   })
 
   it('an agent window\'s FILE_OPEN does not move the main window\'s open runtime', async () => {
