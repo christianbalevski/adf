@@ -36,6 +36,13 @@ describe('firewall-service command builders', () => {
       }
     })
 
+    it('Windows: each add first removes any rule of the same name, so a stale (Block) rule cannot win and a re-run adds no duplicate', () => {
+      const [tcp, udp] = lanFirewallCommands('win32', 7295, 'C:\\ADF\\ADF Studio.exe')
+      for (const [cmd, name] of [[tcp, FW_RULE_TCP], [udp, FW_RULE_UDP]] as const) {
+        expect(cmd.startsWith(`Get-NetFirewallRule -DisplayName '${name}' -ErrorAction SilentlyContinue | Remove-NetFirewallRule; New-NetFirewallRule -DisplayName '${name}' `)).toBe(true)
+      }
+    })
+
     it('Windows: a single quote in the path is doubled, so it cannot end the literal', () => {
       expect(lanFirewallCommands('win32', 7295, "C:\\o'brien\\app.exe")[0]).toContain("'C:\\o''brien\\app.exe'")
     })

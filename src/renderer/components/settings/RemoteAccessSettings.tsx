@@ -2,13 +2,16 @@
  * Remote access in Settings (docs/design/remote-access.md §7, §9.1;
  * settings-scopes.md §6, §7): other computers using this runtime.
  *
- * - Studio → Connections → Add → Share (`SharePanel`): consent inline
- *   (remote access on, and Allow on each current network not allowed, with
- *   one explicit Allow), then this runtime's addresses by network with
- *   Copy, and the 6-digit pairing code with its countdown. The other
+ * - Studio → Connections → Add → Share (`SharePanel`): what Share needs,
+ *   in one sentence naming every network it will listen on, and Allow,
+ *   which asks main (REMOTE_ACCESS_SHARE: one native dialog, then remote
+ *   access on and each network it named allowed; review A1). Then the
+ *   addresses by network with Copy, the firewall line, and the 6-digit
+ *   pairing code with its countdown (Renew once it is gone). The other
  *   computer enters it; this computer still asks Allow device (a native
  *   dialog, remote-access.md §5.4), then "Approved: <name>.". A token
- *   shown once is under Details.
+ *   shown once is under Details. Leaving Share with no device added turns
+ *   remote access off again when Share turned it on (review A5).
  * - Studio → Connections → Devices (`DevicesGroup`): the Remote access
  *   switch and the computers using this runtime, each with Revoke.
  * - Studio → Connections → Add → Connect: pairMessage for the client side
@@ -28,7 +31,7 @@ import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
 import type { RemoteAccessView, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
-import { PUBLIC_WARNING } from '../../../shared/utils/network-consent-text'
+import { andList, listenPlan, PUBLIC_WARNING } from '../../../shared/utils/network-consent-text'
 
 // --- Pure helpers (tested) ------------------------------------------------------
 
@@ -122,22 +125,51 @@ export function networkWarning(network: NetworkView): string | null {
   return network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
 }
 
+/** The runtime Share shares: "this runtime", or `<name> (Local)` while there is more than one runtime (review A6). */
+export function sharedRuntime(runtime: string | null | undefined): string {
+  return runtime || 'this runtime'
+}
+
+/** Devices' tooltip. */
+export function devicesHint(runtime: string | null | undefined): string {
+  return `Computers using ${sharedRuntime(runtime)}.`
+}
+
 /**
  * What Share needs before anything listens (owner decision 2026-10-18 b:
  * never listen without consent, given per network): remote access on, and
- * each current network allowed. Null when nothing is needed.
+ * each current network allowed. The sentence names every current network
+ * it will listen on, those allowed earlier too, and the Public warning
+ * covers them all (review A2). Null when nothing is needed. Main's dialog
+ * (REMOTE_ACCESS_SHARE) is the confirmation.
  */
-export function shareConsent(status: RemoteAccessStatus): { enable: boolean; networks: NetworkView[]; text: string; warning: string | null } | null {
-  const networks = status.networks.filter((n) => !n.allowed && !!n.id)
+export function shareConsent(status: RemoteAccessStatus, runtime: string | null = null): { enable: boolean; networks: NetworkView[]; text: string; warning: string | null } | null {
+  const plan = listenPlan(status, { allow: true })
+  const networks = plan.allow as NetworkView[]
   const enable = !status.enabled
   if (!enable && networks.length === 0) return null
-  const where = networks.length > 0 ? ` on ${networks.map((n) => n.label).join(' and ')}` : ''
+  const here = status.networks.filter((n) => !!n.id).map((n) => n.label)
+  const where = here.length > 0 ? ` on ${andList(here)}` : ''
   return {
     enable,
     networks,
-    text: `Computers you pair${where} get full control of this runtime, as powerful as your seed phrase.`,
-    warning: networks.some((n) => networkWarning(n)) ? PUBLIC_NETWORK_WARNING : null,
+    text: `Computers you pair${where} get full control of ${sharedRuntime(runtime)}, as powerful as your seed phrase.`,
+    warning: plan.exposed ? PUBLIC_NETWORK_WARNING : null,
   }
+}
+
+/** Shown in Share when leaving keeps remote access on (review A5). */
+export const STAYS_ON_LINE = 'Remote access stays on; turn it off in Devices.'
+
+/**
+ * Leaving Share (Back, Cancel, closing the dialog) after its Allow: `off`
+ * when Share turned remote access on and no device was added (paired or a
+ * token), so nothing keeps listening for nobody; `stays` (STAYS_ON_LINE)
+ * when Share changed something that stays; null when it changed nothing.
+ */
+export function shareLeave({ turnedOn, allowed, added }: { turnedOn: boolean; allowed: boolean; added: boolean }): 'off' | 'stays' | null {
+  if (turnedOn && !added) return 'off'
+  return turnedOn || allowed ? 'stays' : null
 }
 
 /** "Approved: <label>." once a device that entered the code is allowed: the newest paired device since Share opened. */
@@ -284,15 +316,19 @@ type ActResult = { ok: true; view: RemoteAccessView } | { ok: false; code: strin
  * without it), then shows the addresses and opens a pairing window. The
  * claim is still allowed or denied on this computer (Allow device).
  */
-export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+export function SharePanel({ runtime = null, onBack, onDone }: { runtime?: string | null; onBack: () => void; onDone: () => void }) {
   const [view, setView] = useState<RemoteAccessView | null>(null)
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [now, setNow] = useState(() => Date.now())
   const [label, setLabel] = useState('')
   const [created, setCreated] = useState<{ label: string; token: string } | null>(null)
+  // Share opened a pairing window (Renew once it is gone), and what its Allow changed (review A3, A5).
+  const [opened, setOpened] = useState(false)
+  const [turnedOn, setTurnedOn] = useState(false)
+  const [allowed, setAllowed] = useState(false)
   const before = useRef<ReadonlySet<string> | null>(null)
-  const opened = useRef(false)
+  const openedRef = useRef(false)
 
   useEffect(() => {
     let alive = true
@@ -304,22 +340,31 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
 
   const status = view?.status ?? null
   if (status && before.current === null) before.current = new Set(status.devices.map((d) => d.id))
-  const consent = status ? shareConsent(status) : null
+  const consent = status ? shareConsent(status, runtime) : null
   const approved = status && before.current ? addedDeviceLine(before.current, status.devices) : null
   const pairing = status?.pairing ?? null
+  const leave = shareLeave({ turnedOn, allowed, added: !!approved || !!created })
   const approvedRef = useRef(false)
   approvedRef.current = !!approved
+  const leaveRef = useRef(leave)
+  leaveRef.current = leave
 
-  // Leaving Share before a computer claimed the code closes the window this Share opened.
+  // Leaving Share: the pairing window it opened closes unless a computer claimed it; remote access goes off again
+  // when Share turned it on and no device was added (review A5). Main logs both; the Devices switch shows it.
   useEffect(() => () => {
-    if (opened.current && !approvedRef.current) void window.adfApi?.closeRemotePairing?.().catch(() => {})
+    if (openedRef.current && !approvedRef.current) void window.adfApi?.closeRemotePairing?.().catch(() => {})
+    if (leaveRef.current === 'off') void window.adfApi?.setRemoteAccess({ enabled: false }).catch(() => {})
   }, [])
 
-  // Once it listens: the code (the existing pairing window), opened for this Share.
-  useEffect(() => {
-    if (!status || consent || approved || opened.current || !canAddDevice(status) || status.pairing) return
-    opened.current = true
+  const openPairing = () => {
+    openedRef.current = true
+    setOpened(true)
     void act(() => window.adfApi.openRemotePairing())
+  }
+  // Once it listens: the code (the existing pairing window), opened for this Share; afterwards Renew (review A3).
+  useEffect(() => {
+    if (!status || consent || approved || openedRef.current || !canAddDevice(status) || status.pairing) return
+    openPairing()
   }, [status, consent, approved])
   useEffect(() => {
     if (!pairing) return
@@ -342,18 +387,21 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
       setBusy(false)
     }
   }
+  // Allow asks main: one native dialog naming every network, then on and those networks allowed (review A1).
   const allow = async () => {
-    if (!consent) return
-    // The Allow under the sentence is the confirmation: no second dialog.
-    if (consent.enable && !await act(() => window.adfApi.setRemoteAccess({ enabled: true, confirmed: true }))) return
-    for (const n of consent.networks) {
-      const result = await window.adfApi.allowNetwork(n.id!)
-      if (!result.ok) { setError(result.error); break }
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.adfApi.shareRemoteAccess()
+      if (result.turnedOn) setTurnedOn(true)
+      if (result.ok) { setView(result.view); setAllowed(true) }
+      else if (result.code !== 'cancelled') setError(result.error)
+    } catch {
+      setError('Studio could not reach the ADF daemon.')
+    } finally {
+      setBusy(false)
     }
-    const next = await window.adfApi.getRemoteAccess().catch(() => null)
-    if (next) setView(next)
   }
-  const renew = () => { void act(() => window.adfApi.openRemotePairing()) }
   const createToken = async () => {
     setBusy(true)
     setError(null)
@@ -369,15 +417,18 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
   return (
     <SharePanelView
       view={view}
+      runtime={runtime}
       busy={busy}
       error={error}
       now={now}
+      opened={opened}
+      leave={leave}
       approved={approved}
       label={label}
       created={created}
       onLabel={setLabel}
       onAllow={() => void allow()}
-      onRenew={renew}
+      onRenew={openPairing}
       onCreateToken={() => void createToken()}
       onBack={onBack}
       onDone={onDone}
@@ -386,11 +437,17 @@ export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () 
 }
 
 /** Share's markup (static in tests). */
-export function SharePanelView({ view, busy, error, now, approved, label, created, onLabel, onAllow, onRenew, onCreateToken, onBack, onDone }: {
+export function SharePanelView({ view, runtime = null, busy, error, now, opened = false, leave = null, approved, label, created, onLabel, onAllow, onRenew, onCreateToken, onBack, onDone }: {
   view: RemoteAccessView | null
+  /** `<name> (Local)` while there is more than one runtime (review A6). */
+  runtime?: string | null
   busy: boolean
   error: string | null
   now?: number
+  /** Share opened a pairing window: once it is gone (expired, wrong codes, a failed open), Renew (review A3). */
+  opened?: boolean
+  /** What leaving does (shareLeave): `stays` shows STAYS_ON_LINE (review A5). */
+  leave?: 'off' | 'stays' | null
   approved: string | null
   label: string
   created: { label: string; token: string } | null
@@ -402,9 +459,10 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
   onDone: () => void
 }) {
   const status = view?.status ?? null
-  const consent = status ? shareConsent(status) : null
+  const consent = status ? shareConsent(status, runtime) : null
   const pairing = status?.pairing ?? null
   const expired = !!pairing && pairingCountdown(pairing.expiresAt, now) === '0:00'
+  const firewall = status && status.firewall.state !== 'ok' && (status.firewall.message || status.firewall.commands.length > 0) ? status.firewall : null
   return (
     <div className="space-y-3 text-[12px]">
       {!view && <p className="text-[var(--adf-ui-text-muted)]">Loading…</p>}
@@ -418,8 +476,15 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
             : pairing && !expired
               ? <PairingCodePanel pairing={pairing} fingerprint={status.fingerprint} now={now} />
               : canAddDevice(status)
-                ? <div className="flex items-center justify-between gap-2"><span className="text-[var(--adf-ui-text-muted)]">{pairing ? 'The code expired.' : 'Opening…'}</span>{pairing && <Button size="compact" disabled={busy} onClick={onRenew}>Renew</Button>}</div>
+                ? <div className="flex items-center justify-between gap-2"><span className="text-[var(--adf-ui-text-muted)]">{pairing ? 'The code expired.' : opened ? 'No code.' : 'Opening…'}</span>{(pairing || opened) && <Button size="compact" disabled={busy} onClick={onRenew}>Renew</Button>}</div>
                 : <p className="text-[var(--adf-ui-text-muted)]">{remoteStatusLine(status)}</p>}
+          {firewall && (
+            <div className={`space-y-1 text-[11px] ${firewall.state === 'blocked' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-subtle)]'}`}>
+              <div className="font-medium">Firewall</div>
+              {firewall.message && <p>{firewall.message}</p>}
+              {firewall.commands.length > 0 && <ul className="space-y-0.5 font-mono">{firewall.commands.map((c) => <li key={c} className="break-all">{c}</li>)}</ul>}
+            </div>
+          )}
           <div>
             <div className="mb-1 text-[13px] font-medium text-[var(--adf-ui-text)]">Addresses</div>
             <GroupedAddresses status={status} />
@@ -443,6 +508,7 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
         </>
       )}
       {error && <p role="status" className="text-[var(--adf-ui-danger)]">{error}</p>}
+      {leave === 'stays' && <p className="text-[var(--adf-ui-text-muted)]">{STAYS_ON_LINE}</p>}
       <div className="flex justify-end gap-2 pt-1">
         <Button onClick={onBack}>Back</Button>
         {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone}>Cancel</Button>}
@@ -458,7 +524,7 @@ export function SharePanelView({ view, busy, error, now, approved, label, create
  * remote-access.md §7) and the computers using this runtime, each with
  * Revoke. Only in local mode; otherwise the reason.
  */
-export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning: () => Promise<void>; className?: string }) {
+export function DevicesGroup({ runtime = null, onKeepRunning, className = '' }: { runtime?: string | null; onKeepRunning: () => Promise<void>; className?: string }) {
   const [view, setView] = useState<RemoteAccessView | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
@@ -501,6 +567,7 @@ export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning:
   return (
     <DevicesGroupView
       className={className}
+      runtime={runtime}
       view={view}
       busy={busy}
       message={message}
@@ -513,8 +580,10 @@ export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning:
 }
 
 /** Devices' markup (static in tests). */
-export function DevicesGroupView({ view, busy, message, now, onSwitch, onKeepRunning, onRevoke, className = '' }: {
+export function DevicesGroupView({ view, runtime = null, busy, message, now, onSwitch, onKeepRunning, onRevoke, className = '' }: {
   view: RemoteAccessView | null
+  /** `<name> (Local)` while there is more than one runtime (review A6). */
+  runtime?: string | null
   busy: boolean
   message: { kind: 'ok' | 'error'; text: string } | null
   now?: number
@@ -527,10 +596,10 @@ export function DevicesGroupView({ view, busy, message, now, onSwitch, onKeepRun
   const status = view.status
   const enabled = status?.enabled === true
   return (
-    <SettingsGroup title="Devices" hint="Computers using this runtime." docs={DOCS.remoteAccessDevices} className={className}>
+    <SettingsGroup title="Devices" hint={devicesHint(runtime)} docs={DOCS.remoteAccessDevices} className={className}>
       <SettingsRow
         label="Remote access"
-        description="Computers you add use this runtime."
+        description={`Computers you add use ${sharedRuntime(runtime)}.`}
         help={view.available ? (status ? remoteStatusLine(status) : undefined) : view.unavailableReason ?? undefined}
         error={view.error ?? undefined}
       >

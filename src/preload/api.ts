@@ -14,7 +14,7 @@ import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
-import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
+import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemoteAccessChange, RemoteAccessResult, RemoteAccessView, RemoteDeviceAddResult, RemoteDiscoveryUpdate, RemoteShareResult, RemotePairStartRequest, RemotePairState } from '../shared/types/remote-access-ipc.types'
 import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimesMoved } from '../shared/types/connection.types'
 
 /** Claude sign-in as reported by the user's Claude Code install (mirrors main's ClaudeAuthStatus). */
@@ -259,7 +259,7 @@ export interface AdfApi {
     adapters: { adapters: AdapterState[]; perAgent?: AdapterAgentStatus[] }
     peers: unknown[]
   }>
-  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string; lanAddresses?: string[] }>
+  getMeshServerStatus: () => Promise<{ running: boolean; port: number; host: string; lanAddresses?: string[]; warning?: string }>
   restartMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   startMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
   stopMeshServer: () => Promise<{ success: boolean; running?: boolean; port?: number; host?: string; error?: string }>
@@ -748,10 +748,11 @@ export interface AdfApi {
   getRemoteAccess: (opts?: { refresh?: boolean }) => Promise<RemoteAccessView>
   /**
    * The switch (turning it on is confirmed in a native dialog first) and the
-   * name. `confirmed`: the user pressed Allow under the same sentence in
-   * Add → Share, so no second dialog. Networks: allowNetwork / forgetNetwork.
+   * name. Networks: allowNetwork / forgetNetwork. Main window only.
    */
-  setRemoteAccess: (request: { enabled?: boolean; name?: string; confirmed?: boolean }) => Promise<RemoteAccessResult>
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => Promise<RemoteAccessResult>
+  /** Add → Share: main asks once (a native dialog naming every network it listens on), then turns remote access on and allows them. */
+  shareRemoteAccess: () => Promise<RemoteShareResult>
   /** "Add a computer": a device token, returned this once. */
   addRemoteDevice: (label: string) => Promise<RemoteDeviceAddResult>
   /** Remove a computer (confirmed first): disconnected now, its token stops working. */

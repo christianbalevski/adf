@@ -22,7 +22,7 @@ vi.mock('electron', () => ({
   dialog: {},
 }))
 
-import { MeshServer } from '../../../src/main/services/mesh-server'
+import { MeshServer, PUBLIC_LOOPBACK_WARNING } from '../../../src/main/services/mesh-server'
 import { LanReach, type LanReachSnapshot } from '../../../src/main/services/lan-reach'
 import { CodeSandboxService } from '../../../src/main/runtime/code-sandbox'
 import { allowNetwork, forgetNetwork } from '../../../src/main/daemon/remote-access/config'
@@ -198,7 +198,50 @@ describe('owner decision 2026-10-21: a public agent needs the same consent per n
       await server.start()
       expect(server.getBindMode()).toBe('lan')
       expect(boundAddress(server)).toBe('127.0.0.1')
+      // Only a public agent is expected beyond the LAN: a lan agent gets no server warning.
+      expect(server.getWarning()).toBeNull()
     } finally {
+      await server.stop()
+    }
+  })
+
+  it('review A8: a public agent with no allowed network (a headless VPS): one visible warning naming MESH_HOST, in the log and the status', async () => {
+    const port = await freePort()
+    const server = withAgent(meshServer(port, false), 'public')
+    server.setLanReach(reach({ listenable: [] }))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await server.start()
+      expect(server.getWarning()).toBe(PUBLIC_LOOPBACK_WARNING)
+      expect(PUBLIC_LOOPBACK_WARNING).toContain('MESH_HOST')
+      expect(PUBLIC_LOOPBACK_WARNING.split(/[.!?]\s/)).toHaveLength(1)
+      const logged = () => warn.mock.calls.filter((c) => String(c[0]).includes('MESH_HOST')).length
+      expect(logged()).toBe(1)
+      // Logged once, not every check.
+      await server.syncLan(true)
+      expect(logged()).toBe(1)
+    } finally {
+      warn.mockRestore()
+      await server.stop()
+    }
+    expect(server.getWarning()).toBeNull()
+  })
+
+  it.skipIf(process.platform === 'darwin')('review A8: the warning goes once a network listens', async () => {
+    const port = await freePort()
+    const server = withAgent(meshServer(port, false), 'public')
+    let listenable: string[] = []
+    server.setLanReach({ snapshot: async () => ({ addresses: [], listenable, networks: [], tailscale: 'absent' }) } as unknown as LanReach)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      await server.start()
+      expect(server.getWarning()).toBe(PUBLIC_LOOPBACK_WARNING)
+      listenable = ['127.0.0.2']
+      await server.syncLan(true)
+      expect(server.getLanAddresses()).toEqual(['127.0.0.2'])
+      expect(server.getWarning()).toBeNull()
+    } finally {
+      warn.mockRestore()
       await server.stop()
     }
   })

@@ -40,6 +40,8 @@ import type { RemotePairErrorCode, RemotePairStartRequest, RemotePairState } fro
 import { DevicesGroup, SharePanel, pairMessage } from './RemoteAccessSettings'
 import type { RemoteDiscoveryEntry } from '../../../shared/types/remote-access-ipc.types'
 import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from '../../stores/connection.store'
+import { runtimeLabel, useRuntimes } from '../../stores/runtimes.store'
+import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
 
 /** The modes as users see them. Inside Studio is the legacy backend, kept for this release only. */
 const MODE_LABELS: Record<StudioRunMode, string> = {
@@ -456,7 +458,11 @@ export function AddConnectionDialog({ onClose, onBack, found: initialFound = nul
 
 /** The help line of each Add choice (owner decision 2026-10-21). */
 export const CONNECT_HELP = 'Use a runtime on another computer.'
-export const SHARE_HELP = 'Let another computer use this runtime.'
+/** Share always shares the local runtime: named `<name> (Local)` while there is more than one runtime (review A6). */
+export function shareHelp(runtime: string | null | undefined): string {
+  return `Let another computer use ${runtime || 'this runtime'}.`
+}
+export const SHARE_HELP = shareHelp(null)
 
 function ChoiceButton({ title, help, disabled, reason, onClick }: { title: string; help: string; disabled?: boolean; reason?: string | null; onClick: () => void }) {
   const button = (
@@ -474,17 +480,17 @@ function ChoiceButton({ title, help, disabled, reason, onClick }: { title: strin
 }
 
 /** Add's first step (static in tests): Connect or Share. Share needs this computer's daemon (local mode). */
-export function AddChoice({ share, onConnect, onShare }: { share: { available: boolean; reason: string | null }; onConnect: () => void; onShare: () => void }) {
+export function AddChoice({ share, runtime = null, onConnect, onShare }: { share: { available: boolean; reason: string | null }; runtime?: string | null; onConnect: () => void; onShare: () => void }) {
   return (
     <div className="grid gap-2">
       <ChoiceButton title="Connect" help={CONNECT_HELP} onClick={onConnect} />
-      <ChoiceButton title="Share" help={SHARE_HELP} disabled={!share.available} reason={share.reason} onClick={onShare} />
+      <ChoiceButton title="Share" help={shareHelp(runtime)} disabled={!share.available} reason={share.reason} onClick={onShare} />
     </div>
   )
 }
 
 /** Add: Connect (this Studio uses a remote) or Share (another computer uses this runtime). */
-export function AddDialog({ onClose }: { onClose: () => void }) {
+export function AddDialog({ runtime = null, onClose }: { runtime?: string | null; onClose: () => void }) {
   const [choice, setChoice] = useState<'choose' | 'connect' | 'share'>('choose')
   const [share, setShare] = useState<{ available: boolean; reason: string | null }>({ available: true, reason: null })
   useEffect(() => {
@@ -497,13 +503,13 @@ export function AddDialog({ onClose }: { onClose: () => void }) {
     <Dialog open title="Add" onClose={onClose} lightDismiss={false}>
       {choice === 'choose' ? (
         <div className="space-y-3 text-[12px]">
-          <AddChoice share={share} onConnect={() => setChoice('connect')} onShare={() => setChoice('share')} />
+          <AddChoice share={share} runtime={runtime} onConnect={() => setChoice('connect')} onShare={() => setChoice('share')} />
           <div className="flex justify-end pt-1">
             <Button onClick={onClose}>Cancel</Button>
           </div>
         </div>
       ) : (
-        <SharePanel onBack={() => setChoice('choose')} onDone={onClose} />
+        <SharePanel runtime={runtime} onBack={() => setChoice('choose')} onDone={onClose} />
       )}
     </Dialog>
   )
@@ -556,6 +562,8 @@ export function ConnectionSettings() {
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
   const [adding, setAdding] = useState(false)
   const { track } = useSettingsSave()
+  // The local runtime by name while there is more than one: Share and Devices are about it (review A6).
+  const shared = runtimeLabel(LOCAL_RUNTIME, useRuntimes())
 
   useEffect(() => {
     startConnectionFeed()
@@ -691,7 +699,7 @@ export function ConnectionSettings() {
   </>
 
   const addBar = <AddBar busy={busy} message={message} onAdd={() => setAdding(true)} />
-  const devices = <DevicesGroup onKeepRunning={keepRunning} />
+  const devices = <DevicesGroup runtime={shared} onKeepRunning={keepRunning} />
 
   if (simple) {
     return (
@@ -700,7 +708,7 @@ export function ConnectionSettings() {
         {addBar}
         <SimpleConnections busy={busy} onLegacy={() => connect('embedded')} details={thisComputerRows} extra={switchRows} />
         {devices}
-        {adding && <AddDialog onClose={() => setAdding(false)} />}
+        {adding && <AddDialog runtime={shared} onClose={() => setAdding(false)} />}
       </>
     )
   }
@@ -719,7 +727,7 @@ export function ConnectionSettings() {
 
       {local && <SettingsGroup title={view.rows.find((r) => r.kind === 'local')?.name ?? LOCAL_LABEL}>{thisComputerRows}</SettingsGroup>}
 
-      {adding && <AddDialog onClose={() => setAdding(false)} />}
+      {adding && <AddDialog runtime={shared} onClose={() => setAdding(false)} />}
     </>
   )
 }

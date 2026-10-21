@@ -300,6 +300,19 @@ describe('Connections: one Add, two choices, two lists', () => {
     expect(renderToStaticMarkup(<AddBar busy={false} message={null} onAdd={() => {}} />).match(/>Add</g)).toHaveLength(1)
   })
 
+  it('review A6: with more than one runtime, Share names the local runtime it shares ("<name> (Local)"), never "this runtime"', async () => {
+    const { AddChoice, shareHelp } = await import('../../../src/renderer/components/settings/ConnectionSettings')
+    expect(shareHelp('box-1 (Local)')).toBe('Let another computer use box-1 (Local).')
+    expect(shareHelp(null)).toBe('Let another computer use this runtime.')
+    const html = renderToStaticMarkup(<AddChoice share={{ available: true, reason: null }} runtime="box-1 (Local)" onConnect={() => {}} onShare={() => {}} />)
+    expect(html).toContain('Let another computer use box-1 (Local).')
+    expect(html).not.toContain('this runtime')
+    const source = readFileSync(join(__dirname, '../../../src/renderer/components/settings/ConnectionSettings.tsx'), 'utf8')
+    // The page computes it once and hands it to Add (help, Share) and Devices.
+    expect(source).toContain('<DevicesGroup runtime={shared}')
+    expect(source).toContain('<AddDialog runtime={shared}')
+  })
+
   it('the page has one Add; the lists are Remotes and Devices; found computers are listed in Connect, not on the page', () => {
     const source = readFileSync(join(__dirname, '../../../src/renderer/components/settings/ConnectionSettings.tsx'), 'utf8')
     // The page's one Add is AddBar; the page body has no other.

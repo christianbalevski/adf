@@ -253,6 +253,8 @@ meshManager.setWsConnectionManager(wsConnectionManager)
 const meshServer = new MeshServer(codeSandboxService, ownerIdentity.presentedSettings(settings))
 // LAN mode: only on networks the user allowed, the rule and the list remote access uses (remote-access.md §3.3.1).
 meshServer.setLanReach(new LanReach({ settingsDir: dirname(settingsPath) }))
+// A public agent with no allowed network to listen on: in the server status (adf daemon status, Studio's status card).
+const serverWarning = (): { warning?: string } => { const warning = meshServer.getWarning(); return warning ? { warning } : {} }
 // When the mesh server binds, and a stop on request that holds (mesh-controls.ts).
 const meshServerBinder = createMeshServerBinder({ settings, mesh: meshManager, server: meshServer })
 meshServer.setMeshManager(meshManager)
@@ -456,6 +458,7 @@ const daemon = new DaemonHost({
         port: meshServer.getPort(),
         host: meshServer.getHost(),
         lanAddresses: meshServer.getLanAddresses(),
+        ...serverWarning(),
       },
       agents: meshManager.getAgentStatuses(),
       debug: meshManager.getDebugInfo(),
@@ -475,6 +478,7 @@ const daemon = new DaemonHost({
       port: meshServer.getPort(),
       host: meshServer.getHost(),
       lanAddresses: meshServer.getLanAddresses(),
+      ...serverWarning(),
     }),
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),

@@ -174,6 +174,12 @@ describe.each(['linux', 'darwin', 'win32'] as const)('adf daemon remote status t
     expect(h.out.join('')).toContain('  eth0 (192.168.77.0/24)  allowed')
   })
 
+  it('review A2: an allowed network the OS does not report Private still carries the Public warning while remote access listens on it', async () => {
+    const h = await host({ platform })
+    expect(await h.run('remote', 'on')).toBe(0)
+    expect(h.out.join('')).toContain('  eth0 (192.168.77.0/24)  allowed. Public network. The token is sent unencrypted.\n')
+  })
+
   it('on, on a network not allowed: paused, with the command that allows it', async () => {
     const h = await host({ platform, allowed: false })
     expect(await h.run('remote', 'on')).toBe(0)
@@ -697,5 +703,21 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     expect(await runHostRemoteCommand('devices', [], io, { url: HOST, port: 7385, dataDir: tempDir() })).toBe(1)
     expect(err.join('')).toBe(`adf daemon remote, devices and pair manage this computer's ADF daemon only; ${HOST} is not on this computer.\n`)
     expect(there.requests).not.toContain('/remote-access/devices')
+  })
+})
+
+describe('review A8: adf daemon status names a public agent that listens on this computer only', () => {
+  it('the mesh server\'s warning is a line of its own, naming MESH_HOST; none without one', async () => {
+    const { daemonStatus, daemonTarget } = await import('../src/main/cli/daemon-control')
+    const warning = 'Public agents listen on this computer only (no allowed network); on a server, set MESH_HOST=0.0.0.0 and restart the daemon.'
+    const fetchWith = (server: Record<string, unknown>) => (async (input: string | URL | Request) => {
+      const path = new URL(String(input)).pathname
+      const body = path === '/network/server' ? server : path === '/health' ? { ok: true } : {}
+      return new Response(JSON.stringify(body), { status: 200, headers: { 'content-type': 'application/json' } })
+    }) as typeof fetch
+    const env = { ADF_USER_DATA_DIR: tempDir(), ADF_DAEMON_TOKEN: 'a'.repeat(43) }
+    const target = daemonTarget('http://127.0.0.1:7999')
+    expect((await daemonStatus(target, { env, fetch: fetchWith({ running: true, port: 7295, host: '0.0.0.0', lanAddresses: [], warning }) })).lines).toContain(`mesh      ${warning}`)
+    expect((await daemonStatus(target, { env, fetch: fetchWith({ running: true, port: 7295, host: '0.0.0.0', lanAddresses: ['192.168.1.20'], warning: null }) })).lines.some((l) => l.startsWith('mesh'))).toBe(false)
   })
 })

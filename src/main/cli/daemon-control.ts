@@ -421,6 +421,15 @@ export async function daemonStatus(target: DaemonTarget, options: { env?: NodeJS
         if (info.keychainProblem) lines.push(`keychain  unavailable: ${info.keychainProblem}`)
       }
     } catch { /* older daemon */ }
+    try {
+      // A public agent that listens on this computer only (no allowed network, e.g. a headless VPS): the daemon names MESH_HOST.
+      const token = hostControlToken(target.url, env)
+      const res = await fetchImpl(`${target.url}/network/server`, { headers: token ? { Authorization: `Bearer ${token}` } : {}, signal: AbortSignal.timeout(3000) })
+      if (res.ok) {
+        const server = await res.json() as { warning?: unknown }
+        if (typeof server.warning === 'string' && server.warning) lines.push(`mesh      ${server.warning}`)
+      }
+    } catch { /* no mesh server, or an older daemon */ }
   } else if (record && processAlive(record.pid)) {
     lines.push(`pid       ${record.pid} (alive, not answering: starting or stuck)`)
   }
