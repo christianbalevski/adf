@@ -371,7 +371,7 @@ describe('remote mode', () => {
   it('the LAN firewall is the laptop\'s: check and apply answer with the sentence', async () => {
     daemon.routes.set('GET /network/server', () => ({ running: true, port: 7295, host: '0.0.0.0' }))
     expect(await remoteHandlers.get(IPC.MESH_FIREWALL_CHECK)!({})).toMatchObject({ supported: false, detail: REMOTE_FIREWALL_SENTENCE, port: 7295, serverLanBound: true, verified: false })
-    expect(await remoteHandlers.get(IPC.MESH_FIREWALL_APPLY)!({})).toEqual({ success: false, error: REMOTE_FIREWALL_SENTENCE })
+    expect(remoteHandlers.get('adf:mesh:firewall-apply')).toBeUndefined()
   })
 
   it('the browser viewer gets no port and says why', async () => {

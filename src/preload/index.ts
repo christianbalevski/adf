@@ -229,8 +229,6 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     >,
   checkLanFirewall: () =>
     ipcRenderer.invoke(IPC.MESH_FIREWALL_CHECK),
-  applyLanFirewall: () =>
-    ipcRenderer.invoke(IPC.MESH_FIREWALL_APPLY),
   getMeshRecentTools: () =>
     ipcRenderer.invoke(IPC.MESH_GET_RECENT_TOOLS) as Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>,
   getMeshPendingInteractions: () =>
@@ -727,7 +725,7 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
 
   // Remote access (remote-access.md)
   getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
-  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  setRemoteAccess: (request: { enabled?: boolean; name?: string; confirmed?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
   addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
   removeRemoteDevice: (id: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_REMOVE, id),
   openRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_OPEN),

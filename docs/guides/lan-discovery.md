@@ -16,8 +16,8 @@ mDNS is a LAN-only convenience layer for reachability. It is **not** a trust bou
 
 The runtime evaluates three gates at mesh startup and whenever a LAN-tier agent registers:
 
-1. **Mesh server is bound to `0.0.0.0`.** Driven by `meshLan=true` in settings or the presence of any agent with `messaging.visibility = "lan"`. A loopback-bound server never announces.
-2. **At least one registered agent has `visibility: "lan"`.** Browsing is always-on once the server is LAN-bound, but announcement is gated on having something to announce.
+1. **Mesh server listens beyond loopback.** Driven by **Network** (`meshLan`) in Settings → Networking → Sharing, or any agent with `messaging.visibility` `lan` or `public`. It listens only on the private and Tailscale addresses of networks you allowed (Settings → Networking); on a network not allowed nothing listens and nothing is announced. A loopback-only server never announces.
+2. **At least one registered agent has `visibility: "lan"` or `"public"`.** Browsing is always-on once the server is LAN-bound, but announcement is gated on having something to announce.
 3. **mDNS library initialized successfully.** Another process holding UDP 5353 exclusively, a kernel firewall, or a missing interface will surface as `[mdns] unavailable: <reason>` in the logs. The runtime continues — direct-address `msg_send` still works.
 
 The announcement is not re-emitted on tier changes at runtime (per spec). Setting the tier is the one step an agent can do itself — `sys_update_config({ path: "messaging.visibility", value: "lan" })`, HIL-gated (your principal approves) — but the app must be restarted before the announcement starts going out.
@@ -44,15 +44,13 @@ Once a peer is seen, its `/agents` directory is fetched over plain HTTP with a 2
 
 ## Observing it in the UI
 
-Settings → Networking → **Discovered on LAN**:
+Settings → Networking → **Runtimes**:
 
-- Empty state: *"No other ADF runtimes visible on your network."*
-- Each discovered runtime shows as `<hostname>.local — <N> agents`, where the agent count comes from the cached directory fetch. The count is eagerly prefetched on first sight, so it's populated by the time the row renders.
+- Empty state: *"None found."*
+- Each runtime found shows its host, how it was found (**LAN**, **Tailnet** or **Address**), its mesh address and `<N> agents`, where the agent count comes from the cached directory fetch; **Unreachable** when its directory did not answer. **Managed** marks a computer Settings → Connections also has. The count is eagerly prefetched on first sight, so it's populated by the time the row renders.
 - Rows disappear a few seconds after a peer sends its mDNS goodbye on shutdown (TTL=0), or after ~120s if the peer crashes without cleaning up.
 
 The list is driven by the `adf:mesh:discovered-runtimes` IPC channel and updated live by `MeshEvent` broadcasts (`lan_peer_discovered` / `lan_peer_expired`).
-
-![Settings → Networking: the mesh server running on loopback with the Allow LAN access checkbox and per-interface LAN addresses, and the Discovered runtimes section with its recheck button showing the empty state — "No other ADF runtimes visible on your network" — plus the Discover peers over Tailscale checkbox and a manual peer address field.](../assets/screenshots/settings-networking.png)
 
 ## How `agent_discover(scope: 'all')` merges
 
@@ -88,7 +86,7 @@ The mesh inbox handler rewrites loopback hosts in incoming `reply_to` URLs with 
 
 Most remediations below (Settings > Networking toggles, firewall rules, environment variables, app restarts) are owner/OS-level — not agent-executable; agents should diagnose and then ask their principal.
 
-### Nothing appears under "Discovered on LAN"
+### Nothing appears under Runtimes
 
 The `scripts/mdns-probe.mjs` utility lists every `_adf-runtime._tcp.local` service it can see from the command line. Run it on each machine:
 
@@ -142,18 +140,18 @@ LAN discovery uses **two** network paths, and each needs its own firewall allowa
 - **UDP 5353** — mDNS multicast. Opening only this makes your runtime *discoverable*.
 - **TCP `<mesh port>`** (default 7295) — the plain-HTTP `/agents` fetch that returns the agent list. If *only* 5353 is open, peers see your runtime row but **0 agents** ("directory unreachable"). This is the most common misconfiguration and is asymmetric: the side whose firewall blocks the fetch is the side that hides its agents.
 
-**Automatic (recommended).** The Windows installer adds both inbound rules (program-scoped, Private+Domain profiles) at install time — no runtime prompt. If you moved the mesh port, declined at install, or run a dev build, Settings → Networking → **LAN** runs a live reachability check and offers an **Enable in firewall** button that creates/repairs the rules behind a single UAC prompt. The **Visible on LAN** indicator only turns green once the server is `0.0.0.0`-bound *and* the inbound rule is present.
+**Installer.** The Windows installer adds both inbound rules (program-scoped, Private+Domain profiles) at install time. If you moved the mesh port, declined at install, or run a dev build, Settings → Networking → Advanced → **Firewall** runs a live check and, when a rule is missing, shows the exact commands to run in an administrator shell, with **Copy**. Studio never adds a firewall rule itself (remote-access.md R9). The row says "Open on *address*:*port*." once the server listens on the LAN *and* the inbound rule is present.
 
 **Manual:**
 
-- **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`). The in-app "Enable in firewall" button does this via `socketfilterfw` behind an admin prompt.
+- **macOS:** System Settings → Network → Firewall. If the firewall is on, allow incoming connections for the ADF Studio binary (Electron during `npm run dev`). Settings → Networking → Advanced → **Firewall** shows the `socketfilterfw --add` and `--unblockapp` commands for this binary.
 - **Windows:** an inbound UDP 5353 rule **and** an inbound TCP `<mesh port>` rule for the ADF binary on the Private profile:
   ```powershell
   New-NetFirewallRule -DisplayName "ADF Mesh (LAN)" -Direction Inbound -Protocol TCP -LocalPort 7295 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
   New-NetFirewallRule -DisplayName "ADF mDNS (LAN)" -Direction Inbound -Protocol UDP -LocalPort 5353 -Program "<path\to\ADF Studio.exe>" -Profile Private,Domain -Action Allow
   ```
   Confirm the active network is **Private**, not Public — a Private-scoped rule doesn't apply on a Public network.
-- **Linux:** the in-app "Enable in firewall" button detects an active **firewalld** or **ufw** and applies the rules via `pkexec` (desktop password prompt). Manual equivalents: `firewall-cmd --add-port=5353/udp --add-port=7295/tcp --permanent && firewall-cmd --reload`, or `ufw allow 7295/tcp && ufw allow 5353/udp`. If no firewall is active (common on Ubuntu, where `ufw` ships inactive), inbound is already open and nothing is needed. Raw `nftables`/`iptables` setups are reported as unmanaged — add the rules by hand.
+- **Linux:** Settings → Networking → Advanced → **Firewall** detects an active **firewalld** or **ufw** and shows the commands, with `sudo`. They are: `firewall-cmd --add-port=5353/udp --add-port=7295/tcp --permanent && firewall-cmd --reload`, or `ufw allow 7295/tcp && ufw allow 5353/udp`. If no firewall is active (common on Ubuntu, where `ufw` ships inactive), inbound is already open and nothing is needed. Raw `nftables`/`iptables` setups are reported as unmanaged — add the rules by hand.
 
 ### Hostname collisions
 

@@ -71,3 +71,16 @@ describe('docs links', () => {
     expect(Object.values(DOCS)).toContain(`${REPO_URL}/blob/main/docs/guides/index.md`)
   })
 })
+
+describe('docs links of Connections and Networking (owner decision 2026-10-21)', () => {
+  it('Share, Devices, the network status card and the mesh firewall each land on their own heading', () => {
+    expect(DOCS.remoteAccessPair).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#share`)
+    expect(DOCS.remoteAccessDevices).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#devices`)
+    expect(DOCS.backendAddConnection).toBe(`${REPO_URL}/blob/main/docs/guides/studio-backend.md#add`)
+    expect(DOCS.networkingStatus).toBe(`${REPO_URL}/blob/main/docs/guides/settings.md#network-status`)
+    expect(DOCS.meshFirewall).toBe(`${REPO_URL}/blob/main/docs/guides/lan-discovery.md#firewalls`)
+    for (const [guide, anchor] of [['studio-backend', 'share'], ['studio-backend', 'devices'], ['studio-backend', 'connect'], ['settings', 'network-status'], ['lan-discovery', 'firewalls']]) {
+      expect(anchorsFor(guide).has(anchor), `${guide}#${anchor}`).toBe(true)
+    }
+  })
+})

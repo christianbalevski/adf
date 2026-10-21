@@ -8,11 +8,14 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { killResultLabel, killTooltip } from '../../../src/renderer/components/layout/StatusBar'
-import { MESH_OFF_NOTE, OUTDATED_CONTAINER_ADVISORY, setupLogTone } from '../../../src/renderer/components/settings/SettingsPage'
+import { OUTDATED_CONTAINER_ADVISORY, setupLogTone } from '../../../src/renderer/components/settings/SettingsPage'
+import { MESH_EFFECT, MESH_OFF_NOTE, NETWORK_EFFECT } from '../../../src/renderer/components/settings/NetworkingSettings'
 import type { ConnectionCurrent } from '../../../src/shared/types/connection.types'
 
 const current = (over: Partial<ConnectionCurrent> = {}): ConnectionCurrent => ({ id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected', ...over })
 const settingsPage = () => readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
+// Settings → Networking's controls live in NetworkingSettings.tsx.
+const networkingPage = () => readFileSync(join(__dirname, '../../../src/renderer/components/settings/NetworkingSettings.tsx'), 'utf-8')
 
 describe('Kill', () => {
   it('the tooltip names the runtime only once a remote connection is saved', () => {
@@ -36,21 +39,27 @@ describe('Kill', () => {
 
 describe('the Mesh controls', () => {
   it('one switch for the live state and an Autostart switch; no separate Disable or server Stop/Start', () => {
-    const page = settingsPage()
+    const page = networkingPage()
     expect(page).toContain('<Switch label="Mesh"')
     expect(page).toContain('<Switch label="Autostart"')
     expect(page).not.toContain("{meshAutoStart ? 'Disable' : 'Enable'}")
     expect(page).not.toContain("{meshServerStatus.running ? 'Stop' : 'Start'}")
   })
 
-  it('one description sentence and one note on what off interrupts', () => {
+  it('one effect sentence per switch; what off interrupts is the tooltip', () => {
     expect(MESH_OFF_NOTE.split(/[.!]\s/)).toHaveLength(1)
     expect(MESH_OFF_NOTE).toMatch(/messaging/)
-    expect(settingsPage()).toContain('description="Agents message each other and peer runtimes, and serve their cards and APIs."')
+    expect(MESH_EFFECT).toBe('Agents on this computer message each other.')
+    expect(NETWORK_EFFECT).toBe('Other computers on allowed networks reach agents you share.')
+    for (const s of [MESH_EFFECT, NETWORK_EFFECT]) expect(s.split(/[.!]\s/)).toHaveLength(1)
+    expect(networkingPage()).toContain('description={MESH_EFFECT}')
+    expect(networkingPage()).toContain('description={NETWORK_EFFECT}')
+    expect(networkingPage()).toContain('<InfoHint tip={MESH_OFF_NOTE} />')
   })
 
   it('the LAN addresses hint no longer points "below" to a toggle above it', () => {
     expect(settingsPage()).not.toContain('Allow LAN access" below')
+    expect(networkingPage()).not.toContain('Allow LAN access" below')
   })
 })
 

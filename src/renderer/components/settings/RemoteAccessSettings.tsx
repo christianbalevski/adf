@@ -1,33 +1,34 @@
 /**
  * Remote access in Settings (docs/design/remote-access.md §7, §9.1;
- * settings-scopes.md §6, §7):
+ * settings-scopes.md §6, §7): other computers using this runtime.
  *
- * - Runtime → Networking: `NetworkStatusLine` (the networks the mesh and
- *   remote access both use, Allow on this network, Allowed networks with
- *   Remove) and `RemoteAccessGroup`, the host side (local mode), with the
- *   one Add device dialog (the code, or a token). Every action goes to
- *   main, which asks the daemon and confirms in a native dialog where the
- *   design says so. A new device token is shown once, here, and dropped on
- *   Done; nothing else here holds a token. With a remote runtime these are
- *   host-only: `HostOnlyRemoteAccess` says "Change on <name>."
- * - Studio → Connections: the Add dialog (ConnectionSettings.tsx) pairs with
- *   a computer found on the network or at a typed address, with pairMessage.
- *   Discovery and pairing run in main; the token never reaches the renderer.
+ * - Studio → Connections → Add → Share (`SharePanel`): consent inline
+ *   (remote access on, and Allow on each current network not allowed, with
+ *   one explicit Allow), then this runtime's addresses by network with
+ *   Copy, and the 6-digit pairing code with its countdown. The other
+ *   computer enters it; this computer still asks Allow device (a native
+ *   dialog, remote-access.md §5.4), then "Approved: <name>.". A token
+ *   shown once is under Details.
+ * - Studio → Connections → Devices (`DevicesGroup`): the Remote access
+ *   switch and the computers using this runtime, each with Revoke.
+ * - Studio → Connections → Add → Connect: pairMessage for the client side
+ *   (ConnectionSettings.tsx). Discovery and pairing run in main; the token
+ *   never reaches the renderer.
  *
- * Copy (owner rule 2026-10-18): headings, labels, buttons and dialog titles
- * are plain nouns or short verb phrases; at most one short sentence under a
- * heading; the rest is behind Learn more.
+ * Every action goes to main, which asks the daemon. A new device token is
+ * shown once, here, and dropped on Done; nothing else here holds a token.
+ *
+ * Copy (owner rule): labels are one word or a noun; at most one sentence
+ * under a heading; the rest is behind Learn more.
  */
 
 import { useEffect, useRef, useState } from 'react'
 import { Button, SettingsGroup, SettingsRow, Switch, TextInput } from '../ui'
-import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
-import { Tooltip } from '../common/Tooltip'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { NetworkView, PairingWindowView, RemoteAccessStatus, RemoteDevice, RemoteUrl } from '../../../shared/types/remote-access.types'
-import type { NetworkStatusView, RemoteAccessView, RemoteDiscoveryUpdate, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
-import type { MeshAgentStatus } from '../../../shared/types/ipc.types'
+import type { RemoteAccessView, RemotePairState } from '../../../shared/types/remote-access-ipc.types'
+import { PUBLIC_WARNING } from '../../../shared/utils/network-consent-text'
 
 // --- Pure helpers (tested) ------------------------------------------------------
 
@@ -41,37 +42,9 @@ export function remoteStatusLine(status: RemoteAccessStatus): string {
   return status.message || status.problem || 'Off.'
 }
 
-/** Add device needs a listener: on but paused (or with no address), no device could reach the code. */
+/** A pairing window needs a listener: on but paused (or with no address), no device could reach the code. */
 export function canAddDevice(status: RemoteAccessStatus | null): boolean {
   return !!status && status.enabled && status.state === 'on'
-}
-
-/** The status line at the top of Settings → Networking. */
-export function networkStatusText(view: NetworkStatusView): string {
-  const parts: string[] = []
-  const lans = view.networks.filter((n) => n.kind === 'lan')
-  if (lans.length === 0) parts.push('Network: no LAN address')
-  else parts.push(`Network: ${lans.map((n) => `${n.label}${n.allowed ? '' : ' (not allowed)'}`).join(', ')}`)
-  if (view.lan.length > 0) parts.push(`LAN ${view.lan.map((a) => a.address).join(', ')}${view.lan.every((a) => !a.allowed) ? ', not listening' : ''}`)
-  parts.push(view.tailscale === 'running' ? `Tailscale on${view.tailnetAddress ? ` (${view.tailnetAddress})` : ''}` : view.tailscale === 'stopped' ? 'Tailscale stopped' : 'Tailscale not installed')
-  parts.push(`Firewall ${view.firewall.state === 'blocked' ? 'blocked' : view.firewall.state === 'unknown' ? 'unknown' : 'ok'}`)
-  return parts.join(' · ')
-}
-
-/** Agents by visibility, with the LanAgentsList predicate (visibility 'lan'). */
-export function meshVisibilityCounts(agents: Array<Pick<MeshAgentStatus, 'visibility'>>): { lan: number; public: number; private: number } {
-  let lan = 0, pub = 0, priv = 0
-  for (const a of agents) {
-    if (a.visibility === 'lan') lan++
-    else if (a.visibility === 'public') pub++
-    else priv++
-  }
-  return { lan, public: pub, private: priv }
-}
-
-export function meshVisibilityLine(agents: Array<Pick<MeshAgentStatus, 'visibility'>>): string {
-  const c = meshVisibilityCounts(agents)
-  return `${c.lan} ${c.lan === 1 ? 'agent' : 'agents'} visible on LAN · ${c.public} public · ${c.private} private`
 }
 
 /** The mesh server's listeners: LAN mode lists its private-network and Tailscale addresses (lan-reach.ts). */
@@ -84,9 +57,38 @@ export function meshServerHosts(status: { host: string; lanAddresses?: string[] 
 
 const URL_ORDER: Record<RemoteUrl['kind'], number> = { 'tailscale-https': 0, tailnet: 1, lan: 2, 'mdns-name': 3 }
 
-/** Addresses in the order the panel offers them: Tailscale https, tailnet, LAN, the .local name (§5.7). */
+/** Addresses in the order Share offers them: Tailscale https, tailnet, LAN, the .local name (§5.7). */
 export function orderedUrls(urls: RemoteUrl[]): RemoteUrl[] {
   return [...urls].sort((a, b) => URL_ORDER[a.kind] - URL_ORDER[b.kind])
+}
+
+function urlHost(url: string): string {
+  try { return new URL(url).hostname.replace(/^\[|\]$/g, '').toLowerCase() } catch { return url }
+}
+
+/**
+ * Share's addresses by network: Tailscale (the `tailscale serve` https URL
+ * first, then the tailnet address), each LAN by its network's name, then
+ * the others (the .local name, an address of no known network).
+ */
+export function groupedUrls(status: Pick<RemoteAccessStatus, 'urls' | 'networks'>): Array<{ title: string; urls: RemoteUrl[] }> {
+  const groups: Array<{ title: string; urls: RemoteUrl[] }> = []
+  const used = new Set<string>()
+  const tailscale = orderedUrls(status.urls.filter((u) => u.kind === 'tailscale-https' || u.kind === 'tailnet'))
+  if (tailscale.length > 0) {
+    groups.push({ title: 'Tailscale', urls: tailscale })
+    for (const u of tailscale) used.add(u.url)
+  }
+  for (const network of status.networks.filter((n) => n.kind === 'lan')) {
+    const hosts = new Set(network.addresses.map((a) => a.toLowerCase()))
+    const urls = status.urls.filter((u) => u.kind === 'lan' && !used.has(u.url) && hosts.has(urlHost(u.url)))
+    if (urls.length === 0) continue
+    groups.push({ title: network.label, urls })
+    for (const u of urls) used.add(u.url)
+  }
+  const others = orderedUrls(status.urls.filter((u) => !used.has(u.url)))
+  if (others.length > 0) groups.push({ title: 'Others', urls: others })
+  return groups
 }
 
 export const NOT_ENCRYPTED_WARNING = 'Anyone on this network can read the token.'
@@ -111,6 +113,52 @@ export function pairingCountdown(expiresAt: string, now = Date.now()): string {
 /** The code as the host shows it: "123 456". */
 export function formatCode(code: string): string {
   return code.length === 6 ? `${code.slice(0, 3)} ${code.slice(3)}` : code
+}
+
+/** The warning under Allow: a LAN the OS reports Public, or does not report. */
+export const PUBLIC_NETWORK_WARNING = PUBLIC_WARNING
+
+export function networkWarning(network: NetworkView): string | null {
+  return network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
+}
+
+/**
+ * What Share needs before anything listens (owner decision 2026-10-18 b:
+ * never listen without consent, given per network): remote access on, and
+ * each current network allowed. Null when nothing is needed.
+ */
+export function shareConsent(status: RemoteAccessStatus): { enable: boolean; networks: NetworkView[]; text: string; warning: string | null } | null {
+  const networks = status.networks.filter((n) => !n.allowed && !!n.id)
+  const enable = !status.enabled
+  if (!enable && networks.length === 0) return null
+  const where = networks.length > 0 ? ` on ${networks.map((n) => n.label).join(' and ')}` : ''
+  return {
+    enable,
+    networks,
+    text: `Computers you pair${where} get full control of this runtime, as powerful as your seed phrase.`,
+    warning: networks.some((n) => networkWarning(n)) ? PUBLIC_NETWORK_WARNING : null,
+  }
+}
+
+/** "Approved: <label>." once a device that entered the code is allowed: the newest paired device since Share opened. */
+export function addedDeviceLine(before: ReadonlySet<string>, devices: RemoteDevice[]): string | null {
+  const added = devices.find((d) => d.origin === 'paired' && !before.has(d.id))
+  return added ? `Approved: ${added.label}.` : null
+}
+
+/** The line of every host-only control with a remote runtime (settings-scopes.md §7). */
+export function changeOn(name: string): string {
+  return `Change on ${name}.`
+}
+
+/** The Connect dialog's message line: what to do now, or why it stopped. */
+export function pairMessage(state: RemotePairState | null, hostName: string): { kind: 'ok' | 'error'; text: string } | null {
+  if (!state) return null
+  if (state.step === 'waiting') return { kind: 'ok', text: state.message ?? `Waiting for ${hostName} to allow this device…` }
+  if (state.step === 'paired') return { kind: 'ok', text: state.message ?? `Paired with ${hostName}.` }
+  if (state.step === 'claiming') return { kind: 'ok', text: 'Sending the code…' }
+  if (state.message) return { kind: state.code ? 'error' : 'ok', text: state.message }
+  return null
 }
 
 // --- Presentational parts ----------------------------------------------------------
@@ -147,8 +195,24 @@ export function RemoteAddressList({ urls }: { urls: RemoteUrl[] }) {
   )
 }
 
+/** Share's addresses, one heading per network (groupedUrls). */
+export function GroupedAddresses({ status }: { status: Pick<RemoteAccessStatus, 'urls' | 'networks'> }) {
+  const groups = groupedUrls(status)
+  if (groups.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No address.</p>
+  return (
+    <div className="space-y-2">
+      {groups.map((g) => (
+        <div key={g.title}>
+          <div className="mb-1 text-[11px] font-medium uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">{g.title}</div>
+          <RemoteAddressList urls={g.urls} />
+        </div>
+      ))}
+    </div>
+  )
+}
+
 export function RemoteDeviceList({ devices, busy, onRemove, now }: { devices: RemoteDevice[]; busy: boolean; onRemove: (device: RemoteDevice) => void; now?: number }) {
-  if (devices.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">No devices.</p>
+  if (devices.length === 0) return <p className="text-[12px] text-[var(--adf-ui-text-muted)]">None.</p>
   return (
     <ul className="divide-y divide-[var(--adf-ui-separator)]">
       {devices.map((d) => (
@@ -166,11 +230,11 @@ export function RemoteDeviceList({ devices, busy, onRemove, now }: { devices: Re
   )
 }
 
-/** Add device, code view: the code in large digits, the countdown and the tries left. */
+/** Share, code view: the code in large digits, the countdown and the tries left. */
 export function PairingCodePanel({ pairing, fingerprint, now }: { pairing: PairingWindowView; fingerprint: string | null; now?: number }) {
   return (
-    <div className="space-y-3 text-center">
-      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the device.</p>
+    <div className="space-y-2 text-center">
+      <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Enter this code on the other computer.</p>
       <p className="font-mono text-[40px] font-semibold tracking-[0.15em] text-[var(--adf-ui-text)]" aria-label="Pairing code">{formatCode(pairing.code)}</p>
       <p className="text-[12px] text-[var(--adf-ui-text-muted)]">
         Expires in {pairingCountdown(pairing.expiresAt, now)} · {pairing.attemptsLeft} wrong {pairing.attemptsLeft === 1 ? 'code' : 'codes'} left
@@ -192,98 +256,212 @@ export function NewTokenPanel({ label, token, onDone }: { label: string; token: 
         <Button size="compact" onClick={() => copy(token)}>Copy</Button>
         <Button size="compact" variant="primary" onClick={onDone}>Done</Button>
       </div>
-      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the device: Settings → Connections → Add.</div>
+      <div className="text-[11px] text-[var(--adf-ui-text-subtle)]">On the other computer: Add, Connect, then Details.</div>
     </div>
   )
 }
 
-// --- Settings → Networking -----------------------------------------------------------
-
-/** The warning under Allow on this network: a LAN the OS reports Public, or does not report. */
-export const PUBLIC_NETWORK_WARNING = 'Public network. The token is sent unencrypted.'
-
-export function networkWarning(network: NetworkView): string | null {
-  return network.id && network.kind === 'lan' && network.osCategory !== 'private' ? PUBLIC_NETWORK_WARNING : null
-}
-
-/**
- * The status line (networks, LAN address, Tailscale, firewall), Allow on
- * this network for each network not allowed, and Allowed networks with
- * Remove. Mesh and remote access both follow it (owner decision 2026-10-18 b).
- */
-export function NetworkStatusLine() {
-  const [view, setView] = useState<NetworkStatusView | null>(null)
-  const [note, setNote] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const load = () => {
-    window.adfApi?.getNetworkStatus?.().then(setView).catch(() => {})
-  }
-  useEffect(() => {
-    load()
-    const timer = setInterval(load, 10_000)
-    const off = window.adfApi?.onRemoteAccessChanged?.(() => load())
-    return () => { clearInterval(timer); off?.() }
-  }, [])
-  if (!view?.available) return null
-  const change = async (action: 'allow' | 'forget', id: string) => {
-    setNote(null)
-    setBusy(true)
-    try {
-      const result = action === 'allow' ? await window.adfApi.allowNetwork(id) : await window.adfApi.forgetNetwork(id)
-      if (!result.ok) setNote(result.error)
-    } catch {
-      setNote('Studio could not change the allowed networks.')
-    } finally {
-      setBusy(false)
-      load()
-    }
-  }
-  return <NetworkConsentPanel view={view} busy={busy} note={note} onAllow={(id) => void change('allow', id)} onRemove={(id) => void change('forget', id)} />
-}
-
-/** The status line with "Remote access paused on <network>." and Allow on this network, then Allowed networks with Remove. */
-export function NetworkConsentPanel({ view, busy, note, onAllow, onRemove }: {
-  view: NetworkStatusView
-  busy: boolean
-  note: string | null
-  onAllow: (id: string) => void
-  onRemove: (id: string) => void
-}) {
-  const waiting = view.networks.filter((n) => !n.allowed)
+/** Share's consent, inline: one sentence, the Public warning, one explicit Allow. */
+export function ShareConsent({ consent, busy, onAllow }: { consent: NonNullable<ReturnType<typeof shareConsent>>; busy: boolean; onAllow: () => void }) {
   return (
-    <>
-      <div role="status" className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2 text-[12px] text-[var(--adf-ui-text)]">
-        <span>{networkStatusText(view)}<LearnMore href={DOCS.networkingStatus} /></span>
-        {waiting.map((n) => (
-          <div key={n.id ?? `unidentified-${n.ifaces.join(',')}`} className="flex w-full flex-wrap items-center justify-between gap-2">
-            <span>Remote access paused on {n.label}.</span>
-            {n.id && <Button size="compact" disabled={busy} onClick={() => onAllow(n.id!)}>Allow on this network</Button>}
-            {networkWarning(n) && <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{networkWarning(n)}</span>}
-          </div>
-        ))}
-        {(view.firewall.state === 'blocked' || note) && (
-          <span className="w-full text-[11px] text-[var(--adf-ui-danger)]">{note ?? view.firewall.message}</span>
-        )}
+    <div className="space-y-2">
+      <p className="text-[var(--adf-ui-text)]">{consent.text}<LearnMore href={DOCS.remoteAccessPair} /></p>
+      {consent.warning && <p className="text-[11px] text-[var(--adf-ui-danger)]">{consent.warning}</p>}
+      <div className="flex justify-end">
+        <Button variant="primary" loading={busy} onClick={onAllow}>Allow</Button>
       </div>
-      <SettingsGroup title="Allowed networks">
-        {view.allowedNetworks.length === 0
-          ? <SettingsRow label="None" />
-          : view.allowedNetworks.map((n) => (
-            <SettingsRow key={n.id} label={n.label} description={view.networks.some((c) => c.id === n.id) ? 'Current network' : undefined}>
-              <Button size="compact" disabled={busy} onClick={() => onRemove(n.id)}>Remove</Button>
-            </SettingsRow>
-          ))}
-      </SettingsGroup>
-    </>
+    </div>
   )
 }
 
-export function RemoteAccessGroup({ onKeepRunning }: { onKeepRunning: () => Promise<void> }) {
+// --- Add → Share -------------------------------------------------------------------
+
+type ActResult = { ok: true; view: RemoteAccessView } | { ok: false; code: string; error: string }
+
+/**
+ * Add → Share: another computer uses this runtime. Asks consent inline when
+ * remote access is off or a current network is not allowed (never listens
+ * without it), then shows the addresses and opens a pairing window. The
+ * claim is still allowed or denied on this computer (Allow device).
+ */
+export function SharePanel({ onBack, onDone }: { onBack: () => void; onDone: () => void }) {
+  const [view, setView] = useState<RemoteAccessView | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [now, setNow] = useState(() => Date.now())
+  const [label, setLabel] = useState('')
+  const [created, setCreated] = useState<{ label: string; token: string } | null>(null)
+  const before = useRef<ReadonlySet<string> | null>(null)
+  const opened = useRef(false)
+
+  useEffect(() => {
+    let alive = true
+    window.adfApi?.getRemoteAccess?.().then((v) => { if (alive) setView(v) }).catch(() => {})
+    const off = window.adfApi?.onRemoteAccessChanged?.((change) => setView(change.view))
+    const timer = setInterval(() => { window.adfApi?.getRemoteAccess?.().then((v) => { if (alive) setView(v) }).catch(() => {}) }, 5_000)
+    return () => { alive = false; off?.(); clearInterval(timer) }
+  }, [])
+
+  const status = view?.status ?? null
+  if (status && before.current === null) before.current = new Set(status.devices.map((d) => d.id))
+  const consent = status ? shareConsent(status) : null
+  const approved = status && before.current ? addedDeviceLine(before.current, status.devices) : null
+  const pairing = status?.pairing ?? null
+  const approvedRef = useRef(false)
+  approvedRef.current = !!approved
+
+  // Leaving Share before a computer claimed the code closes the window this Share opened.
+  useEffect(() => () => {
+    if (opened.current && !approvedRef.current) void window.adfApi?.closeRemotePairing?.().catch(() => {})
+  }, [])
+
+  // Once it listens: the code (the existing pairing window), opened for this Share.
+  useEffect(() => {
+    if (!status || consent || approved || opened.current || !canAddDevice(status) || status.pairing) return
+    opened.current = true
+    void act(() => window.adfApi.openRemotePairing())
+  }, [status, consent, approved])
+  useEffect(() => {
+    if (!pairing) return
+    const timer = setInterval(() => setNow(Date.now()), 1_000)
+    return () => clearInterval(timer)
+  }, [pairing])
+
+  async function act(fn: () => Promise<ActResult>): Promise<boolean> {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await fn()
+      if (result.ok) setView(result.view)
+      else if (result.code !== 'cancelled') setError(result.error)
+      return result.ok
+    } catch {
+      setError('Studio could not reach the ADF daemon.')
+      return false
+    } finally {
+      setBusy(false)
+    }
+  }
+  const allow = async () => {
+    if (!consent) return
+    // The Allow under the sentence is the confirmation: no second dialog.
+    if (consent.enable && !await act(() => window.adfApi.setRemoteAccess({ enabled: true, confirmed: true }))) return
+    for (const n of consent.networks) {
+      const result = await window.adfApi.allowNetwork(n.id!)
+      if (!result.ok) { setError(result.error); break }
+    }
+    const next = await window.adfApi.getRemoteAccess().catch(() => null)
+    if (next) setView(next)
+  }
+  const renew = () => { void act(() => window.adfApi.openRemotePairing()) }
+  const createToken = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await window.adfApi.addRemoteDevice(label)
+      if (result.ok) { setView(result.view); setCreated({ label: result.device.label, token: result.token }) }
+      else setError(result.error)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <SharePanelView
+      view={view}
+      busy={busy}
+      error={error}
+      now={now}
+      approved={approved}
+      label={label}
+      created={created}
+      onLabel={setLabel}
+      onAllow={() => void allow()}
+      onRenew={renew}
+      onCreateToken={() => void createToken()}
+      onBack={onBack}
+      onDone={onDone}
+    />
+  )
+}
+
+/** Share's markup (static in tests). */
+export function SharePanelView({ view, busy, error, now, approved, label, created, onLabel, onAllow, onRenew, onCreateToken, onBack, onDone }: {
+  view: RemoteAccessView | null
+  busy: boolean
+  error: string | null
+  now?: number
+  approved: string | null
+  label: string
+  created: { label: string; token: string } | null
+  onLabel: (label: string) => void
+  onAllow: () => void
+  onRenew: () => void
+  onCreateToken: () => void
+  onBack: () => void
+  onDone: () => void
+}) {
+  const status = view?.status ?? null
+  const consent = status ? shareConsent(status) : null
+  const pairing = status?.pairing ?? null
+  const expired = !!pairing && pairingCountdown(pairing.expiresAt, now) === '0:00'
+  return (
+    <div className="space-y-3 text-[12px]">
+      {!view && <p className="text-[var(--adf-ui-text-muted)]">Loading…</p>}
+      {view && !view.available && <p className="text-[var(--adf-ui-text-muted)]">{view.unavailableReason}</p>}
+      {view?.available && !status && <p className="text-[var(--adf-ui-danger)]">{view.error ?? 'Studio could not read remote access.'}</p>}
+      {status && consent && <ShareConsent consent={consent} busy={busy} onAllow={onAllow} />}
+      {status && !consent && (
+        <>
+          {approved
+            ? <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">{approved}</p>
+            : pairing && !expired
+              ? <PairingCodePanel pairing={pairing} fingerprint={status.fingerprint} now={now} />
+              : canAddDevice(status)
+                ? <div className="flex items-center justify-between gap-2"><span className="text-[var(--adf-ui-text-muted)]">{pairing ? 'The code expired.' : 'Opening…'}</span>{pairing && <Button size="compact" disabled={busy} onClick={onRenew}>Renew</Button>}</div>
+                : <p className="text-[var(--adf-ui-text-muted)]">{remoteStatusLine(status)}</p>}
+          <div>
+            <div className="mb-1 text-[13px] font-medium text-[var(--adf-ui-text)]">Addresses</div>
+            <GroupedAddresses status={status} />
+          </div>
+          {!approved && (
+            <details className="text-[12px]">
+              <summary className="cursor-pointer select-none text-[var(--adf-ui-text-muted)]">Details</summary>
+              <div className="mt-2 space-y-2">
+                {created ? <NewTokenPanel label={created.label} token={created.token} onDone={onDone} /> : (
+                  <div className="flex items-end gap-2">
+                    <label className="block flex-1 space-y-1">
+                      <span className="text-[var(--adf-ui-text)]">Device name</span>
+                      <TextInput value={label} onChange={(e) => onLabel(e.target.value)} placeholder="Device name" aria-label="Device name" maxLength={64} />
+                    </label>
+                    <Button disabled={busy} onClick={onCreateToken}>Create</Button>
+                  </div>
+                )}
+              </div>
+            </details>
+          )}
+        </>
+      )}
+      {error && <p role="status" className="text-[var(--adf-ui-danger)]">{error}</p>}
+      <div className="flex justify-end gap-2 pt-1">
+        <Button onClick={onBack}>Back</Button>
+        {approved || created ? <Button variant="primary" onClick={onDone}>Done</Button> : <Button onClick={onDone}>Cancel</Button>}
+      </div>
+    </div>
+  )
+}
+
+// --- Studio → Connections → Devices -------------------------------------------------
+
+/**
+ * Devices: the Remote access switch (turning it on asks in a native dialog,
+ * remote-access.md §7) and the computers using this runtime, each with
+ * Revoke. Only in local mode; otherwise the reason.
+ */
+export function DevicesGroup({ onKeepRunning, className = '' }: { onKeepRunning: () => Promise<void>; className?: string }) {
   const [view, setView] = useState<RemoteAccessView | null>(null)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState<{ kind: 'ok' | 'error'; text: string } | null>(null)
-  /** The one Add device dialog: the code, or a token (settings-scopes.md §6). */
-  const [adding, setAdding] = useState(false)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
@@ -295,246 +473,84 @@ export function RemoteAccessGroup({ onKeepRunning }: { onKeepRunning: () => Prom
     })
     return () => { alive = false; off?.() }
   }, [])
-
-  const status = view?.status ?? null
-  const enabled = status?.enabled === true
-  const pairing = status?.pairing ?? null
-  // While on: re-read every 5 s (Connected now); a pairing window ticks every second.
+  const enabled = view?.status?.enabled === true
+  // While on: re-read every 5 s (Connected now).
   useEffect(() => {
     if (!enabled) return
     const timer = setInterval(() => {
       window.adfApi?.getRemoteAccess?.().then(setView).catch(() => {})
+      setNow(Date.now())
     }, 5_000)
     return () => clearInterval(timer)
   }, [enabled])
-  useEffect(() => {
-    if (!pairing) return
-    const timer = setInterval(() => setNow(Date.now()), 1_000)
-    return () => clearInterval(timer)
-  }, [pairing])
 
-  const act = async (fn: () => Promise<{ ok: true; view: RemoteAccessView } | { ok: false; code: string; error: string }>, okText?: string) => {
+  const act = async (fn: () => Promise<ActResult>) => {
     setBusy(true)
     setMessage(null)
     try {
       const result = await fn()
-      if (result.ok) {
-        setView(result.view)
-        if (okText) setMessage({ kind: 'ok', text: okText })
-      } else if (result.code !== 'cancelled') {
-        setMessage({ kind: 'error', text: result.error })
-      }
-      return result.ok
+      if (result.ok) setView(result.view)
+      else if (result.code !== 'cancelled') setMessage({ kind: 'error', text: result.error })
     } catch {
       setMessage({ kind: 'error', text: 'Studio could not reach the ADF daemon.' })
-      return false
     } finally {
       setBusy(false)
     }
   }
 
-  if (!view) return null
-  const disabled = !view.available || busy
-
   return (
-    <SettingsGroup title="Remote access" description="Your devices use this computer's agents." docs={DOCS.remoteAccess}>
+    <DevicesGroupView
+      className={className}
+      view={view}
+      busy={busy}
+      message={message}
+      now={now}
+      onSwitch={(next) => void act(() => window.adfApi.setRemoteAccess({ enabled: next }))}
+      onKeepRunning={() => void onKeepRunning().then(() => window.adfApi.getRemoteAccess()).then(setView).catch(() => {})}
+      onRevoke={(d) => void act(() => window.adfApi.removeRemoteDevice(d.id))}
+    />
+  )
+}
+
+/** Devices' markup (static in tests). */
+export function DevicesGroupView({ view, busy, message, now, onSwitch, onKeepRunning, onRevoke, className = '' }: {
+  view: RemoteAccessView | null
+  busy: boolean
+  message: { kind: 'ok' | 'error'; text: string } | null
+  now?: number
+  onSwitch: (next: boolean) => void
+  onKeepRunning: () => void
+  onRevoke: (device: RemoteDevice) => void
+  className?: string
+}) {
+  if (!view) return null
+  const status = view.status
+  const enabled = status?.enabled === true
+  return (
+    <SettingsGroup title="Devices" hint="Computers using this runtime." docs={DOCS.remoteAccessDevices} className={className}>
       <SettingsRow
         label="Remote access"
-        description={<>A device token is as powerful as your seed phrase.<LearnMore href={DOCS.remoteAccess} /></>}
+        description="Computers you add use this runtime."
         help={view.available ? (status ? remoteStatusLine(status) : undefined) : view.unavailableReason ?? undefined}
         error={view.error ?? undefined}
       >
-        <Switch label="Remote access" checked={enabled} disabled={disabled || !status} onChange={(next) => void act(() => window.adfApi.setRemoteAccess({ enabled: next }))} />
+        <Switch label="Remote access" checked={enabled} disabled={!view.available || busy || !status} onChange={onSwitch} />
       </SettingsRow>
       {enabled && view.stopsWithStudio && (
         <SettingsRow separator label="On quit" description="Devices lose the connection when Studio quits.">
-          <Button size="compact" disabled={busy} onClick={() => void onKeepRunning().then(() => window.adfApi.getRemoteAccess()).then(setView).catch(() => {})}>Keep running</Button>
+          <Button size="compact" disabled={busy} onClick={onKeepRunning}>Keep running</Button>
         </SettingsRow>
       )}
-      {enabled && status && (
-        <>
-          <SettingsRow stacked separator label="Addresses" description={<>Use one on the other device.<LearnMore href={DOCS.remoteAccess} /></>}>
-            <RemoteAddressList urls={status.urls} />
-            {status.tailscale.state === 'running' && status.tailscale.serve !== 'unknown' && (
-              <div className="mt-2">
-                <Button size="compact" disabled={busy} onClick={() => void act(() => window.adfApi.setRemoteTailscaleServe(status.tailscale.serve !== 'on'))}>
-                  {status.tailscale.serve === 'on' ? 'Disable Tailscale https' : 'Enable Tailscale https'}
-                </Button>
-              </div>
-            )}
-            {status.firewall.state === 'unknown' && status.firewall.commands.length > 0 && (
-              <details className="mt-2 text-[11px] text-[var(--adf-ui-text-subtle)]">
-                <summary className="cursor-pointer select-none">Firewall</summary>
-                <p className="mt-1">{status.firewall.message}</p>
-                <ul className="mt-1 space-y-0.5 font-mono">{status.firewall.commands.map((c) => <li key={c}>{c}</li>)}</ul>
-              </details>
-            )}
-          </SettingsRow>
-          <SettingsRow stacked separator label="Devices" description={<>Devices that use this computer&apos;s agents.<LearnMore href={DOCS.remoteAccessPair} /></>}>
-            <Tooltip tip={canAddDevice(status) ? 'Show a code to enter on the device' : remoteStatusLine(status)}>
-              <Button size="compact" variant="primary" disabled={busy || !canAddDevice(status)} onClick={() => setAdding(true)}>Add device</Button>
-            </Tooltip>
-            <div className="mt-2">
-              <RemoteDeviceList
-                devices={status.devices}
-                busy={busy}
-                now={now}
-                onRemove={(d) => void act(() => window.adfApi.removeRemoteDevice(d.id))}
-              />
-            </div>
-          </SettingsRow>
-        </>
+      {status && (
+        <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2">
+          <RemoteDeviceList devices={status.devices} busy={busy} now={now} onRemove={onRevoke} />
+        </div>
       )}
       {message && (
         <div className="border-t border-[var(--adf-ui-separator)] px-4 py-2.5">
           <span role="status" className={`text-[12px] ${message.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`}>{message.text}</span>
         </div>
       )}
-      {adding && status && (
-        <AddDeviceDialog
-          pairing={pairing}
-          fingerprint={status.fingerprint}
-          devices={status.devices}
-          now={now}
-          onOpenCode={() => act(() => window.adfApi.openRemotePairing())}
-          onCloseCode={() => act(() => window.adfApi.closeRemotePairing())}
-          onCreateToken={async (label) => {
-            const result = await window.adfApi.addRemoteDevice(label)
-            if (result.ok) setView(result.view)
-            return result.ok ? { ok: true, label: result.device.label, token: result.token } : { ok: false, error: result.error }
-          }}
-          onClose={() => setAdding(false)}
-        />
-      )}
     </SettingsGroup>
   )
-}
-
-/** "Added <label>." once a device that entered the code is allowed: the newest paired device since the dialog opened. */
-export function addedDeviceLine(before: ReadonlySet<string>, devices: RemoteDevice[]): string | null {
-  const added = devices.find((d) => d.origin === 'paired' && !before.has(d.id))
-  return added ? `Added ${added.label}.` : null
-}
-
-/**
- * Add device (settings-scopes.md §6): opens on the 6-digit code (the pairing
- * window opens with the dialog); "Use a token instead" closes the window and
- * creates a token shown once. "Use a code instead" opens a new window.
- */
-export function AddDeviceDialog({ pairing, fingerprint, devices, now, onOpenCode, onCloseCode, onCreateToken, onClose, initialView = 'code' }: {
-  pairing: PairingWindowView | null
-  fingerprint: string | null
-  devices: RemoteDevice[]
-  now?: number
-  onOpenCode: () => Promise<boolean>
-  onCloseCode: () => Promise<boolean>
-  onCreateToken: (label: string) => Promise<{ ok: true; label: string; token: string } | { ok: false; error: string }>
-  onClose: () => void
-  /** Tests: the view to render first. */
-  initialView?: 'code' | 'token'
-}) {
-  const [view, setView] = useState<'code' | 'token'>(initialView)
-  const [label, setLabel] = useState('')
-  const [created, setCreated] = useState<{ label: string; token: string } | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  const [busy, setBusy] = useState(false)
-  const before = useRef<ReadonlySet<string>>(new Set(devices.map((d) => d.id)))
-  const opened = useRef(false)
-  useEffect(() => {
-    if (initialView !== 'code' || opened.current) return
-    opened.current = true
-    if (!pairing) void onOpenCode()
-    // Opened once, with the dialog.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [])
-  const added = addedDeviceLine(before.current, devices)
-  const close = () => {
-    if (view === 'code' && pairing) void onCloseCode()
-    onClose()
-  }
-  const toToken = () => {
-    if (pairing) void onCloseCode()
-    setError(null)
-    setView('token')
-  }
-  const toCode = () => {
-    setError(null)
-    setView('code')
-    void onOpenCode()
-  }
-  const create = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      const result = await onCreateToken(label)
-      if (result.ok) setCreated({ label: result.label, token: result.token })
-      else setError(result.error)
-    } finally {
-      setBusy(false)
-    }
-  }
-  return (
-    <Dialog open title="Add device" onClose={close} lightDismiss={false}>
-      <div className="space-y-3 text-[12px]">
-        {view === 'code' && (
-          added
-            ? <p className="text-[var(--adf-ui-text)]">{added}</p>
-            : pairing
-              ? <PairingCodePanel pairing={pairing} fingerprint={fingerprint} now={now} />
-              : <p className="text-[var(--adf-ui-text-muted)]">Opening…</p>
-        )}
-        {view === 'code' && !added && (
-          <div className="text-center">
-            <button type="button" className="text-[var(--adf-ui-accent)] hover:underline" onClick={toToken}>Use a token instead</button>
-          </div>
-        )}
-        {view === 'token' && (created ? (
-          <NewTokenPanel label={created.label} token={created.token} onDone={onClose} />
-        ) : (
-          <>
-            <label className="block space-y-1">
-              <span className="text-[var(--adf-ui-text)]">Device name</span>
-              <TextInput value={label} onChange={(e) => setLabel(e.target.value)} placeholder="Device name" aria-label="Device name" maxLength={64} autoFocus />
-            </label>
-            <button type="button" className="text-[var(--adf-ui-accent)] hover:underline" onClick={toCode}>Use a code instead</button>
-          </>
-        ))}
-        {error && <p role="status" className="text-[var(--adf-ui-danger)]">{error}</p>}
-        {!created && (
-          <div className="flex justify-end gap-2 pt-1">
-            {view === 'code' && added
-              ? <Button variant="primary" onClick={onClose}>Done</Button>
-              : <Button onClick={close}>Cancel</Button>}
-            {view === 'token' && <Button variant="primary" loading={busy} onClick={() => void create()}>Create token</Button>}
-          </div>
-        )}
-      </div>
-    </Dialog>
-  )
-}
-
-/** The line of every host-only control with a remote runtime (settings-scopes.md §7). */
-export function changeOn(name: string): string {
-  return `Change on ${name}.`
-}
-
-/** Remote access, Allowed networks and Devices of a remote runtime: changed on that computer only (settings-scopes.md §7). */
-export function HostOnlyRemoteAccess({ name }: { name: string }) {
-  return (
-    <SettingsGroup title="Remote access" docs={DOCS.remoteAccess}>
-      <SettingsRow label="Remote access" description={changeOn(name)} />
-    </SettingsGroup>
-  )
-}
-
-// --- Settings → Connections ---------------------------------------------------------------
-
-/** The dialog's message line: what to do now, or why it stopped. */
-export function pairMessage(state: RemotePairState | null, hostName: string): { kind: 'ok' | 'error'; text: string } | null {
-  if (!state) return null
-  if (state.step === 'waiting') return { kind: 'ok', text: state.message ?? `Waiting for ${hostName} to allow this device…` }
-  if (state.step === 'paired') return { kind: 'ok', text: state.message ?? `Paired with ${hostName}.` }
-  if (state.step === 'claiming') return { kind: 'ok', text: 'Sending the code…' }
-  if (state.message) return { kind: state.code ? 'error' : 'ok', text: state.message }
-  return null
 }

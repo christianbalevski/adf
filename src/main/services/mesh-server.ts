@@ -163,13 +163,15 @@ const LAN_CHECK_MS = 10_000
 
 /**
  * - `loopback`: 127.0.0.1 only.
- * - `lan` (the LAN switch, or an agent with lan visibility): 127.0.0.1
- *   plus each private and Tailscale address on a network the user allowed
- *   (lan-reach.ts), never without that consent. `getHost()` reports '0.0.0.0' as the LAN-mode marker.
- * - `all`: 0.0.0.0, for an agent with public visibility (the owner chose the internet).
- * - `env`: MESH_HOST, as given.
+ * - `lan` (the Network switch, or an agent with lan or public visibility):
+ *   127.0.0.1 plus each private and Tailscale address on a network the user
+ *   allowed (lan-reach.ts), never without that consent. A `public` agent
+ *   gets no wildcard bind: listening needs the same per-network consent
+ *   (owner decision 2026-10-21). `getHost()` reports '0.0.0.0' as the
+ *   LAN-mode marker.
+ * - `env`: MESH_HOST, as given (the operator's own choice, e.g. 0.0.0.0 on a server).
  */
-export type MeshBindMode = 'loopback' | 'lan' | 'all' | 'env'
+export type MeshBindMode = 'loopback' | 'lan' | 'env'
 
 export class MeshServer {
   private server: FastifyInstance | null = null
@@ -243,10 +245,10 @@ export class MeshServer {
       this.bindMode = 'env'
     } else {
       const meshLan = !!this.settings.get('meshLan')
-      const hasLanAgent = this.meshManager?.hasAgentOfTier('lan') ?? false
-      const hasPublicAgent = this.meshManager?.hasAgentOfTier('public') ?? false
+      // A public agent needs other computers too, and so the same consent per network (never 0.0.0.0).
+      const sharedAgent = (this.meshManager?.hasAgentOfTier('lan') ?? false) || (this.meshManager?.hasAgentOfTier('public') ?? false)
       // LAN mode follows remote access's rule (remote-access.md §3.3): private networks and Tailscale only.
-      this.bindMode = hasPublicAgent ? 'all' : (meshLan || hasLanAgent) ? 'lan' : 'loopback'
+      this.bindMode = meshLan || sharedAgent ? 'lan' : 'loopback'
       this.host = this.bindMode === 'loopback' ? '127.0.0.1' : '0.0.0.0'
     }
     const listenHost = this.bindMode === 'lan' ? '127.0.0.1' : this.host
@@ -374,11 +376,10 @@ export class MeshServer {
   getPort(): number { return this.port }
   getHost(): string { return this.host }
   getBindMode(): MeshBindMode { return this.bindMode }
-  /** The non-loopback addresses listening now: LAN mode's private and Tailscale addresses; ['0.0.0.0'] in `all` mode. */
+  /** The non-loopback addresses listening now: LAN mode's private and Tailscale addresses on allowed networks. */
   getLanAddresses(): string[] {
     if (!this.running) return []
     if (this.bindMode === 'lan') return this.lanListeners?.addresses() ?? []
-    if (this.bindMode === 'all') return ['0.0.0.0']
     if (this.bindMode === 'env') return this.host === '127.0.0.1' || this.host === 'localhost' || this.host === '::1' ? [] : [this.host]
     return []
   }

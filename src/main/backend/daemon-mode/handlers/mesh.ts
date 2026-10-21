@@ -370,19 +370,12 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
     const port = server?.port ?? DEFAULT_MESH_PORT
     const serverLanBound = server?.host === '0.0.0.0'
     if (ctx.mode === 'remote') {
-      return { platform: process.platform, supported: false, ruleConfigured: null, reachable: null, lanIp: null, detail: REMOTE_FIREWALL_SENTENCE, port, serverLanBound, verified: false }
+      return { platform: process.platform, supported: false, ruleConfigured: null, reachable: null, lanIp: null, detail: REMOTE_FIREWALL_SENTENCE, commands: [], port, serverLanBound, verified: false }
     }
     const { checkLanFirewall } = await import('../../../services/firewall-service')
     const fw = await checkLanFirewall(port)
     const verified = serverLanBound && (fw.supported ? fw.ruleConfigured === true : fw.reachable === true)
     return { ...fw, port, serverLanBound, verified }
-  },
-
-  [IPC.MESH_FIREWALL_APPLY]: async (ctx) => {
-    if (ctx.mode === 'remote') return { success: false, error: REMOTE_FIREWALL_SENTENCE }
-    const server = await serverStatus(ctx)
-    const { applyLanFirewall } = await import('../../../services/firewall-service')
-    return applyLanFirewall(server?.port ?? DEFAULT_MESH_PORT)
   },
 
   // --- emergency stop -------------------------------------------------------------------

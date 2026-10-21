@@ -84,11 +84,12 @@ Columns **Local** and **Remote** give editability with the local runtime and wit
 | `ownerAlias`, `shareOwnerIdentity`, `runtimeAlias` | Identity | Runtime | R | Edit | Edit |
 | Owner create, restore, import, back up, confirm backup (`ownerMnemonic`, `ownerDid`, `ownerSeedBackupConfirmed`) | Identity | Runtime | R, host keychain | Edit | Host |
 | `runtimeDid`, `runtimeDelegation`, `legacyOwnerDids`, `legacyRuntimeDids` | Identity | Runtime | R | Read | Read |
-| `meshEnabled`, `meshPort`, `meshLan`, `tailnetDiscovery`, `meshManualPeers`; mesh server start and stop | Networking → Mesh | Runtime | R | Edit | Edit |
-| Firewall check and fix | Networking → Mesh | Runtime | host OS | Edit | Host |
-| Remote access on and off, name, addresses, Tailscale https | Networking → Remote access | Runtime | A | Edit | Host |
-| `allowedNetworks` | Networking → Allowed networks | Runtime | A | Edit | Host |
-| Devices, pairing window | Networking → Remote access | Runtime | A | Edit | Host |
+| `meshEnabled`, `meshPort`, `meshLan`, `tailnetDiscovery`, `meshManualPeers`; mesh server start and stop | Networking → Sharing, Runtimes, Advanced | Runtime | R | Edit | Edit |
+| Firewall check (the commands to run; never a fix by Studio, remote-access.md R9) | Networking → Advanced → Firewall | Runtime | host OS | Edit | Host |
+| Remote access on and off, addresses | Connections → Add → Share, Devices | Studio (this computer's runtime) | A | Edit | none (local mode only) |
+| Tailscale https | Networking → Advanced → HTTPS | Runtime | A | Edit | Host |
+| `allowedNetworks` | Networking → status card (Allow), Networks (Remove); Connections → Add → Share (Allow) | Runtime | A | Edit | Host |
+| Devices, pairing window | Connections → Devices, Add → Share | Studio (this computer's runtime) | A | Edit | none (local mode only) |
 | `compute` | Compute | Runtime | R | Edit | Edit; browser view unsupported |
 | `templatesMigratedAt`, `promptDefaultsApplied`, `openrouterMandatoryReasoningModels`, `autoCompactThreshold`, `maxDirectoryScanDepth`, `reviewedAgents`, `runtimeId`, `meshServerEnabled`, `mcpOauthCredentials`, `ownerDidSeedDerived`, `ownerEncPublicKey`, `runtimePrivateKey`, `runtimeEncPrivateKey`, `runtimeEncPublicKey`, `daemonRuntimeDid`, `daemonRuntimeDelegation`, `daemonLegacyRuntimeDids`, `trustedDaemonEncKeys` | none | Runtime | R | none | none |
 
@@ -204,6 +205,8 @@ Discovery and pairing keep `REMOTE_DISCOVERY_*` and `REMOTE_PAIR_*`. `RemoteDisc
 
 ## 6. Host "Add device" dialog (d)
 
+Superseded by owner decision 2026-10-21 (remote-access.md §7, O5): the host side is Settings → Connections → **Add** → **Share**, and the list is Connections → **Devices**. The text below records the earlier design.
+
 On Runtime → Networking → Remote access, while remote access is on, the Devices row has one button, **Add device**. Its help: "Devices that use this computer's agents."
 
 Dialog "Add device":
@@ -221,11 +224,11 @@ The Devices list (label, Paired or Token, last seen, Revoke) is unchanged. `adf 
 
 | Place | With a remote runtime |
 |---|---|
-| Networking → status line (network, Tailscale, firewall of this computer) | Hidden |
-| Networking → Allowed networks | Hidden |
-| Networking → Remote access | Group "Remote access", one row "Remote access", "Change on <name>." No control, no addresses, no devices |
-| Networking → Mesh → firewall fix | "Change on <name>." in place of the fix button |
-| Networking → Agent endpoints, Identity → Agent directory URL | Hidden (they are the host's loopback addresses) |
+| Networking → status card | The mesh and the agents shared; no network part, no Allow |
+| Networking → Networks | One row, "Change on <name>." |
+| Networking → Advanced → HTTPS, Firewall, Endpoints | "Change on <name>." |
+| Identity → Agent directory URL | Hidden (the host's loopback address) |
+| Connections → Add → Share, Devices | This computer's runtime only, whatever the picker (Studio page) |
 | Identity → Back up seed phrase, Import identity, Restore identity | Buttons hidden; one line under Owner identity: "Change on <name>." `REMOTE_OWNER_*` sentences move to the guide |
 | Providers, MCP, Channels → reveal a stored value | "Stored on <name>." |
 | Compute → browser view | "Open on <name>." |

@@ -23,6 +23,9 @@ export interface DiscoveredRuntime {
   last_seen: number
   /** How this peer was found. mDNS entries win over overlay/manual routes. */
   source?: 'mdns' | 'tailnet' | 'manual'
+  /** Remote access on that runtime (TXT `fp`, `daemon_port`): lets a client tell it is a runtime it manages. */
+  fingerprint?: string
+  daemon_port?: number
 }
 
 /**
@@ -497,7 +500,8 @@ export class MdnsService extends EventEmitter {
     const fp = txtString(txt, 'fp')
     const daemonPort = Number(txtString(txt, 'daemon_port'))
     const source = `mdns:${service.name}`
-    if (fp && FINGERPRINT.test(fp) && txtString(txt, 'v') === '1' && Number.isInteger(daemonPort) && daemonPort > 0 && daemonPort < 65536) {
+    const remoteAccess = !!fp && FINGERPRINT.test(fp) && txtString(txt, 'v') === '1' && Number.isInteger(daemonPort) && daemonPort > 0 && daemonPort < 65536
+    if (remoteAccess) {
       const name = peerName(txtString(txt, 'name')) ?? peerName(host.replace(/\.local\.?$/, '')) ?? fp
       this.dropSightings((f, src) => src === source && f !== fp)
       this.setSighting(fp, source, { name, address: reachHost, port: daemonPort, pairingOpen: txtString(txt, 'pair') === '1', kind: 'lan', runtimeId, listed: listedAddresses(service) })
@@ -526,7 +530,8 @@ export class MdnsService extends EventEmitter {
       port,
       url: buildBaseUrl(reachHost, port),
       first_seen: existing?.first_seen ?? now,
-      last_seen: now
+      last_seen: now,
+      ...(remoteAccess ? { fingerprint: fp!, daemon_port: daemonPort } : {})
     }
     this.discovered.set(runtimeId, entry)
     this.emit('discovered', entry)

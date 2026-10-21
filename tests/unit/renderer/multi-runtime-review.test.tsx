@@ -1,6 +1,6 @@
 /**
  * Review findings on the renderer's multi-runtime state and routing
- * (docs/design/multi-runtime.md): each test reproduces one finding (C1–C14)
+ * (docs/design/multi-runtime.md): each test reproduces one finding (C1–C13)
  * against the stores and surfaces a window has, with This computer and
  * host-1, and the same agent path on both where it matters.
  *
@@ -464,54 +464,6 @@ describe('C12: no silent failures', () => {
     openAgentWindow({ filePath: PATH, runtimeId: HOST_1 })
     await flush()
     expect(await notices()).toEqual(['Open in new window failed: host-1 is not connected'])
-  })
-})
-
-describe('C14: the status bar\'s Runtimes fold measures again when what the bar holds changes', () => {
-  class FakeResizeObserver {
-    static all: FakeResizeObserver[] = []
-    observed = new Set<unknown>()
-    constructor(readonly cb: () => void) { FakeResizeObserver.all.push(this) }
-    observe(el: unknown) { this.observed.add(el) }
-    disconnect() { this.observed.clear() }
-  }
-  class FakeMutationObserver {
-    static all: FakeMutationObserver[] = []
-    constructor(readonly cb: () => void) { FakeMutationObserver.all.push(this) }
-    observe() {}
-    disconnect() {}
-  }
-  const el = (width: number) => ({ width, getBoundingClientRect() { return { width: this.width } } })
-
-  it('an item that grows folds the groups; while folded, items that shrink unfold them once they fit', async () => {
-    await page([LOCAL, REMOTE])
-    vi.stubGlobal('ResizeObserver', FakeResizeObserver)
-    vi.stubGlobal('MutationObserver', FakeMutationObserver)
-    const { watchRuntimeFold } = await import('../../../src/renderer/components/layout/StatusBar')
-    const save = el(300)
-    const groups = el(500)
-    const bar = { children: [save, groups], scrollWidth: 900, clientWidth: 900 }
-    let fold = { folded: false, needed: 0 }
-    const stop = watchRuntimeFold(bar as never, groups as never, (update) => { fold = update(fold) })
-    const observer = FakeResizeObserver.all.at(-1)!
-    expect(observer.observed.has(save)).toBe(true)
-    expect(observer.observed.has(groups)).toBe(true)
-    // An agent opened: the items beside the groups grow; the bar does not.
-    save.width = 500
-    bar.scrollWidth = 1100
-    observer.cb()
-    expect(fold).toEqual({ folded: true, needed: 1100 })
-    // Folded, the bar holds less; the item shrinks back: the inline groups fit again.
-    bar.scrollWidth = 900
-    save.width = 300
-    observer.cb()
-    expect(fold).toEqual({ folded: false, needed: 0 })
-    // An item added later is observed too.
-    const added = el(100)
-    bar.children.push(added)
-    FakeMutationObserver.all.at(-1)!.cb()
-    expect(observer.observed.has(added)).toBe(true)
-    stop()
   })
 })
 

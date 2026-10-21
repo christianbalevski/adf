@@ -57,8 +57,10 @@ describe('fields that commit on Enter or blur', () => {
       expect(src, label).toMatch(new RegExp(`<CommitInput\\s+aria-label="${label}"`))
     }
     expect(src).not.toContain('isNaN(n) || n < 0 ? 0')
-    expect(src).toContain('onClick={() => void applyMeshPort()}')
-    expect(src).not.toContain('Server restarts when you leave the field')
-    expect(src).toContain('const checked = checkPeerAddress(draft)')
+    // The port and the address are on the Networking page (NetworkingSettings.tsx).
+    const networking = readFileSync(join(__dirname, '../../../src/renderer/components/settings/NetworkingSettings.tsx'), 'utf-8')
+    expect(networking).toContain('onClick={() => void applyMeshPort()}')
+    expect(networking).not.toContain('Server restarts when you leave the field')
+    expect(networking).toContain('const checked = checkPeerAddress(draft)')
   })
 })
