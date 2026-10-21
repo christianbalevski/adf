@@ -174,9 +174,13 @@ computer must answer with the fingerprint it was found with; otherwise
 "*address* now answers as another computer (*fingerprint*). Add it from the
 list again." and nothing is sent.
 
-A token is checked against the computer before it is saved. A saved
-connection's address that now answers with another fingerprint is refused
-before the token is sent.
+A token is checked against the computer before it is saved: the computer
+must prove it issued that device token, without the token being sent
+([remote-access.md §5.2.1](../design/remote-access.md)). A saved
+connection's address that now answers with another fingerprint, or cannot
+prove it holds this computer's token, is refused before the token is sent.
+A computer that runs an older ADF is refused: "*name* runs an older ADF;
+update it."
 
 ## Upgrading from 0.7.x
 
@@ -685,6 +689,10 @@ its state in Settings → Connections, the sidebar and the status bar; **Help
 | "No token is saved for … or it cannot be decrypted on this computer." | **Add** the connection again |
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "*url* is not *name* (fingerprint …, paired as …); the token was not sent." | Another computer answers at the saved address. Studio checks this before every new connection (launch, a dropped connection, wake, Reconnect), sends nothing, and stops. If that computer was set up again, remove *name* and pair again |
+| "*url* could not prove it is *name*; the token was not sent." | Something at the saved address shows *name*'s fingerprint but does not hold this computer's token. Studio sends nothing and stops. Check the address |
+| "*name* runs an older ADF; update it." | The computer cannot prove who it is. Update ADF there; Studio sends no token to it until then |
+| "*name* does not know this computer's token, which was not sent; pair it again." / "*name* removed this computer's access; pair it again." | Pair again |
+| "Waiting for the list of saved connections …" | `cli-remotes.json` cannot be read. Fix or remove the file it names; Studio connects once it can read it |
 
 ### Files on the server
 
@@ -926,7 +934,9 @@ address** dialog ("*name* is now at *url*."). The dialog then shows **Done**.
 | "Studio could not reach *host* at *url*. The host's firewall may block port 7385." | See [Firewall](#firewall) |
 | "*host* is already asking about another device. …" | Wait, then try again |
 | "*url* has remote access off. …" | Turn remote access on, on the host |
-| "*host* runs an older ADF. Update ADF there, then pair again." | The host's ADF predates this feature |
+| "*host* runs an older ADF. Update ADF there, then pair again." / "*host* runs an older ADF; update it." | The host's ADF predates this feature or cannot prove who it is |
+| "*url* could not prove it is *host*; Studio saved nothing, so remove "*device*" on *host*." | The address did not prove it issued the token it just delivered. Remove the device on the host and pair again |
+| "*file* … Fix or remove it; nothing was changed." | The list of saved connections cannot be read; nothing was sent to the host. Fix or remove the file |
 | "*address* now answers with fingerprint *X*, not *Y* as when *name* was paired; Studio sent nothing, and if it was set up again, remove *name* and pair again." | Another computer answers at the saved address. If that computer was set up again, remove *name* first |
 | "The approval came with fingerprint *X*, but *host* showed *Y*. …" | Nothing was saved; revoke the device on the host and pair again |
 | "Kept the saved address of *name*; nothing was sent." | You chose Cancel in Use new address |

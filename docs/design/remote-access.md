@@ -246,7 +246,26 @@ The record MUST NOT carry a token, a code, a claim id, the owner DID, a path or 
 
 ### 5.2 Hello
 
-`GET /remote/hello`, no token, on every listener while remote access is on: `{v: 1, name, fingerprint, pairingOpen, clientApiVersion}`. Same content as the announcement. It serves clients that cannot hear mDNS: a tailnet peer (multicast does not cross WireGuard), a typed address. Rate limit: 30 per minute per source address.
+`GET /remote/hello`, no token, on every listener while remote access is on: `{v: 1, name, fingerprint, pairingOpen, clientApiVersion, helloProof: 1}`. Same content as the announcement. It serves clients that cannot hear mDNS: a tailnet peer (multicast does not cross WireGuard), a typed address. Rate limit: 30 per minute per source address.
+
+Nothing in this answer is authenticated. The fingerprint is a name for display and for comparison by people, not a key: it is the first 40 bits of SHA-256 of `daemonId` (§3.1), and anything at an address can show it.
+
+#### 5.2.1 Authenticated hello (review round 2, R2A-2)
+
+Before a client sends a saved device token, it MUST check that the computer at the address holds that device's record. The fingerprint does not name a signing key, so the proof is keyed by the device credential that both sides already hold.
+
+- Request: `GET /remote/hello?nonce=<n>&device=<id>&origin=<o>`. `n` is 32 random bytes, base64url, new for each hello. `id` is the device id of the client's `adfd_<id>_<secret>` token (§4.2). `o` is the origin the client dialed (scheme, host, port). The three go together; a partial or malformed set answers 400 `bad_request`.
+- Key: `K = SHA-256(secret)`, raw 32 bytes. The daemon keeps it (`daemon-devices.json` `secretSha256`, §4.3); the client computes it from its token. The token itself is never sent.
+- Message: `"adf-remote-hello-v1\n" + n + "\n" + fingerprint + "\n" + o + "\n" + id`.
+- Answer: the hello plus `device` (`known`, `unknown`, `revoked`) and `proof` = base64url(HMAC-SHA256(K, message)), null unless `device` is `known`. The same rate limit applies.
+- The client verifies the proof in constant time against its own nonce, the pinned fingerprint and the origin it dialed. Only `verified` with the pinned fingerprint lets the token go. A different fingerprint is "another computer"; a wrong proof, `unknown` or `revoked` is a refusal; the token is not sent in any case.
+- An answer without `helloProof: 1` or without `proof` is an older ADF. It is refused with "*name* runs an older ADF; update it." There is no unsigned fallback (owner decision).
+- Checked on every dial and re-dial wherever a pin is checked: Studio's remote connector (launch and every attempt), the connection's pin check (after a drop, on wake, on Reconnect), Add connection with a token, `adf` before any command with a saved token (the terminal app is launched through the same check).
+- Pairing: a fresh pairing pins the fingerprint only after the address it saves (and any encrypted address it switches to, §5.7) proved, with the token just delivered, that it issued it. `adf pair` and Studio refuse a host whose plain hello has no `helloProof` before the code is typed, so no device is left on an older host.
+
+Why this and not a signature: a signature needs a public key the fingerprint commits to, and the fingerprint commits to `daemonId`, a random id. A new key and a new fingerprint would change every saved pin, and 40 bits would still be too short to bind a key. The device token is already a 256-bit secret shared with exactly one host. The proof binds the answer to it, to the nonce (no replay) and to the origin.
+
+What it does not stop: an active attacker on the path who relays the whole hello to the real host and then reads the token from the next plain-http request. That is the plain-http risk of §5.6 and §10, and it is why encrypted transports come first. A fresh pairing with an impostor that runs its own pairing gives the client that impostor's own token: no token of the real host leaks.
 
 ### 5.3 Pairing window
 
@@ -400,7 +419,8 @@ Host pinning in the CLI (security review item 7, trust on first use):
 - `adf pair` refuses an approval whose `daemon.fingerprint` differs from the fingerprint `/remote/hello` showed before the code was typed; nothing is saved, and the output names the device to remove on the host.
 - A saved remote is pinned to the fingerprint it was paired with. Pairing another fingerprint under its name is refused ("forget it first"); re-pairing the same computer replaces its address or token only after the user says yes (`--yes` accepts).
 - The saved URL is the one the user typed or chose. A URL the host lists replaces it only when it is `https://*.ts.net` or a 100.64/10 / `fd7a:115c:a1e0::/48` address that this computer's own Tailscale lists as a peer, answers with the same fingerprint, and the user agrees.
-- Before any command sends a saved device token, `adf` asks `/remote/hello` at that URL; another fingerprint, or no answer as that computer, refuses the command and the token is not sent. A token given with `--token` / `ADF_DAEMON_TOKEN` is not checked.
+- Before any command sends a saved device token, `adf` asks the authenticated hello (§5.2.1) at that URL; another fingerprint, a proof that does not verify, an older ADF, or no answer as that computer refuses the command and the token is not sent. A token given with `--token` / `ADF_DAEMON_TOKEN` is not checked.
+- `adf pair` refuses a host without `helloProof` before the code is typed, and saves a pairing only after the saved address proved, with the delivered token, that it issued it.
 
 ## 10. Security review
 
@@ -414,6 +434,8 @@ Assets: device tokens (each = the owner phrase, §4.5), the pairing code during 
 | Rogue mDNS responder | Announce a fake "*owner*'s PC" with `pair=1` and the real fingerprint; learn the code the user types; relay it to the real host within the window | Host prompt names the source (socket) address and arrival path, never a forwarded header; `adf` pins the fingerprint and refuses an approval from another one; the client's dialog shows the address it is talking to; one claim per window; the window is short and owner-opened | Partly: an owner who allows without reading the address is fooled. SPAKE2 would close this; deferred (§5.6, Q3). |
 | LAN guesser | Guess codes; or enter wrong codes to close the owner's window | 5 wrong codes per source (then locked out), 20 per window, per-source rate limit, host confirmation | Residual 2 × 10^-5 per window, and still needs Allow; one source cannot close the window |
 | LAN stranger without a code | Spam claims, probe hello | 404 without a window; rate limits; hello carries no secret | Learns name and fingerprint (also in mDNS) |
+| Anything at a saved address (a reused DHCP lease, an mDNS or tailnet name taken over) | Show the saved fingerprint and receive the device token over plain http | The authenticated hello (§5.2.1): no token goes out until the address proves it holds the device's record, keyed by SHA-256 of the device secret, over a fresh nonce and the dialed origin; an older ADF is refused | An active attacker on the path who relays the hello to the real host: the plain-http risk above |
+| Anyone who sends hellos with a known device id | Get proofs over nonces of its choosing | The MAC is keyed by a 256-bit secret's hash: no offline guessing; rate limit per source; the device id comes only from the token | — |
 | Web page in the user's browser | CSRF / DNS rebinding to the daemon | Existing Host, Origin, `Sec-Fetch-Site` checks on every listener and route | — |
 | Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens. It cannot see or collect other devices' pairing claims (no remote_access events, collect secret), nor reach local-only routes by any URL spelling |
 | Device token holder | Mint more tokens, lock the owner out | §4.5: management and local-only routes refuse device tokens | — |
@@ -466,7 +488,8 @@ interface RemoteAccessStatus {
   pairing: PairingWindowView | null
   networks: NetworkView[]; allowedNetworks: AllowedNetwork[]; meshLan: boolean
 }
-interface RemoteHello { v: 1; name: string; fingerprint: string; pairingOpen: boolean; clientApiVersion: number }
+interface RemoteHello { v: 1; name: string; fingerprint: string; pairingOpen: boolean; clientApiVersion: number; helloProof?: 1 }
+interface RemoteHelloProved extends RemoteHello { helloProof: 1; device: 'known' | 'unknown' | 'revoked'; proof: string | null }  // ?nonce&device&origin (§5.2.1)
 interface PairClaimRequest { code: string; deviceName: string; clientKind: 'studio' | 'cli' }
 interface PairClaimAccepted { claimId: string; expiresAt: string; collectSecret: string }
 type PairClaimResult =
@@ -500,7 +523,7 @@ Host / Origin checks apply; no bearer token; all answers `Cache-Control: no-stor
 
 | Method, path | Body | 2xx answer |
 |---|---|---|
-| `GET /remote/hello` | — | 200 `RemoteHello` |
+| `GET /remote/hello[?nonce&device&origin]` | — | 200 `RemoteHello`; with the query, `RemoteHelloProved` (§5.2.1); 400 `bad_request` for a partial query |
 | `POST /pair/claim` | `PairClaimRequest` | 202 `PairClaimAccepted` |
 | `GET /pair/claims/:claimId?wait=<0-25>` | header `X-ADF-Pair-Secret` = the 202's `collectSecret` | 200 `PairClaimResult` (holds up to `wait` s while pending) |
 

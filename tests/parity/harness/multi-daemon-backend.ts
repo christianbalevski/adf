@@ -15,6 +15,7 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { createFixtureAgents, type FixtureAgent, type FixtureSpec } from './fixtures'
 import { waitForUsageOnDisk } from './usage-flush'
 import { waitForLeasesSettled } from './lease-settle'
+import { helloBody } from '../../helpers/hello-proof'
 
 /**
  * Multi-daemon backend (docs/design/multi-runtime.md §9.1; README
@@ -160,6 +161,12 @@ export interface RemoteProxy {
   upstream: number
   /** What /remote/hello answers; null: 404, remote access off. */
   hello: { name: string; fingerprint: string } | null
+  /**
+   * Without `forwardHello`: the device token this computer issued to Studio, as the proxy plays the other computer.
+   * Its hello proves it (remote-access.md §5.2.1), and a request with it reaches the daemon with `upstreamToken`
+   * (the remote's master token: remote access is off there). Null: it holds no token (another computer).
+   */
+  issued: { token: string; upstreamToken: string } | null
   /** Every request but /health and /remote/hello answers 401 (the device token was revoked). */
   refuse: boolean
   /** Requests are accepted and never answered (a computer that went away without closing its connections). */
@@ -172,8 +179,8 @@ export interface RemoteProxy {
   forwardHello: boolean
 }
 
-async function startProxy(upstream: number, hello: RemoteProxy['hello'], forwardHello = false): Promise<RemoteProxy> {
-  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, refuse: false, blackhole: false, refuseConnections: false, gateway: false, forwardHello }
+async function startProxy(upstream: number, hello: RemoteProxy['hello'], forwardHello = false, issued: RemoteProxy['issued'] = null): Promise<RemoteProxy> {
+  const proxy: RemoteProxy = { server: null as unknown as Server, port: 0, proofsSeen: [], authorized: [], upstream, hello, issued, refuse: false, blackhole: false, refuseConnections: false, gateway: false, forwardHello }
   proxy.server = createHttpServer(async (req, res) => {
     const path = (req.url ?? '').split('?')[0]
     const headers = { ...req.headers }
@@ -202,7 +209,7 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
       if (!alive || upstream !== proxy.upstream) { res.socket?.destroy(); return }
       if (!proxy.hello) { res.writeHead(404, { 'Content-Type': 'application/json' }); res.end(JSON.stringify({ error: 'Remote access is off on this computer.', code: 'remote_access_off' })); return }
       res.writeHead(200, { 'Content-Type': 'application/json' })
-      res.end(JSON.stringify({ v: 1, name: proxy.hello.name, fingerprint: proxy.hello.fingerprint, pairingOpen: false, api: '2' }))
+      res.end(JSON.stringify(helloBody(new URL(req.url ?? '/', 'http://proxy'), { name: proxy.hello.name, fingerprint: proxy.hello.fingerprint, tokens: proxy.issued ? [proxy.issued.token] : [] })))
       return
     }
     if (proxy.refuse && path !== '/health') {
@@ -213,6 +220,7 @@ async function startProxy(upstream: number, hello: RemoteProxy['hello'], forward
     }
     headers.host = REMOTE_PROXY_HOST
     headers['x-forwarded-for'] = '198.51.100.7'
+    if (proxy.issued && headers.authorization === `Bearer ${proxy.issued.token}`) headers.authorization = `Bearer ${proxy.issued.upstreamToken}`
     const up = httpRequest({ host: '127.0.0.1', port: proxy.upstream, method: req.method, path: req.url, headers }, (answer) => {
       res.writeHead(answer.statusCode ?? 502, answer.headers)
       answer.pipe(res)
@@ -375,8 +383,10 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
           throw err
         }
       }
-      const savedToken = device?.token ?? remoteToken
-      const proxy = await startProxy(remotePort, { name: remoteName, fingerprint }, !!options.deviceToken)
+      // Without remote access there, the proxy is the other computer: it issued Studio a device token of its own.
+      const proxyIssued = device ? null : { token: `adfd_${'p'.repeat(10)}_${randomBytes(32).toString('base64url')}`, upstreamToken: remoteToken }
+      const savedToken = device?.token ?? proxyIssued!.token
+      const proxy = await startProxy(remotePort, { name: remoteName, fingerprint }, !!options.deviceToken, proxyIssued)
       env.allowPort(proxy.port)
       const proxyUrl = `http://127.0.0.1:${proxy.port}`
 
@@ -514,6 +524,8 @@ export function multiDaemonBackend(options: MultiDaemonOptions = {}): MultiParit
           children.push(impostor)
           if (impostor.pid !== undefined) pids.push({ value: impostor.pid, name: 'pid:impostor' })
           proxy.hello = { name: remoteName, fingerprint: fingerprintOf(randomBytes(16).toString('hex')) }
+          // Another computer holds no record of Studio's token.
+          proxy.issued = null
           proxy.upstream = port
         },
         openAgentWindow(runtimeId = remoteId) {
