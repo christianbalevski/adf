@@ -8,7 +8,7 @@ import * as daemonUrlNs from '../cli/daemon-url'
 import { cjs } from './interop'
 import { defaultPrefsPath, loadPrefs, savePrefs } from './app/prefs'
 
-const { resolveDaemonUrl } = cjs(daemonUrlNs)
+const { resolveDaemonUrl, DEFAULT_DAEMON_URL } = cjs(daemonUrlNs)
 
 /**
  * React and ink pick their build when first loaded: without NODE_ENV they
@@ -58,7 +58,7 @@ such as a memory consolidator on a nightly timer or a researcher work on their
 own goal, on demand or on a schedule.
 
 Options:
-  --url, -u <url>      Daemon URL (default ADF_DAEMON_URL or ${resolveDaemonUrl(undefined, {})})
+  --url, -u <url>      Daemon URL (default ADF_DAEMON_URL, the default remote, or ${DEFAULT_DAEMON_URL})
   --token <token>      Bearer token (default: ADF_DAEMON_TOKEN, else the local daemon's token file)
   --view <id>          Start view: chat | files | loops | inspect | fleet | runtime
   --agent <id|handle>  Preselect an agent

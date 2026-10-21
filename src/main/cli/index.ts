@@ -76,7 +76,10 @@ interface CliOptions {
 interface ParsedArgs {
   command: string
   args: string[]
-  options: CliOptions
+  /** All but the daemon URL: runCli resolves it only for a command that talks to a daemon. */
+  options: Omit<CliOptions, 'daemonUrl'>
+  /** --url as given, else null. */
+  explicitUrl: string | null
 }
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
@@ -172,6 +175,17 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   try {
     parsed = parseArgs(argv)
   } catch (err) {
+    io.stderr(`${err instanceof Error ? err.message : String(err)}\n\n${usage()}\n`)
+    return 2
+  }
+
+  const { command, args } = parsed
+  // help, pair and remotes talk to no daemon: only the other commands resolve the URL, and so read the saved remotes.
+  const talksToDaemon = !['help', '--help', '-h', 'pair', 'remotes'].includes(command)
+  let options: CliOptions
+  try {
+    options = { ...parsed.options, daemonUrl: talksToDaemon ? resolveDaemonUrl(parsed.explicitUrl ?? undefined) : '' }
+  } catch (err) {
     // Not a usage mistake: the saved remotes file needs fixing.
     if (err instanceof RemotesUnreadableError) {
       io.stderr(`${err.message}\n`)
@@ -180,11 +194,9 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
     io.stderr(`${err instanceof Error ? err.message : String(err)}\n\n${usage()}\n`)
     return 2
   }
-
-  const { command, args, options } = parsed
-  if (!['help', '--help', '-h', 'pair', 'remotes'].includes(command) && !(await pinnedRemoteOk(io, options.daemonUrl, !!options.token))) return 1
+  if (talksToDaemon && !(await pinnedRemoteOk(io, options.daemonUrl, !!options.token))) return 1
   // pair / remotes talk to other computers or read local files: they never start this machine's daemon.
-  if (!['help', '--help', '-h', 'pair', 'remotes'].includes(command) && !(await daemonReady(io, options.daemonUrl)).ok) return 1
+  if (talksToDaemon && !(await daemonReady(io, options.daemonUrl)).ok) return 1
 
   try {
     switch (command) {
@@ -295,7 +307,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
 
 function parseArgs(argv: string[]): ParsedArgs {
   const args = [...argv]
-  // Resolved after the loop, only without --url: a saved list that cannot be read stops no command given an address.
+  // Resolved by runCli, only without --url: a saved list that cannot be read stops no command given an address.
   let daemonUrl: string | null = null
   let json = false
   let token: string | undefined
@@ -326,10 +338,10 @@ function parseArgs(argv: string[]): ParsedArgs {
     command: positional[0] ?? 'help',
     args: positional.slice(1),
     options: {
-      daemonUrl: (daemonUrl ?? resolveDaemonUrl(undefined)).replace(/\/+$/, ''),
       json,
       ...(token ? { token } : {}),
     },
+    explicitUrl: daemonUrl,
   }
 }
 
