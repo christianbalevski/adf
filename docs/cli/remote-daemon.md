@@ -44,7 +44,7 @@ variable, no foreground daemon, no restart (agents keep running).
 
 ```bash
 # on the server (the computer whose agents you want to reach)
-adf daemon remote on          # also Settings → Networking → Remote access in ADF Studio
+adf daemon remote on          # also Settings → Connections → Add → Share (or Devices) in ADF Studio
 adf daemon pair               # shows a 6-digit code for 2 minutes
 
 # on your laptop

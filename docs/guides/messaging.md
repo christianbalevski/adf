@@ -270,10 +270,11 @@ The runtime's mesh server binding follows the highest declared tier:
 | Condition | Binding |
 |-----------|---------|
 | All agents `off` | Mesh server not started |
-| No `lan`-tier agent and no `meshLan` override | `127.0.0.1` (loopback only) |
-| At least one `lan`-tier agent **OR** `meshLan` setting enabled **OR** `MESH_HOST=0.0.0.0` | `0.0.0.0` (all interfaces) |
+| No `lan` or `public` agent and **Network** (`meshLan`) off | `127.0.0.1` (loopback only) |
+| At least one `lan` or `public` agent **OR** **Network** (`meshLan`) on | `127.0.0.1` plus each private and Tailscale address on a network you allowed (Settings → Networking); never `0.0.0.0` |
+| `MESH_HOST=0.0.0.0` | `0.0.0.0` (all interfaces; the operator's choice) |
 
-Flipping a single agent to `lan` is enough to make the runtime bind on all interfaces at next start. Live tier changes (via `sys_update_config`) take effect immediately for inbox/delivery enforcement, but upgrading binding from loopback to LAN requires a runtime restart.
+Flipping a single agent to `lan` or `public` is enough to make the runtime listen beyond loopback; a `public` agent needs the same consent per network as `lan`, and Settings → Networking names it until you allow the network. Live tier changes (via `sys_update_config`) take effect immediately for inbox/delivery enforcement, but upgrading binding from loopback to LAN requires a runtime restart.
 
 ### Public Reach
 

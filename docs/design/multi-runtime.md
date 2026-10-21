@@ -279,9 +279,9 @@ Settings-scopes.md §5 stands, with these rows:
 |---|---|---|---|
 | `<runtime name> (Local)` | Connected (or the state while down) | none | Inside Studio (legacy) |
 | A saved connection | Connected, Connecting, Not connected, retrying, Not connected | none | Remove |
-| Found on the network, not saved | Not paired | **Add** | none |
 
-- **Add** below the list and **Add** on a found row open one dialog, titled "Add": today's Pair and Add connection flow (settings-scopes.md §5.3: address, fingerprint check, code or token). On success the connection is saved and connects; the dialog shows **Done** only.
+- **Add** (owner decision 2026-10-21) is the page's one button. It opens one dialog, titled "Add", with two choices: **Connect** ("Use a runtime on another computer.": the computers found on the network, or an address, then the code; a token under Details; settings-scopes.md §5.3) and **Share** ("Let another computer use this runtime.": remote-access.md §7). Found computers are listed in Connect, not as rows. On success the connection is saved and connects; the dialog shows **Done** only.
+- **Devices** under the list: the computers using this runtime, each with **Revoke** (remote-access.md §7).
 - Remove: "Removes the address and token from Studio and adf." When the runtime has agent windows or unsaved editor text, the dialog adds "Closes 2 agent windows." Buttons **Remove**, **Cancel**. The switch-first sentence goes.
 - With no remote saved the page is SimpleConnections, unchanged.
 

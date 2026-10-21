@@ -359,57 +359,72 @@ A second tier is **locked by default** rather than hard-denied: `security.allow_
 
 ## Networking
 
-**Settings → Networking** shows the status of the mesh HTTP server and all agents currently serving content.
+**Settings → Networking** is about agent messaging: the mesh, which agents other computers can reach, the networks you allowed and the runtimes found. Other computers that use this runtime (remote access) are in [Connections](#connection).
 
-![Settings → Networking showing the Mesh startup card with a Disable button, the mesh server running on loopback with its port, the Allow LAN access checkbox, per-interface LAN addresses with copy links, and the Discovered runtimes list with a recheck button and the Discover peers over Tailscale option.](../assets/screenshots/settings-networking.png)
-
-The page has, in this order: the network status line, **Mesh**, **Server** (status, **Port**, **LAN**, addresses, agent visibility), **Discovery** (runtimes found, **Tailscale**, manual **Peers**), **Agent endpoints** and **Remote access**.
+The page has, in this order: the status card, **Sharing** (**Mesh**, **Network**, **Agents**), **Networks**, **Runtimes** and **Advanced** (closed until you open it).
 
 ### Network status
 
-One line at the top of the tab: the networks, the LAN address, Tailscale, and the firewall, for example "Network: Wi-Fi (192.168.1.0/24) · LAN 192.168.1.20 · Tailscale on (100.101.102.103) · Firewall ok". The mesh's LAN mode and remote access both follow it: they listen only on a network you allowed, once per network, the same on every OS. A network not allowed shows "Remote access paused on *network*." with **Allow on this network**. **Allowed networks** lists them, each with **Remove**. Details: [Studio backend › Network status](studio-backend.md#network-status). Not shown with another computer picked in the **Runtime** picker.
+The status card is one line, for example "Mesh on · Wi-Fi (192.168.1.0/24) (allowed) · 3 agents shared": the mesh, each network this computer is on and whether you allowed it, and the number of agents with `lan` or `public` visibility. With another computer picked in the **Runtime** picker, the line has no network part.
 
-### Server Status
+Nothing listens beyond `127.0.0.1` on a network until you allow it, once per network, the same on every OS (details: [Studio backend › Network status](studio-backend.md#network-status)). For each network you are on that is not allowed, the card shows **Allow** and what waits for it:
 
-- **Running indicator** — Green dot when the server is listening, red when stopped
-- **Host and port** — The addresses it listens on (e.g., `127.0.0.1, 192.168.1.20, port 7295`), or `127.0.0.1 only (no private network)` in LAN mode on a network not allowed
-- **Server URL** — Clickable link to the server root
-- **Agent visibility** — "N agents visible on LAN · N public · N private": agents by `messaging.visibility` (`lan`; `public`; the rest)
-- **Port** — the mesh port (`meshPort`, default 7295). Leaving the field changes nothing; **Apply** saves it and restarts a running server on it. A value outside 1–65535 is refused under the field.
+| Line | When |
+|---|---|
+| "Agent sharing paused on *network*." | **Network** is on, or an agent has `lan` or `public` visibility |
+| "Remote access paused on *network*." | Remote access is on ([Connections](#connection) → **Devices**) |
+| "Remote access and agent sharing paused on *network*." | Both |
+| "*agent-1* is public; Allow on this network to share it." | An agent has `public` visibility |
+| "Public network. …" | Under the line when Windows calls the network Public, or on macOS and Linux, which do not say |
 
-**Discovery** lists the runtimes found on the LAN (mDNS), on the tailnet (**Tailscale**, `tailnetDiscovery`) and from **Peers** (`meshManualPeers`). A peer is `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port; an address with `http://`, a path or a port outside 1–65535 is refused under the field.
+**Allow** is the only place on this page that gives consent. An unidentified network has no **Allow**: nothing can listen there. When a firewall block is known, the card says how to fix it.
 
-### Mesh
+### Sharing
 
-The **Mesh** switch turns the mesh and its server on or off now. Turning it off stops agent-to-agent messaging, agent websites and `serving.api` routes, and peer runtimes' delivery until it is on again. **Autostart** decides whether the mesh starts when the runtime starts (`meshEnabled`); the Mesh switch does not change it. **Kill** in the status bar also turns the mesh off. The switch, port, and LAN binding are app-level, not agent-reachable; agents request changes from their principal.
+| Row | Effect | Setting |
+|---|---|---|
+| **Mesh** | Agents on this computer message each other. | The mesh and its server, now. Off stops agent messaging, agent websites and `serving.api` routes, and delivery from peer runtimes (tooltip). **Kill** in the status bar also turns it off. |
+| **Network** | Other computers on allowed networks reach agents you share. | `meshLan`. Listens on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, only on allowed networks; the addresses follow network changes within 10 seconds. A running server restarts on a change. `MESH_HOST` overrides it. |
+| **Agents** | "*N* shared", each agent with its visibility (**LAN** or **Public**). The name opens the agent's window. | Read only. Visibility is set in Agent → Config → Messaging ([Visibility tiers](messaging.md#visibility-tiers)). |
 
-### LAN Access
+An agent with `lan` or `public` visibility turns on the same listening as **Network**. A `public` agent never binds every interface (`0.0.0.0`) by itself: it needs the same consent per network, and the status card names it until you allow the network. Only `MESH_HOST=0.0.0.0` binds every interface; that is the operator's choice, for example on a server. A device paired with this computer that changes an agent's visibility gets no listener without your consent either.
 
-Turn on **LAN** (Networking → Server) to listen on this computer's private-network and Tailscale addresses as well as `127.0.0.1`, so other devices on your network reach served agents at `http://{your-ip}:{port}/agents/{handle}/`. It listens only on networks you allowed (see [Network status](#network-status)); the addresses follow network changes within 10 seconds. An agent with `lan` visibility turns it on too. An agent with `public` visibility binds every interface (`0.0.0.0`), as before.
+The switches, the port and the binding are app-level, not agent-reachable; agents request changes from their principal.
 
-A server restart is required after changing this setting. The `MESH_HOST` environment variable overrides this setting.
+### Networks
 
-Before this release LAN mode bound `0.0.0.0`, every interface, also on a Public network.
+The networks you allowed, each with **Remove**, which closes its listeners at once; the network you are on now is marked **Current**. The mesh and remote access use the same list (`allowedNetworks` in `remote-access.json`). With another computer picked in the **Runtime** picker: "Change on *name*."
 
-### Remote access
+### Runtimes
 
-Other devices use this computer's daemon: the toggle, the addresses, **Add device** (a code, or a token), and **Devices** with **Revoke**. With another computer picked in the **Runtime** picker, this group says "Change on *name*." See [Studio backend › Remote access](studio-backend.md#remote-access).
+One list of the ADF runtimes found, each with how it was found:
 
-### Agent Endpoints
+| Badge | Found by |
+|---|---|
+| **LAN** | mDNS on this network |
+| **Tailnet** | The Tailscale sweep (Advanced → **Tailscale**, `tailnetDiscovery`) |
+| **Address** | An address you added (`meshManualPeers`), with ✕ to remove it (Undo in the toast) |
 
-A table listing all agents currently registered on the mesh:
+Each row shows the host, its mesh address and its agent count, or **Unreachable** when its directory did not answer. **Managed** means Connections also has that computer as a saved connection. An address you added that nothing answers at yet is listed with "No answer".
 
-| Column | Description |
-|--------|-------------|
-| **Handle** | The agent's identity — URL-safe slug derived from filename or manually configured |
-| **URL** | Clickable link to the agent's mesh root |
-| **Public** | Badge shown if public folder serving is enabled |
-| **API** | Route count badge (e.g., "3 routes") |
-| **Shared** | Pattern count badge (e.g., "2 patterns") |
+**Address** with **Add** adds one: `host:port`, `[IPv6]:port`, or a bare host, which uses the mesh port. An address with `http://`, a path or a port outside 1–65535 is refused under the field. **Recheck** probes the tailnet and the addresses now and fetches each directory again.
 
-Empty state: "No agents serving" when mesh is disabled or no agents are registered.
+### Advanced
 
-See [HTTP Serving](serving.md) for the full guide on configuring what agents serve.
+Closed by default; nothing in it is hidden.
+
+| Row | Content |
+|---|---|
+| **Autostart** | Start the mesh when the runtime starts (`meshEnabled`). The Mesh switch does not change it. |
+| **Port** | The mesh port (`meshPort`, default 7295). Leaving the field changes nothing; **Apply** saves it and restarts a running server on it. A value outside 1–65535 is refused under the field. |
+| **Server** | Running or stopped, with the addresses it listens on (for example `127.0.0.1, 192.168.1.20, port 7295`, or `127.0.0.1 only (no private network)` on a network not allowed). |
+| **Tailscale** | Probe the computers on your tailnet for ADF runtimes (`tailnetDiscovery`). |
+| **Addresses** | This computer's LAN addresses and Tailscale state, and each interface address with **Copy**; a link while **Network** is on. |
+| **HTTPS** | `tailscale serve` in front of this runtime's daemon (remote access over https on your tailnet): **Enable** or **Disable**, each confirmed with the exact command first. "Needs Tailscale." without it. |
+| **Firewall** | Whether peers can reach the mesh port. When a rule is missing, the exact commands to run in an administrator shell, with **Copy** and a link to [LAN discovery › Firewalls](lan-discovery.md#firewalls). Studio never adds a firewall rule itself. |
+| **Endpoints** | The agents serving on the mesh: handle, URL, **Site** (public folder served), route count, pattern count. "Mesh is off." while the mesh is off. See [HTTP Serving](serving.md). |
+
+With another computer picked in the **Runtime** picker, **Networks**, **HTTPS**, **Firewall** and **Endpoints** say "Change on *name*.": they belong to that computer.
 
 ## System Prompt
 
@@ -556,18 +571,29 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Connection
 
-**Studio → Connections** is last in the Studio group. Until a runtime on another computer is saved, it is one line, **Remotes** (tooltip "Runtimes on other computers."), with **Add**, which opens the [Add](studio-backend.md#add) dialog. **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
+**Studio → Connections** is last in the Studio group. It has one **Add** and two lists:
 
-Once a connection is saved, the page lists the runtimes Studio connects to:
+- **Remotes** (tooltip "Runtimes this Studio uses."): the runtimes this Studio uses.
+- **Devices** (tooltip "Computers using this runtime."): the **Remote access** switch and the computers that use this runtime, each with **Revoke** (see [Studio backend › Devices](studio-backend.md#devices)).
+
+**Add** opens one dialog, titled **Add**, with two choices ([Studio backend › Add](studio-backend.md#add)):
+
+| Choice | Help line | What it does |
+|---|---|---|
+| **Connect** | "Use a runtime on another computer." | Lists the computers found on this network and your tailnet; pick one or type an **Address**, then enter the 6-digit code shown on that computer. The connection is saved and connects in one step. A token is under **Details**. |
+| **Share** | "Let another computer use this runtime." | Asks for consent first when remote access is off or this network is not allowed (one **Allow**), then shows this runtime's addresses by network with **Copy** and a 6-digit code with its countdown. The other computer enters the code; this computer still asks **Allow device**. Then "Approved: *name*." A token shown once is under **Details**. Only in Local mode. |
+
+Until a runtime on another computer is saved, **Remotes** says "None.". **Details** under it holds this computer's daemon, **Background** and **Inside Studio (legacy)**. The status bar then shows no runtime name, and Kill's tooltip reads "Stops all agents and mesh".
+
+Once a connection is saved, **Remotes** lists the runtimes Studio connects to:
 
 | Row | State | Action |
 |---|---|---|
 | *name* (Local) | Connected, or its state while it is not connected; none while Inside Studio runs | None; **Inside Studio (legacy)** in its **More** menu (⋯); **Connect** while Inside Studio runs |
 | Inside Studio (legacy), only while it runs or is saved | Connected, or none | **Connect** |
 | A saved connection (shared with `adf`) | Connected, Connecting, Not connected, retrying, or Not connected | None; **Remove** in its **More** menu |
-| A computer found on this network or the tailnet, not saved | Not paired | **Add** |
 
-**Add** on a found computer and **Add** below the list open one dialog, titled **Add**: the address (filled in for a found computer), then the code or a token. On success the connection is saved and connects at once; the dialog shows **Done**. Studio does not restart. **Remove** asks first: "Removes the address and token from Studio and adf.", and "Closes *N* agent windows." when that runtime has agent windows open, then "Still listed on *name*; revoke it there."; it then disconnects and forgets the connection. See [Studio backend › Connection](studio-backend.md#connection).
+Computers found on the network that are not saved are listed in **Add** → **Connect**, not on the page. On success the connection is saved and connects at once; the dialog shows **Done**. Studio does not restart. **Remove** asks first: "Removes the address and token from Studio and adf.", and "Closes *N* agent windows." when that runtime has agent windows open, then "Still listed on *name*; revoke it there."; it then disconnects and forgets the connection. See [Studio backend › Connection](studio-backend.md#connection).
 
 | Choice | `mode` | Agents run in |
 |--------|--------|---------------|
