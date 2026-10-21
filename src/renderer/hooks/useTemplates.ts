@@ -26,6 +26,8 @@ interface TemplatesState extends TemplatesSlice {
   byRuntime: Record<RuntimeId, TemplatesSlice>
   /** `runtimeId`: the runtime whose list is read; omitted, this window's. */
   refresh: (runtimeId?: RuntimeId | null) => Promise<void>
+  /** The runtime left the set or is another computer now: its list goes (a read on its way is not kept). */
+  dropRuntime: (runtimeId: RuntimeId) => void
 }
 
 const EMPTY_SLICE: TemplatesSlice = { templates: [], folder: '', defaultId: 'standard', migrated: null, loaded: false }
@@ -41,6 +43,14 @@ export const useTemplatesStore = create<TemplatesState>((set) => {
   return {
     ...EMPTY_SLICE,
     byRuntime: {},
+    dropRuntime: (runtimeId) => {
+      inFlight.delete(runtimeId)
+      set((s) => {
+        if (!(runtimeId in s.byRuntime)) return s
+        const { [runtimeId]: _gone, ...rest } = s.byRuntime
+        return { byRuntime: rest }
+      })
+    },
     refresh: (runtimeId) => {
       const key = isTop(runtimeId) ? windowRuntime : runtimeId!
       const pending = inFlight.get(key)
@@ -48,6 +58,8 @@ export const useTemplatesStore = create<TemplatesState>((set) => {
       const run: Promise<void> = (isTop(runtimeId) ? window.adfApi : apiFor(runtimeId))
         .listTemplates()
         .then((result: AgentTemplateListResult) => {
+          // Dropped meanwhile (its runtime left the set): not kept.
+          if (inFlight.get(key) !== run) return
           write(runtimeId, {
             templates: result.templates,
             folder: result.folder,
@@ -58,10 +70,10 @@ export const useTemplatesStore = create<TemplatesState>((set) => {
         })
         .catch((err: unknown) => {
           console.error(`[templates] list failed${isTop(runtimeId) ? '' : ` on ${runtimeId}`}:`, err)
-          write(runtimeId, { loaded: true })
+          if (inFlight.get(key) === run) write(runtimeId, { loaded: true })
         })
         .finally(() => {
-          inFlight.delete(key)
+          if (inFlight.get(key) === run) inFlight.delete(key)
         })
       inFlight.set(key, run)
       return run

@@ -29,7 +29,7 @@ import { clearTwinSlot, LINK_STATE, migratePairedSlot, remotesEnv, runtimeSlot, 
 import { savedRuntimeId, SLOT_RUNTIME } from './backend/daemon-mode/runtime-manager'
 import { notConnectedSentence } from '../shared/runtime-tag'
 import type { RuntimeView } from '../shared/types/connection.types'
-import { createConnections, pushConnections, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
+import { createConnections, pushConnections, pushRuntimesMoved, registerConnectionHandlers, type Connections } from './backend/connections-ipc'
 import { localDaemonConnector, remoteDaemonConnector } from './backend/daemon-mode/connectors'
 import {
   askVersionMismatch,
@@ -771,8 +771,6 @@ app.whenReady().then(async () => {
       // Settings → Connections shows it (the notices of this launch).
       backend.notices = [...(backend.notices ?? []), `Saved connections could not be read: ${savedCache.unreadable}. Fix or remove the file; nothing was changed.`]
     }
-    connections?.changed()
-    syncRuntimes()
     const before = lastSaved
     lastSaved = savedCache.get()
     const changes = before ? savedConnectionChanges(before, lastSaved) : null
@@ -781,6 +779,10 @@ app.whenReady().then(async () => {
     const store = savedCache.unreadable ? null : backendStore
     const twin = store ? slotTwin(store.config(), lastSaved) : null
     if (twin && changes && !changes.moves.has(SLOT_RUNTIME)) changes.moves.set(SLOT_RUNTIME, savedRuntimeId(twin))
+    // §17: the windows learn the moves before the runtime set without the old ids, so they re-key, not remove.
+    if (changes) pushRuntimesMoved(changes)
+    connections?.changed()
+    syncRuntimes()
     if (changes) runtimeKeysFollow?.(changes)
     if (twin && store) {
       void clearTwinSlot(store, lastSaved).then((name) => {

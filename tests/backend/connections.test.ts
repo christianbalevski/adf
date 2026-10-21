@@ -14,7 +14,7 @@ vi.mock('electron', async () => (await import('./daemon-mode-electron')).electro
 import { SUPPORTED_CLIENT_API_VERSION } from '../../src/shared/daemon-client'
 import { createBackendSettingsStore, defaultBackendConfig, resolveBootBackend, type SecretCodec, type StudioBackendConfig } from '../../src/main/backend/backend-config'
 import { buildConnectionsView, ConnectionError, currentConnection, forgetConnection, keychainSentence, remotesEnv, saveConnection, savedConnections, savedConnectionTarget } from '../../src/main/backend/connections'
-import { createConnections } from '../../src/main/backend/connections-ipc'
+import { createConnections, pushRuntimesMoved } from '../../src/main/backend/connections-ipc'
 import { remoteDaemonConnector, RemoteConnectError } from '../../src/main/backend/daemon-mode/remote/connector'
 import { loadRemotes, readRemoteToken, remoteNameFor, saveRemotes, savedRemoteToken, selectedRemote, storeRemoteToken } from '../../src/main/cli/remotes'
 import type { BackendDaemonStatus } from '../../src/shared/types/backend.types'
@@ -462,5 +462,31 @@ describe('the remote connector on a saved connection', () => {
     saveRemotes({ v: 1, default: null, remotes: { hub: { url: HUB, fingerprint: 'ABCD-EFGH', deviceId: '', label: '', pairedAt: '' } } }, env)
     const error = await remoteDaemonConnector(config('hub'), codec, { env, fetch: fakeDaemon().fetch })(() => {}).catch((e) => e)
     expect(error).toMatchObject({ problem: 'keychain', message: keychainSentence('hub') })
+  })
+})
+
+describe('RUNTIMES_MOVED (multi-runtime.md §17)', () => {
+  function windows() {
+    const sent: Array<[string, unknown]> = []
+    const win = { isDestroyed: () => false, webContents: { isDestroyed: () => false, send: (channel: string, payload: unknown) => { sent.push([channel, payload]) } } }
+    return { sent, list: () => [win] as never }
+  }
+
+  it('every window gets the moves and the replaced ids; nothing is sent when nothing moved', () => {
+    const w = windows()
+    pushRuntimesMoved({ moves: new Map([['remote:host-1', 'remote:host-2']]), replaced: new Set(['remote:host-3']) }, w.list)
+    expect(w.sent).toEqual([['adf:connection:runtimes-moved', { moves: { 'remote:host-1': 'remote:host-2' }, replaced: ['remote:host-3'] }]])
+    pushRuntimesMoved({ moves: new Map(), replaced: new Set() }, w.list)
+    expect(w.sent).toHaveLength(1)
+  })
+
+  it('main sends them before the runtime set that no longer lists the old ids', () => {
+    const src = readFileSync(join(__dirname, '../../src/main/index.ts'), 'utf8')
+    const at = src.indexOf('const savedCache = new SavedConnectionsCache(')
+    const body = src.slice(at, src.indexOf('\n  })', at))
+    const pushed = body.indexOf('pushRuntimesMoved(changes)')
+    expect(pushed).toBeGreaterThan(0)
+    expect(pushed).toBeLessThan(body.indexOf('connections?.changed()'))
+    expect(pushed).toBeLessThan(body.indexOf('syncRuntimes()'))
   })
 })

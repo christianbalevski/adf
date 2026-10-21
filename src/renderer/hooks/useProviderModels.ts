@@ -25,6 +25,14 @@ export function invalidateProviderModels(): void {
   cache = new Map()
 }
 
+/** The runtime left the set or is another computer now: its lists go, and a fetch on its way is not kept. */
+export function dropProviderModels(runtimeId: RuntimeId): void {
+  if (runtimeId === LOCAL_RUNTIME) return
+  const prefix = `${runtimeId}\n`
+  for (const key of [...cache.keys()]) if (key.startsWith(prefix)) cache.delete(key)
+  for (const key of [...inflight.keys()]) if (key.startsWith(prefix)) inflight.delete(key)
+}
+
 /**
  * The provider's model list, fetched once per key, from the open agent's
  * runtime. Pass `filePath` when the provider is stored on that agent so the
@@ -39,10 +47,11 @@ export function loadProviderModels(providerId: string, filePath?: string): Promi
     pending = (openApi()?.listModels(providerId, filePath) ?? Promise.resolve({ models: [] }))
       .catch((err: unknown) => ({ models: [], error: String(err) }))
       .then((result) => {
-        cache.set(key, result)
+        // Dropped meanwhile (its runtime left the set): answered, not kept.
+        if (inflight.get(key) === pending) cache.set(key, result)
         return result
       })
-      .finally(() => inflight.delete(key))
+      .finally(() => { if (inflight.get(key) === pending) inflight.delete(key) })
     inflight.set(key, pending)
   }
   return pending

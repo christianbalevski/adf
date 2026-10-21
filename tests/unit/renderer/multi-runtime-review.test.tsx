@@ -44,6 +44,8 @@ vi.mock('react/jsx-dev-runtime', async (importOriginal) => {
 const HOST_1 = 'remote:host-1'
 const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'connected' }
+const HOST_2 = 'remote:host-2'
+const REMOTE_2: RuntimeView = { id: HOST_2, kind: 'remote', name: 'host-2', url: 'https://host-2.example:7386', state: 'connected' }
 /** One path on both runtimes: two agents. */
 const PATH = '/srv/agents/agent-1.adf'
 const PATH_2 = '/srv/agents/agent-2.adf'
@@ -78,11 +80,12 @@ function surface(runtimeId: string | undefined, impl: Record<string, unknown> = 
 }
 
 /** A fresh page (`search`: an agent window's query) with the runtime set and a recording surface per runtime. */
-async function page(runtimes: RuntimeView[] | undefined, opts: { search?: string; local?: Record<string, unknown>; remote?: Record<string, unknown> } = {}) {
+async function page(runtimes: RuntimeView[] | undefined, opts: { search?: string; local?: Record<string, unknown>; remote?: Record<string, unknown>; remote2?: Record<string, unknown> } = {}) {
   vi.resetModules()
   // Each surface binds the others, as preload's runtime() does.
-  const bind = (id: string) => (id === HOST_1 ? remote.api : local.api)
+  const bind = (id: string) => (id === HOST_1 ? remote.api : id === HOST_2 ? remote2.api : local.api)
   const remote = surface(HOST_1, { platform: 'linux', runtime: bind, ...opts.remote })
+  const remote2 = surface(HOST_2, { platform: 'linux', runtime: bind, ...opts.remote2 })
   const local = surface(undefined, { platform: 'linux', runtime: bind, ...opts.local })
   // An agent window of host-1: its window.adfApi is host-1's surface.
   const own = opts.search?.includes('runtime=') ? remote : local
@@ -91,7 +94,7 @@ async function page(runtimes: RuntimeView[] | undefined, opts: { search?: string
   const { useConnectionStore } = await import('../../../src/renderer/stores/connection.store')
   await import('../../../src/renderer/stores/runtimes.store')
   useConnectionStore.getState().setView(view(runtimes))
-  return { local, remote }
+  return { local, remote, remote2 }
 }
 
 /** Render, recording every element made: a handler is then called as the click would. */
@@ -350,8 +353,6 @@ describe('C9 and C13: a runtime that leaves the set', () => {
   })
 
   it('C9: a fleet save after Remove never writes the removed runtime\'s saved entry back (main deleted it)', async () => {
-    const HOST_2 = 'remote:host-2'
-    const REMOTE_2: RuntimeView = { id: HOST_2, kind: 'remote', name: 'host-2', url: 'https://host-2.example:7386', state: 'connected' }
     const setSettings = vi.fn(async () => ({ success: true }))
     await page([LOCAL, REMOTE, REMOTE_2], { local: { setSettings } })
     const fleet = await import('../../../src/renderer/components/mesh/runtime-fleet')
@@ -510,5 +511,259 @@ describe('C14: the status bar\'s Runtimes fold measures again when what the bar 
     FakeMutationObserver.all.at(-1)!.cb()
     expect(observer.observed.has(added)).toBe(true)
     stop()
+  })
+})
+
+// ---- Second review (R2C, docs/design/multi-runtime.md §17) -------------------------------------
+
+/** What an agent open reads, on any runtime. */
+const FILES = {
+  getBatch: async () => ({ document: '', agentConfig: null, statusText: '', chat: { uiLog: [] } }),
+  readInternalFile: async () => null,
+  checkAgentReview: async () => ({ needsReview: false }),
+  closeFile: async () => ({ success: true }),
+}
+
+/** The main window's openFile (useAdfFile), as the runtime feeds call it. */
+async function mainOpenFile() {
+  const { useAdfFile } = await import('../../../src/renderer/hooks/useAdfFile')
+  let api!: ReturnType<typeof useAdfFile>
+  const Probe = (): null => { api = useAdfFile(); return null }
+  renderToString(<Probe />)
+  return api.openFile
+}
+
+/** host-1's agent-1 open, with notes.md under a "changed elsewhere" notice. */
+async function openWithConflict(useDocumentStore: typeof import('../../../src/renderer/stores/document.store').useDocumentStore) {
+  const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+  const { useEditorTabsStore } = await import('../../../src/renderer/stores/editor-tabs.store')
+  useDocumentStore.getState().setFilePath(PATH, HOST_1)
+  useAgentStore.getState().setConfig({ id: ID_1, name: 'agent-1' } as never)
+  const tabs = useEditorTabsStore.getState()
+  tabs.openTab('notes.md', 'base', false, undefined, 1)
+  tabs.updateTabContent('notes.md', 'mine')
+  tabs.updateTabFromExternal('notes.md', 'theirs', { revision: 2, writer: { kind: 'agent' } } as never)
+}
+
+const removals = (stash: ReturnType<typeof vi.fn>) => stash.mock.calls.map((c) => c[0] as { path: string; content: string | null }).filter((s) => s.content === null)
+
+describe('R2C-1: the open agent reopened after a reconnect, or closed by Remove, keeps its recovery copies', () => {
+  it('reconnect: no confirm dialog, the agent reopens, and the copies just kept are not removed', async () => {
+    const recoveryStash = vi.fn(async () => ({ success: true }))
+    const { local } = await page([LOCAL, REMOTE], {
+      local: { recoveryStash },
+      remote: { ...FILES, getCurrentFile: async () => ({ filePath: null, agentRunning: false }), openFile: async (filePath: string) => ({ success: true, filePath }) },
+    })
+    const confirm = vi.fn(() => false)
+    ;(window as unknown as { confirm: unknown }).confirm = confirm
+    const { syncRuntimeFeeds, reopenerOf } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { startEditRecovery } = await import('../../../src/renderer/utils/edit-recovery')
+    const stop = startEditRecovery(local.api as never, 500)
+    const reopen = reopenerOf(await mainOpenFile())
+    syncRuntimeFeeds([LOCAL, REMOTE], reopen)
+    await openWithConflict(useDocumentStore)
+    expect(recoveryStash).toHaveBeenCalledWith({ agentFilePath: PATH, path: 'notes.md', content: 'mine', runtimeId: HOST_1 })
+    syncRuntimeFeeds([LOCAL, { ...REMOTE, state: 'retrying' }], reopen)
+    syncRuntimeFeeds([LOCAL, REMOTE], reopen)
+    for (let i = 0; i < 10; i++) await flush()
+    stop()
+    expect(confirm).not.toHaveBeenCalled()
+    expect(useDocumentStore.getState()).toMatchObject({ filePath: PATH, runtimeId: HOST_1 })
+    expect(removals(recoveryStash)).toEqual([])
+    expect(await notices()).toEqual(['host-1 reconnected; agent-1 reopened; unsaved changes kept for recovery.'])
+  })
+
+  it('Remove: the agent closes only once its copies are written, and they are not removed', async () => {
+    const pending: Array<() => void> = []
+    const recoveryStash = vi.fn((s: { content: string | null }) => (s.content === null ? Promise.resolve({ success: true }) : new Promise((resolve) => { pending.push(() => resolve({ success: true })) })))
+    const { local } = await page([LOCAL, REMOTE], { local: { recoveryStash } })
+    const { syncRuntimeFeeds } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { startEditRecovery } = await import('../../../src/renderer/utils/edit-recovery')
+    const stop = startEditRecovery(local.api as never, 500)
+    syncRuntimeFeeds([LOCAL, REMOTE])
+    await openWithConflict(useDocumentStore)
+    // The copy the notice keeps.
+    pending.shift()!()
+    await flush()
+    syncRuntimeFeeds([LOCAL])
+    await flush()
+    // The copy for Remove is on its way: the agent is still shown.
+    expect(pending).toHaveLength(1)
+    expect(useDocumentStore.getState().filePath).toBe(PATH)
+    pending.shift()!()
+    for (let i = 0; i < 5; i++) await flush()
+    stop()
+    expect(useDocumentStore.getState().filePath).toBeNull()
+    expect(removals(recoveryStash)).toEqual([])
+    expect(await notices()).toEqual(['host-1 removed; agent-1 closed; unsaved changes kept for recovery.'])
+  })
+})
+
+describe('R2C-5: a reconnect reopen overtaken by the user\'s own open', () => {
+  it('says nothing: the agent the user opened shows', async () => {
+    let answer: ((r: unknown) => void) | null = null
+    await page([LOCAL, REMOTE], {
+      local: { ...FILES, openFile: async (filePath: string) => ({ success: true, filePath }) },
+      remote: { ...FILES, getCurrentFile: async () => ({ filePath: null, agentRunning: false }), openFile: () => new Promise((resolve) => { answer = resolve }) },
+    })
+    const { syncRuntimeFeeds, reopenerOf } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    const openFile = await mainOpenFile()
+    const reopen = reopenerOf(openFile)
+    syncRuntimeFeeds([LOCAL, REMOTE], reopen)
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    useAgentStore.getState().setConfig({ id: ID_1, name: 'agent-1' } as never)
+    syncRuntimeFeeds([LOCAL, { ...REMOTE, state: 'retrying' }], reopen)
+    syncRuntimeFeeds([LOCAL, REMOTE], reopen)
+    for (let i = 0; i < 5; i++) await flush()
+    expect(answer).toBeTypeOf('function')
+    await openFile(PATH_2)
+    answer!({ success: true, filePath: PATH })
+    for (let i = 0; i < 5; i++) await flush()
+    expect(useDocumentStore.getState()).toMatchObject({ filePath: PATH_2, runtimeId: 'local' })
+    expect(await notices()).toEqual([])
+  })
+})
+
+describe('R2C-2 and R2C-3: the same computer under another id (a rename, the remote slot cleared)', () => {
+  async function moved(opts: { mainFleet?: Record<string, unknown> } = {}) {
+    const setSettings = vi.fn(async () => ({ success: true }))
+    const getSettings = vi.fn(async () => ({ runtimeFleet: opts.mainFleet ?? {} }))
+    const { remote2 } = await page([LOCAL, REMOTE], {
+      local: { setSettings, getSettings },
+      remote2: { ...FILES, getCurrentFile: async () => ({ filePath: null, agentRunning: false }), openFile: async (filePath: string) => ({ success: true, filePath }) },
+    })
+    const feeds = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const fleet = await import('../../../src/renderer/components/mesh/runtime-fleet')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    const { useMessageQueueStore } = await import('../../../src/renderer/stores/message-queue.store')
+    const { useAppStore } = await import('../../../src/renderer/stores/app.store')
+    const { useFleetStore } = await import('../../../src/renderer/stores/fleet.store')
+    const reopen = feeds.reopenerOf(await mainOpenFile())
+    feeds.syncRuntimeFeeds([LOCAL, REMOTE], reopen)
+    await flush()
+    // The Mesh view read runtimeFleet when it mounted.
+    fleet.setStoredRuntimeFleet({ [HOST_1]: { fleetGroups: { team: [PATH] } } })
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    useAgentStore.getState().setConfig({ id: ID_1, name: 'agent-1' } as never)
+    useMessageQueueStore.getState().enqueue(KEY, 'main', { text: 'hello' })
+    useDocumentStore.getState().setDraftInput(KEY_2, 'draft')
+    useAppStore.getState().addStartingFilePath(KEY_2)
+    useFleetStore.getState().setSelection([KEY_2, PATH_2])
+    useFleetStore.getState().setNamedGroups({ team: [KEY, PATH_2] })
+    useFleetStore.getState().setStewards({ [`${HOST_1}\n${DIR}`]: 'did:key:agent-1' })
+    useFleetStore.getState().setPlacement({ regionOrigins: { [`${HOST_1}\n`]: { q: 1, r: 2 } }, cellPins: { [KEY]: { q: 3, r: 4 } } })
+    // Main pushes the move before the runtime set that no longer has host-1.
+    feeds.noteRuntimeMoves({ moves: { [HOST_1]: HOST_2 }, replaced: [] })
+    feeds.syncRuntimeFeeds([LOCAL, REMOTE_2], reopen)
+    for (let i = 0; i < 10; i++) await flush()
+    return { feeds, fleet, setSettings, getSettings, remote2, useDocumentStore, useMessageQueueStore, useAppStore, useFleetStore }
+  }
+
+  const K = (p: string) => `${HOST_2}\n${p}`
+
+  it('queues, drafts, marks, the fleet copy and the open agent follow it; nothing is said removed', async () => {
+    const s = await moved()
+    expect(Object.keys(s.useMessageQueueStore.getState().queues)).toEqual([K(PATH)])
+    expect(s.useDocumentStore.getState().draftInputs).toEqual({ [K(PATH_2)]: 'draft' })
+    expect([...s.useAppStore.getState().startingFilePaths]).toEqual([K(PATH_2)])
+    const f = s.useFleetStore.getState()
+    expect(f.selection).toEqual([K(PATH_2), PATH_2])
+    expect(f.namedGroups).toEqual({ team: [K(PATH), PATH_2] })
+    expect(f.stewards).toEqual({ [K(DIR)]: 'did:key:agent-1' })
+    expect(f.placement).toEqual({ regionOrigins: { [`${HOST_2}\n`]: { q: 1, r: 2 } }, cellPins: { [K(PATH)]: { q: 3, r: 4 } } })
+    // The open agent is host-2's now, opened there (host-2 is connected and does not hold it).
+    expect(s.useDocumentStore.getState()).toMatchObject({ filePath: PATH, runtimeId: HOST_2 })
+    expect(s.remote2.names()).toContain('openFile')
+    const said = await notices()
+    expect(said.some((n) => n.includes('removed'))).toBe(false)
+    expect(said).toEqual(['host-1 is now host-2; agent-1 reopened.'])
+  })
+
+  it('the next fleet save writes host-2\'s entry only, never host-1\'s from the copy read at mount', async () => {
+    const s = await moved()
+    await s.fleet.saveFleetKeys({ groups: s.useFleetStore.getState().namedGroups }, [LOCAL, REMOTE_2])
+    expect(s.setSettings).toHaveBeenLastCalledWith({ fleetGroups: { team: [PATH_2] }, runtimeFleet: { [HOST_2]: { fleetGroups: { team: [PATH] } } } })
+  })
+
+  it('R2C-3: the runtime set changed, runtimeFleet is read again from main', async () => {
+    const s = await moved({ mainFleet: { [HOST_2]: { fleetGroups: { team: [PATH] }, fleetMapState: { savedAt: 1 } } } })
+    expect(s.getSettings).toHaveBeenCalled()
+    expect(s.fleet.storedRuntimeFleetOf()).toEqual({ [HOST_2]: { fleetGroups: { team: [PATH] }, fleetMapState: { savedAt: 1 } } })
+  })
+
+  it('R2C-2: the Mesh view gets the saved groups, stewards and placement of a runtime it has nothing of; its own keys stay', async () => {
+    await page([LOCAL, REMOTE, REMOTE_2])
+    const fleet = await import('../../../src/renderer/components/mesh/runtime-fleet')
+    const { useFleetStore } = await import('../../../src/renderer/stores/fleet.store')
+    useFleetStore.getState().setNamedGroups({ team: [KEY] })
+    useFleetStore.getState().setPlacement({ regionOrigins: { [`${HOST_1}
+`]: { q: 0, r: 0 } }, cellPins: {} })
+    const getSettings = vi.fn(async () => ({ runtimeFleet: {
+      [HOST_1]: { fleetGroups: { stale: [PATH] } },
+      [HOST_2]: { fleetGroups: { team: [PATH_2] }, fleetStewards: { [DIR]: 'did:key:agent-2' }, fleetMapState: { placement: { regionOrigins: { '': { q: 5, r: 5 } }, cellPins: { [PATH_2]: { q: 6, r: 6 } } } } },
+    } }))
+    await fleet.reloadRuntimeFleet([LOCAL, REMOTE, REMOTE_2], { getSettings } as never)
+    const f = useFleetStore.getState()
+    expect(f.namedGroups).toEqual({ team: [KEY, `${HOST_2}
+${PATH_2}`] })
+    expect(f.stewards).toEqual({ [`${HOST_2}
+${DIR}`]: 'did:key:agent-2' })
+    expect(f.placement).toEqual({ regionOrigins: { [`${HOST_1}
+`]: { q: 0, r: 0 }, [`${HOST_2}
+`]: { q: 5, r: 5 } }, cellPins: { [`${HOST_2}
+${PATH_2}`]: { q: 6, r: 6 } }, districtAnchors: {} })
+  })
+
+  it('R2C-3: a save sends only the fields it saves, per runtime of the set', async () => {
+    await page([LOCAL, REMOTE, REMOTE_2])
+    const fleet = await import('../../../src/renderer/components/mesh/runtime-fleet')
+    fleet.setStoredRuntimeFleet({ [HOST_1]: { fleetGroups: { stale: [PATH] } }, 'remote:gone': { fleetGroups: { old: [PATH] } } })
+    const patch = fleet.fleetSettingsPatch({ fleetMapState: { savedAt: 2 } as never }, { [HOST_2]: { fleetMapState: { savedAt: 2 } as never } }, [LOCAL, REMOTE, REMOTE_2])
+    expect(patch).toEqual({ fleetMapState: { savedAt: 2 }, runtimeFleet: { [HOST_2]: { fleetMapState: { savedAt: 2 } } } })
+  })
+})
+
+describe('R2C-4: per-runtime caches go with the runtime', () => {
+  it('Remove clears its config caches, model lists and templates; This computer\'s stay', async () => {
+    const listModels = vi.fn(async () => ({ models: ['model-1'] }))
+    await page([LOCAL, REMOTE], { remote: { listModels } })
+    const { syncRuntimeFeeds } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const { cachesOf } = await import('../../../src/renderer/utils/config-caches')
+    const { loadProviderModels } = await import('../../../src/renderer/hooks/useProviderModels')
+    const { useTemplatesStore } = await import('../../../src/renderer/hooks/useTemplates')
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    syncRuntimeFeeds([LOCAL, REMOTE])
+    cachesOf(HOST_1).toolDefs = { fs_read: {} }
+    cachesOf('local').toolDefs = { fs_write: {} }
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    await loadProviderModels('provider-1')
+    await loadProviderModels('provider-1')
+    expect(listModels).toHaveBeenCalledTimes(1)
+    useTemplatesStore.setState({ byRuntime: { [HOST_1]: { templates: [], folder: '/srv/templates', defaultId: 'standard', migrated: null, loaded: true } } })
+    syncRuntimeFeeds([LOCAL])
+    await flush()
+    expect(cachesOf(HOST_1).toolDefs).toBeNull()
+    expect(cachesOf('local').toolDefs).toEqual({ fs_write: {} })
+    expect(useTemplatesStore.getState().byRuntime[HOST_1]).toBeUndefined()
+    // host-1 added again: its list is read again.
+    syncRuntimeFeeds([LOCAL, REMOTE])
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    await loadProviderModels('provider-1')
+    expect(listModels).toHaveBeenCalledTimes(2)
+  })
+
+  it('a runtime now another computer (replaced) loses them too', async () => {
+    await page([LOCAL, REMOTE])
+    const { syncRuntimeFeeds, noteRuntimeMoves } = await import('../../../src/renderer/hooks/useRuntimeFeeds')
+    const { cachesOf } = await import('../../../src/renderer/utils/config-caches')
+    syncRuntimeFeeds([LOCAL, REMOTE])
+    cachesOf(HOST_1).toolDefs = { fs_read: {} }
+    noteRuntimeMoves({ moves: {}, replaced: [HOST_1] })
+    expect(cachesOf(HOST_1).toolDefs).toBeNull()
   })
 })

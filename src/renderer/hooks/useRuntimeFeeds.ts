@@ -6,9 +6,12 @@ import { useMeshStore, selectMeshSlice } from '../stores/mesh.store'
 import { useAppStore } from '../stores/app.store'
 import { reportFailure, agentNameOf, useFailureNoticesStore } from '../stores/failure-notices.store'
 import { useFleetStore } from '../stores/fleet.store'
-import { forgetRuntimeFleet } from '../components/mesh/runtime-fleet'
+import { forgetRuntimeFleet, moveRuntimeFleet, reloadRuntimeFleet } from '../components/mesh/runtime-fleet'
 import { trackedDirsActions } from './useTrackedDirs'
-import { openingFilePaths, useAdfFile } from './useAdfFile'
+import { openingFilePaths, useAdfFile, type OpenOptions } from './useAdfFile'
+import { dropProviderModels } from './useProviderModels'
+import { useTemplatesStore } from './useTemplates'
+import { dropConfigCaches } from '../utils/config-caches'
 import { apiFor, openAgentKey } from '../utils/runtime-api'
 import { isAgentWindow } from '../utils/window-kind'
 import { stashUnsavedEditors } from '../utils/edit-recovery'
@@ -20,7 +23,7 @@ import { foldAgentStatuses } from '../utils/background-agent-statuses'
 import { deliverSettledBackgroundQueues } from '../utils/queued-delivery'
 import { agentKey, parseAgentKey } from '../../shared/types/agent-ref'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
-import type { RuntimeView } from '../../shared/types/connection.types'
+import type { RuntimeView, RuntimesMoved } from '../../shared/types/connection.types'
 import type { MeshEvent, RendererBackgroundAgentEvent } from '../../shared/types/ipc.types'
 
 /**
@@ -46,8 +49,28 @@ interface Feed {
 
 const feeds = new Map<RuntimeId, Feed>()
 
+/**
+ * Ids main said are the same computer under another id now (RUNTIMES_MOVED,
+ * multi-runtime.md §17), old id → new id, until the old id leaves the set.
+ */
+const pendingMoves = new Map<RuntimeId, RuntimeId>()
+
+/** The ids of the set as last synced: a change reads runtimeFleet again. */
+let lastIds = ''
+
 /** Opens an agent in the main window (useAdfFile's openFile): the open agent of a runtime that connected again. */
 export type ReopenAgent = (filePath: string, runtimeId: RuntimeId) => Promise<unknown>
+
+type OpenFile = (filePath?: string, runtimeId?: RuntimeId, options?: OpenOptions) => Promise<unknown>
+
+/**
+ * The reopen of the open agent after a reconnect or a move: its unsaved
+ * editors are kept as recovery copies first (resyncOpenAgent), so nothing is
+ * asked before they go.
+ */
+export function reopenerOf(openFile: OpenFile): ReopenAgent {
+  return (filePath, runtimeId) => openFile(filePath, runtimeId, { kept: true })
+}
 
 /** A notice the user sees (bottom right, until dismissed). */
 function notice(text: string): void {
@@ -188,15 +211,74 @@ function dropAgentState(id: RuntimeId): number {
   return discarded
 }
 
+/** Every cache kept for a runtime (the config panel's, model lists, templates): it left the set or is another computer now. */
+function dropRuntimeCaches(id: RuntimeId): void {
+  dropConfigCaches(id)
+  dropProviderModels(id)
+  useTemplatesStore.getState().dropRuntime(id)
+}
+
 /**
- * The main window's open agent is on `runtime`, which connected: when the
- * runtime no longer has it open (Reconnect replaced its connection, §3.4),
- * the agent is opened again, its unsaved editors kept as recovery copies
- * first, and the user is told. An open that fails shows Home, said.
+ * The same computer is `to` now (§17): what the main window keeps per agent
+ * of `from` (queues, drafts, marks, the fleet map's keys) goes under `to`.
+ * An entry `to` already has wins.
  */
-async function resyncOpenAgent(runtime: RuntimeView, reopen: ReopenAgent | null): Promise<void> {
+function rekeyAgentState(from: RuntimeId, to: RuntimeId): void {
+  const prefix = `${from}\n`
+  const moves = (key: string): boolean => key.startsWith(prefix)
+  const move = (key: string): string => (moves(key) ? `${to}\n${key.slice(prefix.length)}` : key)
+  function record<V>(r: Record<string, V>): Record<string, V> {
+    if (!Object.keys(r).some(moves)) return r
+    const out: Record<string, V> = {}
+    for (const [k, v] of Object.entries(r)) if (!moves(k)) out[k] = v
+    for (const [k, v] of Object.entries(r)) if (moves(k) && !(move(k) in out)) out[move(k)] = v
+    return out
+  }
+  const list = (l: string[]): string[] => (l.some(moves) ? [...new Set(l.map(move))] : l)
+  const queues = useMessageQueueStore.getState().queues
+  if (Object.keys(queues).some(moves)) useMessageQueueStore.setState({ queues: record(queues) })
+  const drafts = useDocumentStore.getState().draftInputs
+  if (Object.keys(drafts).some(moves)) useDocumentStore.setState({ draftInputs: record(drafts) })
+  const app = useAppStore.getState()
+  if ([...app.startingFilePaths].some(moves) || [...app.stoppingFilePaths].some(moves)) {
+    useAppStore.setState({ startingFilePaths: new Set(list([...app.startingFilePaths])), stoppingFilePaths: new Set(list([...app.stoppingFilePaths])) })
+  }
+  const fleet = useFleetStore.getState()
+  const placement = fleet.placement
+  useFleetStore.setState({
+    selection: list(fleet.selection),
+    family: list(fleet.family),
+    starting: record(fleet.starting),
+    controlGroups: Object.fromEntries(Object.entries(fleet.controlGroups).map(([digit, keys]) => [digit, list(keys)])),
+    namedGroups: Object.fromEntries(Object.entries(fleet.namedGroups).map(([name, keys]) => [name, list(keys)])),
+    stewards: record(fleet.stewards),
+    ...(placement ? {
+      placement: {
+        ...placement,
+        regionOrigins: record(placement.regionOrigins),
+        cellPins: record(placement.cellPins),
+        ...(placement.districtAnchors ? { districtAnchors: record(placement.districtAnchors) } : {}),
+        ...(placement.stationPins ? { stationPins: record(placement.stationPins) } : {}),
+      },
+    } : {}),
+  })
+  moveRuntimeFleet(from, to)
+}
+
+/** What a resync did to the open agent: a sentence part, or nothing to say. */
+type Resync = { said: string } | null
+
+/**
+ * The main window's open agent is on `runtime`, which connected (or is the
+ * new id of the agent's computer): when the runtime does not have it open
+ * (Reconnect replaced its connection, §3.4), the agent is opened again, its
+ * unsaved editors kept as recovery copies first. Answers what to tell the
+ * user; nothing when it is still open there, the user moved on, or the
+ * user's own open overtook the reopen. An open that fails shows Home.
+ */
+async function resyncOpenAgent(runtime: RuntimeView, reopen: ReopenAgent | null): Promise<Resync> {
   const { filePath, runtimeId } = useDocumentStore.getState()
-  if (!filePath || runtimeId !== runtime.id) return
+  if (!filePath || runtimeId !== runtime.id) return null
   let held: string | null = null
   try {
     held = (await apiFor(runtime.id).getCurrentFile())?.filePath ?? null
@@ -205,24 +287,56 @@ async function resyncOpenAgent(runtime: RuntimeView, reopen: ReopenAgent | null)
   }
   const now = useDocumentStore.getState()
   // Still open there, or the user has moved on meanwhile.
-  if (held === filePath || now.filePath !== filePath || now.runtimeId !== runtime.id) return
+  if (held === filePath || now.filePath !== filePath || now.runtimeId !== runtime.id) return null
   console.log(`[Runtimes] ${runtime.id} connected without ${filePath} open: opening it again`)
   const agent = useAgentStore.getState().config?.name || agentNameOf(filePath)
   const kept = await stashUnsavedEditors().catch(() => 0)
   const keptText = kept > 0 ? '; unsaved changes kept for recovery' : ''
   let opened = false
   if (reopen) {
-    const result = await reopen(filePath, runtime.id).catch((err: unknown) => ({ success: false, error: err }))
+    const result = await reopen(filePath, runtime.id).catch((err: unknown) => ({ success: false, error: err })) as { success?: boolean; overtaken?: boolean } | undefined
+    // The user opened another agent meanwhile: theirs shows, and that is not news.
+    if (result?.overtaken) {
+      console.log(`[Runtimes] The reopen of ${filePath} on ${runtime.id} was overtaken by a later open`)
+      return null
+    }
     const after = useDocumentStore.getState()
-    opened = (result as { success?: boolean } | undefined)?.success === true && after.filePath === filePath && after.runtimeId === runtime.id
+    opened = result?.success === true && after.filePath === filePath && after.runtimeId === runtime.id
   }
-  if (opened) {
-    notice(`${runtime.name} reconnected; ${agent} reopened${keptText}.`)
-    return
-  }
+  if (opened) return { said: `${agent} reopened${keptText}` }
   const after = useDocumentStore.getState()
   if (after.filePath === filePath && after.runtimeId === runtime.id) closeOpenAgent()
-  notice(`${runtime.name} reconnected; ${agent} closed${keptText}.`)
+  return { said: `${agent} closed${keptText}` }
+}
+
+/**
+ * A runtime left the set while the main window shows its agent (Remove,
+ * §3.3): Home shows once its unsaved editors are kept as recovery copies
+ * (main already closed its file there). Answers what to tell the user.
+ */
+async function closeRemovedAgent(id: RuntimeId, filePath: string): Promise<{ closed: string; kept: boolean }> {
+  console.log(`[Runtimes] ${id} left the set: closing its open agent ${filePath}`)
+  const closed = `${useAgentStore.getState().config?.name || agentNameOf(filePath)} closed`
+  const kept = await stashUnsavedEditors().catch(() => 0)
+  const doc = useDocumentStore.getState()
+  // The user has moved on meanwhile: their agent stays.
+  if (doc.runtimeId === id && doc.filePath === filePath) closeOpenAgent()
+  return { closed, kept: kept > 0 }
+}
+
+/**
+ * RUNTIMES_MOVED (main, §17), before the runtime set that follows it: a
+ * moved id is re-keyed when it leaves the set; an id that is another
+ * computer now loses its caches at once.
+ */
+export function noteRuntimeMoves(change: RuntimesMoved): void {
+  for (const [from, to] of Object.entries(change.moves ?? {})) {
+    if (from && to && from !== to) pendingMoves.set(from, to)
+  }
+  for (const id of change.replaced ?? []) {
+    console.log(`[Runtimes] ${id} is another computer now: its cached settings, model lists and templates go`)
+    dropRuntimeCaches(id)
+  }
 }
 
 /**
@@ -232,6 +346,8 @@ async function resyncOpenAgent(runtime: RuntimeView, reopen: ReopenAgent | null)
  */
 export function syncRuntimeFeeds(runtimes: readonly RuntimeView[], reopen: ReopenAgent | null = null): void {
   const others = runtimes.length > 1 ? runtimes.filter((r) => r.id !== LOCAL_RUNTIME) : []
+  /** Open agents re-keyed to a moved runtime's new id: resynced there once its feed is known. */
+  const movedOpen: Array<{ from: string; to: RuntimeId }> = []
   for (const [id, feed] of [...feeds]) {
     if (others.some((r) => r.id === id)) continue
     for (const off of feed.unsubscribe) off()
@@ -239,29 +355,42 @@ export function syncRuntimeFeeds(runtimes: readonly RuntimeView[], reopen: Reope
     useTrackedDirsStore.getState().dropRuntime(id)
     useBackgroundAgentsStore.getState().dropRuntime(id)
     useMeshStore.getState().dropRuntime(id)
+    dropRuntimeCaches(id)
     // The page is going (unmount): nothing was removed.
     if (runtimes.length === 0) continue
-    const said: string[] = []
-    // The open agent was on it (Remove, multi-runtime.md §3.3): the main window shows Home, its
-    // unsaved editors kept as recovery copies first; main already closed its file there.
-    const doc = useDocumentStore.getState()
-    let kept: Promise<number> = Promise.resolve(0)
-    if (doc.runtimeId === id && doc.filePath) {
-      console.log(`[Runtimes] ${id} left the set: closing its open agent ${doc.filePath}`)
-      said.push(`${useAgentStore.getState().config?.name || agentNameOf(doc.filePath)} closed`)
-      // It reads every editor before its first await: the reset below loses nothing.
-      kept = stashUnsavedEditors()
-      closeOpenAgent()
+    const to = pendingMoves.get(id)
+    pendingMoves.delete(id)
+    const target = to ? others.find((r) => r.id === to) : undefined
+    if (target) {
+      // The same computer under another id (§17): what was kept for it follows, nothing is removed.
+      console.log(`[Runtimes] ${id} is ${target.id} now: its agents' queues, drafts, marks and fleet keys follow`)
+      rekeyAgentState(id, target.id)
+      const doc = useDocumentStore.getState()
+      if (doc.runtimeId === id && doc.filePath) {
+        useDocumentStore.setState({ runtimeId: target.id })
+        movedOpen.push({ from: feed.name, to: target.id })
+      } else {
+        notice(`${feed.name} is now ${target.name}.`)
+      }
+      continue
     }
+    // The open agent was on it (Remove, multi-runtime.md §3.3): the main window shows Home once its
+    // unsaved editors are kept as recovery copies; main already closed its file there.
+    const doc = useDocumentStore.getState()
+    const closing = doc.runtimeId === id && doc.filePath ? closeRemovedAgent(id, doc.filePath) : Promise.resolve(null)
     const discarded = dropAgentState(id)
-    // Main deleted its saved fleet entry: the copy a later fleet save writes from goes too.
+    // Main deleted its saved fleet entry: the copy here goes too.
     forgetRuntimeFleet(id)
-    if (discarded > 0) said.push(`${discarded} queued message${discarded === 1 ? '' : 's'} discarded`)
-    void kept.catch(() => 0).then((n) => {
-      if (n > 0) said.push('unsaved changes kept for recovery')
+    void closing.catch(() => null).then((closed) => {
+      const said: string[] = []
+      if (closed) said.push(closed.closed)
+      if (discarded > 0) said.push(`${discarded} queued message${discarded === 1 ? '' : 's'} discarded`)
+      if (closed?.kept) said.push('unsaved changes kept for recovery')
       if (said.length > 0) notice(`${feed.name} removed; ${said.join('; ')}.`)
     })
   }
+  // A move of an id this window never had: nothing to re-key.
+  for (const from of [...pendingMoves.keys()]) if (!feeds.has(from) && !others.some((r) => r.id === from)) pendingMoves.delete(from)
   for (const runtime of others) {
     let feed = feeds.get(runtime.id)
     if (!feed) {
@@ -271,10 +400,24 @@ export function syncRuntimeFeeds(runtimes: readonly RuntimeView[], reopen: Reope
     feed.name = runtime.name
     const was = feed.state
     feed.state = runtime.state
+    const moved = movedOpen.find((m) => m.to === runtime.id)
     if (runtime.state === 'connected' && was !== 'connected') {
       load(runtime)
-      void resyncOpenAgent(runtime, reopen)
+      if (!moved) void resyncOpenAgent(runtime, reopen).then((r) => { if (r) notice(`${runtime.name} reconnected; ${r.said}.`) })
     }
+    // The open agent's computer is `runtime` now: opened there unless it is already (or once it connects), said.
+    if (moved) {
+      const here = runtime.state === 'connected' ? resyncOpenAgent(runtime, reopen) : Promise.resolve(null)
+      void here.then((r) => notice(`${moved.from} is now ${runtime.name}${r ? `; ${r.said}` : ''}.`))
+    }
+  }
+  // Main may have moved or removed saved fleet entries with this change: the Mesh view's copy is read again (§17).
+  const ids = runtimes.map((r) => r.id).join('\n')
+  if (runtimes.length === 0) lastIds = ''
+  else if (ids !== lastIds) {
+    const first = lastIds === ''
+    lastIds = ids
+    if (!first && others.length > 0) void reloadRuntimeFleet(runtimes)
   }
 }
 
@@ -286,11 +429,14 @@ export function useRuntimeFeeds(): void {
   useEffect(() => {
     // An agent window shows one agent of one runtime: its stores are that runtime's.
     if (isAgentWindow) return
-    const reopen: ReopenAgent = (filePath, runtimeId) => opener.current(filePath, runtimeId)
+    const reopen = reopenerOf((filePath, runtimeId, options) => opener.current(filePath, runtimeId, options))
+    // Main says which ids moved before it sends the set without them (§17).
+    const offMoves = window.adfApi?.onRuntimesMoved?.((change) => noteRuntimeMoves(change)) ?? (() => {})
     syncRuntimeFeeds(useRuntimesStore.getState().runtimes, reopen)
     const off = useRuntimesStore.subscribe((s, prev) => { if (s.runtimes !== prev.runtimes) syncRuntimeFeeds(s.runtimes, reopen) })
     return () => {
       off()
+      offMoves()
       syncRuntimeFeeds([])
     }
   }, [])

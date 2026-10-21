@@ -73,6 +73,18 @@ export interface ConnectionsView {
   runtimes?: RuntimeView[]
 }
 
+/**
+ * RUNTIMES_MOVED (multi-runtime.md §17): `moves` maps an id of the set to the
+ * id the same computer has now (a rename in cli-remotes.json, the remote slot
+ * cleared for its saved twin); `replaced` lists ids that are another computer
+ * now. Sent before the runtime set that follows, so the main window re-keys
+ * what it keeps per agent instead of dropping it as removed.
+ */
+export interface RuntimesMoved {
+  moves: Record<string, string>
+  replaced: string[]
+}
+
 /** A runtime of the runtime set (multi-runtime.md §1.3, §4.5). Its state counts while it is down. */
 export interface RuntimeView {
   /** `local`, `remote:<name>` or `remote`. */

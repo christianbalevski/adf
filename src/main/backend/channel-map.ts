@@ -567,6 +567,7 @@ export const CHANNEL_MAP = {
   [IPC.CONNECTION_ADD]: local('invoke', 'Add connection with a token: /remote/hello on the other computer, the pinned-fingerprint check, then the version handshake; saved to cli-remotes.json and the keychain, or without a fingerprint to studio-backend.json. Never returns the token.'),
   [IPC.CONNECTION_REMOVE]: local('invoke', 'Remove after a native confirmation: forgets the address and token (adf remotes forget), or the remote URL of studio-backend.json.'),
   [IPC.CONNECTION_CHANGED]: aggregate(local('push', 'The list and the connection state, pushed on a change (discovery, pairing, Add, Remove, the connection of a runtime).')),
+  [IPC.RUNTIMES_MOVED]: local('push', 'The ids of the set that are the same computer under another id now, and those that are another computer, from cli-remotes.json; sent before the list that follows, so the main window re-keys what it keeps per agent.'),
   [IPC.NETWORK_STATUS_GET]: local('invoke', 'This computer\'s network for Settings → Networking (lan-reach.ts, the firewall probe), read in Studio main; remote mode answers available: false.'),
   [IPC.NETWORK_ALLOW]: local('invoke', 'Allow on this network: local mode POST /remote-access/networks; with no daemon Studio main writes remote-access.json allowedNetworks and re-syncs the mesh; remote mode refuses.'),
   [IPC.NETWORK_NOTICES_GET]: local('invoke', 'The "Remote access paused on <network>." notices on screen now, for a window that opens after they were pushed.'),

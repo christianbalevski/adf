@@ -169,6 +169,19 @@ describe('daemon-mode handler registration (D2)', () => {
     expect(view.meshEnabled).toBe(true)
   })
 
+  it('SETTINGS_SET merges runtimeFleet per runtime and per field: an entry main moved, and fields not saved, stay (multi-runtime.md §17)', async () => {
+    handle.clientSettings.set('runtimeFleet', {
+      'remote:host-1': { fleetGroups: { team: ['/srv/agent-1.adf'] } },
+      'remote:host-2': { fleetGroups: { ops: ['/srv/agent-2.adf'] }, fleetMapState: { savedAt: 1 } },
+    })
+    expect(await electronStub.handlers.get(IPC.SETTINGS_SET)!({}, { runtimeFleet: { 'remote:host-2': { fleetGroups: {} } } })).toEqual({ success: true })
+    expect(handle.clientSettings.get('runtimeFleet')).toEqual({
+      'remote:host-1': { fleetGroups: { team: ['/srv/agent-1.adf'] } },
+      'remote:host-2': { fleetGroups: {}, fleetMapState: { savedAt: 1 } },
+    })
+    await handle.clientSettings.flush()
+  })
+
   it('TOOLS_DESCRIPTIONS folds the tools of the open agent into the daemon catalog', async () => {
     const AGENT = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
     daemon.routes.set('GET /agents', () => [{ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false }])

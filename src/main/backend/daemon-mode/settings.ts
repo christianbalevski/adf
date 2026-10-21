@@ -139,6 +139,24 @@ export function splitSettingsPatch(patch: Record<string, unknown>): SplitSetting
   return out
 }
 
+const isRecord = (v: unknown): v is Record<string, unknown> => !!v && typeof v === 'object' && !Array.isArray(v)
+
+/**
+ * A runtimeFleet write (multi-runtime.md §17): each runtime's entry the patch
+ * names takes the fields it carries; every other entry and field stays as
+ * held (main's moves and Remove are the only other writers). A patch that is
+ * not an object leaves what is held.
+ */
+export function mergeRuntimeFleet(held: unknown, patch: unknown): Record<string, unknown> {
+  const out: Record<string, unknown> = isRecord(held) ? { ...held } : {}
+  if (!isRecord(patch)) return out
+  for (const [id, entry] of Object.entries(patch)) {
+    if (!isRecord(entry)) continue
+    out[id] = { ...(isRecord(out[id]) ? out[id] as Record<string, unknown> : {}), ...entry }
+  }
+  return out
+}
+
 /** SETTINGS_GET in daemon mode: the daemon's view of backend keys, Studio's of client keys. */
 export function mergeSettingsViews(daemonSettings: Record<string, unknown> | null, client: ClientSettingsStore): Record<string, unknown> {
   const out: Record<string, unknown> = {}

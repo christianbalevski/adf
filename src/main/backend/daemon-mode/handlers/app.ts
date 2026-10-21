@@ -3,7 +3,7 @@ import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type AgentToolsResult, type DaemonClient } from '../../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
-import { mergeSettingsViews, splitSettingsPatch } from '../settings'
+import { mergeRuntimeFleet, mergeSettingsViews, splitSettingsPatch } from '../settings'
 import { editedPlaceholderRefusal, isEditedPlaceholder } from '../mcp/common'
 import { REDACTED_API_KEY } from './providers'
 
@@ -101,6 +101,9 @@ export const APP_HANDLERS: DaemonHandlerTable = {
       // Backend first: a refused backend write leaves the client file as it was.
       await client.request('PATCH', '/settings', { body: backend })
     }
+    // runtimeFleet merges per runtime and per field (multi-runtime.md §17): a window writes the parts it saves, never
+    // the whole map from its copy, so an entry main moved or another window wrote is kept.
+    if ('runtimeFleet' in clientPart) clientPart.runtimeFleet = mergeRuntimeFleet(ctx.clientSettings.get('runtimeFleet'), clientPart.runtimeFleet)
     if (Object.keys(clientPart).length > 0) ctx.clientSettings.patch(clientPart)
     if ('menuBarEnabled' in clientPart) ctx.approvals.setMenuBarEnabled(clientPart.menuBarEnabled !== false)
     // Appearance follows in every other window at once (agent windows, agent-windows.md).

@@ -4,7 +4,7 @@ import { ipcMain } from './studio-ipc'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { checkRemoteDaemonUrl, remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { BackendDaemonStatus } from '../../shared/types/backend.types'
-import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimeView } from '../../shared/types/connection.types'
+import type { ConnectionAddRequest, ConnectionResult, ConnectionsView, RuntimeView, RuntimesMoved } from '../../shared/types/connection.types'
 import type { RemoteDiscoveryUpdate } from '../../shared/types/remote-access-ipc.types'
 import type { BackendSettingsStore, BootBackend } from './backend-config'
 import { buildConnectionsView, forgetConnection, SavedConnectionsCache, saveConnection } from './connections'
@@ -237,6 +237,21 @@ export function createConnections(deps: ConnectionsDeps): Connections {
   }
 
   return { view, use, add, remove, changed }
+}
+
+/**
+ * Ids of the set that are the same computer under another id now, or another
+ * computer (RUNTIMES_MOVED, multi-runtime.md §17). Sent before the list that
+ * follows: a window keyed by the old id re-keys instead of dropping it. Nothing
+ * is sent when nothing moved.
+ */
+export function pushRuntimesMoved(changes: { moves: ReadonlyMap<string, string>; replaced: ReadonlySet<string> }, windows: () => BrowserWindow[] = () => BrowserWindow.getAllWindows()): void {
+  if (changes.moves.size === 0 && changes.replaced.size === 0) return
+  const payload: RuntimesMoved = { moves: Object.fromEntries(changes.moves), replaced: [...changes.replaced] }
+  for (const win of windows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue
+    try { win.webContents.send(IPC.RUNTIMES_MOVED, payload) } catch { /* window going away */ }
+  }
 }
 
 /** Every window gets the list (Settings and the status bar's runtime indicator). */
