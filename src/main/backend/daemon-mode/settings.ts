@@ -54,7 +54,13 @@ export class ClientSettingsStore {
   private writeBlocked: boolean
   private pending: Promise<void> = Promise.resolve()
 
-  constructor(readonly filePath: string, private readonly log: Log = console) {
+  /**
+   * `migrate`: applied to the file's values as loaded, after the client
+   * settings migrations; a key it changed is written at once (the migration
+   * of an older remote mode whose client file could not be written at boot,
+   * runtime-migration.ts).
+   */
+  constructor(readonly filePath: string, private readonly log: Log = console, opts: { migrate?: ((data: Record<string, unknown>) => string[]) | null } = {}) {
     const { data, quarantinedTo, corruptUnpreserved } = readJsonOrQuarantine<Record<string, unknown>>(filePath)
     if (quarantinedTo) {
       this.log.error(`[Settings] ${filePath} could not be parsed; it was moved to ${quarantinedTo} (not deleted) and client defaults were loaded.`)
@@ -65,6 +71,11 @@ export class ClientSettingsStore {
     }
     this.data = { ...(data && typeof data === 'object' && !Array.isArray(data) ? data : {}) }
     const { changedKeys } = applyClientSettingsMigrations(this.data)
+    if (opts.migrate) {
+      const migrated = opts.migrate(this.data)
+      if (migrated.length > 0) this.log.log(`[Settings] Client keys of remote mode migrated in memory: ${migrated.join('; ')}`)
+      changedKeys.push(...migrated)
+    }
     if (changedKeys.length > 0) {
       this.log.log(`[Settings] Client settings migrated: ${changedKeys.join(', ')}`)
       this.persist()

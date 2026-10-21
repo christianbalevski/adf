@@ -259,7 +259,7 @@ The host-side panels of remote access (`RemoteAccessGroup`, `NetworkStatusLine`)
 - "Connected", the Runtime picker and the status-bar groups come from each runtime's state. An agent window shows one agent of one runtime. No renderer store holds a global "current connection", and no Studio key caches the runtime's name.
 - `CONNECTION_USE` no longer connects anything: it saves `local` or `embedded` for the next launch (§5.3). Add connects, Remove disconnects.
 - Studio pages edit C, B, K and L, which every window shares. Runtime pages talk to the picked runtime through the window's session on it.
-- Keyed by connection id (multi-runtime.md §7.4): `runtimeRecentFiles` (from `remoteRecentFiles`) and `runtimeFleet` (`fleetGroups`, `fleetStewards`, `fleetMapState` of each runtime other than This computer). `keepDaemonRunning` stays This computer's only (multi-runtime.md M10).
+- Keyed by connection id (multi-runtime.md §7.4): `runtimeRecentFiles` (from `remoteRecentFiles`), `runtimeFleet` (`fleetGroups`, `fleetStewards`, `fleetMapState` of each runtime other than This computer) and `runtimeFingerprints` (the fingerprint of each, as last seen saved). `keepDaemonRunning` stays This computer's only (multi-runtime.md M10).
 - This design adds no key that assumes one connection.
 
 ## 11. Work plan and difficulty (h)

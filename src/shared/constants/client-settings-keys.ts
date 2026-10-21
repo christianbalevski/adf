@@ -65,6 +65,10 @@ export const CLIENT_SETTINGS_KEYS = [
   // (docs/design/multi-runtime.md §7.4): paths on those computers
   // (CLIENT_FILE_ONLY_KEYS).
   'runtimeRecentFiles',
+  // The fingerprint of each remote runtime with keys above, as last seen saved
+  // (multi-runtime.md §7.4): its keys follow the computer to another name.
+  // Written by Studio main only (CLIENT_FILE_ONLY_KEYS).
+  'runtimeFingerprints',
   'updateChecksEnabled',
   'spellcheckDownloadsEnabled',
   // The agent windows open at the last quit, for the runtime they belong to
@@ -153,7 +157,7 @@ export const RUNTIME_RECENT_FILES_KEY = 'runtimeRecentFiles'
  * reads them, and a remote daemon's paths must not become paths embedded
  * Studio opens or sweeps.
  */
-export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY, RUNTIME_RECENT_FILES_KEY, 'agentWindows', 'runtimeFleet']
+export const CLIENT_FILE_ONLY_KEYS: readonly string[] = [REMOTE_RECENT_FILES_KEY, RUNTIME_RECENT_FILES_KEY, 'agentWindows', 'runtimeFleet', 'runtimeFingerprints']
 
 /** The settings key of Open Recent: `recentFiles`, or `remoteRecentFiles` in remote mode. */
 export function recentFilesKey(remote: boolean): 'recentFiles' | typeof REMOTE_RECENT_FILES_KEY {

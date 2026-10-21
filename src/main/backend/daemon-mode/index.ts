@@ -144,6 +144,8 @@ export interface DaemonModeDeps {
   connect: DaemonConnector
   /** Studio's userData (studio-client-settings.json lives here). */
   userDataDir: string
+  /** Applied to studio-client-settings.json as it is loaded (ClientSettingsStore `migrate`). */
+  clientSettingsMigration?: ((data: Record<string, unknown>) => string[]) | null
   /** `mainWindow`: the main window (pushes not addressed to an agent window go there); default the first window. */
   hooks?: {
     showMainWindow?: () => BrowserWindow | null
@@ -309,7 +311,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   const primaryId: RuntimeId = deps.mode === 'local' ? LOCAL_RUNTIME : deps.runtimeId ?? 'remote'
 
   // The client keys were moved into the client file by the switch (handover.ts, at boot).
-  const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log)
+  const clientSettings = new ClientSettingsStore(clientSettingsPath(deps.userDataDir), log, { migrate: deps.clientSettingsMigration ?? null })
 
   const firstWindow = (): BrowserWindow | null => {
     if (hooks.mainWindow) return hooks.mainWindow()

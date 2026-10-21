@@ -366,3 +366,14 @@ describe('runtimes (docs/design/multi-runtime.md §7.5)', () => {
     expect(saved()!.windows).toEqual([])
   })
 })
+
+describe('a list an older remote mode saved, not migrated yet (R2B-2)', () => {
+  it('This computer never writes over it: not on open, close or quit', () => {
+    const pending = { runtime: 'remote:host-1', windows: [{ agentId: AGENT_2, filePath: FILE_2 }] }
+    const { manager, windows, saved } = setup({ saved: pending })
+    manager.open({ filePath: FILE_1, agentId: AGENT_1 })
+    windows[0].close()
+    manager.freeze()
+    expect(saved()).toEqual(pending)
+  })
+})

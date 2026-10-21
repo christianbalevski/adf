@@ -103,12 +103,12 @@ function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err)
 }
 
-const RAW = Symbol('remotes raw')
-type RemotesReadWithRaw = RemotesRead & { [RAW]: RemotesRaw }
+/** What a write keeps, by the read it came from (updateRemotes); not part of the read itself. */
+const rawOfRead = new WeakMap<RemotesRead, RemotesRaw>()
 
 /** The one reading of the file's text (or of why it could not be read). */
-function readOf(path: string, text: string | null, readError?: unknown): RemotesReadWithRaw {
-  const none = (unreadable: string | null): RemotesReadWithRaw => ({ file: emptyRemotes(), names: new Set(), unreadable, malformed: [], [RAW]: { malformed: {}, order: [], default: null } })
+function readOf(path: string, text: string | null, readError?: unknown): RemotesRead {
+  const none = (unreadable: string | null): RemotesRead => ({ file: emptyRemotes(), names: new Set(), unreadable, malformed: [] })
   if (text === null) {
     if ((readError as NodeJS.ErrnoException)?.code === 'ENOENT') return none(null)
     return none(`${path} cannot be read (${errorText(readError)})`)
@@ -123,7 +123,9 @@ function readOf(path: string, text: string | null, readError?: unknown): Remotes
   const file = parseRemotes(text)
   const order = Object.keys(raw.remotes)
   const malformed = Object.fromEntries(Object.entries(raw.remotes).filter(([name]) => !file.remotes[name]))
-  return { file, names: new Set(order), unreadable: null, malformed: Object.keys(malformed), [RAW]: { malformed, order, default: raw.default ?? null } }
+  const read: RemotesRead = { file, names: new Set(order), unreadable: null, malformed: Object.keys(malformed) }
+  rawOfRead.set(read, { malformed, order, default: raw.default ?? null })
+  return read
 }
 
 /**
@@ -317,16 +319,17 @@ export async function updateRemotes<T>(env: NodeJS.ProcessEnv, mutate: (file: Re
   }
   try {
     // Never written over while it cannot be read: the user's list would be lost.
-    const read = await readRemotesAsync(env) as RemotesReadWithRaw
+    const read = await readRemotesAsync(env)
     if (read.unreadable) throw new RemotesUnreadableError(path, read.unreadable)
     const file = read.file
     // A malformed entry is the user's to fix: kept by the write unless `mutate` removes it (adf remotes forget).
-    const malformed = { ...read[RAW].malformed }
+    const raw = rawOfRead.get(read) ?? { malformed: {}, order: [], default: null }
+    const malformed = { ...raw.malformed }
     const parsedDefault = file.default
     const before = JSON.stringify([file, malformed])
     const result = await mutate(file, malformed)
     if (JSON.stringify([file, malformed]) !== before) {
-      const out = rawOf(file, read[RAW], malformed, parsedDefault)
+      const out = rawOf(file, raw, malformed, parsedDefault)
       // Windows: the rename over the file fails while a reader has it open (EPERM, EBUSY): retried until the deadline.
       for (;;) {
         try {

@@ -231,10 +231,11 @@ describe('a migration that runs again (studio-backend.json still says remote)', 
     expect(data.runtimeFleet).toEqual({ 'remote:host-1': entry })
   })
 
-  it('a client file migrated before (marked): nothing moves', () => {
+  it("a client file migrated before (marked): its fleet keys are This computer's and stay; remote mode's recent files still move (R2B-6)", () => {
     const data: Record<string, unknown> = { remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, remoteRecentFiles: ['/srv/x.adf'] }
+    expect(migrateRemoteModeClientKeys(data, legacy, runtime, saved)).toEqual(['remoteRecentFiles → runtimeRecentFiles'])
+    expect(data).toEqual({ remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, runtimeRecentFiles: { 'remote:host-1': ['/srv/x.adf'] } })
     expect(migrateRemoteModeClientKeys(data, legacy, runtime, saved)).toEqual([])
-    expect(data).toEqual({ remoteModeMigrated: true, fleetGroups: { 'C:/agents': ['C:/agents/agent-1.adf'] }, remoteRecentFiles: ['/srv/x.adf'] })
   })
 })
 

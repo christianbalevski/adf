@@ -8,7 +8,8 @@ import { join } from 'node:path'
 function createBootHarness() {
   const calls: string[] = []
   /** `app.on`/`app.once` handlers: a test fires 'before-quit' (quitMain). */
-  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void>, appHandlers: new Map<string, Array<(...args: unknown[]) => void>>() }
+  /** `ipcMain.handle` handlers by channel: a test invokes one (invokeMain). */
+  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void>, appHandlers: new Map<string, Array<(...args: unknown[]) => void>>(), handlers: new Map<string, (...args: unknown[]) => unknown>() }
   const onApp = (event: string, fn: (...args: unknown[]) => void) => {
     state.appHandlers.set(event, [...(state.appHandlers.get(event) ?? []), fn])
     return electron.app
@@ -67,7 +68,10 @@ function createBootHarness() {
     BrowserWindow: FakeBrowserWindow,
     crashReporter: { start: rec('crashReporter.start') },
     ipcMain: {
-      handle: (channel: string) => { calls.push(`ipcMain.handle(${channel})`) },
+      handle: (channel: string, fn?: (...args: unknown[]) => unknown) => {
+        calls.push(`ipcMain.handle(${channel})`)
+        if (fn) state.handlers.set(channel, fn)
+      },
       on: (channel: string) => { calls.push(`ipcMain.on(${channel})`) },
     },
     nativeTheme: { shouldUseDarkColors: false, on: () => {}, off: () => {} },
@@ -111,6 +115,13 @@ function createBootHarness() {
 export const h = createBootHarness()
 
 const EVENTS = ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK', 'unhandledRejection', 'uncaughtException', 'exit']
+
+/** Call main's handler of `channel` as the main window would. */
+export async function invokeMain(channel: string, ...args: unknown[]): Promise<unknown> {
+  const fn = h.state.handlers.get(channel)
+  if (!fn) throw new Error(`no handler for ${channel}`)
+  return await fn({ sender: { id: 1 } }, ...args)
+}
 
 /** Fire the main window's 'ready-to-show' handlers, then let their dialogs run. */
 export async function fireReadyToShow(): Promise<void> {

@@ -1,4 +1,5 @@
 import { promises as fsp } from 'node:fs'
+import { isDeepStrictEqual } from 'node:util'
 import { readRemotesAsync, remotesFilePath, type SavedRemote } from '../cli/remotes'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
@@ -67,6 +68,13 @@ export interface RemoteModeMigration {
   written: boolean
   /** The one sentence shown at this launch (multi-runtime.md §7.3), or null. */
   notice: string | null
+  /**
+   * The client file could not be written: the migration of its keys, for the
+   * client settings store to apply as it loads the file (and mark it), so this
+   * launch never shows or writes the remote's keys as This computer's, and
+   * the next write of the file holds them. Null when the file has them.
+   */
+  clientKeys?: ((data: Record<string, unknown>) => string[]) | null
 }
 
 /** The sentence of the first launch after the migration. */
@@ -91,6 +99,8 @@ export async function migrateRemoteMode(boot: BootBackend, saved: Record<string,
   const first = runtime?.inSet && !previous.includes(runtime.id) ? [runtime.id, ...previous] : previous
   const next: StudioBackendConfig = { ...kept, runtimeOrder: runtimeOrder(first, saved, runtimeSlot(kept, saved)) }
   boot.config = next
+  // Until it is written, every save of studio-backend.json in this launch keeps it in remote mode (backend-config.ts).
+  boot.remoteModePending = { name: _old ?? null }
   const what = runtime ? `${runtime.name} (${runtime.id})${runtime.inSet ? '' : ', which is no longer saved'}` : 'no connection'
   if (boot.writeBlocked) {
     log.warn(`[Backend] ${boot.configPath} is in remote mode (an older Studio) and cannot be rewritten: ${boot.writeBlocked} This launch runs This computer with ${what}; the next launch migrates it again`)
@@ -110,6 +120,7 @@ export async function migrateRemoteMode(boot: BootBackend, saved: Record<string,
     boot.notices = [...(boot.notices ?? []), `studio-backend.json still says remote: it could not be rewritten (${message}).`]
     return { runtime, written: false, notice: migrationNotice(runtime) }
   }
+  boot.remoteModePending = null
   log.log(`[Backend] Migrated ${boot.configPath} from remote mode to This computer, with ${what} in the runtime set; runtime order ${next.runtimeOrder!.join(', ') || '(none)'}`)
   return { runtime, written: true, notice: migrationNotice(runtime) }
 }
@@ -138,15 +149,17 @@ function windowsRuntime(listRuntime: string, config: Pick<StudioBackendConfig, '
 
 /**
  * The client keys of §7.4 and §7.5 for the runtime of an older remote mode,
- * on the parsed client file. Pure; returns the keys it changed. A file
- * marked `remoteModeMigrated` is not migrated again: its plain fleet keys
- * are This computer's now. Unmarked, the plain fleet keys move only while
- * the runtime has no `runtimeFleet` entry, and only a key copied there is
- * deleted.
+ * on the parsed client file. Pure; returns the keys it changed.
+ * `remoteModeRecentFiles` and an agent windows list saved for `remote:…` are
+ * remote mode's whenever they are there. The plain fleet keys are not: in a
+ * file marked `remoteModeMigrated` they are This computer's (written since
+ * the client keys were migrated), so they never move; unmarked, they move
+ * only while the runtime has no `runtimeFleet` entry, and only a key copied
+ * there is deleted.
  */
 export function migrateRemoteModeClientKeys(data: Record<string, unknown>, config: Pick<StudioBackendConfig, 'remote'>, runtime: RemoteModeRuntime | null, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>): string[] {
   const changed: string[] = []
-  if (data[REMOTE_MODE_MIGRATED_KEY] === true) return changed
+  const marked = data[REMOTE_MODE_MIGRATED_KEY] === true
   const id = runtime?.id ?? null
   if (id && Array.isArray(data.remoteRecentFiles)) {
     const recents = isObject(data.runtimeRecentFiles) ? { ...data.runtimeRecentFiles } : {}
@@ -157,7 +170,7 @@ export function migrateRemoteModeClientKeys(data: Record<string, unknown>, confi
     changed.push('remoteRecentFiles → runtimeRecentFiles')
   }
   const fleet = isObject(data.runtimeFleet) ? { ...data.runtimeFleet } : {}
-  if (id && !(id in fleet) && FLEET_KEYS.some((key) => key in data)) {
+  if (id && !marked && !(id in fleet) && FLEET_KEYS.some((key) => key in data)) {
     const entry: Record<string, unknown> = {}
     for (const key of FLEET_KEYS) {
       if (!(key in data) || key in entry) continue
@@ -231,7 +244,10 @@ async function markClientFile(userDataDir: string, mark: boolean, log: Log): Pro
   const path = clientSettingsPath(userDataDir)
   let data: unknown = {}
   try {
-    data = JSON.parse((await fsp.readFile(path, 'utf-8')).replace(/^\uFEFF/, ''))
+    const text = await fsp.readFile(path, 'utf-8')
+    // Unmarking at every launch that reads mode local: a file without the key is not parsed.
+    if (!mark && !text.includes(REMOTE_MODE_MIGRATED_KEY)) return
+    data = JSON.parse(text.replace(/^\uFEFF/, ''))
   } catch (err) {
     if ((err as NodeJS.ErrnoException)?.code !== 'ENOENT' || !mark) return
   }
@@ -240,8 +256,21 @@ async function markClientFile(userDataDir: string, mark: boolean, log: Log): Pro
   else delete data[REMOTE_MODE_MIGRATED_KEY]
   try {
     await writeJsonAtomicAsync(path, data)
+    log.log(`[Backend] ${mark ? 'Marked' : 'Unmarked'} ${path} (${REMOTE_MODE_MIGRATED_KEY}): studio-backend.json ${mark ? 'still says remote' : 'no longer says remote'}`)
   } catch (err) {
     log.warn(`[Backend] Could not ${mark ? 'mark' : 'unmark'} ${path} (${REMOTE_MODE_MIGRATED_KEY}): ${errorText(err)}`)
+  }
+}
+
+/** The client keys' migration, applied in memory and marked (RemoteModeMigration.clientKeys). */
+function clientKeysInMemory(config: Pick<StudioBackendConfig, 'remote'>, runtime: RemoteModeRuntime | null, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>): (data: Record<string, unknown>) => string[] {
+  return (data) => {
+    const changed = migrateRemoteModeClientKeys(data, config, runtime, saved)
+    if (data[REMOTE_MODE_MIGRATED_KEY] !== true) {
+      data[REMOTE_MODE_MIGRATED_KEY] = true
+      changed.push(REMOTE_MODE_MIGRATED_KEY)
+    }
+    return changed
   }
 }
 
@@ -249,17 +278,38 @@ async function markClientFile(userDataDir: string, mark: boolean, log: Log): Pro
  * The whole migration of §7.3 to §7.5, in a crash-safe order: the client
  * keys first, then studio-backend.json. A client file that cannot be
  * written leaves studio-backend.json in remote mode, so the next launch
- * migrates both. Null when the file is not in remote mode, or the launch
- * runs Inside Studio (it leaves the file for the next launch).
+ * migrates both; this launch migrates the client keys in memory
+ * (`clientKeys`). With `savedUnreadable` (cli-remotes.json cannot be read)
+ * only the client keys migrate, which need only `remote.name`;
+ * studio-backend.json waits for a launch that can read the saved
+ * connections, and Settings → Connections says so.
+ *
+ * Null when the file is not in remote mode (a client file still marked
+ * `remoteModeMigrated` is unmarked), or the launch runs Inside Studio (it
+ * leaves both files for the next launch).
  */
-export async function migrateRemoteModeInstall(boot: BootBackend, userDataDir: string, saved: Record<string, SavedRemote>, log: Log = console): Promise<RemoteModeMigration | null> {
-  if (boot.mode !== 'local' || boot.config.mode !== 'remote') return null
+export async function migrateRemoteModeInstall(boot: BootBackend, userDataDir: string, saved: Record<string, SavedRemote>, log: Log = console, opts: { savedUnreadable?: string | null } = {}): Promise<RemoteModeMigration | null> {
+  if (boot.config.mode !== 'remote') {
+    // The mark holds only while studio-backend.json says remote; a stuck one would stop a later migration's fleet keys.
+    await markClientFile(userDataDir, false, log)
+    return null
+  }
+  if (boot.mode !== 'local') return null
   const legacy = boot.config
-  const clientWrite = await migrateRemoteModeClientFile(userDataDir, legacy, remoteModeRuntime(legacy, saved), saved, log, { mark: true })
+  const runtime = remoteModeRuntime(legacy, saved)
+  const clientWrite = await migrateRemoteModeClientFile(userDataDir, legacy, runtime, saved, log, { mark: true })
+  const clientKeys = clientWrite === null ? clientKeysInMemory(legacy, runtime, saved) : null
+  if (opts.savedUnreadable) {
+    log.warn(`[Backend] ${boot.configPath} is in remote mode; it migrates at the first launch that can read the saved connections (${opts.savedUnreadable})`)
+    boot.notices = [...(boot.notices ?? []), 'studio-backend.json still says remote; it is migrated at the first launch that can read the saved connections.']
+    // The client keys moved (or there were none): what This computer writes until then is its own.
+    if (clientWrite !== null) await markClientFile(userDataDir, true, log)
+    return { runtime, written: false, notice: null, clientKeys }
+  }
   const migration = await migrateRemoteMode(boot, saved, log, clientWrite === null ? { clientKeysFailed: `${clientSettingsPath(userDataDir)} could not be written` } : {})
   // Written: the migration never runs again. Not written: a later run must not move what This computer writes meanwhile.
   if (clientWrite !== null && migration) await markClientFile(userDataDir, !migration.written, log)
-  return migration
+  return migration ? { ...migration, clientKeys } : null
 }
 
 /**
@@ -355,10 +405,42 @@ export function savedConnectionChanges(before: Record<string, Pick<SavedRemote, 
       if (now.fingerprint !== remote.fingerprint) replaced.add(savedRuntimeId(name))
       continue
     }
-    const to = Object.entries(after).find(([other, r]) => r.fingerprint === remote.fingerprint && !before[other])?.[0]
+    // Any name with that fingerprint, saved before or not (adf pair --as lab, then forget): relinkRuntimeKeys keeps its own keys.
+    const to = Object.entries(after).find(([, r]) => r.fingerprint === remote.fingerprint)?.[0]
     if (to) moves.set(savedRuntimeId(name), savedRuntimeId(to))
   }
   return { moves, replaced }
+}
+
+/**
+ * The client key `runtimeFingerprints`: the fingerprint of each remote
+ * runtime that has keys, as last seen saved (forgetGoneRuntimeKeys writes
+ * it). With it the keys follow the fingerprint when Studio did not see the
+ * change, as relinkSavedAgentWindows does with the fingerprint of each
+ * saved window.
+ */
+export const RUNTIME_FINGERPRINTS_KEY = 'runtimeFingerprints'
+
+/** `runtimeFingerprints` as a saved list, for savedConnectionChanges. */
+function recordedConnections(recorded: unknown): Record<string, { fingerprint: string }> {
+  if (!isObject(recorded)) return {}
+  const out: Record<string, { fingerprint: string }> = {}
+  for (const [id, fp] of Object.entries(recorded)) {
+    if (id.startsWith('remote:') && typeof fp === 'string' && fp) out[id.slice('remote:'.length)] = { fingerprint: fp }
+  }
+  return out
+}
+
+/**
+ * At launch: what changed since the keys' fingerprints were recorded (a name
+ * gone whose fingerprint is under another name moved; a name that holds
+ * another fingerprint was replaced), plus the moves renamedRuntimes finds
+ * from the saved agent windows and the slot.
+ */
+export function launchRuntimeKeyChanges(recorded: unknown, windows: unknown, saved: Record<string, Pick<SavedRemote, 'fingerprint'>>, slot: { inSet: boolean; fingerprint: string | null }): { moves: Map<string, string>; replaced: Set<string> } {
+  const changes = savedConnectionChanges(recordedConnections(recorded), saved)
+  for (const [from, to] of renamedRuntimes(windows, saved, slot)) if (!changes.moves.has(from)) changes.moves.set(from, to)
+  return changes
 }
 
 /**
@@ -393,15 +475,35 @@ export function forgetRuntimeKeysOf(settings: RuntimeKeyStore, id: string, log: 
  */
 export async function forgetGoneRuntimeKeys(settings: RuntimeKeyStore, env: NodeJS.ProcessEnv, slotInSet: () => boolean, changes: { moves?: ReadonlyMap<string, string>; replaced?: ReadonlySet<string> } = {}, log: Log = console): Promise<void> {
   const values = runtimeKeyValues(settings)
-  if (!RUNTIME_KEYS.some((key) => isObject(values[key]) && Object.keys(values[key] as object).length > 0)) return
-  const names = await savedConnectionNames(env)
-  if (!names) {
+  const recorded = settings.get(RUNTIME_FINGERPRINTS_KEY)
+  if (!RUNTIME_KEYS.some((key) => isObject(values[key]) && Object.keys(values[key] as object).length > 0) && !isObject(recorded)) return
+  const read = await readRemotesAsync(env)
+  if (read.unreadable) {
     log.warn(`[Connection] ${remotesFilePath(env)} could not be read; the Open Recent and Mesh view keys of every runtime are kept`)
     return
   }
-  const keep = (id: string): boolean => id === LOCAL_RUNTIME || (id === SLOT_RUNTIME ? slotInSet() : id.startsWith('remote:') && names.has(id.slice('remote:'.length)) && !changes.replaced?.has(id))
-  const patch = relinkRuntimeKeys(runtimeKeyValues(settings), keep, changes.moves)
-  if (!patch) return
-  log.log(`[Connection] Open Recent and Mesh view keys of runtimes no longer in the set removed, or moved to the new name of the same computer (${Object.keys(patch).join(', ')})`)
-  settings.patch(patch)
+  const names = read.names
+  const saved = read.file.remotes
+  // What changed since the fingerprints were recorded, then what the caller saw change (it wins).
+  const since = savedConnectionChanges(recordedConnections(recorded), saved)
+  const moves = new Map([...since.moves, ...(changes.moves ?? [])])
+  const replaced = new Set([...since.replaced, ...(changes.replaced ?? [])])
+  const keep = (id: string): boolean => id === LOCAL_RUNTIME || (id === SLOT_RUNTIME ? slotInSet() : id.startsWith('remote:') && names.has(id.slice('remote:'.length)) && !replaced.has(id))
+  const patch: Record<string, unknown> = relinkRuntimeKeys(values, keep, moves) ?? {}
+  if (Object.keys(patch).length > 0) log.log(`[Connection] Open Recent and Mesh view keys of runtimes no longer in the set removed, or moved to the new name of the same computer (${Object.keys(patch).join(', ')})`)
+  // The fingerprint of each remote runtime that has keys now (a malformed entry keeps the one recorded).
+  const after: Record<string, unknown> = { ...values, ...patch }
+  const previous = isObject(recorded) ? recorded : {}
+  const record: Record<string, string> = {}
+  for (const key of RUNTIME_KEYS) {
+    const held = after[key]
+    if (!isObject(held)) continue
+    for (const id of Object.keys(held)) {
+      if (!id.startsWith('remote:')) continue
+      const fp = saved[id.slice('remote:'.length)]?.fingerprint ?? (typeof previous[id] === 'string' ? previous[id] : null)
+      if (fp) record[id] = fp
+    }
+  }
+  if (!isDeepStrictEqual(record, previous)) patch[RUNTIME_FINGERPRINTS_KEY] = Object.keys(record).length > 0 ? record : undefined
+  if (Object.keys(patch).length > 0) settings.patch(patch)
 }
