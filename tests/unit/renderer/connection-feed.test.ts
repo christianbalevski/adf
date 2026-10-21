@@ -14,7 +14,7 @@ describe('startConnectionFeed', () => {
     let listeners = 0
     let push: ((view: unknown) => void) | null = null
     let calls = 0
-    const view = { current: { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }, next: null, rows: [], discovery: null }
+    const view = { current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }, next: null, rows: [], discovery: null }
     ;(globalThis as { window?: unknown }).window = {
       adfApi: {
         onConnectionChanged: (cb: (v: unknown) => void) => { listeners++; push = cb; return () => { listeners--; push = null } },

@@ -24,6 +24,8 @@ import { useSettingsSave } from './settings-save'
 import { Dialog } from '../common/Dialog'
 import { useConfirm, type ConfirmOptions } from '../common/ConfirmDialog'
 import { Tooltip } from '../common/Tooltip'
+import { RemoteMark } from '../common/RemoteMark'
+import { LOCAL_LABEL } from '../../../shared/runtime-name'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { checkRemoteDaemonUrl } from '../../../shared/utils/remote-backend-url'
@@ -37,7 +39,7 @@ import { remoteConnectionsSaved, startConnectionFeed, useConnectionStore } from 
 /** The modes as users see them. Inside Studio is the legacy backend, kept for this release only. */
 const MODE_LABELS: Record<StudioRunMode, string> = {
   embedded: 'Inside Studio (legacy)',
-  local: 'This computer',
+  local: LOCAL_LABEL,
 }
 
 /** A "Learn more" link to the guide after a row's one-sentence description. */
@@ -128,7 +130,7 @@ export function connectionDetail(row: ConnectionRow): string | null {
 
 export interface RowMenuItem { label: string; onSelect: () => void; danger?: boolean }
 
-/** The row's More menu (⋯): Remove, and Inside Studio (legacy) on This computer. */
+/** The row's More menu (⋯): Remove, and Inside Studio (legacy) on the Local row. */
 function RowMenu({ items, disabled }: { items: RowMenuItem[]; disabled: boolean }) {
   const [open, setOpen] = useState(false)
   const ref = useRef<HTMLDivElement>(null)
@@ -189,7 +191,7 @@ export function ConnectionRows({ rows, busy, onConnect, onAdd, onRemove }: {
           <li key={row.id} className="flex items-center justify-between gap-3 px-4 py-2.5" data-connection={row.id}>
             <div className="min-w-0 text-[12px]">
               <div className="flex flex-wrap items-center gap-2 text-[13px] font-medium text-[var(--adf-ui-text)]">
-                {row.name}
+                {row.kind === 'saved' ? <span className="flex items-center gap-1.5"><RemoteMark />{row.name}</span> : row.name}
                 {row.state && (
                   <span className={`text-[11px] font-normal ${row.state === 'connected' ? 'text-[var(--adf-ui-accent)]' : row.state === 'retrying' || row.state === 'not-connected' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-text-muted)]'}`}>
                     {CONNECTION_STATE_LABELS[row.state]}
@@ -583,7 +585,7 @@ export function ConnectionSettings() {
         {switchRows}
       </SettingsGroup>
 
-      {local && <SettingsGroup title="This computer">{thisComputerRows}</SettingsGroup>}
+      {local && <SettingsGroup title={view.rows.find((r) => r.kind === 'local')?.name ?? LOCAL_LABEL}>{thisComputerRows}</SettingsGroup>}
 
       {adding && <AddConnectionDialog onClose={() => setAdding(null)} found={adding === true ? null : adding} />}
     </>

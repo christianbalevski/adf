@@ -42,13 +42,13 @@ vi.mock('react', async (importOriginal) => {
 })
 
 const HOST_1 = 'remote:host-1'
-const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'connected' }
 const PATH = '/srv/agents/agent-1.adf'
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 function view(runtimes?: RuntimeView[]): ConnectionsView {
-  return { current: { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
+  return { current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
 }
 
 interface Surface { api: Record<string, unknown>; names: () => string[] }

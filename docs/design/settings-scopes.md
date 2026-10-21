@@ -120,7 +120,7 @@ Runtime · rawl-hub         (no heading until a remote is saved)
   Usage
 ```
 
-- Group label: "Studio"; "Runtime · <name>". <name> is "This computer" for the local daemon, "Inside Studio" for the legacy mode, the saved remote's name for a remote (the `adf remotes` name, e.g. `rawl-hub`), else the URL's host.
+- Group label: "Studio"; "Runtime · <name>". <name> is "<runtime name> (Local)" for the local daemon (multi-runtime.md §1.3), "Inside Studio" for the legacy mode, the saved remote's name for a remote (the `adf remotes` name, e.g. `rawl-hub`), else the URL's host.
 - Remote runtimes are an opt-in. Until one is saved (a `saved` row, or a remote in use; `remoteConnectionsSaved`), the runtime group has no heading and no runtime name shows anywhere in Settings or the status bar.
 - While the runtime is not connected, the label adds the state: "Runtime · rawl-hub · Not connected". Runtime pages show one line, "Not connected to rawl-hub.", and their controls are disabled. With no remote saved the line is the state alone, e.g. "Not connected, retrying."
 - Search covers both groups. Results show the group label.
@@ -135,7 +135,7 @@ The status bar (`StatusBar.tsx`) groups the runtime with its mesh and Kill, righ
 |---|---|---|
 | This computer, Inside Studio | Connected | Nothing |
 | This computer, no remote saved | Connecting / Not connected, retrying / Not connected | "Not connected, retrying" |
-| This computer, a remote saved | Connecting / Not connected, retrying / Not connected | "This computer · Not connected, retrying" |
+| This computer, a remote saved | Connecting / Not connected, retrying / Not connected | "<runtime name> (Local) · Not connected, retrying" |
 | Remote | Connected | Remote icon, "rawl-hub" |
 | Remote | Connecting / Not connected, retrying / Not connected | Remote icon, "rawl-hub · Not connected, retrying" |
 

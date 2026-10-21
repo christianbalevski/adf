@@ -11,6 +11,7 @@ import { runMode, type BackendSettingsStore, type BootBackend, type SecretCodec,
 import { writeJsonAtomicAsync } from '../utils/atomic-json'
 import { PinMismatchError } from './daemon-mode/connection'
 import { runtimeOrder, SLOT_RUNTIME } from './daemon-mode/runtime-manager'
+import { LOCAL_LABEL } from '../../shared/runtime-name'
 
 /**
  * Saved connections (docs/design/settings-scopes.md §5.2): one list for
@@ -418,12 +419,14 @@ export interface ConnectionsViewInput {
    * connections are listed with no state (§7.2).
    */
   runtimeStates?: Record<string, ConnectionCurrent['state']>
+  /** The local runtime's name, `<name> (Local)` (shared/runtime-name.ts); default "Local". */
+  localName?: string
 }
 
-/** The connection this launch uses (settings-scopes.md §4.1, §5.4): This computer, or Inside Studio. */
-export function currentConnection(input: Pick<ConnectionsViewInput, 'active' | 'daemon'>): ConnectionCurrent {
+/** The connection this launch uses (settings-scopes.md §4.1, §5.4): the local runtime, `<name> (Local)`, or Inside Studio. */
+export function currentConnection(input: Pick<ConnectionsViewInput, 'active' | 'daemon' | 'localName'>): ConnectionCurrent {
   if (input.active.mode === 'embedded') return { id: 'embedded', kind: 'embedded', name: 'Inside Studio', url: null, state: 'connected' }
-  return { id: 'local', kind: 'local', name: 'This computer', url: null, state: input.daemon ? LINK_STATE[input.daemon.connection] : 'connecting' }
+  return { id: 'local', kind: 'local', name: input.localName || LOCAL_LABEL, url: null, state: input.daemon ? LINK_STATE[input.daemon.connection] : 'connecting' }
 }
 
 /**
@@ -444,7 +447,8 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     action: inUse(id) ? null : 'connect',
     url: null, address: null, fingerprint: null, encrypted: true, pairingOpen: false, removable: false,
   })
-  const rows: ConnectionRow[] = [plain('local', 'local', 'This computer')]
+  const localName = input.localName || LOCAL_LABEL
+  const rows: ConnectionRow[] = [plain('local', 'local', localName)]
   if (current.kind === 'embedded' || configuredId === 'embedded') rows.push(plain('embedded', 'embedded', 'Inside Studio (legacy)'))
 
   const saved: ConnectionRow[] = []
@@ -483,7 +487,7 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
   }
   return {
     current,
-    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? 'This computer' : 'Inside Studio (legacy)' } : null,
+    next: configuredId !== current.id ? { id: configuredId, name: configuredId === 'local' ? localName : 'Inside Studio (legacy)' } : null,
     rows: [...rows, ...saved, ...found],
     discovery: input.discovery ? { browsing: input.discovery.browsing, problem: input.discovery.problem } : null,
   }

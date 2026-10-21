@@ -37,13 +37,13 @@ const AGENT_2 = '/agents/agent-2.adf'
 const ID_1 = '0b7c6f1e-2d4a-4c55-9a0e-3f1c2b7a9e11'
 const ID_2 = '5d2e8a90-7b13-4f6e-8c21-9e4d0a6b3c77'
 
-const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'connected' }
 
 const entry = (filePath: string, agentId: string): TrackedDirEntry => ({ filePath, fileName: filePath.split('/').pop()!, agentName: filePath.split('/').pop()!.replace('.adf', ''), agentId })
 
 function view(runtimes?: RuntimeView[]): ConnectionsView {
-  return { current: { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
+  return { current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
 }
 
 /**
@@ -78,7 +78,7 @@ describe('sidebar', () => {
     const before = await (await page(undefined)).sidebar()
     const one = await (await page([LOCAL])).sidebar()
     expect(one).toBe(before)
-    expect(one).not.toContain('This computer')
+    expect(one).not.toContain('host-0 (Local)')
     expect(one).not.toContain('host-1')
     expect(one.match(/agent-1/g)?.length).toBeGreaterThan(0)
     expect(one).not.toContain('agent-2')
@@ -86,7 +86,7 @@ describe('sidebar', () => {
 
   it('more than one runtime: one group per runtime, This computer first; the same path on both is two rows', async () => {
     const html = await (await page([LOCAL, REMOTE])).sidebar()
-    const local = html.indexOf('This computer')
+    const local = html.indexOf('host-0 (Local)')
     const remote = html.indexOf('host-1')
     expect(local).toBeGreaterThan(-1)
     expect(remote).toBeGreaterThan(local)
@@ -117,12 +117,12 @@ describe('bell rows', () => {
   it('name no runtime with This computer only', async () => {
     const html = await row([LOCAL])
     expect(html).toContain('>agent-1<')
-    expect(html).not.toContain('This computer')
+    expect(html).not.toContain('host-0 (Local)')
   })
 
   it('name the runtime before the agent with more than one, This computer too', async () => {
     expect(await row([LOCAL, REMOTE], HOST_1)).toContain('host-1 · agent-1')
-    expect(await row([LOCAL, REMOTE])).toContain('This computer · agent-1')
+    expect(await row([LOCAL, REMOTE])).toContain('host-0 (Local) · agent-1')
   })
 
   it('cannot be answered while their runtime is down', async () => {
@@ -137,7 +137,7 @@ describe('Go to Agent', () => {
     const { SwitcherView } = await import('../../../src/renderer/components/common/AgentSwitcher')
     const { rankAgents } = await import('../../../src/renderer/utils/agent-switcher')
     const agents = [
-      { filePath: AGENT_1, name: 'agent-1', folder: 'agents', running: false, needsYou: 0, runtimeName: 'This computer' },
+      { filePath: AGENT_1, name: 'agent-1', folder: 'agents', running: false, needsYou: 0, runtimeName: 'host-0 (Local)' },
       { filePath: AGENT_1, name: 'agent-1', folder: 'agents', running: false, needsYou: 0, runtimeId: HOST_1, runtimeName: 'host-1' },
     ]
     const noop = () => {}
@@ -146,13 +146,13 @@ describe('Go to Agent', () => {
     )
     const options = [...html.matchAll(/<li id="[^"]+" role="option"[^>]*>(.*?)<\/li>/g)].map((m) => m[1])
     expect(options).toHaveLength(2)
-    expect(options[0]).toContain('This computer')
+    expect(options[0]).toContain('host-0 (Local)')
     expect(options[0]).toContain('Open')
     expect(options[1]).toContain('host-1')
     expect(options[1]).not.toContain('>Open<')
     const plain = renderToStaticMarkup(
       <SwitcherView listId="switcher" query="" matches={rankAgents([{ filePath: AGENT_1, name: 'agent-1', folder: 'agents', running: false, needsYou: 0 }], '')} current={0} openFilePath={AGENT_1} onQuery={noop} onKeyDown={noop} onHover={noop} onChoose={noop} />
     )
-    expect(plain).not.toContain('This computer')
+    expect(plain).not.toContain('host-0 (Local)')
   })
 })

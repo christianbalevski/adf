@@ -103,12 +103,12 @@ export async function migrateRemoteMode(boot: BootBackend, saved: Record<string,
   boot.remoteModePending = { name: _old ?? null }
   const what = runtime ? `${runtime.name} (${runtime.id})${runtime.inSet ? '' : ', which is no longer saved'}` : 'no connection'
   if (boot.writeBlocked) {
-    log.warn(`[Backend] ${boot.configPath} is in remote mode (an older Studio) and cannot be rewritten: ${boot.writeBlocked} This launch runs This computer with ${what}; the next launch migrates it again`)
+    log.warn(`[Backend] ${boot.configPath} is in remote mode (an older Studio) and cannot be rewritten: ${boot.writeBlocked} This launch runs Local with ${what}; the next launch migrates it again`)
     boot.notices = [...(boot.notices ?? []), `studio-backend.json still says remote and could not be rewritten: ${boot.writeBlocked}`]
     return { runtime, written: false, notice: migrationNotice(runtime) }
   }
   if (opts.clientKeysFailed) {
-    log.warn(`[Backend] Not rewriting ${boot.configPath} from remote mode: the client keys could not be migrated (${opts.clientKeysFailed}). This launch runs This computer with ${what}; the next launch migrates both again`)
+    log.warn(`[Backend] Not rewriting ${boot.configPath} from remote mode: the client keys could not be migrated (${opts.clientKeysFailed}). This launch runs Local with ${what}; the next launch migrates both again`)
     boot.notices = [...(boot.notices ?? []), `studio-backend.json still says remote: ${opts.clientKeysFailed}.`]
     return { runtime, written: false, notice: migrationNotice(runtime) }
   }
@@ -116,12 +116,12 @@ export async function migrateRemoteMode(boot: BootBackend, saved: Record<string,
     await writeJsonAtomicAsync(boot.configPath, next)
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err)
-    log.warn(`[Backend] Could not write the migrated ${boot.configPath} (${message}); this launch runs This computer with ${what}, and the next launch migrates it again`)
+    log.warn(`[Backend] Could not write the migrated ${boot.configPath} (${message}); this launch runs Local with ${what}, and the next launch migrates it again`)
     boot.notices = [...(boot.notices ?? []), `studio-backend.json still says remote: it could not be rewritten (${message}).`]
     return { runtime, written: false, notice: migrationNotice(runtime) }
   }
   boot.remoteModePending = null
-  log.log(`[Backend] Migrated ${boot.configPath} from remote mode to This computer, with ${what} in the runtime set; runtime order ${next.runtimeOrder!.join(', ') || '(none)'}`)
+  log.log(`[Backend] Migrated ${boot.configPath} from remote mode to Local, with ${what} in the runtime set; runtime order ${next.runtimeOrder!.join(', ') || '(none)'}`)
   return { runtime, written: true, notice: migrationNotice(runtime) }
 }
 

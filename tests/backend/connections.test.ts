@@ -187,7 +187,7 @@ describe('the rows of the Connection page', () => {
 
   it('This computer in use: Connected, no action; a saved remote: its runtime state, no action; no Inside Studio row', async () => {
     const view = local()
-    expect(view.current).toEqual({ id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' })
+    expect(view.current).toEqual({ id: 'local', kind: 'local', name: 'Local', url: null, state: 'connected' })
     expect(view.rows.map((r) => [r.id, r.state, r.action])).toEqual([['local', 'connected', null], ['remote:rawl-hub', 'connecting', null]])
     expect(view.next).toBeNull()
   })
@@ -218,10 +218,17 @@ describe('the rows of the Connection page', () => {
 
   it('the mode saved for the next launch is `next`; a remote is never the next one (multi-runtime.md §7.2)', () => {
     expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
-    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
+    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'Local' })
     // An older remote-mode file not migrated yet (a launch Inside Studio): the next launch runs This computer.
     const legacy: StudioBackendConfig = { ...defaultBackendConfig(), mode: 'remote', remote: { url: null, token: null, allowInsecureHttp: false, name: 'rawl-hub' } }
-    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: legacy, daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'This computer' })
+    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: legacy, daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'Local' })
+  })
+
+  it('the local runtime is `<name> (Local)` where its name is known: the current connection, its row and the next launch', () => {
+    const named = local({ localName: 'host-0 (Local)' })
+    expect(named.current.name).toBe('host-0 (Local)')
+    expect(named.rows.map((r) => r.name)).toEqual(['host-0 (Local)', 'rawl-hub'])
+    expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null, localName: 'host-0 (Local)' }).next).toEqual({ id: 'local', name: 'host-0 (Local)' })
   })
 
   it('Inside Studio (legacy) is a row only while it runs or is saved; there, saved connections have no state (§7.2)', async () => {

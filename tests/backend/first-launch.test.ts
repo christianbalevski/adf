@@ -345,7 +345,7 @@ describe('an unusable studio-backend.json', () => {
     expect(b.asked).toHaveLength(1)
     expect(b.asked[0].detail).toContain(backendConfigPath(dir))
     expect(b.asked[0].detail).toMatch(/could not be parsed and was moved to .*corrupt/)
-    expect(b.asked[0].buttons).toEqual(['Run on This Computer (Recommended)', 'Run Inside Studio (Legacy)'])
+    expect(b.asked[0].buttons).toEqual(['Run Locally (Recommended)', 'Run Inside Studio (Legacy)'])
     expect(b.backend).toMatchObject({ mode: 'embedded', source: 'file', fileProblem: null })
     expect(readJson(backendConfigPath(dir))).toMatchObject({ mode: 'embedded' })
     // Embedded: Studio's sign-in stays with Studio.
@@ -371,7 +371,7 @@ describe('an unusable studio-backend.json', () => {
     expect(b.asked[0].detail).toContain(backendConfigPath(dir))
     expect(b.asked[0].detail).toMatch(/could not be read \(EISDIR\)/)
     expect(b.asked[0].detail).toMatch(/Fix its permissions or delete it, then restart Studio/)
-    expect(b.asked[0].buttons).toEqual(['Run on This Computer for This Launch', 'Run Inside Studio for This Launch'])
+    expect(b.asked[0].buttons).toEqual(['Run Locally for This Launch', 'Run Inside Studio for This Launch'])
     expect(b.backend).toMatchObject({ mode: 'local', source: 'session', sessionReason: expect.stringContaining(backendConfigPath(dir)) })
     // Session-only: client keys follow, credentials stay.
     expect(existsSync(join(dir, 'chatgpt-subscription', 'auth.json'))).toBe(true)

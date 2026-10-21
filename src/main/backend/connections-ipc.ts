@@ -42,6 +42,8 @@ export interface ConnectionsDeps {
   push: (view: ConnectionsView) => void
   /** The runtime set in order (multi-runtime.md §3.1); the view lists it only while it has more than one runtime. */
   runtimes?: () => RuntimeView[]
+  /** The local runtime's name, `<name> (Local)` (local-runtime-name.ts); default "Local". */
+  localName?: () => string
   /** How many agent windows show an agent of the runtime `id` (Remove says it closes them, §6.5). */
   agentWindowsOn?: (id: string) => number
   /** The remote slot of studio-backend.json was added, replaced or removed: the runtime set follows it now. */
@@ -90,6 +92,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       daemon: deps.daemonStatus(),
       saved: saved(),
       discovery: deps.discovery(),
+      ...(deps.localName ? { localName: deps.localName() } : {}),
       ...(runtimeSet ? { runtimeStates: Object.fromEntries(runtimes.map((r) => [r.id, r.state])) } : {}),
     })
     // One runtime: the view is the one sent before (multi-runtime.md §4.6).
@@ -109,7 +112,7 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       if (id.startsWith('found:')) return fail('not_paired', 'Add it first.')
       return fail('not_found', id === 'remote' || id.startsWith('remote:') ? 'Already connected.' : 'That connection is not saved.')
     }
-    log.log(`[Connection] ${id === 'local' ? 'This computer' : 'Inside Studio (legacy)'} chosen for the next launch`)
+    log.log(`[Connection] ${id === 'local' ? 'Local' : 'Inside Studio (legacy)'} chosen for the next launch`)
     const result = await deps.backend.set({ mode: id })
     changed()
     return result.ok ? { ok: true, view: view(), notices: result.notices } : fail(result.code, result.error)

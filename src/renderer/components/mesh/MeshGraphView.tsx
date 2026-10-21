@@ -42,7 +42,7 @@ import { FleetNextUpPanel } from './FleetNextUpPanel'
 import { FleetAmbienceLayer, type AmbienceEmitter } from './FleetAmbienceLayer'
 import { FleetVoicesLayer, type VoiceTerrain } from './FleetVoicesLayer'
 import { FleetGardenLayer } from './FleetGardenLayer'
-import { computeFleetLayout, districtKeyOf, hexDistance, hexSpiral, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type TerrainNodeData } from './fleet-layout'
+import { computeFleetLayout, districtKeyOf, hexDistance, hexSpiral, NODE_WIDTH, NODE_EST_HEIGHT, HEX_SIZE, HEX_ROW_H, hexCorners, axialToPixel, pixelToAxialRounded, joinDir, pathBasename, pathDirname, type RegionDecor, type TerrainNodeData } from './fleet-layout'
 import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
@@ -318,7 +318,7 @@ export async function fleetPeers<P extends MapPeer>(own: P[], remote: ReadonlyAr
 }
 
 /** Region labels and greying for the runtimes other than This computer; undefined with This computer only. */
-function regionDecor(runtimes: readonly RuntimeView[]): { label: (dirPath: string) => string | undefined; muted: (dirPath: string) => boolean } | undefined {
+function regionDecor(runtimes: readonly RuntimeView[]): Required<RegionDecor> | undefined {
   if (runtimes.length < 2) return undefined
   const byId = new Map(runtimes.map((r) => [r.id, r]))
   return {
@@ -331,6 +331,10 @@ function regionDecor(runtimes: readonly RuntimeView[]): { label: (dirPath: strin
     muted: (dirPath) => {
       const id = runtimeOfRegion(dirPath)
       return !!id && byId.get(id)?.state !== 'connected'
+    },
+    remote: (dirPath) => {
+      const id = runtimeOfRegion(dirPath)
+      return !!id && byId.get(id)?.kind !== 'local'
     },
   }
 }

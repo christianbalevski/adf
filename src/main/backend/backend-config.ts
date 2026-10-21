@@ -54,7 +54,7 @@ const MODES: readonly StudioBackendMode[] = ['embedded', 'local', 'remote']
  * be read or names an unknown mode falls back to.
  */
 export const DEFAULT_BACKEND_MODE: StudioBackendMode = 'local'
-const DEFAULT_LABEL = 'the default, This computer'
+const DEFAULT_LABEL = 'the default, Local'
 
 export interface StudioBackendConfig {
   v: 1
@@ -340,7 +340,7 @@ export function resolveBootBackend(configPath: string, env: NodeJS.ProcessEnv, l
 
   // An older Studio's remote mode: This computer, with that connection in the runtime set (multi-runtime.md §7.3).
   let mode: StudioRunMode = runMode(config.mode)
-  if (config.mode === 'remote') log.log(`[Backend] ${configPath} says remote (an older Studio): this launch runs This computer, with that connection in the runtime set`)
+  if (config.mode === 'remote') log.log(`[Backend] ${configPath} says remote (an older Studio): this launch runs Local, with that connection in the runtime set`)
   let source: StudioBackendSource = file.found ? 'file' : 'default'
   const override = env[BACKEND_ENV_OVERRIDE]?.trim().toLowerCase()
   if (override) {

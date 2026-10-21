@@ -226,7 +226,7 @@ describe.skipIf(!enabled)('remote access: Studio main against the built daemon',
     expect(remote.pairing.state).toMatchObject({ savedId: 'remote:agent-1-e2e' })
     // Settings → Connections: This computer in use, the paired computer as Paired with Connect, never a Pair row for it.
     const list = await invoke<ConnectionsView>(IPC.CONNECTION_LIST)
-    expect(list.current).toMatchObject({ id: 'local', name: 'This computer', state: 'connected' })
+    expect(list.current).toMatchObject({ id: 'local', name: 'Local', state: 'connected' })
     expect(list.rows.find((r) => r.id === 'remote:agent-1-e2e')).toMatchObject({ state: 'paired', action: 'connect', fingerprint })
     expect(list.rows.filter((r) => r.action === 'pair' && r.fingerprint === fingerprint)).toEqual([])
     await until(() => notices, (n) => n.includes('Device added: agent-2 laptop.'))

@@ -56,7 +56,7 @@ function setup() {
   }) as unknown as RuntimeConnection
   const moved: Array<[string, string]> = []
   const m = new RuntimeManager({
-    primary: fake('local', 'This computer'),
+    primary: fake('local', 'host-0 (Local)'),
     closedWindows: new Set(),
     log: quiet,
     create: (id, name) => fake(id, name),

@@ -231,7 +231,7 @@ http needs the confirmation; use `serve` instead.
 Settings → Connections → **Add** takes the same URL and token (or pairs
 with a code). Studio checks the address, the token and the client API
 version before it saves the connection, then connects to it; Studio does not
-restart, and This computer's agents are listed next to the server's. A
+restart, and the local runtime's agents are listed next to the server's. A
 computer paired with `adf pair` is already in Studio's list and connected:
 Studio and `adf` share `cli-remotes.json` and the keychain. Details and every message:
 [Studio backend › Remote computer](../guides/studio-backend.md#remote-computer).

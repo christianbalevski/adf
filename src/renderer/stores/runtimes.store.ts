@@ -2,6 +2,7 @@ import { useEffect } from 'react'
 import { create } from 'zustand'
 import { CONNECTION_STATE_LABELS, type ConnectionsView, type RuntimeView } from '../../shared/types/connection.types'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
+import { LOCAL_LABEL } from '../../shared/runtime-name'
 import { startConnectionFeed, useConnectionStore } from './connection.store'
 
 /**
@@ -60,10 +61,10 @@ export function useRuntime(id: RuntimeId | null | undefined): RuntimeView | null
   return useRuntimesStore((s) => s.runtimes.find((r) => r.id === (id || LOCAL_RUNTIME)) ?? null)
 }
 
-/** The runtime's name; the id itself while the set does not list it. */
+/** The runtime's name (`<name> (Local)` for the local one, shared/runtime-name.ts); "Local" or the id while the set does not list it. */
 export function runtimeName(id: RuntimeId | null | undefined, runtimes: readonly RuntimeView[] = useRuntimesStore.getState().runtimes): string {
   const key = id || LOCAL_RUNTIME
-  return runtimes.find((r) => r.id === key)?.name ?? (key === LOCAL_RUNTIME ? 'This computer' : key.replace(/^remote:/, ''))
+  return runtimes.find((r) => r.id === key)?.name ?? (key === LOCAL_RUNTIME ? LOCAL_LABEL : key.replace(/^remote:/, ''))
 }
 
 /** The runtime is in the set and not reachable now (connecting, retrying, failed). */
@@ -83,6 +84,11 @@ export function runtimeHeader(runtime: RuntimeView): string {
  */
 export function runtimeLabel(id: RuntimeId | null | undefined, runtimes: readonly RuntimeView[]): string | null {
   return multiRuntime(runtimes) ? runtimeName(id, runtimes) : null
+}
+
+/** The runtime is on another computer: its name shows with the remote icon (RemoteMark). */
+export function runtimeRemote(id: RuntimeId | null | undefined, runtimes: readonly RuntimeView[] = useRuntimesStore.getState().runtimes): boolean {
+  return runtimes.find((r) => r.id === (id || LOCAL_RUNTIME))?.kind === 'remote'
 }
 
 /** runtimeLabel for this window's set. */

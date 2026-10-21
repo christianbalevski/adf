@@ -1,9 +1,6 @@
 import { BrowserWindow, dialog, Notification } from 'electron'
 // Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
 import { ipcMain } from './studio-ipc'
-import { readFileSync } from 'node:fs'
-import { hostname } from 'node:os'
-import { join } from 'node:path'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { remoteUrlOrigin } from '../../shared/utils/remote-backend-url'
 import type { DaemonClient } from '../../shared/daemon-client'
@@ -18,10 +15,11 @@ import { PairingFlow, type PairingFlowDeps } from './remote-access/pairing'
 import { quitQuestion, RemoteQuitGate, type QuitAnswer } from './remote-access/quit-gate'
 import { LanReach } from '../services/lan-reach'
 import { probeFirewall, type FirewallView } from '../daemon/remote-access/firewall'
-import { allowNetwork, cleanDisplayName, forgetNetwork, readAllowedNetworks, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
+import { allowNetwork, forgetNetwork, readAllowedNetworks, UNSAFE_DISPLAY_CHARS } from '../daemon/remote-access/config'
 import type { NetworkConsentResult, NetworkNotice, NetworkStatusView, RemotePairStartRequest } from '../../shared/types/remote-access-ipc.types'
 import type { AllowedNetwork } from '../../shared/types/remote-access.types'
 import { NetworkConsentPrompt } from './remote-access/network-consent'
+import { machineName } from './local-runtime-name'
 import { remotesEnv, SavedConnectionsCache, saveConnection } from './connections'
 import { KEYCHAIN_FILE_COPY, readRemotesAsync, RemotesUnreadableError, remotesFilePath } from '../cli/remotes'
 
@@ -90,18 +88,11 @@ export interface RemoteAccessIpc {
 
 /**
  * This computer's name for other computers: the runtime alias (Settings →
- * Identity), else the host name. One name everywhere (mDNS, pairing, device
- * lists); the daemon reads the same setting.
+ * Identity), else the host name (local-runtime-name.ts). One name everywhere
+ * (mDNS, pairing, device lists); the daemon reads the same setting.
  */
 export function runtimeName(settingsDir: string | undefined): string {
-  if (settingsDir) {
-    try {
-      const alias = (JSON.parse(readFileSync(join(settingsDir, 'adf-settings.json'), 'utf-8')) as { runtimeAlias?: unknown }).runtimeAlias
-      const name = cleanDisplayName(alias, 64)
-      if (name) return name
-    } catch { /* no settings file yet: the host name */ }
-  }
-  return hostname()
+  return machineName(settingsDir)
 }
 
 /** The status line's view of a snapshot (pure). */
@@ -122,7 +113,7 @@ export function networkStatusView(snapshot: Awaited<ReturnType<LanReach['snapsho
 export function unavailableReason(mode: StudioBackendMode): string {
   return mode === 'remote'
     ? 'Remote access is changed on the remote computer.'
-    : 'Remote access needs This computer as the connection (Settings → Connections).'
+    : 'Remote access needs Local as the connection (Settings → Connections).'
 }
 
 const VIA: Record<PairingClaimView['via'], string> = { lan: 'this network', tailnet: 'your tailnet', proxy: 'through a proxy' }

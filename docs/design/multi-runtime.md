@@ -28,6 +28,7 @@ Read with: [agent-windows.md](agent-windows.md) (window and session map, `ctxFor
 - **Runtime set**: the runtimes Studio connects to: This computer, plus every saved connection (§3.1).
 - **Runtime id**: the connection id of settings-scopes.md §5.4: `local`, `remote:<name>` (a saved connection in `cli-remotes.json`) or `remote` (the one connection without a fingerprint in `studio-backend.json`).
 - **Multi-runtime**: the runtime set has more than one entry. A runtime in the set counts while it is down.
+- **Runtime name** (owner decision 2026-10-21): the local runtime (`local`) is shown as `<runtime name> (Local)`, e.g. "rawl-laptop (Local)". The runtime name is the runtime alias (Settings → Identity), else the computer's host name (`local-runtime-name.ts`); with neither, "Local". A remote runtime is shown as its saved name with the remote icon (tooltip "Remote"), never "(Remote)". Text-only places (window titles, OS notifications, menus) show the name alone. `local` stays the id and what users type (`adf remotes use local`).
 - **Agent ref**: `{runtimeId, agentId, filePath}`. Two refs name the same agent when the runtime ids are equal and the agent ids are equal; when either agent id is null, when the file paths are equal under that runtime's path rule (`samePath(a, b, kind === 'remote')`).
 
 ### 1.4 User-visible behaviour
@@ -49,7 +50,7 @@ UI copy MUST NOT describe the runtime set as additive or explain that This compu
 
 Before: Studio runs agents on This computer or on one other computer. Choosing rawl-hub in Settings → Connections asks to switch, lists what stops, and restarts Studio. Afterwards the agents of this laptop are gone from Studio until the next switch and restart. To watch both, the owner runs a second Studio with `ADF_INSTANCE`.
 
-After: the owner adds rawl-hub (**Add**, then the code shown on rawl-hub). Nothing restarts. The sidebar now shows two groups, This computer and rawl-hub, and the status bar shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
+After: the owner adds rawl-hub (**Add**, then the code shown on rawl-hub). Nothing restarts. The sidebar now shows two groups, rawl-laptop (Local) and rawl-hub, and the status bar shows a Mesh and Kill for each. Approvals from both arrive in one bell, each marked with its computer. An agent window can show an agent of either. When rawl-hub goes offline, its group says "Not connected, retrying" and its agents grey out; the laptop's agents keep working.
 
 An owner who never adds another computer sees no change.
 
@@ -244,7 +245,7 @@ Selectors: `selectRuntimeSlice(state, id)`, `selectAllAgents(state)` (each with 
 - Each runtime's main-window stream feeds its snapshot into `ApprovalsAggregator` in main. The merged snapshot lists pending entries oldest first and history newest first, each with `runtimeId` (omitted for `local`).
 - `NoticeOwners` keys by `runtimeId` and notification id. The notice window rule (agent-windows.md §6) compares agent refs.
 - `ApprovalsUi` (native notifier, macOS menu bar, reveal) takes the merged snapshot. The badge counts all pending entries. The menu bar's token totals add the runtimes' totals.
-- Multi-runtime: each bell row, toast and OS notification names its runtime before the agent (`rawl-hub · agent-1`). This computer is named too.
+- Multi-runtime: each bell row, toast and OS notification names its runtime before the agent (`rawl-hub · agent-1`). The local runtime is named too (`rawl-laptop (Local) · agent-1`).
 - Answering resolves through `apiFor(entry.runtimeId)`.
 - A runtime's entries that cannot be answered (runtime down) are shown disabled (§3.6).
 
@@ -276,7 +277,7 @@ Settings-scopes.md §5 stands, with these rows:
 
 | Row | State | Action | More menu |
 |---|---|---|---|
-| This computer | Connected (or the state while down) | none | Inside Studio (legacy) |
+| `<runtime name> (Local)` | Connected (or the state while down) | none | Inside Studio (legacy) |
 | A saved connection | Connected, Connecting, Not connected, retrying, Not connected | none | Remove |
 | Found on the network, not saved | Not paired | **Add** | none |
 
@@ -286,7 +287,7 @@ Settings-scopes.md §5 stands, with these rows:
 
 ### 6.6 Menus
 
-- Help: the status line names each runtime that is down. **Reconnect** acts on the runtime that is down; with more than one down, it is a submenu of their names. Open Daemon Log is This computer's.
+- Help: the status line names each runtime that is down. **Reconnect** acts on the runtime that is down; with more than one down, it is a submenu of their names. Open Daemon Log is the local runtime's.
 - Open Recent: This computer's files; multi-runtime adds each remote's files under its name (§7.4).
 
 ## 7. Upgrade
@@ -301,9 +302,9 @@ Phase 4 deletes the switch-and-restart flow for every target, and `mode-switch.t
 
 ### 7.2 Inside Studio (legacy)
 
-- It stays where #171 put it: under Details in SimpleConnections, and in This computer's More menu.
+- It stays where #171 put it: under Details in SimpleConnections, and in the Local row's More menu.
 - It is a whole-Studio mode. The embedded backend code stays; its removal is a later PR.
-- Choosing it (or This computer while it runs) saves `mode`; the page shows "Next launch: <name>." with Restart (`ConnectionsView.next`). Studio does not restart and shows no switch dialog. The boot handover (`runBootHandover`) moves the credentials at the next launch, as it does today. Running agents are not carried across.
+- Choosing it (or the Local row while it runs) saves `mode`; the page shows "Next launch: <name>." with Restart (`ConnectionsView.next`). Studio does not restart and shows no switch dialog. The boot handover (`runBootHandover`) moves the credentials at the next launch, as it does today. Running agents are not carried across.
 - In embedded mode the runtime set is not loaded. Saved connections are listed with no state; they connect at the next launch in This computer mode.
 
 ### 7.3 `studio-backend.json`
@@ -489,7 +490,7 @@ Choices made where this design met the code. Each is the simplest option consist
 3. **Client keys (§7.4, §7.5).** Migrated only from `mode: remote`, in `studio-client-settings.json`, written atomically and only when a key changed: `remoteRecentFiles` into `runtimeRecentFiles[<id>]`, the plain `fleetGroups`, `fleetStewards` and `fleetMapState` into `runtimeFleet[<id>]` (only while that runtime has no entry there; only a key copied is deleted), and an `agentWindows` list of `remote:<name or URL>` into `{runtime: 'local'}` with `runtimeId` and the fingerprint on each entry. A list of another URL or of a name not saved loses its entries. While `studio-backend.json` still says remote after the client keys moved, the client file holds `remoteModeMigrated: true` and is not migrated again, so the plain fleet keys This computer writes meanwhile stay its own; the mark goes once `studio-backend.json` says local. A local install that ran remote mode before this version and chose This computer again keeps its `remoteRecentFiles` unread: the file no longer names the connection they belong to.
    - The keys of a runtime that goes go with it: Remove of a saved connection or the slot, the slot replaced by another address (`forgetRuntimeKeysOf`), and, at launch and whenever `cli-remotes.json` changes, a connection no longer saved or saved again as another computer under the same name (`forgetGoneRuntimeKeys`). A connection saved again under another name with the same fingerprint takes them to its new id (from the saved agent windows at launch, from the previous list while Studio runs). Nothing goes while `cli-remotes.json` cannot be read or parsed.
 4. **Agent windows (§7.5).** Opening an agent window on a remote saves that connection's fingerprint with it. At every launch `relinkSavedAgentWindows` moves an entry whose `runtimeId` is not in the set to the saved connection with its fingerprint; the list is written only when an entry moves, so a list of This computer only keeps its bytes. Restore is as in §15 item 6.
-5. **Connections page.** **Connect** on This computer or Inside Studio (legacy) saves the mode ("Saved." for the mode this launch runs). The page then shows "Next launch: <name>." with **Restart** (`BACKEND_RESTART_STUDIO`, `relaunchStudio`); <name> is the row's name ("Inside Studio (legacy)"), and no other notice is shown. `CONNECTION_USE` on a saved connection or the slot is `not_found` in every mode. Saved rows have no action; Inside Studio lists them with no state (§7.2). The state `paired` is gone. Remove has no switch-first wording.
+5. **Connections page.** **Connect** on the Local row or Inside Studio (legacy) saves the mode ("Saved." for the mode this launch runs). The page then shows "Next launch: <name>." with **Restart** (`BACKEND_RESTART_STUDIO`, `relaunchStudio`); <name> is the row's name ("Inside Studio (legacy)"), and no other notice is shown. `CONNECTION_USE` on a saved connection or the slot is `not_found` in every mode. Saved rows have no action; Inside Studio lists them with no state (§7.2). The state `paired` is gone. Remove has no switch-first wording.
 6. **Removed with the switch.** `mode-switch.ts`, moved to `boot-handover.ts` with the §7.1 list; `planHandover` (the dialog's plan) and `syncStudioRuntimeEntry`'s `dryRun`; `DaemonModeHandle.agentActivity` and `startBackgroundAgent`; `shutdown`'s `waitForDaemonExitMs`; `BackendSettingsView.pendingSwitch`; the patch fields `switchAction` and `remoteName` and the error codes `switch_cancelled` and `restarting`; `connectionKey`; the remote-mode branches of `buildConnectionsView`, `currentConnection`, `remoteConnectionsSaved`, the status bar, the Settings runtime heading (`runtimeGroupLabel`) and the identity restore banner. A patch with `mode: remote` is refused: "Remote mode is gone; use Add in Settings → Connections."
 7. **Kept.** The embedded backend, including `hostActions` in ipc/index.ts, which nothing reads now; it goes with the embedded backend. Reconnect on This computer after a failed launch still restarts Studio, and Run Inside Studio for This Session stays (§3.4); a remote runtime is replaced without a restart (§15 item 6). `RECOVERY_HINT` says Inside Studio applies at the next launch.
 8. **Remote primary.** Studio's boot always passes `mode: 'local'` to `registerDaemonModeHandlers`. `DaemonModeDeps.mode: 'remote'` (with `runtimeName`, `runtimeId`, and the menu's `remoteRecents`) stays as the test seam of the remote handler variants: tests/parity/remote and tests/backend/daemon-mode-remote*.test.ts run one remote daemon as the primary and compare its recordings with embedded's. Moving them onto a non-primary runtime would tag every call and push of those recordings. Only the remote primary's own UI is removed: Help's Open Settings → Connections (`openBackendSettings`, the `open-settings-backend` menu action) and `REMOTE_RECOVERY_HINT`.

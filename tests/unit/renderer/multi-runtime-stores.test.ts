@@ -15,12 +15,12 @@ const AGENT_2 = '/agents/agent-2.adf'
 const ID_1 = '0b7c6f1e-2d4a-4c55-9a0e-3f1c2b7a9e11'
 const ID_2 = '5d2e8a90-7b13-4f6e-8c21-9e4d0a6b3c77'
 
-const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'connected' }
 
 function view(runtimes?: RuntimeView[]): ConnectionsView {
   return {
-    current: { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' },
+    current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' },
     next: null,
     rows: [],
     discovery: null,
@@ -72,11 +72,11 @@ describe('the runtime set', () => {
     const { runtimes } = await load()
     expect(runtimes.runtimeLabel(HOST_1, [LOCAL])).toBeNull()
     expect(runtimes.runtimeLabel(undefined, [LOCAL])).toBeNull()
-    expect(runtimes.runtimeLabel(undefined, [LOCAL, REMOTE])).toBe('This computer')
+    expect(runtimes.runtimeLabel(undefined, [LOCAL, REMOTE])).toBe('host-0 (Local)')
     expect(runtimes.runtimeLabel(HOST_1, [LOCAL, REMOTE])).toBe('host-1')
     const down: RuntimeView = { ...REMOTE, state: 'retrying' }
     expect(runtimes.runtimeHeader(down)).toBe('host-1 · Not connected, retrying')
-    expect(runtimes.runtimeHeader(LOCAL)).toBe('This computer')
+    expect(runtimes.runtimeHeader(LOCAL)).toBe('host-0 (Local)')
     expect(runtimes.runtimeDown(HOST_1, [LOCAL, down])).toBe(true)
     expect(runtimes.runtimeDown(undefined, [LOCAL, down])).toBe(false)
   })

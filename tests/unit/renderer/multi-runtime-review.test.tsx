@@ -42,7 +42,7 @@ vi.mock('react/jsx-dev-runtime', async (importOriginal) => {
 })
 
 const HOST_1 = 'remote:host-1'
-const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }
+const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://host-1.example:7386', state: 'connected' }
 const HOST_2 = 'remote:host-2'
 const REMOTE_2: RuntimeView = { id: HOST_2, kind: 'remote', name: 'host-2', url: 'https://host-2.example:7386', state: 'connected' }
@@ -57,7 +57,7 @@ const KEY_2 = `${HOST_1}\n${PATH_2}`
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 function view(runtimes?: RuntimeView[]): ConnectionsView {
-  return { current: { id: 'local', kind: 'local', name: 'This computer', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
+  return { current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }, next: null, rows: [], discovery: null, ...(runtimes ? { runtimes } : {}) }
 }
 
 interface Surface { api: Record<string, unknown>; calls: Array<[string, unknown[]]>; names: () => string[] }
@@ -455,7 +455,7 @@ describe('C12: no silent failures', () => {
     const { Sidebar } = await import('../../../src/renderer/components/layout/Sidebar')
     const { elements } = capture(() => renderToStaticMarkup(<Sidebar />))
     const tips = elements.map((e) => e.props.tip).filter((t): t is string => typeof t === 'string' && t.startsWith(PATH))
-    expect(tips.sort()).toEqual([PATH, `${PATH} · Drag out: This computer only`])
+    expect(tips.sort()).toEqual([PATH, `${PATH} · Drag out: Local only`])
   })
 
   it('Open in new window that fails is said', async () => {

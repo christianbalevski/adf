@@ -36,7 +36,7 @@ import {
 /** The modes as Settings → Connections names them (owner decision 2026-10-17); internal ids stay embedded/local. */
 const MODE_LABELS: Record<StudioRunMode, string> = {
   embedded: 'Inside Studio (legacy)',
-  local: 'This computer',
+  local: 'Local',
 }
 
 /** Where agents run in each mode, for sentences ("Agents now run on this computer."). */
