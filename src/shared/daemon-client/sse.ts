@@ -70,6 +70,10 @@ export interface EventStreamOptions<F extends StreamFrame = DaemonEventFrame> {
   query?: StreamQuery | (() => StreamQuery)
   /** Request headers; a function is re-read on every (re)connect, with the URL it is for. */
   headers?: Record<string, string> | ((url: string) => Record<string, string>)
+  /** Awaited before every (re)connect, with its URL; a rejection fails that attempt (nothing is sent) and it retries with backoff. */
+  beforeConnect?: (url: string) => Promise<void>
+  /** A connection attempt failed or an open stream ended: before the retry. */
+  onDrop?: () => void
   fetch?: typeof fetch
   /** Only this agent's events (`?agentId=`). */
   agentId?: string
@@ -207,6 +211,8 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
     let failure: string | undefined
     try {
       const url = this.buildUrl()
+      await this.options.beforeConnect?.(url)
+      if (this.closed) return
       const response = await this.fetchImpl(url, {
         headers: { Accept: 'text/event-stream', ...(typeof this.options.headers === 'function' ? this.options.headers(url) : this.options.headers ?? {}) },
         signal: controller.signal,
@@ -231,6 +237,7 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
       this.clearIdle()
     }
     if (this.closed) return
+    try { this.options.onDrop?.() } catch { /* a bad listener must not kill the stream */ }
     this.attempt += 1
     const delay = this.backoff()
     this.setState({ state: 'reconnecting', attempt: this.attempt, error: failure, retryInMs: delay })

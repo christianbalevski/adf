@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { daemonSettingsDir, readDaemonToken } from '../daemon/daemon-token'
 import { isLocalOnlyRoute, readLocalProof } from '../daemon/local-access'
 import type { DaemonCredentials } from '../../shared/daemon-client/client'
-import { savedRemoteToken, selectedRemote } from './remotes'
+import { pinnedRemoteRefusal, savedRemoteFor, savedRemoteToken, selectedRemote } from './remotes'
 
 export const DEFAULT_DAEMON_PORT = 7385
 export const DEFAULT_DAEMON_URL = `http://127.0.0.1:${DEFAULT_DAEMON_PORT}`
@@ -115,6 +115,8 @@ export interface NodeCredentialOptions {
   localToken?: boolean
   /** Environment for the lookup. Defaults to process.env. */
   env?: NodeJS.ProcessEnv
+  /** For the authenticated hello of a saved remote (pinnedRemoteRefusal). Defaults to fetch. */
+  fetch?: typeof fetch
 }
 
 /**
@@ -126,8 +128,24 @@ export interface NodeCredentialOptions {
 export function daemonCredentials(url: string, options: NodeCredentialOptions = {}): DaemonCredentials {
   const env = options.env ?? process.env
   let token = resolveDaemonToken(options.token, env, options.localToken ? url : undefined)
+  // A saved remote's device token (no --token, no ADF_DAEMON_TOKEN): it goes only after the daemon at `url` proved,
+  // by the authenticated hello, that it is the paired computer (pinnedRemoteRefusal), at the first connection and
+  // again after every failed or dropped one (a re-dial may reach another host at that address).
+  const pinned = !!options.localToken && !options.token && !env.ADF_DAEMON_TOKEN && savedRemoteFor(url, env) !== null
+  const fetchImpl = options.fetch ?? fetch
+  let proved: Promise<void> | null = null
+  const ready = (): Promise<void> => {
+    proved ??= pinnedRemoteRefusal(url, env, fetchImpl).then((refusal) => { if (refusal) throw new Error(refusal) })
+    const check = proved
+    return check.catch((err: unknown) => {
+      // Refused or not answered: the next connection checks again.
+      if (proved === check) proved = null
+      throw err
+    })
+  }
   return {
     token: () => token,
+    ...(pinned ? { ready, dropped: () => { proved = null } } : {}),
     // The daemon answered 401: pick up a token file that appeared or changed
     // since (daemon first start). localDaemonToken is null for any URL that is
     // not this machine's daemon, so a remote URL never gets the local token.

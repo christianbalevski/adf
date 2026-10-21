@@ -526,3 +526,12 @@ A second adversarial review found the gaps below; each is fixed with a test that
 7. **Notices of `cli-remotes.json`.** "Saved connections could not be read" and the malformed-entry notices are replaced at each read, so a file fixed while Studio runs is no longer reported.
 8. **adf help.** The daemon URL, and so the saved remotes list, is resolved only for a command that talks to a daemon: `adf help`, `adf --help` and `adf tui --help` work while `cli-remotes.json` cannot be read.
 9. **Tests.** main-boot-remote-migration-pending.test.ts, main-boot-remote-migration-deferred.test.ts, runtime-keys-follow.test.ts, remotes-forget-and-malformed.test.ts, cli-help-remotes-unreadable.test.ts, and a case in agent-windows.test.ts.
+
+## 19. Round-2 review fixes
+
+The three round-2 fixer branches are merged together (`ux/mr-fix2A`, `ux/mr-fix2B`, `ux/mr-fix2C`; items in §17 item 10, §18 and remote-access.md §5.2.1). The integration adds the following.
+
+1. **Protocol change.** A saved remote's token goes only after the authenticated hello (remote-access.md §5.2.1). A remote computer MUST run this version or newer; an older one is refused with "<name> runs an older ADF; update it." There is no unsigned fallback.
+2. **The CLI's environment.** Every lookup `adf` makes for a command (the daemon URL, the token, the local proof, the tunnel hint) reads the environment it was given (`CliIo.env`, else `process.env`), the same one the pin check reads. A saved remote's token is sent on the request after the hello proof passed, and only then.
+3. **Terminal app reconnects.** The token of a saved remote (no `--token`, no `ADF_DAEMON_TOKEN`) goes only after the hello proof, at the first connection and again after every failed request or dropped event stream (`DaemonCredentials.ready` and `dropped`, `daemonCredentials` in cli/daemon-url.ts; `EventStreamOptions.beforeConnect` and `onDrop`). A refusal fails that request or stream attempt with its sentence, and nothing is sent; the stream retries with backoff and checks again. `/url` to a saved remote is checked the same way.
+4. **Tests.** tests/backend/main-boot-runtimes-moved.test.ts (a rename while Studio runs: the windows get `RUNTIMES_MOVED`, then the runtime set without the old id, and `runtimeRecentFiles` and `runtimeFleet` move to the new id), a case in tests/cli-remote-access.test.ts (the saved token goes to the paired host, after the hello), and tests/tui/remote-pin-reconnect.test.ts.

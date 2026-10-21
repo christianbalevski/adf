@@ -9,7 +9,7 @@ function createBootHarness() {
   const calls: string[] = []
   /** `app.on`/`app.once` handlers: a test fires 'before-quit' (quitMain). */
   /** `ipcMain.handle` handlers by channel: a test invokes one (invokeMain). */
-  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void>, appHandlers: new Map<string, Array<(...args: unknown[]) => void>>(), handlers: new Map<string, (...args: unknown[]) => unknown>() }
+  const state = { userData: '', windows: [] as unknown[], readyToShow: [] as Array<() => void>, appHandlers: new Map<string, Array<(...args: unknown[]) => void>>(), handlers: new Map<string, (...args: unknown[]) => unknown>(), sent: [] as Array<{ channel: string; payload: unknown }> }
   const onApp = (event: string, fn: (...args: unknown[]) => void) => {
     state.appHandlers.set(event, [...(state.appHandlers.get(event) ?? []), fn])
     return electron.app
@@ -20,7 +20,8 @@ function createBootHarness() {
   class FakeWebContents {
     on = () => this
     once = () => this
-    send = rec('webContents.send')
+    /** Recorded in calls, and with its payload in state.sent (the renderer-facing pushes, in order). */
+    send = (channel: string, payload?: unknown) => { calls.push(`webContents.send(${channel})`); state.sent.push({ channel, payload }) }
     setWindowOpenHandler = () => {}
     isDestroyed = () => false
     isLoading = () => false

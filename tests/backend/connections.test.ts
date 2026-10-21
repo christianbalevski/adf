@@ -523,13 +523,5 @@ describe('RUNTIMES_MOVED (multi-runtime.md §17)', () => {
     expect(w.sent).toHaveLength(1)
   })
 
-  it('main sends them before the runtime set that no longer lists the old ids', () => {
-    const src = readFileSync(join(__dirname, '../../src/main/index.ts'), 'utf8')
-    const at = src.indexOf('const savedCache = new SavedConnectionsCache(')
-    const body = src.slice(at, src.indexOf('\n  })', at))
-    const pushed = body.indexOf('pushRuntimesMoved(changes)')
-    expect(pushed).toBeGreaterThan(0)
-    expect(pushed).toBeLessThan(body.indexOf('connections?.changed()'))
-    expect(pushed).toBeLessThan(body.indexOf('syncRuntimes()'))
-  })
+  // Their order against the runtime set, and the keys that follow a rename: main-boot-runtimes-moved.test.ts.
 })

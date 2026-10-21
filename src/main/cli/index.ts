@@ -56,7 +56,7 @@ export interface CliIo {
   onInterrupt?: (fn: () => void) => () => void
   /** Test seam: daemon discovery (adf pair without a host). */
   discover?: PairIo['discover']
-  /** Test seam: environment for saved remotes (adf pair, adf remotes). */
+  /** Test seam: the environment adf reads (daemon URL, tokens, saved remotes). Default: process.env. */
   env?: NodeJS.ProcessEnv
 }
 
@@ -71,13 +71,15 @@ interface CliOptions {
   json: boolean
   /** --token; else ADF_DAEMON_TOKEN, else (loopback) the local token file. */
   token?: string
+  /** io.env, else process.env: every lookup of the URL, the token and the local proof reads it. */
+  env: NodeJS.ProcessEnv
 }
 
 interface ParsedArgs {
   command: string
   args: string[]
   /** All but the daemon URL: runCli resolves it only for a command that talks to a daemon. */
-  options: Omit<CliOptions, 'daemonUrl'>
+  options: Omit<CliOptions, 'daemonUrl' | 'env'>
   /** --url as given, else null. */
   explicitUrl: string | null
 }
@@ -113,12 +115,12 @@ async function defaultLaunchTui(argv: string[]): Promise<number> {
 }
 
 /** The `--url` in argv (TUI and CLI both take it), else ADF_DAEMON_URL, else the default. */
-function urlFromArgv(argv: string[]): string {
+function urlFromArgv(argv: string[], env: NodeJS.ProcessEnv): string {
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i] === '--url' || argv[i] === '-u') return resolveDaemonUrl(argv[i + 1])
-    if (argv[i].startsWith('--url=')) return resolveDaemonUrl(argv[i].slice(6))
+    if (argv[i] === '--url' || argv[i] === '-u') return resolveDaemonUrl(argv[i + 1], env)
+    if (argv[i].startsWith('--url=')) return resolveDaemonUrl(argv[i].slice(6), env)
   }
-  return resolveDaemonUrl(undefined)
+  return resolveDaemonUrl(undefined, env)
 }
 
 /** Start the daemon when needed; false when that failed (the error is printed). */
@@ -152,7 +154,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
     const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
     let tuiUrl = ''
     try {
-      if (!wantsHelp) tuiUrl = urlFromArgv(tuiArgv)
+      if (!wantsHelp) tuiUrl = urlFromArgv(tuiArgv, io.env ?? process.env)
     } catch (err) {
       // An unknown remote name, or a saved remotes file that cannot be read.
       io.stderr(`${err instanceof Error ? err.message : String(err)}\n`)
@@ -184,7 +186,8 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   const talksToDaemon = !['help', '--help', '-h', 'pair', 'remotes'].includes(command)
   let options: CliOptions
   try {
-    options = { ...parsed.options, daemonUrl: talksToDaemon ? resolveDaemonUrl(parsed.explicitUrl ?? undefined) : '' }
+    const env = io.env ?? process.env
+    options = { ...parsed.options, env, daemonUrl: talksToDaemon ? resolveDaemonUrl(parsed.explicitUrl ?? undefined, env) : '' }
   } catch (err) {
     // Not a usage mistake: the saved remotes file needs fixing.
     if (err instanceof RemotesUnreadableError) {
@@ -358,7 +361,7 @@ async function printGet(
 
 /** Resolved per request: an auto-started daemon writes its token file on first start. */
 function authHeader(options: CliOptions): Record<string, string> {
-  const token = resolveDaemonToken(options.token, process.env, options.daemonUrl)
+  const token = resolveDaemonToken(options.token, options.env, options.daemonUrl)
   return token ? { Authorization: `Bearer ${token}` } : {}
 }
 
@@ -371,12 +374,12 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
         ...(init?.headers ?? {}),
         Accept: 'application/json',
         ...authHeader(options),
-        ...localProofHeaders(options.daemonUrl, path),
+        ...localProofHeaders(options.daemonUrl, path, options.env),
       },
     })
   } catch (err) {
     if (err instanceof TypeError) {
-      const forwarded = loopbackPort(options.daemonUrl) !== null && !isLocalDaemonUrl(options.daemonUrl)
+      const forwarded = loopbackPort(options.daemonUrl) !== null && !isLocalDaemonUrl(options.daemonUrl, options.env)
       throw new Error(`Cannot reach the ADF daemon at ${options.daemonUrl} (${err.message}). ${forwarded
         ? 'That is not this machine\'s daemon port, so adf did not start one there: check the SSH tunnel, or start a daemon on it with: adf daemon start --port <n>'
         : 'Start it with: adf daemon start'}`)
@@ -392,7 +395,7 @@ async function requestJson(io: CliIo, options: CliOptions, path: string, init?: 
     const message = isRecord(body) && typeof body.error === 'string'
       ? body.error
       : `HTTP ${response.status} ${response.statusText}`
-    const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token) : null
+    const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token, options.env) : null
     throw new DaemonRequestError(hint ? `${message}\n${hint}` : message, response.status, isRecord(body) && typeof body.code === 'string' ? body.code : null)
   }
   return body
@@ -768,7 +771,7 @@ async function streamEvents(io: CliIo, options: CliOptions, args: string[]): Pro
   })
   if (!response.ok || !response.body) {
     const detail = await response.json().catch(() => null) as { error?: unknown } | null
-    const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token) : null
+    const hint = response.status === 401 ? tunnelTokenHint(options.daemonUrl, options.token, options.env) : null
     throw new Error(`Event stream failed: ${typeof detail?.error === 'string' ? detail.error : `HTTP ${response.status} ${response.statusText}`}${hint ? `\n${hint}` : ''}`)
   }
 

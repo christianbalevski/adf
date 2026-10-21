@@ -428,10 +428,13 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
    */
   function fakeHost(opts: { helloFp: Record<string, string>; approvalFp: string; urls?: Array<{ url: string; kind: string; encrypted: boolean }>; holds?: string[]; old?: boolean }) {
     const authSeen: string[] = []
+    /** Every request in order: its path, and whether it carried the device token. */
+    const requests: string[] = []
     const fetchImpl = (async (input: string | URL, init?: RequestInit) => {
       const u = new URL(String(input))
       const headers = new Headers(init?.headers)
       if (headers.get('authorization')) authSeen.push(`${u.origin} ${headers.get('authorization')}`)
+      requests.push(`${u.pathname}${headers.get('authorization') === `Bearer ${TOKEN_A}` ? ' +token' : ''}`)
       const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } })
       if (u.pathname === '/remote/hello') {
         const fp = opts.helloFp[u.origin]
@@ -441,9 +444,10 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
       if (u.pathname === '/pair/claims/c1') {
         return json(200, { state: 'approved', token: TOKEN_A, device: { id: 'abcdefghij', label: 'agent-2 laptop' }, daemon: { name: 'host-1', fingerprint: opts.approvalFp, urls: opts.urls ?? [] } })
       }
+      if (u.pathname === '/agents') return headers.get('authorization') === `Bearer ${TOKEN_A}` ? json(200, []) : json(401, { error: 'Unauthorized' })
       return json(200, { ok: true })
     }) as typeof fetch
-    return { fetchImpl, authSeen }
+    return { fetchImpl, authSeen, requests }
   }
   function client(fetchImpl: typeof fetch, answers: Record<string, string>, extra: Partial<Parameters<typeof runPair>[1]> = {}) {
     const env = { ADF_DAEMON_SETTINGS: join(tempDir(), 'adf-settings.json'), ADF_KEYCHAIN: '0' }
@@ -593,6 +597,24 @@ describe('security review item 7: the CLI pins the host it paired with', () => {
     }
     // The real host, which proves it holds the token's record: no refusal, the token may go.
     expect(await pinnedRemoteRefusal(HOST, c.env, host.fetchImpl)).toBeNull()
+  })
+
+  // I-2: the CLI reads its saved token from the env it was given (io.env), and sends it only after the hello proof.
+  it('later commands send the saved token to the paired host, only after its hello proved the pin', async () => {
+    const host = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+    const c = client(host.fetchImpl, { 'Code shown': '123456', 'trust this network': 'y', 'by default': 'y' })
+    expect(await runPair([HOST], c.io)).toBe(0)
+    for (const argv of [['--url', HOST, 'agents'], ['agents']]) {
+      const there = fakeHost({ helloFp: { [HOST]: FP_A }, approvalFp: FP_A })
+      const out: string[] = []
+      const err: string[] = []
+      const code = await runCli(argv, { fetch: there.fetchImpl, stdout: (t) => out.push(t), stderr: (t) => err.push(t), env: c.env } as never)
+      expect(code, `${argv.join(' ')}: ${err.join('')}`).toBe(0)
+      expect(out.join('')).toBe('No agents loaded.\n')
+      expect(there.authSeen).toEqual([`${HOST} Bearer ${TOKEN_A}`])
+      // The hello goes without the token; the token goes on the request after it.
+      expect(there.requests).toEqual(['/remote/hello', '/agents +token'])
+    }
   })
 
   it('adf pair refuses an older ADF before the code is typed; a host that cannot prove the token after approval saves nothing', async () => {
