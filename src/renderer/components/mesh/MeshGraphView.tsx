@@ -61,7 +61,7 @@ import { useMesh } from '../../hooks/useMesh'
 import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
-import { selectMapAgents, mapTarget, mergeBurn, mergePeers, trackPeerMatchState, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { selectMapAgents, mapTarget, mergeBurn, mergePeers, trackPeerMatchState, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, normalHost, urlHostOf, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
 import { useConnectionStore } from '../../stores/connection.store'
 import { isRemoteAgentKey } from '../../../shared/types/agent-ref'
 import { useRuntimesStore, runtimeHeader } from '../../stores/runtimes.store'
@@ -271,6 +271,8 @@ export interface RemotePollState {
   didRetry?: Record<string, { at: number; wait: number }>
   /** Peer runtime_id → runtime of the set, as the last poll matched them. */
   learned?: Record<string, string>
+  /** This computer's own interface addresses (getMeshServerLanIps): where a peer can prove it is this computer (S2). */
+  localHosts?: string[]
 }
 
 /** The first wait after a DID read that failed, doubled up to the cap. */
@@ -350,10 +352,30 @@ function pairedFingerprints(): Map<string, string> {
 export function peerMatchOf(state: RemotePollState, runtimes: readonly RuntimeView[], agents: readonly FleetAgentStatus[]): PeerMatch {
   const fps = pairedFingerprints()
   const ids = new Set(runtimes.map((r) => r.id))
+  // S2: the address each runtime is proven at. A remote: its connection's host (the authenticated hello pinned
+  // the fingerprint there). This computer: its own addresses. A peer elsewhere that copies a DID or fingerprint
+  // is a station, and its traffic is drawn to that station, never onto a managed tile.
+  const hosts: Record<string, string[]> = {}
+  for (const r of runtimes) {
+    if (r.kind === 'remote') { const h = urlHostOf(r.url); hosts[r.id] = h ? [h] : [] }
+    else hosts[r.id] = (state.localHosts ?? []).map((h) => normalHost(h)).filter((h): h is string => !!h)
+  }
   return {
     dids: Object.fromEntries(Object.entries(state.dids).filter(([id]) => ids.has(id))),
     remotes: runtimes.filter((r) => r.kind === 'remote').map((r) => ({ id: r.id, fingerprint: fps.get(r.id) ?? null })),
     agentDids: agentDidsOf(agents),
+    hosts,
+  }
+}
+
+/** This computer's interface addresses, read once per poll (S2). */
+async function setLocalHosts(state: RemotePollState): Promise<void> {
+  try {
+    const read = window.adfApi?.getMeshServerLanIps?.()
+    const info = read ? await Promise.race([read, new Promise<null>((r) => setTimeout(() => r(null), 2_000))]) : null
+    if (info) state.localHosts = info.addresses.map((a) => a.address)
+  } catch {
+    // Unread: this computer is matched nowhere this poll; its peer records stay stations.
   }
 }
 
@@ -372,6 +394,7 @@ export async function fleetPeers<P extends MapPeer>(own: P[], remote: ReadonlyAr
     return own
   }
   await setRuntimeDids(state)
+  await setLocalHosts(state)
   const match = peerMatchOf(state, runtimes, selectMapAgents(useMeshStore.getState()))
   const learned: Record<string, string> = {}
   const shown = mergePeers([own, ...remote.map((r) => r.peers as P[])], match, (rid, rt) => { learned[rid] = rt })

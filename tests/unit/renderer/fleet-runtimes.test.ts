@@ -101,9 +101,12 @@ describe('two runtimes: one region per runtime', () => {
 
 describe('peer stations', () => {
   it('a peer that is a runtime of the set is not a station; others are one per runtime id', () => {
-    const local = [{ runtime_id: 'rt-host-1', runtime_did: 'did:key:host-1' }, { runtime_id: 'rt-peer', runtime_did: 'did:key:peer' }]
-    const host = [{ runtime_id: 'rt-peer', runtime_did: 'did:key:peer' }, { runtime_id: 'rt-this', runtime_did: 'did:key:this' }, { runtime_id: 'rt-other' }]
-    const merged = mergePeers([local, host], new Set(['did:key:host-1', 'did:key:this']))
+    const local = [{ runtime_id: 'rt-host-1', runtime_did: 'did:key:host-1', url: 'http://192.168.1.20:7295' }, { runtime_id: 'rt-peer', runtime_did: 'did:key:peer' }]
+    const host = [{ runtime_id: 'rt-peer', runtime_did: 'did:key:peer' }, { runtime_id: 'rt-this', runtime_did: 'did:key:this', url: 'http://192.168.1.10:7295' }, { runtime_id: 'rt-other' }]
+    const match = { dids: { 'remote:host-1': 'did:key:host-1', local: 'did:key:this' }, remotes: [], agentDids: new Map(), hosts: { 'remote:host-1': ['192.168.1.20'], local: ['192.168.1.10'] } }
+    const merged = mergePeers([local, host], match)
+    // S2: the same DIDs at other addresses are not a match.
+    expect(mergePeers([local, host], { ...match, hosts: {} }).map((p) => p.runtime_id)).toEqual(['rt-host-1', 'rt-peer', 'rt-this', 'rt-other'])
     expect(merged.map((p) => p.runtime_id)).toEqual(['rt-peer', 'rt-other'])
   })
 })

@@ -298,9 +298,9 @@ describe('C7: an open of a running agent of host-1 keeps its starting mark', () 
 
 describe('C8: the Mesh view\'s peer stations', () => {
   it('a runtime of the set is never its own peer station, even while it is down (its DID is known)', async () => {
-    await page([LOCAL, { ...REMOTE, state: 'retrying' }], { local: { getOwnerIdentityStatus: async () => ({ runtimeDid: 'did:key:this-computer' }) } })
+    await page([LOCAL, { ...REMOTE, state: 'retrying' }], { local: { getOwnerIdentityStatus: async () => ({ runtimeDid: 'did:key:this-computer' }), getMeshServerLanIps: async () => ({ hostname: 'host-0', addresses: [] }) } })
     const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
-    const own = [{ runtime_id: 'rt-host-1', runtime_did: 'did:key:host-1' }, { runtime_id: 'rt-desk', runtime_did: 'did:key:desk' }]
+    const own = [{ runtime_id: 'rt-host-1', runtime_did: 'did:key:host-1', url: `http://${new URL(REMOTE.url!).hostname}:7295` }, { runtime_id: 'rt-desk', runtime_did: 'did:key:desk' }]
     const state = { seq: {}, errors: {}, dids: { [HOST_1]: 'did:key:host-1' } as Record<string, string | null> }
     expect(await fleetPeers(own, [], state)).toEqual([own[1]])
   })

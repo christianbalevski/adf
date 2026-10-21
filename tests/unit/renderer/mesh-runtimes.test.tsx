@@ -45,6 +45,10 @@ const HOST_1 = 'remote:host-1'
 const LOCAL: RuntimeView = { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }
 const REMOTE: RuntimeView = { id: HOST_1, kind: 'remote', name: 'host-1', url: 'https://192.168.1.20:7386', state: 'connected' }
 const FP_1 = 'ABCD-EFGH'
+/** Where each runtime is proven (S2): host-1 at its connection's host, This computer at its own address. */
+const AT_HOST_1 = 'http://192.168.1.20:7295'
+const AT_LOCAL = 'http://192.168.1.10:7295'
+const LAN_IPS = { getMeshServerLanIps: async () => ({ hostname: 'host-0', addresses: [{ iface: 'eth0', address: '192.168.1.10', family: 'IPv4', mac: '' }] }) }
 
 const LOCAL_ROOT = '/home/u/agents'
 const HOST_ROOT = '/srv/agents'
@@ -100,7 +104,7 @@ async function page(runtimes: RuntimeView[], opts: { local?: Record<string, unkn
   // A runtime DID read fails unless the test answers it.
   const unread = { getOwnerIdentityStatus: async () => { throw new Error('unreachable') } }
   const remote = surface(HOST_1, { platform: 'linux', runtime: bind, ...unread, ...opts.remote }, subs)
-  const local = surface(undefined, { platform: 'linux', runtime: bind, ...unread, ...opts.local }, subs)
+  const local = surface(undefined, { platform: 'linux', runtime: bind, ...unread, ...LAN_IPS, ...opts.local }, subs)
   vi.spyOn(console, 'warn').mockImplementation(() => {})
   vi.stubGlobal('window', { location: { search: '' }, adfApi: local, addEventListener: () => {}, removeEventListener: () => {} })
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} })
@@ -133,8 +137,8 @@ const routed = (payload: Record<string, unknown>): MeshEvent => ({ type: 'messag
 /** The polls' peers of a set with both runtimes: each lists the other (DIDs known). */
 async function learnBothWays(state = { seq: {}, errors: {}, dids: { local: 'did:key:rt-local', [HOST_1]: 'did:key:rt-host-1' } as Record<string, string | null> }) {
   const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
-  const own = [{ runtime_id: RT_HOST_1, runtime_did: 'did:key:rt-host-1' }]
-  const remote = [{ peers: [{ runtime_id: RT_LOCAL, runtime_did: 'did:key:rt-local' }] }]
+  const own = [{ runtime_id: RT_HOST_1, runtime_did: 'did:key:rt-host-1', url: AT_HOST_1 }]
+  const remote = [{ peers: [{ runtime_id: RT_LOCAL, runtime_did: 'did:key:rt-local', url: AT_LOCAL }] }]
   return fleetPeers(own, remote, state)
 }
 
@@ -191,6 +195,18 @@ describe('a message between two runtimes of the set', () => {
     expect(await edges()).toEqual([[A2, KEY_B1].sort()])
   })
 
+  it('S2: egress to an unproven peer that claims a managed runtime\'s DID is drawn to its station, never onto the managed tile', async () => {
+    const { subs } = await page([LOCAL, REMOTE])
+    const send = await mountMeshHook(subs)
+    const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
+    const state = { seq: {}, errors: {}, dids: { local: 'did:key:rt-local', [HOST_1]: 'did:key:rt-host-1' } as Record<string, string | null> }
+    await fleetPeers([{ runtime_id: RT_PEER, runtime_did: 'did:key:rt-host-1', fingerprint: FP_1, url: 'http://192.168.1.66:7295' }], [], state)
+    send.local(routed({ filePath: A1, toFilePaths: [`station:peer:${RT_PEER}`], toPeerAgent: { runtimeId: RT_PEER, id: DID_B2 } }))
+    const { useMeshGraphStore } = await import('../../../src/renderer/stores/mesh-graph.store')
+    expect(Object.keys(useMeshGraphStore.getState().liveRoutes)).toEqual([`${A1}|station:peer:${RT_PEER}`])
+    expect(Object.keys(useMeshGraphStore.getState().edgeHeat).some((k) => k.includes(KEY_B2))).toBe(false)
+  })
+
   it('a peer the map does not manage keeps its station and its stub ping', async () => {
     const { subs } = await page([LOCAL, REMOTE])
     const send = await mountMeshHook(subs)
@@ -232,7 +248,7 @@ describe('a runtime of the set is not also a peer station', () => {
   it('by the runtime DID read over its connection', async () => {
     await page([LOCAL, REMOTE], { fingerprint: null, remote: { getOwnerIdentityStatus: async () => ({ runtimeDid: 'did:key:rt-host-1' }) } })
     const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
-    const own = [{ runtime_id: RT_HOST_1, runtime_did: 'did:key:rt-host-1' }, { runtime_id: RT_PEER, runtime_did: 'did:key:rt-peer' }]
+    const own = [{ runtime_id: RT_HOST_1, runtime_did: 'did:key:rt-host-1', url: AT_HOST_1 }, { runtime_id: RT_PEER, runtime_did: 'did:key:rt-peer' }]
     expect((await fleetPeers(own, [], match())).map((p) => p.runtime_id)).toEqual([RT_PEER])
   })
 
@@ -258,12 +274,26 @@ describe('a runtime of the set is not also a peer station', () => {
     await page([LOCAL, REMOTE])
     const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
     const state = match() as ReturnType<typeof match> & { learned?: Record<string, string> }
-    expect(await fleetPeers([{ runtime_id: RT_PEER, fingerprint: FP_1 }], [], state)).toEqual([])
+    expect(await fleetPeers([{ runtime_id: RT_PEER, fingerprint: FP_1, url: AT_HOST_1 }], [], state)).toEqual([])
     expect(state.learned).toEqual({ [RT_PEER]: HOST_1 })
     expect(await fleetPeers([{ runtime_id: RT_PEER }], [], state)).toEqual([{ runtime_id: RT_PEER }])
     expect(state.learned).toEqual({})
     // Within one poll a record of a matched runtime_id is that runtime, whichever list reports it.
-    expect(await fleetPeers([{ runtime_id: RT_HOST_1, fingerprint: FP_1 }], [{ peers: [{ runtime_id: RT_HOST_1 }] }], state)).toEqual([])
+    expect(await fleetPeers([{ runtime_id: RT_HOST_1, fingerprint: FP_1, url: AT_HOST_1 }], [{ peers: [{ runtime_id: RT_HOST_1 }] }], state)).toEqual([])
+  })
+
+  it('S2: a LAN spoofer that copies the runtime DID and the fingerprint from mDNS TXT is a station, not the managed region', async () => {
+    await page([LOCAL, REMOTE], { remote: { getOwnerIdentityStatus: async () => ({ runtimeDid: 'did:key:rt-host-1' }) }, local: { getOwnerIdentityStatus: async () => ({ runtimeDid: 'did:key:rt-local' }) } })
+    const { fleetPeers } = await import('../../../src/renderer/components/mesh/MeshGraphView')
+    const state = match() as ReturnType<typeof match> & { learned?: Record<string, string> }
+    const spoof = [
+      { runtime_id: RT_PEER, runtime_did: 'did:key:rt-host-1', fingerprint: FP_1, url: 'http://192.168.1.66:7295' },
+      { runtime_id: 'rt-spoof-local', runtime_did: 'did:key:rt-local', url: 'http://192.168.1.67:7295' },
+    ]
+    expect((await fleetPeers(spoof, [], state)).map((p) => p.runtime_id)).toEqual([RT_PEER, 'rt-spoof-local'])
+    expect(state.learned).toEqual({})
+    // At the proven addresses the same claims match.
+    expect(await fleetPeers([{ ...spoof[0], url: AT_HOST_1 }, { ...spoof[1], url: AT_LOCAL }], [], state)).toEqual([])
   })
 
   it('a DID read that fails, or answers none, is read again with backoff, not once', async () => {
@@ -301,7 +331,7 @@ describe('a peer that becomes a runtime of the set', () => {
     const { mergePeers, selectMapAgents, runtimeRegionRoot } = await import('../../../src/renderer/components/mesh/runtime-fleet')
     const { computeFleetLayout } = await import('../../../src/renderer/components/mesh/fleet-layout')
     // host-1 is a peer, not paired yet: a station; its record carries its remote-access fingerprint.
-    const peer = { runtime_id: RT_HOST_1, fingerprint: FP_1, agents: [{ handle: 'agent-1', did: DID_B1 }, { handle: 'agent-2', did: DID_B2 }] }
+    const peer = { runtime_id: RT_HOST_1, fingerprint: FP_1, url: AT_HOST_1, agents: [{ handle: 'agent-1', did: DID_B1 }, { handle: 'agent-2', did: DID_B2 }] }
     const state = { seq: {}, errors: {}, dids: {} as Record<string, string | null> }
     const lanPeers = await fleetPeers([peer], [], state)
     expect(lanPeers).toEqual([peer])

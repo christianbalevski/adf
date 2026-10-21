@@ -178,21 +178,54 @@ export interface PeerMatch {
   remotes: ReadonlyArray<{ id: RuntimeId; fingerprint: string | null }>
   /** Agent DID → the runtime of the set whose tile it is (only to drop those stubs from a station). */
   agentDids: ReadonlyMap<string, RuntimeId>
+  /**
+   * The addresses proven for each runtime of the set (S2): a remote's is the
+   * host of its saved connection's URL, where the authenticated hello checked
+   * the pinned fingerprint; this computer's are its own interface addresses.
+   * A peer is matched only at one of these: a DID or fingerprint in mDNS TXT
+   * is a claim that any host on the LAN can copy.
+   */
+  hosts?: Readonly<Record<RuntimeId, readonly string[]>>
+}
+
+/** A host as matched: lowercased, IPv6 brackets dropped. */
+export function normalHost(host: string | null | undefined): string | null {
+  if (!host) return null
+  const h = host.trim().toLowerCase().replace(/^\[|\]$/g, '')
+  return h || null
+}
+
+/** The host part of a URL, normalized; null when it is not a URL. */
+export function urlHostOf(url: string | null | undefined): string | null {
+  if (!url) return null
+  try { return normalHost(new URL(url).hostname) } catch { return null }
+}
+
+/** Where a peer record says it is: its mesh URL's host and its `host`. */
+function peerHosts(p: MapPeer): string[] {
+  return [urlHostOf(p.url), normalHost(typeof p.host === 'string' ? p.host : null)].filter((h): h is string => !!h)
 }
 
 /**
  * The runtime of the set a peer is, or null for a peer the map does not
- * manage: its runtime DID is the one read over that runtime's connection, or
- * its fingerprint is the one pinned for it. An address, a directory of the
- * map's agent DIDs or a match in an earlier poll is not enough: any host on
- * the LAN can announce those.
+ * manage. Its runtime DID must be the one read over that runtime's
+ * connection, or its fingerprint the one pinned for it, AND the peer must
+ * be at an address proven for that runtime (PeerMatch.hosts, S2). A DID or
+ * fingerprint alone, an address alone, a directory of the map's agent DIDs
+ * or a match in an earlier poll is not enough: any host on the LAN can
+ * announce those.
  */
 export function managedRuntimeOf(p: MapPeer, m: PeerMatch): RuntimeId | null {
+  const at = peerHosts(p)
+  const proven = (id: RuntimeId): boolean => {
+    const hosts = m.hosts?.[id]
+    return !!hosts && at.some((h) => hosts.includes(h))
+  }
   if (p.runtime_did) {
-    for (const [id, did] of Object.entries(m.dids)) if (did && did === p.runtime_did) return id
+    for (const [id, did] of Object.entries(m.dids)) if (did && did === p.runtime_did && proven(id)) return id
   }
   if (p.fingerprint) {
-    const hit = m.remotes.find((r) => r.fingerprint && r.fingerprint === p.fingerprint)
+    const hit = m.remotes.find((r) => r.fingerprint && r.fingerprint === p.fingerprint && proven(r.id))
     if (hit) return hit.id
   }
   return null
@@ -202,13 +235,6 @@ export function managedRuntimeOf(p: MapPeer, m: PeerMatch): RuntimeId | null {
 function withoutManagedStubs<P extends MapPeer>(p: P, agentDids: ReadonlyMap<string, RuntimeId>): P {
   if (!p.agents || !p.agents.some((a) => a.did && agentDids.has(a.did))) return p
   return { ...p, agents: p.agents.filter((a) => !(a.did && agentDids.has(a.did))) }
-}
-
-/** A set of runtime DIDs as a PeerMatch (by runtime DID only). */
-function matchOfDids(setDids: ReadonlySet<string>): PeerMatch {
-  const dids: Record<string, string> = {}
-  for (const did of setDids) dids[did] = did
-  return { dids, remotes: [], agentDids: new Map() }
 }
 
 /**
@@ -222,10 +248,9 @@ function matchOfDids(setDids: ReadonlySet<string>): PeerMatch {
  */
 export function mergePeers<P extends MapPeer>(
   polls: ReadonlyArray<readonly P[]>,
-  match: PeerMatch | ReadonlySet<string>,
+  m: PeerMatch,
   onMatch?: (peerRuntimeId: string, runtime: RuntimeId) => void,
 ): P[] {
-  const m = match instanceof Set ? matchOfDids(match) : (match as PeerMatch)
   const managed = new Map<string, RuntimeId>()
   for (const peers of polls) {
     for (const p of peers) {
