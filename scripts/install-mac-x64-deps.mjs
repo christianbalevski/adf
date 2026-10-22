@@ -6,7 +6,7 @@
 // universal dmg crashes on load. Run on the macOS release runner after
 // `npm ci` (see .github/workflows/release.yml).
 //
-// node-pty and tree-sitter-bash need no entry here: they bundle prebuilds for
+// tree-sitter-bash needs no entry here: it bundles prebuilds for
 // both darwin arches inside the package itself.
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
@@ -14,7 +14,6 @@ import { execFileSync } from "node:child_process";
 const PAIRS = [
   ["sqlite-vec", "sqlite-vec-darwin-x64"],
   ["esbuild", "@esbuild/darwin-x64"],
-  ["@lydell/node-pty", "@lydell/node-pty-darwin-x64"],
   ["@napi-rs/keyring", "@napi-rs/keyring-darwin-x64"],
 ];
 

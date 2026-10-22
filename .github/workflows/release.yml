@@ -59,7 +59,7 @@ jobs:
 
       # npm only installs the platform binary packages matching the host arch
       # (darwin-arm64), but the universal dmg must also carry the Intel
-      # variants of sqlite-vec / esbuild / @lydell/node-pty — each resolves
+      # variants of sqlite-vec / esbuild / @napi-rs/keyring — each resolves
       # its binary at runtime via process.arch. The script force-installs
       # them pinned to the exact versions the parent packages declare.
       - name: Add Intel binary packages for the universal build

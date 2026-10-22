@@ -39,7 +39,7 @@ minutes or never got a runner, so it never actually shipped. Instead the
 dmg stays as-is, and for the universal dmg electron-builder packs the app once
 per arch — rebuilding `better-sqlite3` for each, which the Xcode toolchain
 cross-compiles fine — and lipo-merges the two. Deps that ship prebuilt
-single-arch binaries (`sqlite-vec`, `esbuild`, `@lydell/node-pty`) pick their
+single-arch binaries (`sqlite-vec`, `esbuild`, `@napi-rs/keyring`) pick their
 binary at runtime via `process.arch`, so CI force-installs their Intel
 variants first (`scripts/install-mac-x64-deps.mjs`) and `x64ArchFiles` in
 `electron-builder.yml` exempts them from the universal-merge arch check.
