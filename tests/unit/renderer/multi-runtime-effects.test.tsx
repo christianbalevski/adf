@@ -165,6 +165,25 @@ describe('C4: a remote agent\'s Config panel', () => {
     expect(await loadProviderModels('p-1')).toEqual({ models: ['model-host-1'] })
     expect([local.names(), remote.names()]).toEqual([['listModels'], ['listModels']])
   })
+
+  it('lists a provider\'s models again once its list is ten minutes old (a model added meanwhile shows)', async () => {
+    let models = ['claude-haiku-4-5']
+    const { local } = await page([LOCAL, REMOTE], { local: { listModels: async () => ({ models }) } })
+    const { loadProviderModels } = await import('../../../src/renderer/hooks/useProviderModels')
+    const now = vi.spyOn(Date, 'now')
+    try {
+      now.mockReturnValue(1_000_000)
+      expect(await loadProviderModels('p-1')).toEqual({ models: ['claude-haiku-4-5'] })
+      models = ['claude-haiku-5-5']
+      now.mockReturnValue(1_000_000 + 9 * 60_000)
+      expect(await loadProviderModels('p-1')).toEqual({ models: ['claude-haiku-4-5'] })
+      now.mockReturnValue(1_000_000 + 11 * 60_000)
+      expect(await loadProviderModels('p-1')).toEqual({ models: ['claude-haiku-5-5'] })
+      expect(local.names()).toEqual(['listModels', 'listModels'])
+    } finally {
+      now.mockRestore()
+    }
+  })
 })
 
 describe('C1: a reloaded main window', () => {
