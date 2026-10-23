@@ -45,7 +45,7 @@ export const RECORDED_EVENTS: RecordedEvent[] = [
   ev('tool_call_start', { name: 'ask', input: { questions: [{ question: 'ok?' }] }, id: 'toolu_4' }),
   ev('ask_request', { requestId: 'req-ask-1', question: 'ok?', questions: [{ question: 'ok?' }] }),
   ev('state_changed', { state: 'awaiting_ask' }),
-  ev('ask_response', { requestId: 'ask_1', questions: [{ question: 'ok?' }], answers: ['yes'], result: 'Q: ok?\nA: yes' }),
+  ev('ask_response', { requestId: 'ask_1', result: 'Q: ok?\nA: yes' }),
   ev('tool_call_result', { name: 'ask', id: 'toolu_4', result: { content: 'Q: ok?\nA: yes', isError: false } }),
   ev('tool_approval_request', {
     requestId: 'task-1', taskId: 'task-1', name: 'fs_write', input: { path: 'b.md' },

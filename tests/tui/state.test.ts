@@ -102,7 +102,7 @@ describe('reducer: loop-aware event ingestion', () => {
     let state = reduce(
       loaded(),
       { type: 'event', frame: frame('hil.requested', { request_id: 't9', task_id: 't9', tool: 'msg_send', input: { to: 'agent-2' }, reason: 'restricted' }) },
-      { type: 'event', frame: frame('ask.requested', { request_id: 'q1', question: 'Proceed?' }, 'consolidator') },
+      { type: 'event', frame: frame('ask.requested', { request_id: 'q1', question: 'Proceed?', questions: [{ question: 'Proceed?' }] }, 'consolidator') },
     )
     expect(state.agents[AGENT].pendingTasks.map(t => t.id)).toEqual(['t9'])
     expect(state.agents[AGENT].pendingAsks.map(a => a.requestId)).toEqual(['q1'])
@@ -136,19 +136,10 @@ describe('ask forms', () => {
     { question: 'Anything else?' },
   ]
 
-  it('keeps the form from ask.requested and the answers stepped through across a refetch', () => {
-    let state = reduce(loaded(), { type: 'event', frame: frame('ask.requested', { request_id: 'ask_2', question: 'Which region? (+1 more)', questions }) })
-    expect(state.agents[AGENT].pendingAsks[0]).toEqual(expect.objectContaining({ questions, answers: [] }))
+  it('keeps the form from ask.requested', () => {
+    const state = reduce(loaded(), { type: 'event', frame: frame('ask.requested', { request_id: 'ask_2', question: 'Which region? (+1 more)', questions }) })
+    expect(state.agents[AGENT].pendingAsks[0]).toEqual({ requestId: 'ask_2', question: 'Which region? (+1 more)', questions, loop: 'main' })
     expect(state.transcripts[transcriptKey(AGENT, 'main')].items[0]).toEqual(expect.objectContaining({ kind: 'ask', questions }))
-    state = reduce(state, { type: 'ask/progress', agentId: AGENT, requestId: 'ask_2', answers: ['eu-west'] })
-    expect(state.agents[AGENT].pendingAsks[0].answers).toEqual(['eu-west'])
-    state = reduce(state, { type: 'hil/loaded', agentId: AGENT, tasks: [], asks: [{ requestId: 'ask_2', question: 'Which region? (+1 more)', questions }] })
-    expect(state.agents[AGENT].pendingAsks[0].answers).toEqual(['eu-west'])
-  })
-
-  it('reads an older daemon’s ask (no questions) as one free-text question', () => {
-    const state = reduce(loaded(), { type: 'hil/loaded', agentId: AGENT, tasks: [], asks: [{ requestId: 'ask_3', question: 'Proceed?' } as never] })
-    expect(state.agents[AGENT].pendingAsks[0]).toEqual(expect.objectContaining({ questions: [{ question: 'Proceed?' }], answers: [] }))
   })
 
   it('turns the live card into the answered call, for forms and the old { question } shape', () => {
@@ -166,12 +157,12 @@ describe('loop-aware robustness', () => {
   it('keeps asks with the same id apart per loop', () => {
     let state = loaded()
     state = reduce(state,
-      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'main question?' }) },
-      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'researcher question?' }, 'consolidator') },
+      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'main question?', questions: [{ question: 'main question?' }] }) },
+      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'researcher question?', questions: [{ question: 'researcher question?' }] }, 'consolidator') },
     )
-    const researcher = { requestId: 'ask_1', question: 'researcher question?', questions: [{ question: 'researcher question?' }], answers: [], loop: 'consolidator' }
+    const researcher = { requestId: 'ask_1', question: 'researcher question?', questions: [{ question: 'researcher question?' }], loop: 'consolidator' }
     expect(state.agents[AGENT].pendingAsks).toEqual([
-      { requestId: 'ask_1', question: 'main question?', questions: [{ question: 'main question?' }], answers: [], loop: 'main' },
+      { requestId: 'ask_1', question: 'main question?', questions: [{ question: 'main question?' }], loop: 'main' },
       researcher,
     ])
     state = reduce(state, { type: 'event', frame: frame('ask.resolved', { request_id: 'ask_1' }) })

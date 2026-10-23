@@ -3134,8 +3134,10 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, asks }
   }
 
-  /** Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id. */
-  /** `answers`: one per question (`null` = skipped); a payload that does not fit the form is a 400 and the ask stays pending. */
+  /**
+   * `answers`: one per question (`null` = skipped); a payload that does not fit the form is a 400 and the ask stays pending.
+   * Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id.
+   */
   answerAgentAsk(agentId: string, requestId: string, answers: unknown, loop?: string): { agentId: string; requestId: string; loop: string; answered: boolean } {
     const managed = this.requireAgent(agentId)
     const holder = this.askExecutors(managed).find(entry =>

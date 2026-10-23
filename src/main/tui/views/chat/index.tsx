@@ -28,7 +28,7 @@ import { Footer } from './Footer'
 import { loopContextPercent } from '../../context/model'
 import { ApprovalDetailsOverlay, DENY_OVERLAY, DETAILS_OVERLAY, DenyOverlay } from './overlays'
 import { alwaysApprove, rejectWithFeedback } from './approvals'
-import { pendingAskFor, replyToAsk, skipAsk } from './asks'
+import { ASK_PROGRESS_KEY, askProgress, pendingAskFor, replyToAsk, skipAsk } from './asks'
 import type { TaskListEntry } from '../../api/types'
 import { chatCommands, readChatState } from './commands'
 import { isPromptEmpty, isPromptMenuOpen } from '../../app/Prompt'
@@ -158,6 +158,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   const transcripts = useTuiSelector(s => s.transcripts)
   // The agent's status line now sits on the composer's top border (app/ComposerTop.tsx); the website stays here.
   useTuiSelector(s => s.web?.server)
+  useTuiSelector(s => s.viewState[ASK_PROGRESS_KEY])
   const site = siteOf(store.getState(), agentId)
 
   // --- derived --------------------------------------------------------------
@@ -171,7 +172,8 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   const asks = pendingAsksFor(agent, loopName, transcripts)
   const queued = queuedItems(transcript.items, running, turnStart)
   const queuedIds = new Set(queued.map(q => q.id))
-  const dockModel: DockModel = { tasks, asks, suspended: loopName === MAIN_LOOP && agent?.executorState === 'suspended', queued }
+  const askAnswers = agentId && asks[0] ? askProgress(store.getState(), agentId, loopName, asks[0]) : undefined
+  const dockModel: DockModel = { tasks, asks, askAnswers, suspended: loopName === MAIN_LOOP && agent?.executorState === 'suspended', queued }
   const unseen = new Set(Object.entries(latest).filter(([name, at]) => at > (chat.seen[agentId ? transcriptKey(agentId, name) : ''] ?? 0)).map(([name]) => name))
   const pendingLoops = new Set((agent?.pendingTasks ?? []).filter(t => t.status === 'pending_approval').map(t => (typeof t.origin === 'string' && t.origin.startsWith('loop:') ? t.origin.slice(5) : MAIN_LOOP)))
 
@@ -298,7 +300,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
     if (action === 'answer') { actions.setFocus('input'); return }
     if (action === 'skip') {
       const ask = asks[0]
-      if (ask) void skipAsk(store, agentId, ask, loopName)
+      if (ask) void skipAsk(store, agentId, loopName, ask)
       return
     }
     if (action === 'shutdown') {
@@ -587,11 +589,8 @@ function placeholder(scope: CommandScope): string {
   if (!agent || !scope.agentId) return 'Select an agent (Tab → sidebar) or type /help'
   const label = agentLabel(agent)
   const target = scope.loop === MAIN_LOOP ? label : `${label} › ${scope.loop}`
-  const ask = pendingAskFor(state, scope.agentId, scope.loop)
-  if (ask) {
-    const step = ask.questions.length > 1 ? ` ${ask.answers.length + 1}/${ask.questions.length}` : ''
-    return `Answer ${label}'s question${step} · Enter on empty skips it`
-  }
+  // The dock shows which question (n/total): the placeholder does not repeat it.
+  if (pendingAskFor(state, scope.agentId, scope.loop)) return `Answer ${label}'s question · Enter on empty skips it`
   const loopState = agent.loops?.find(l => l.info.name === scope.loop)
   if (loopState && !loopState.info.enabled) return `${scope.loop} is disabled · /loop on ${scope.loop} to enable it`
   if (loopRunning(agent, loopState)) return `Message ${target} · queued until the turn ends · Esc interrupts`
@@ -629,10 +628,10 @@ const chat: ViewDefinition = {
     onSubmit: async (text, ctx) => {
       const ask = pendingAskFor(ctx.state(), ctx.agentId, ctx.loop)
       if (!ask || !ctx.agentId) return false
-      await replyToAsk(ctx.store, ctx.agentId, ask, text, ctx.loop)
+      await replyToAsk(ctx.store, ctx.agentId, ctx.loop, ask, text)
       return true
     },
-    // Enter on an empty prompt skips the question shown.
+    // Enter on an empty prompt skips the question the dock shows.
     submitsEmpty: scope => !!pendingAskFor(scope.state(), scope.agentId, scope.loop),
     historyKey: scope => (scope.agentId ? transcriptKey(scope.agentId, scope.loop) : 'none'),
     draftKey: scope => (scope.agentId ? `chat:${transcriptKey(scope.agentId, scope.loop)}` : 'chat'),
@@ -689,7 +688,7 @@ const chat: ViewDefinition = {
       title: 'Approvals and questions (the card under the transcript)',
       keys: [
         { keys: 'y', label: 'Approve: press twice, or once on a selected approval · resume a suspended agent. Mouse mode: click the card’s buttons' },
-        { keys: 'a', label: 'Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it in the prompt (a number picks an option, other text is your own answer, Enter on empty skips the question)' },
+        { keys: 'a', label: 'Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it in the prompt' },
         { keys: 'x', label: 'On a question card: skip the questions not answered yet and send the answers' },
         { keys: 'n', label: 'Reject · shut a suspended agent down (asks)' },
         { keys: 'f', label: 'Reject with feedback: the agent sees your text' },

@@ -7,6 +7,7 @@
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
+import { summarizeAsk, type AskQuestion } from '../../../../shared/utils/ask-form'
 import { MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
 import type { ActivityDay, AgentContents, ExperienceStat, MemoryFileSize, PowerStat, SkillSize, StatFactor, TableSize, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
@@ -538,7 +539,7 @@ export function waitingItems(slices: Array<{
   loop: string
   log: Array<LiveLogEntry & { id: string }>
   approvals: Iterable<string>
-  asks: Iterable<[string, { question: string }]>
+  asks: Iterable<[string, { questions: AskQuestion[] }]>
 }>): WaitingItem[] {
   const out: WaitingItem[] = []
   for (const s of slices) {
@@ -549,7 +550,7 @@ export function waitingItems(slices: Array<{
       out.push({ key: `approval:${s.loop}:${id}`, text: `${name ? `Approve ${name}` : 'Approve a tool call'}${where}`, loop: s.loop })
     }
     for (const [id, ask] of s.asks) {
-      const q = shortLine(ask.question, 60)
+      const q = shortLine(summarizeAsk(ask.questions), 60)
       out.push({ key: `ask:${s.loop}:${id}`, text: `${q ? `Answer: ${q}` : 'Answer a question'}${where}`, loop: s.loop })
     }
   }

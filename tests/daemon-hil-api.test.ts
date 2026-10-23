@@ -273,15 +273,15 @@ describe('daemon ask API', () => {
     expect(short.statusCode).toBe(400)
     expect(short.json()).toEqual({ error: 'Invalid answers: answers has 1 entries but the ask has 2 questions.', code: 'invalid_answers' })
 
-    const picks = await respond({ answers: ['eu-west', ['a', 'b']] })
-    expect(picks.statusCode).toBe(400)
-    expect(picks.json().code).toBe('invalid_answers')
-    expect(picks.json().error).toMatch(/question 2 takes free text/)
+    const wrongType = await respond({ answers: ['eu-west', 42] })
+    expect(wrongType.statusCode).toBe(400)
+    expect(wrongType.json().code).toBe('invalid_answers')
+    expect(wrongType.json().error).toMatch(/answer 2 must be a string/)
 
     // The pre-form wire shape is gone.
     const legacy = await respond({ answer: 'yes' })
     expect(legacy.statusCode).toBe(400)
-    expect(legacy.json().error).toMatch(/^answers is required/)
+    expect(legacy.json()).toEqual({ error: 'Invalid answers: answers must be an array with one entry per question.', code: 'invalid_answers' })
 
     expect(executor.getPendingAsks().map(a => a.requestId)).toEqual([requestId])
     expect((await respond({ answers: [null, 'no'] })).statusCode).toBe(200)

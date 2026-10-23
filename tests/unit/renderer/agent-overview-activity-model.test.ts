@@ -80,9 +80,9 @@ describe('waiting items', () => {
         loop: 'main',
         log: [{ id: 'e1', type: 'tool_call', content: '', timestamp: 1, metadata: { name: 'fs_delete' } }],
         approvals: ['e1', 'missing'],
-        asks: [['e2', { question: 'Which folder?\nMore text' }]]
+        asks: [['e2', { questions: [{ question: 'Which folder?\nMore text' }] }]]
       },
-      { loop: 'critic', log: [], approvals: [], asks: [['e3', { question: '' }]] }
+      { loop: 'critic', log: [], approvals: [], asks: [['e3', { questions: [] }]] }
     ])
     expect(items.map((i) => i.text)).toEqual([
       'Approve fs_delete',

@@ -26,13 +26,13 @@ export interface NodeActivity {
   detail?: string
 }
 
-export interface PendingInteraction {
-  type: 'ask' | 'approval'
+export type PendingInteraction =
+  | { type: 'ask'; requestId: string; questions: AskQuestion[] }
+  | PendingApprovalInteraction
+
+interface PendingApprovalInteraction {
+  type: 'approval'
   requestId: string
-  /** Asks: the question text (all questions, one per line). */
-  question?: string
-  /** Asks: the form. Absent from an older runtime — then `question` is the one free-text question. */
-  questions?: AskQuestion[]
   toolName?: string
   input?: unknown
   /** Why the approval is pending ('restricted' tool vs 'protection' override). */

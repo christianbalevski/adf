@@ -36,11 +36,10 @@ function toPendingInteractions(notifications: PendingNotification[]): Record<str
     // By agent key: the path on This computer, runtime and path on another runtime (multi-runtime.md §5.2).
     const key = agentKey({ runtimeId: n.runtimeId, filePath: n.filePath })
     if (byAgent[key]) continue
-    byAgent[key] = {
-      type: n.kind,
+    // `questions` is optional only in the shared notification shape; every ask carries it.
+    byAgent[key] = n.kind === 'ask' ? { type: 'ask', requestId: n.requestId, questions: n.questions ?? [] } : {
+      type: 'approval',
       requestId: n.requestId,
-      question: n.question,
-      questions: n.questions,
       toolName: n.toolName,
       input: n.input,
       reason: n.reason,

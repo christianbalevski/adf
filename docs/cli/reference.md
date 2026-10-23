@@ -551,7 +551,7 @@ Approvals and questions (the card under the transcript):
 | Keys | Action |
 |---|---|
 | `y` | Approve: press twice, or once on a selected approval · resume a suspended agent. Mouse mode: click the card’s buttons |
-| `a` | Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it in the prompt (a number picks an option, other text is your own answer, Enter on empty skips the question) |
+| `a` | Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it in the prompt |
 | `x` | On a question card: skip the questions not answered yet and send the answers |
 | `n` | Reject · shut a suspended agent down (asks) |
 | `f` | Reject with feedback: the agent sees your text |

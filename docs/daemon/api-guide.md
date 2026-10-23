@@ -569,8 +569,10 @@ Postgres, SQLite) then "Anything I should avoid?":
 { "answers": ["SQLite", null], "loop": "main" }
 ```
 
-A payload that does not fit the form (wrong count, several picks on a
-one-pick question) is `400` and the ask stays pending. Request ids are
+Several picks on a one-pick or free-text question are joined with `, `. A
+payload that does not fit the form (not an array, the wrong number of
+entries, an entry that is not a string, an array of strings or `null`) is
+`400 invalid_answers` and the ask stays pending. Request ids are
 numbered per loop, so pass `loop` when two loops ask at once.
 
 **Suspends.** An agent that hits `limits.max_active_turns` emits

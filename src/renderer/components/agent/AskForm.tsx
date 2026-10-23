@@ -1,11 +1,6 @@
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
+import { useEffect, useId, useRef, useState, type KeyboardEvent } from 'react'
 import { Button } from '../ui'
-import {
-  ASK_ALL_SKIPPED,
-  parseAskResult,
-  type AskAnswer,
-  type AskQuestion,
-} from '../../../shared/utils/ask-form'
+import { parseAskResult, type AskAnswer, type AskQuestion } from '../../../shared/utils/ask-form'
 
 /**
  * The agent's `ask` as a form: one block per question. Free text takes a
@@ -24,22 +19,27 @@ export interface AskDraft {
   otherPicked: boolean
 }
 
-export const EMPTY_DRAFT: AskDraft = { picks: [], other: '', otherPicked: false }
+const EMPTY_DRAFT: AskDraft = { picks: [], other: '', otherPicked: false }
 
 /** Click an option: single choice replaces the pick (and clears Other), multiple toggles it. */
-export function pickOption(q: AskQuestion, d: AskDraft, label: string): AskDraft {
+function pickOption(q: AskQuestion, d: AskDraft, label: string): AskDraft {
   if (!q.multiple) return { ...d, picks: [label], otherPicked: false }
   return { ...d, picks: d.picks.includes(label) ? d.picks.filter((p) => p !== label) : [...d.picks, label] }
 }
 
 /** Click the "Other…" radio/checkbox. */
-export function toggleOther(q: AskQuestion, d: AskDraft): AskDraft {
+function toggleOther(q: AskQuestion, d: AskDraft): AskDraft {
   if (!q.multiple) return { ...d, picks: [], otherPicked: true }
   return { ...d, otherPicked: !d.otherPicked }
 }
 
+/** Click the checked radio again: the question goes back to unanswered. Other's text stays. */
+function clearPick(d: AskDraft): AskDraft {
+  return { ...d, picks: [], otherPicked: false }
+}
+
 /** Type in the "Other…" box (or a text question's box). Typing selects Other. */
-export function typeOther(q: AskQuestion, d: AskDraft, text: string): AskDraft {
+function typeOther(q: AskQuestion, d: AskDraft, text: string): AskDraft {
   if (!q.options) return { ...d, other: text }
   if (!q.multiple) return { picks: [], other: text, otherPicked: true }
   return { ...d, other: text, otherPicked: d.otherPicked || text.trim() !== '' }
@@ -56,17 +56,6 @@ export function draftAnswer(q: AskQuestion, d: AskDraft): AskAnswer {
   }
   if (d.otherPicked) return other || null
   return d.picks[0] ?? null
-}
-
-/**
- * Per-question display answers of an answered ask, from its tool result
- * (`null` = skipped). A single question whose result is in no known shape
- * (an answer kept as typed) shows the text as is.
- */
-export function askDisplayAnswers(questions: AskQuestion[], result: string): Array<string | null> {
-  const known = result === ASK_ALL_SKIPPED || result.startsWith('Q: ') || result.startsWith('Human answered: ')
-  if (!known && questions.length === 1) return [result && result !== '[skipped]' ? result : null]
-  return parseAskResult(questions, result)
 }
 
 function AutoGrowTextarea({ value, onChange, ...props }: {
@@ -118,20 +107,22 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
 
   if (!q.options) {
     return (
-      <label className="block space-y-1.5">
-        <QuestionHeading q={q} index={index} count={count} />
+      <div className="space-y-1.5">
+        <QuestionHeading q={q} index={index} count={count} id={headingId} />
         <AutoGrowTextarea
           value={draft.other}
           onChange={(text) => onChange(typeOther(q, draft, text))}
           placeholder="Your answer"
-          data-ask-field
+          aria-labelledby={headingId}
         />
-      </label>
+      </div>
     )
   }
 
   const type = q.multiple ? 'checkbox' : 'radio'
   const name = `${formId}-q${index}`
+  // A checked radio fires no change when clicked again: its click unpicks it.
+  const unpick = q.multiple ? undefined : () => onChange(clearPick(draft))
   return (
     <fieldset className="min-w-0 space-y-1" aria-labelledby={headingId}>
       <div className="space-y-0.5">
@@ -149,7 +140,7 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
                 className={`${MARK} mt-[3px]`}
                 checked={checked}
                 onChange={() => onChange(pickOption(q, draft, option.label))}
-                data-ask-field
+                onClick={checked ? unpick : undefined}
               />
               <span className="min-w-0">
                 <span className="block text-sm text-[var(--ink)] break-words">{option.label}</span>
@@ -160,16 +151,21 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
             </label>
           )
         })}
-        <div className={`${ROW} items-center ${draft.otherPicked ? 'bg-[var(--tint-soft)]' : ''}`} onClick={() => otherRef.current?.focus()}>
+        <div
+          className={`${ROW} items-center ${draft.otherPicked ? 'bg-[var(--tint-soft)]' : ''}`}
+          onClick={(e) => { if (e.target === e.currentTarget) otherRef.current?.focus() }}
+        >
           <input
             type={type}
             name={name}
             className={MARK}
             checked={draft.otherPicked}
             onChange={() => {
-              onChange(toggleOther(q, draft))
-              otherRef.current?.focus()
+              const next = toggleOther(q, draft)
+              onChange(next)
+              if (next.otherPicked) otherRef.current?.focus()
             }}
+            onClick={draft.otherPicked ? unpick : undefined}
             aria-label={`Other${n}`}
           />
           <input
@@ -177,10 +173,6 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
             type="text"
             value={draft.other}
             onChange={(e) => onChange(typeOther(q, draft, e.target.value))}
-            onKeyDown={(e) => {
-              // Enter alone must not send the whole form from one text box.
-              if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey) e.preventDefault()
-            }}
             placeholder="Other…"
             aria-label={`Other answer${n}`}
             className="min-w-0 flex-1 border-0 border-b border-[var(--rule)] bg-transparent px-0 py-0.5 text-sm text-[var(--ink)] placeholder:text-[var(--ink-faint)] focus:border-[var(--blue)]"
@@ -192,74 +184,62 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
 }
 
 /** Resolves with an error message when the answer did not land. */
-export type AskSubmit = (answers: AskAnswer[]) => Promise<string | null | undefined> | string | null | undefined | void
-
-// Entered answers by ask, so a form scrolled out of the list and back keeps them.
-const keptDrafts = new Map<string, AskDraft[]>()
-const focusedForms = new Set<string>()
+type AskSubmit = (answers: AskAnswer[]) => Promise<string | null | undefined> | string | null | undefined | void
 
 /**
  * A pending ask, answerable. `onSubmit` gets one answer per question (`null`
  * = skipped) and resolves with an error message when the answer did not land.
+ * `drafts` seeds what was entered before (the loop list unmounts rows scrolled
+ * away) and `onDraftsChange` hands every edit back to be kept.
  */
-export function AskForm({ questions, onSubmit, draftKey, autoFocus = false }: {
+export function AskForm({ questions, drafts: initialDrafts, onDraftsChange, onSubmit }: {
   questions: AskQuestion[]
+  drafts?: AskDraft[]
+  onDraftsChange?: (drafts: AskDraft[]) => void
   onSubmit: AskSubmit
-  /** Keeps the entered answers across remounts (the loop list unmounts rows scrolled away). */
-  draftKey?: string
-  /** Move focus to the first field the first time this form shows. */
-  autoFocus?: boolean
 }) {
   const formId = useId()
-  const formRef = useRef<HTMLFormElement>(null)
-  const [drafts, setDraftState] = useState<AskDraft[]>(() =>
-    (draftKey && keptDrafts.get(draftKey)) || questions.map(() => EMPTY_DRAFT))
+  const [drafts, setDrafts] = useState<AskDraft[]>(() => initialDrafts ?? questions.map(() => EMPTY_DRAFT))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const setDrafts = (update: (all: AskDraft[]) => AskDraft[]) => setDraftState((all) => {
-    const next = update(all)
-    if (draftKey) keptDrafts.set(draftKey, next)
-    return next
-  })
+  const editDraft = (index: number, draft: AskDraft) => {
+    const next = questions.map((_, j) => (j === index ? draft : drafts[j] ?? EMPTY_DRAFT))
+    setDrafts(next)
+    onDraftsChange?.(next)
+  }
 
-  useEffect(() => {
-    if (!autoFocus || (draftKey && focusedForms.has(draftKey))) return
-    if (draftKey) focusedForms.add(draftKey)
-    // Only take focus from nowhere or from the (now locked) composer.
-    const active = document.activeElement
-    if (active && active !== document.body && !active.classList.contains('loop-composer-input')) return
-    formRef.current?.querySelector<HTMLElement>('[data-ask-field]')?.focus({ preventScroll: true })
-  }, [autoFocus, draftKey])
-
-  const send = useCallback(async (answers: AskAnswer[]) => {
+  const send = async (answers: AskAnswer[]) => {
     if (busy) return
     setBusy(true)
     setError(null)
     try {
       const failure = await onSubmit(answers)
       if (failure) setError(failure)
-      else if (draftKey) keptDrafts.delete(draftKey)
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err))
     } finally {
       setBusy(false)
     }
-  }, [busy, onSubmit, draftKey])
+  }
 
   const submit = () => void send(questions.map((q, i) => draftAnswer(q, drafts[i] ?? EMPTY_DRAFT)))
   const skipAll = () => void send(questions.map(() => null))
 
   const handleKeyDown = (e: KeyboardEvent<HTMLFormElement>) => {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    if (e.key !== 'Enter') return
+    if (e.metaKey || e.ctrlKey) {
       e.preventDefault()
       submit()
+      return
     }
+    // Only ⌘/Ctrl+Enter and the Submit button send: Enter in a text box,
+    // radio or checkbox must not submit the whole form implicitly.
+    if (e.target instanceof HTMLInputElement) e.preventDefault()
   }
 
   return (
     <form
-      ref={formRef}
       onSubmit={(e) => { e.preventDefault(); submit() }}
       onKeyDown={handleKeyDown}
       className="space-y-3"
@@ -273,7 +253,7 @@ export function AskForm({ questions, onSubmit, draftKey, autoFocus = false }: {
           count={questions.length}
           draft={drafts[i] ?? EMPTY_DRAFT}
           formId={formId}
-          onChange={(draft) => setDrafts((all) => all.map((d, j) => (j === i ? draft : d)))}
+          onChange={(draft) => editDraft(i, draft)}
         />
       ))}
       {error && (
@@ -319,27 +299,25 @@ export function AskAnswers({ questions, answers }: {
 }
 
 /**
- * The ask card in the loop: the form while the ask is pending, the questions
- * and answers once answered (`result` = the stored tool result).
+ * The ask card in the loop: the form while the ask is pending (`onSubmit`
+ * given), else the questions and answers (`result` = the stored tool result).
  */
-export function AskCard({ questions, pending, result, onSubmit, draftKey }: {
+export function AskCard({ questions, result, drafts, onDraftsChange, onSubmit }: {
   questions: AskQuestion[]
-  pending: boolean
   result?: string | null
+  drafts?: AskDraft[]
+  onDraftsChange?: (drafts: AskDraft[]) => void
   onSubmit?: AskSubmit
-  /** The pending ask's request id: keeps entered answers across remounts. */
-  draftKey?: string
 }) {
-  const answerable = pending && !result && onSubmit
   return (
-    <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${answerable ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
+    <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${onSubmit ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
       <div className="p-2.5">
         <div className="mb-1.5 text-[12px] font-medium text-[var(--ink-muted)]">
           {questions.length > 1 ? `Agent asked ${questions.length} questions` : 'Agent asked'}
         </div>
-        {answerable
-          ? <AskForm questions={questions} onSubmit={onSubmit} draftKey={draftKey} autoFocus />
-          : <AskAnswers questions={questions} answers={result ? askDisplayAnswers(questions, result) : null} />}
+        {onSubmit
+          ? <AskForm questions={questions} drafts={drafts} onDraftsChange={onDraftsChange} onSubmit={onSubmit} />
+          : <AskAnswers questions={questions} answers={result ? parseAskResult(questions, result) : null} />}
       </div>
     </div>
   )

@@ -128,7 +128,7 @@ describe('ApprovalHub registration', () => {
 
     const entry = approvalHub.snapshot()[0]
     expect(entry.preview).toBe('Which branch? (+1 more)')
-    expect(entry.question).toBe('Which branch?\nSquash first?')
+    expect(entry.question).toBe('Which branch? (+1 more)')
     expect(entry.questions).toHaveLength(2)
 
     expect(() => executor.resolveAsk(entry.requestId, ['main'])).toThrow(AskAnswerError)

@@ -17,7 +17,7 @@ import type {
 } from '../api/types'
 import type { TrackedState } from './tracked'
 import type { OwnerCommandHeader } from '../../../shared/utils/owner-command-row'
-import type { AskAnswer, AskQuestion } from '../../../shared/utils/ask-form'
+import type { AskQuestion } from '../../../shared/utils/ask-form'
 
 /** `${agentId}\u0000${loop}` — one transcript per (agent, loop). */
 export type TranscriptKey = string
@@ -123,8 +123,6 @@ export interface AskItem extends ItemBase {
   requestId: string
   questions: AskQuestion[]
   status: 'pending' | 'answered'
-  /** Answer preview (the wire carries at most 200 chars of the Q/A text). */
-  answer?: string
 }
 
 export interface ErrorItem extends ItemBase {
@@ -188,11 +186,6 @@ export interface TokenTally {
   cacheWrite: number
 }
 
-/** A pending ask (its form always set, even from older daemons) and the answers given so far in the dock. */
-export interface PendingAsk extends AskEntry {
-  answers: AskAnswer[]
-}
-
 export interface AgentEntry {
   summary: AgentSummary
   status?: AgentStatus
@@ -204,7 +197,7 @@ export interface AgentEntry {
   config?: AgentConfig
   /** Pending approvals (tasks in pending_approval), with whether "always approve" is allowed. */
   pendingTasks: TaskListEntry[]
-  pendingAsks: PendingAsk[]
+  pendingAsks: AskEntry[]
   /** Tokens seen on llm.completed since the TUI connected. */
   tokens: TokenTally
   /** Model of the last llm.completed, if any. */

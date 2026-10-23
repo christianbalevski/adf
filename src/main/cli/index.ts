@@ -577,17 +577,8 @@ async function answerAsk(io: CliIo, options: CliOptions, argv: string[]): Promis
     } catch {
       throw new Error(`--answers is not valid JSON. ${ANSWER_USAGE}`)
     }
-    if (!Array.isArray(answers)) throw new Error("--answers must be a JSON array with one entry per question, e.g. '[\"yes\", [\"a\", \"b\"], null]'")
   } else {
-    // A bare answer only fits a one-question ask: read the form first.
-    const listed = await requestJson(io, options, `/agents/${enc(agent)}/asks`)
-    const asks = isRecord(listed) && Array.isArray(listed.asks) ? listed.asks.filter(isRecord) : []
-    const pending = asks.find(ask => ask.requestId === requestId && (loop === undefined || ask.loop === loop))
-    if (!pending) throw new Error(`No pending ask "${requestId}" on ${agent}${loop ? ` in loop "${loop}"` : ''} (already answered, or never asked).`)
-    const count = Array.isArray(pending.questions) ? pending.questions.length : 1
-    if (count !== 1) {
-      throw new Error(`${requestId} is a form with ${count} questions: answer with --answers '<json array>', one entry per question (a string, an array of picks, or null to skip).`)
-    }
+    // A bare answer fits a one-question ask; the daemon rejects it for a longer form.
     answers = [text]
   }
   const data = await requestJson(io, options, `/agents/${enc(agent)}/asks/${enc(requestId)}/respond`, {

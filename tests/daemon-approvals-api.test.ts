@@ -38,8 +38,7 @@ function ask(filePath: string, requestId: string): PendingNotification {
     agentName: 'agent-2',
     loop: 'main',
     preview: 'Which folder? (+1 more)',
-    // The hub row carries every question's text; the pull view summarizes it.
-    question: 'Which folder?\nOverwrite?',
+    question: 'Which folder? (+1 more)',
     questions: [{ question: 'Which folder?', options: [{ label: 'src' }, { label: 'docs' }] }, { question: 'Overwrite?' }],
     requestedAt: Date.now(),
   }

@@ -154,9 +154,9 @@ describe('readAskReply', () => {
   const pick = { question: 'Which region?', options: [{ label: 'us-east' }, { label: 'eu-west' }, { label: 'ap-south' }] }
   const several = { ...pick, multiple: true }
 
-  it('picks options by number or label; other text is the Other answer; empty skips', () => {
+  it('picks options by number; other text is the Other answer; empty skips', () => {
     expect(readAskReply(pick, '2')).toEqual({ answer: 'eu-west' })
-    expect(readAskReply(pick, 'EU-West')).toEqual({ answer: 'eu-west' })
+    expect(readAskReply(pick, 'EU-West')).toEqual({ answer: 'EU-West' })
     expect(readAskReply(pick, 'wherever is cheapest')).toEqual({ answer: 'wherever is cheapest' })
     expect(readAskReply(pick, '  ')).toEqual({ answer: null })
     expect(readAskReply({ question: 'Anything else?' }, ' 42 ')).toEqual({ answer: '42' })
@@ -167,6 +167,11 @@ describe('readAskReply', () => {
     expect(readAskReply(several, '3 1 3')).toEqual({ answer: ['ap-south', 'us-east'] })
     expect(readAskReply(several, 'all of them')).toEqual({ answer: ['all of them'] })
     expect(readAskReply(pick, '1,2')).toEqual({ error: 'This question takes one pick' })
-    expect(readAskReply(pick, '4')).toEqual({ error: 'There is no option 4: pick 1–3, or type your own answer' })
+  })
+
+  it('reads numbers that are not all options as the Other answer', () => {
+    expect(readAskReply(pick, '16')).toEqual({ answer: '16' })
+    expect(readAskReply(pick, '1, 4')).toEqual({ answer: '1, 4' })
+    expect(readAskReply(several, '0')).toEqual({ answer: ['0'] })
   })
 })

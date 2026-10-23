@@ -35,7 +35,7 @@
 > #13 {"type":"state_changed","payload":{"state":"awaiting_ask"},"timestamp":1013}
   emit {"type":"agent_state_changed","payload":{"filePath":"<AGENT>","state":"suspended"},"timestamp":1700000000000} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}
   state suspended activeLoops 0 loops [] text ""
-> #14 {"type":"ask_response","payload":{"requestId":"ask_1","questions":[{"question":"ok?"}],"answers":["yes"],"result":"Q: ok?\nA: yes"},"timestamp":1014}
+> #14 {"type":"ask_response","payload":{"requestId":"ask_1","result":"Q: ok?\nA: yes"},"timestamp":1014}
   state suspended activeLoops 0 loops [] text ""
 > #15 {"type":"tool_call_result","payload":{"name":"ask","id":"toolu_4","result":{"content":"Q: ok?\nA: yes","isError":false}},"timestamp":1015}
   emit {"type":"tool_call_result","payload":{"filePath":"<AGENT>","name":"ask","id":"toolu_4","result":{"content":"Q: ok?\nA: yes","isError":false}},"timestamp":1015} | status {"filePath":"<AGENT>","handle":"agent-1","state":"suspended","activeLoops":0}

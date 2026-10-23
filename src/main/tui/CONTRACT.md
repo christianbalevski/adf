@@ -276,10 +276,10 @@ identity (GET /identity status, null on daemons without it), auth (GET
 transcripts: Record<TranscriptKey, Transcript>, activeView, focus, overlays,
 toasts, activity, lastEvents, viewState, tracked }`. `AgentEntry { summary, status?,
 executorState?, loops?: LoopState[], config?, pendingTasks, pendingAsks:
-PendingAsk[], tokens, lastModel?, unreadInbox, error? }`. `PendingAsk` is the
-daemon's `AskEntry {requestId, question, questions, loop?}` (older daemons'
-one question read as a one-question form) plus `answers`: those stepped
-through in the dock so far (`ask/progress`), kept across a refetch. `LoopState { info: LoopInfo,
+AskEntry[], tokens, lastModel?, unreadInbox, error? }`. `AskEntry` is the
+daemon's `{requestId, question (one-line summary), questions, loop?}`; the
+answers stepped through in the dock so far live in view state
+(`views/chat/asks.ts`), keyed by agent + loop + requestId. `LoopState { info: LoopInfo,
 executorState? }`.
 
 Transcript items (`TranscriptItem`, discriminated by `kind`): `user {text,
@@ -287,7 +287,7 @@ origin: owner|loop|runtime, from?, pending?}` · `assistant {text, streaming,
 model?}` · `thinking {text, streaming}` · `tool {toolUseId?, name, input,
 status: running|ok|error, result?}` · `notice {text, level, event?}` · `hil
 {taskId, tool, input, reason?, status: pending|approved|denied}` · `ask
-{requestId, questions, status, answer?}` (the live card; an `ask` tool call
+{requestId, questions, status}` (the live card: questions only, the tool call that replaces it shows the answers; an `ask` tool call
 reads its form with `askQuestions(input)`, which also reads the old
 `{question}` input) · `error {text}` · `context {category,
 text}` (system prompt, loop_inject, compaction summaries — render collapsed,

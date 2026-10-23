@@ -21,7 +21,7 @@ export const MAX_TRANSCRIPT_ITEMS = 2000
 const { parseLoopToDisplay } = cjs(loopParserNs)
 const { attachmentText } = cjs(fileRefNs)
 /** The `ask` form helpers (shared with Studio and the daemon), for the rest of the TUI. */
-export const { askQuestions, parseAskResult, summarizeAsk } = cjs(askFormNs)
+export const { askQuestions, parseAskResult } = cjs(askFormNs)
 
 /** `text` followed by one line per attachment (`[image: path]`, `[deleted: name]`). */
 function withAttachments(text: string, attachments: unknown): string {
@@ -424,16 +424,14 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
     case 'ask.requested': {
       const requestId = str(p.request_id)
       if (!requestId || items.some(item => item.kind === 'ask' && item.requestId === requestId)) return items
-      const form = askQuestions({ questions: p.questions })
-      const questions = form.length > 0 ? form : [{ question: str(p.question) ?? '' }]
-      return cap([...finalizeStreaming(items), { id: localId(), at, local: true, kind: 'ask', requestId, questions, status: 'pending' }])
+      return cap([...finalizeStreaming(items), { id: localId(), at, local: true, kind: 'ask', requestId, questions: askQuestions({ questions: p.questions }), status: 'pending' }])
     }
     case 'ask.resolved': {
       const requestId = str(p.request_id)
       const index = items.findIndex(item => item.kind === 'ask' && item.requestId === requestId)
       if (index < 0) return items
       const next = items.slice()
-      next[index] = { ...(next[index] as Extract<TranscriptItem, { kind: 'ask' }>), status: 'answered', answer: str(p.preview) }
+      next[index] = { ...(next[index] as Extract<TranscriptItem, { kind: 'ask' }>), status: 'answered' }
       return next
     }
     case 'agent.error': {

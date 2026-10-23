@@ -6540,7 +6540,7 @@
           "Tasks & approvals"
         ],
         "summary": "Answer an ask request",
-        "description": "Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own (\"Other\") text. Answers that do not fit the form (wrong count, several picks for a single-pick question, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.",
+        "description": "Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own (\"Other\") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.",
         "operationId": "answerAgentAsk",
         "parameters": [
           {
@@ -6572,7 +6572,7 @@
             }
           },
           "400": {
-            "description": "`answers` missing or not an array (`bad_request`), or answers that do not fit the form (`invalid_answers`)",
+            "description": "`answers` missing, not an array, the wrong length, or holding a non-string entry (`invalid_answers`); a bad `loop` (`bad_request`)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6583,12 +6583,6 @@
                     "value": {
                       "error": "Invalid answers: answers has 1 entries but the ask has 2 questions.",
                       "code": "invalid_answers"
-                    }
-                  },
-                  "bad_request": {
-                    "value": {
-                      "error": "answers is required: an array with one entry per question (a string, an array of strings, or null to skip)",
-                      "code": "bad_request"
                     }
                   }
                 }

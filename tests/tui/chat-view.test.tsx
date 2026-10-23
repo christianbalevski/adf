@@ -269,15 +269,15 @@ describe('chat view', () => {
     let frame = await tui.waitFor('Which region?')
     expect(frame).toContain('1/3')
     expect(frame).toContain('2. eu-west  closer to the team')
-    expect(frame).toContain('Other: type your own answer')
+    expect(frame).toContain('Type a number, or your own answer')
+    // Several numbers on a one-pick question keep the question.
+    await typeInPrompt(tui, '1,2')
+    await tui.press(KEY.enter)
+    await tui.waitFor('This question takes one pick')
     await typeInPrompt(tui, '2')
     await tui.press(KEY.enter)
     frame = await tui.waitFor('Which checks should run?')
     expect(frame).toContain('2/3')
-    // A number out of range keeps the question.
-    await typeInPrompt(tui, '7')
-    await tui.press(KEY.enter)
-    await tui.waitFor('There is no option 7')
     await typeInPrompt(tui, '1,3')
     await tui.press(KEY.enter)
     await tui.waitFor('Anything else?')
@@ -285,6 +285,16 @@ describe('chat view', () => {
     await tui.press(KEY.enter)
     await tui.waitFor('Answers sent')
     expect(mock.agents.get(AGENT_1_ID)!.askAnswers?.ask_2).toEqual(['eu-west', ['lint', 'e2e'], null])
+  })
+
+  it('Enter on an empty prompt does not skip a question hidden behind an approval', async () => {
+    const { tui, mock } = await mountChat({ before: m => { m.agents.get(AGENT_1_ID)!.tasks = [] } })
+    addPendingTask(mock, AGENT_1_ID, { id: 'task_9', tool: 'fs_delete', args: { path: 'old.md' } })
+    addAsk(mock, AGENT_1_ID, 'ask_4', 'Proceed?')
+    await tui.waitFor('(+1 question waiting)')
+    await tui.press(KEY.enter)
+    await new Promise(resolve => setTimeout(resolve, 100))
+    expect(mock.requests).not.toContain(`POST /agents/${AGENT_1_ID}/asks/ask_4/respond`)
   })
 
   it('x on the question card skips the questions not answered yet', async () => {

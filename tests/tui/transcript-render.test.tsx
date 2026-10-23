@@ -185,14 +185,14 @@ describe('live tool events', () => {
 
   it('an answered ask becomes the ask call in place: one card, live and after the refetch', async () => {
     const { tui, mock } = await mount()
-    mock.emit({ event_type: 'ask.requested', agent_id: AGENT_1_ID, payload: { request_id: 'ask_1', question: 'Which region?' } })
+    mock.emit({ event_type: 'ask.requested', agent_id: AGENT_1_ID, payload: { request_id: 'ask_1', question: 'Which region?', questions: [{ question: 'Which region?' }] } })
     await tui.waitFor('the agent asks you')
-    mock.emit({ event_type: 'ask.resolved', agent_id: AGENT_1_ID, payload: { request_id: 'ask_1', preview: 'eu-west' } })
-    mock.emit({ event_type: 'tool.started', agent_id: AGENT_1_ID, payload: { id: 'tu_ask', name: 'ask', input: { question: 'Which region?' } } })
-    mock.emit({ event_type: 'tool.completed', agent_id: AGENT_1_ID, payload: { id: 'tu_ask', name: 'ask', result: { content: 'Human answered: eu-west', isError: false }, isError: false } })
+    mock.emit({ event_type: 'ask.resolved', agent_id: AGENT_1_ID, payload: { request_id: 'ask_1', preview: 'Q: Which region?\nA: eu-west' } })
+    mock.emit({ event_type: 'tool.started', agent_id: AGENT_1_ID, payload: { id: 'tu_ask', name: 'ask', input: { questions: [{ question: 'Which region?' }] } } })
+    mock.emit({ event_type: 'tool.completed', agent_id: AGENT_1_ID, payload: { id: 'tu_ask', name: 'ask', result: { content: 'Q: Which region?\nA: eu-west', isError: false }, isError: false } })
     let frame = await tui.waitFor('› eu-west')
     expect(frame.split('Which region?').length - 1).toBe(1)
-    pushToolCall(mock, AGENT_1_ID, 'main', { id: 'tu_ask', name: 'ask', input: { question: 'Which region?' }, result: 'Human answered: eu-west' })
+    pushToolCall(mock, AGENT_1_ID, 'main', { id: 'tu_ask', name: 'ask', input: { questions: [{ question: 'Which region?' }] }, result: 'Q: Which region?\nA: eu-west' })
     pushRow(mock, AGENT_1_ID, 'main', 'assistant', [{ type: 'text', text: 'Going with eu-west.' }])
     mock.emit({ event_type: 'turn.completed', agent_id: AGENT_1_ID, payload: { content: 'Going with eu-west.' } })
     frame = await tui.waitFor('Going with eu-west.')
@@ -311,7 +311,7 @@ describe('itemHeight matches the rendered rows', () => {
   })
 
   it('an ask card (ask.requested) at its real text width', () => {
-    const ask: TranscriptItem = { id: 'k', at: 1, kind: 'ask', requestId: 'r', questions: [{ question: 'z'.repeat(70) }], status: 'answered', answer: `Q: ${'z'.repeat(70)}\nA: ok` }
+    const ask: TranscriptItem = { id: 'k', at: 1, kind: 'ask', requestId: 'r', questions: [{ question: 'z'.repeat(70) }], status: 'answered' }
     const form: TranscriptItem = { id: 'f', at: 1, kind: 'ask', requestId: 'r', questions: FORM, status: 'pending' }
     for (const item of [ask, form]) {
       for (const width of [48, 100]) expect(renderedRows(item, width, false)).toBe(itemHeight(item, width, { expanded: false, showThinking: false }))

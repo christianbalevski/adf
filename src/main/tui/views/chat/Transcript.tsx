@@ -13,7 +13,6 @@ import type { AskQuestion } from '../../../../shared/utils/ask-form'
 import {
   EXPANDED_TOOL_LINES,
   askAnswers,
-  askCardAnswers,
   capLines,
   isAsyncTool,
   isExpandable,
@@ -279,7 +278,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
       return (
         <Box flexDirection="column" width={w} borderStyle={theme.ascii ? 'classic' : 'single'} borderLeft borderRight={false} borderTop={false} borderBottom={false} borderColor={item.status === 'pending' ? theme.color.warn : theme.color.dim} paddingLeft={1}>
           <Text bold color={item.status === 'pending' ? theme.color.warn : theme.color.muted}>? {item.status === 'pending' ? 'the agent asks you' : 'answered'}</Text>
-          <AskForm questions={item.questions} answers={askCardAnswers(item)} />
+          <AskForm questions={item.questions} />
         </Box>
       )
     case 'notice':

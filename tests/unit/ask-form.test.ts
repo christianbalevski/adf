@@ -29,13 +29,13 @@ describe('askQuestions', () => {
     expect(askQuestions({
       questions: [
         { question: 'A?', options: [] , multiple: true },
-        { question: 'B?', options: ['x', '', { label: 'y', description: '' }, { label: 'z', description: 'zed' }, 7], multiple: true },
+        { question: 'B?', options: [{ label: 'y', description: '' }, { label: 'z', description: 'zed' }, 'x', 7], multiple: true },
         { nope: true },
         'junk',
       ],
     })).toEqual([
       { question: 'A?' },
-      { question: 'B?', options: [{ label: 'x' }, { label: 'y' }, { label: 'z', description: 'zed' }], multiple: true },
+      { question: 'B?', options: [{ label: 'y' }, { label: 'z', description: 'zed' }], multiple: true },
     ])
   })
 
@@ -68,14 +68,14 @@ describe('normalizeAskAnswers', () => {
 
   it('single-pick questions take one value; multi-pick keep the array', () => {
     expect(normalizeAskAnswers([single], [['SQLite']])).toEqual(['SQLite'])
-    expect(() => normalizeAskAnswers([single], [['Postgres', 'SQLite']])).toThrow('question 1 takes one pick, got 2')
+    expect(normalizeAskAnswers([single], [['Postgres', 'SQLite']])).toEqual(['Postgres, SQLite'])
     expect(normalizeAskAnswers([multi], [[' eu-west', 'us-east ']])).toEqual([['eu-west', 'us-east']])
     expect(normalizeAskAnswers([multi], ['eu-west'])).toEqual(['eu-west'])
   })
 
   it('free-text questions take one string, also when it comes wrapped in an array', () => {
     expect(normalizeAskAnswers([free], [['no secrets']])).toEqual(['no secrets'])
-    expect(() => normalizeAskAnswers([free], [['a', 'b']])).toThrow('question 1 takes free text, not several picks')
+    expect(normalizeAskAnswers([free], [['a', 'b']])).toEqual(['a, b'])
   })
 
   it('refuses values that are not strings', () => {

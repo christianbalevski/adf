@@ -53,7 +53,6 @@ export function askQuestions(input: unknown): AskQuestion[] {
       if (typeof q.question !== 'string') continue
       const options = Array.isArray(q.options)
         ? q.options.flatMap((o): AskOption[] => {
-            if (typeof o === 'string') return o ? [{ label: o }] : []
             if (o && typeof o === 'object' && typeof (o as AskOption).label === 'string') {
               const { label, description } = o as AskOption
               return [typeof description === 'string' && description ? { label, description } : { label }]
@@ -100,15 +99,7 @@ export function normalizeAskAnswers(questions: AskQuestion[], raw: unknown): Ask
     }
     const picks = (value as string[]).map((v) => v.trim()).filter(Boolean)
     if (picks.length === 0) return null
-    if (!q.options) {
-      if (picks.length > 1) throw new AskAnswerError(`question ${n} takes free text, not several picks`)
-      return picks[0]
-    }
-    if (!q.multiple) {
-      if (picks.length > 1) throw new AskAnswerError(`question ${n} takes one pick, got ${picks.length}`)
-      return picks[0]
-    }
-    return picks
+    return q.multiple ? picks : picks.join(', ')
   })
 }
 

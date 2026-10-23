@@ -8960,7 +8960,7 @@ Example 200 (`application/json`):
 
 **Answer an ask request**
 
-Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, several picks for a single-pick question, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
+Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
 
 Operation `answerAgentAsk` · bearer token
 
@@ -8996,7 +8996,7 @@ Operation `answerAgentAsk` · bearer token
 | Status | Body | Description |
 |---|---|---|
 | 200 | [AskRespondResponse](#schema-askrespondresponse) | `answered` is false when no loop held the request |
-| 400 | [ErrorResponse](#schema-errorresponse) | `answers` missing or not an array (`bad_request`), or answers that do not fit the form (`invalid_answers`) |
+| 400 | [ErrorResponse](#schema-errorresponse) | `answers` missing, not an array, the wrong length, or holding a non-string entry (`invalid_answers`); a bad `loop` (`bad_request`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (`not_found`), or no loop holds this ask (`ask_not_found`) |

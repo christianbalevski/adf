@@ -54,7 +54,7 @@ import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispat
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
 import { AskInputSchema } from '../tools/built-in/ask.tool'
-import { askQuestions, formatAskAnswers, normalizeAskAnswers, summarizeAsk, type AskAnswer, type AskQuestion } from '../../shared/utils/ask-form'
+import { formatAskAnswers, normalizeAskAnswers, summarizeAsk, type AskAnswer, type AskQuestion } from '../../shared/utils/ask-form'
 import {
   callLlmWithMetadata,
   getAttachedLlmCallMetadata,
@@ -1061,8 +1061,8 @@ export class AgentExecutor extends EventEmitter {
       this.emitEvent({ type: 'state_changed', payload: { state: 'off' }, timestamp: Date.now() })
       return
     }
-    if (this.state === 'thinking' || this.state === 'tool_use') {
-      // Mid-turn: set target state for the finally block to handle
+    if (this.state === 'thinking' || this.state === 'tool_use' || this.state === 'awaiting_ask') {
+      // Mid-turn (an ask is part of the turn): set target state for the finally block to handle
       this._lastTargetState = targetState
     } else {
       // Idle/other: apply immediately
@@ -1211,7 +1211,7 @@ export class AgentExecutor extends EventEmitter {
       agentName: this.config.name,
       loop: this.approvalLoopName(),
       preview: summarizeQuestion(summarizeAsk(questions)),
-      question: questions.map((q) => q.question).join('\n'),
+      question: summarizeAsk(questions),
       questions,
       requestedAt: Date.now(),
     })
@@ -2897,7 +2897,7 @@ export class AgentExecutor extends EventEmitter {
                 this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, { content, isError: true })
                 continue
               }
-              const questions = askQuestions(parsed.data)
+              const { questions } = parsed.data
               const ask = this.requestAsk(questions)
               const answers = await ask.answers
               // The owner ended the turn while it asked: no answer came.
@@ -2914,7 +2914,7 @@ export class AgentExecutor extends EventEmitter {
               })
               this.emitEvent({
                 type: 'ask_response',
-                payload: { requestId: ask.requestId, questions, answers, result: content },
+                payload: { requestId: ask.requestId, result: content },
                 timestamp: Date.now()
               })
               this.emitEvent({

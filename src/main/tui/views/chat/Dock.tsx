@@ -6,14 +6,17 @@ import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from '../../app/theme'
 import { elementRect, keyLabel, useClick } from '../../app/keys'
 import { displayWidth, oneLine, previewJson, truncate, wrappedHeight } from '../../ui/text'
-import type { TaskEntry, TaskListEntry } from '../../api/types'
-import type { PendingAsk, TranscriptItem } from '../../state/types'
+import type { AskEntry, TaskEntry, TaskListEntry } from '../../api/types'
+import type { TranscriptItem } from '../../state/types'
+import type { AskAnswer } from '../../../../shared/utils/ask-form'
 import { askHint, askStep, parseArgs } from './model'
 import { alwaysBlocked } from './approvals'
 
 export interface DockModel {
   tasks: TaskListEntry[]
-  asks: PendingAsk[]
+  asks: AskEntry[]
+  /** Answers given so far to the first ask (the prompt steps through its questions). */
+  askAnswers?: AskAnswer[]
   suspended: boolean
   queued: TranscriptItem[]
 }
@@ -31,11 +34,11 @@ const ASK_LINES = 3
 /** Options listed in the dock; the rest are still picked by number. */
 const ASK_OPTIONS = 6
 
-/** Rows of the ask card's body: the question, its options + "Other", the hint, the buttons. */
-function askRows(ask: PendingAsk, inner: number): number {
-  const { question } = askStep(ask)
+/** Rows of the ask card's body: the question, its options, the hint, the buttons. */
+function askRows(ask: AskEntry, answers: AskAnswer[], inner: number): number {
+  const { question } = askStep(ask, answers)
   const options = question.options?.length ?? 0
-  const optionRows = options > 0 ? Math.min(options, ASK_OPTIONS) + (options > ASK_OPTIONS ? 1 : 0) + 1 : 0
+  const optionRows = Math.min(options, ASK_OPTIONS) + (options > ASK_OPTIONS ? 1 : 0)
   return 1 + Math.min(ASK_LINES, wrappedHeight(question.question || ' ', inner)) + optionRows + 1 + 1
 }
 
@@ -50,7 +53,7 @@ export function dockHeight(model: DockModel, width: number): number {
   const queued = model.queued.length > 0 ? 1 : 0
   switch (topCard(model)) {
     case 'hil': return queued + 2 + 3 + (taskReason(model.tasks[0]) ? 1 : 0)
-    case 'ask': return queued + 2 + askRows(model.asks[0], Math.max(8, width - 4))
+    case 'ask': return queued + 2 + askRows(model.asks[0], model.askAnswers ?? [], Math.max(8, width - 4))
     case 'suspend': return queued + 2 + 2
     default: return queued
   }
@@ -151,7 +154,7 @@ export function Dock({ model, width, focused, agentLabel, onAction }: { model: D
       {card === 'ask' ? (() => {
         // One question at a time; the prompt answers the one shown.
         const ask = model.asks[0]
-        const { index, question } = askStep(ask)
+        const { index, question } = askStep(ask, model.askAnswers ?? [])
         const options = question.options ?? []
         const total = ask.questions.length
         const number = (n: number) => `${n}.`.padStart(String(options.length).length + 1)
@@ -173,8 +176,7 @@ export function Dock({ model, width, focused, agentLabel, onAction }: { model: D
               </Text>
             ))}
             {options.length > ASK_OPTIONS ? <Text wrap="truncate-end" color={theme.color.dim}>{g.ellipsis} {options.length - ASK_OPTIONS} more, {ASK_OPTIONS + 1}–{options.length} by number</Text> : null}
-            {options.length > 0 ? <Text wrap="truncate-end" color={theme.color.dim}>{' '.repeat(number(1).length)} Other: type your own answer</Text> : null}
-            <Text wrap="truncate-end" color={theme.color.dim}>{askHint(question, g.sep)}</Text>
+            <Text wrap="truncate-end" color={theme.color.dim}>{askHint(question)}</Text>
             {act([
               { keys: 'a', label: 'answer', action: 'answer' },
               { keys: 'x', label: index > 0 ? 'skip the rest' : total > 1 ? 'skip all' : 'skip', action: 'skip' },

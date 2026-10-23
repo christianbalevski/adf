@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
+import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
@@ -45,8 +45,8 @@ import { useKeyboardContextMenu } from '../../hooks/useKeyboardContextMenu'
 import { escStopsTurn } from '../../utils/keyboard'
 import { interruptOpenTurn } from '../../utils/turn-interrupt'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
-import { AskCard } from './AskForm'
-import { askQuestions, formatAskAnswers, normalizeAskAnswers, type AskAnswer, type AskQuestion } from '../../../shared/utils/ask-form'
+import { AskCard, type AskDraft } from './AskForm'
+import { askQuestions, type AskAnswer, type AskQuestion } from '../../../shared/utils/ask-form'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { submitOwnerCommand } from '../../utils/owner-command-submit'
 import { parseAuthorizeToken } from '../../../shared/utils/agent-commands'
@@ -499,8 +499,8 @@ const LogEntryRow = memo(({
   onAlwaysApprove,
   approvalStatus,
   pendingAsk,
-  askDraftKey,
   onAskRespond,
+  onAskDraftsChange,
   isSuspendEntry,
   onSuspendRespond,
   toolResultIsError,
@@ -526,11 +526,11 @@ const LogEntryRow = memo(({
   onAlwaysApprove?: (requestId: string, toolName: string) => void
   /** The pending card's decision in flight, or why it did not land. */
   approvalStatus?: ApprovalStatus
-  pendingAsk?: { requestId: string; question: string; questions: AskQuestion[] }
-  /** Keeps a pending ask's entered answers across row remounts. */
-  askDraftKey?: string
+  pendingAsk?: PendingAsk
   /** Answer a pending ask; resolves with an error message when it did not land. */
-  onAskRespond?: (logEntryId: string, requestId: string, questions: AskQuestion[], answers: AskAnswer[]) => Promise<string | null>
+  onAskRespond?: (requestId: string, answers: AskAnswer[]) => Promise<string | null>
+  /** Keep a pending ask's entered answers in the store (the row can unmount on scroll). */
+  onAskDraftsChange?: (logEntryId: string, drafts: AskDraft[]) => void
   isSuspendEntry?: boolean
   onSuspendRespond?: (resume: boolean) => void
   toolResultIsError?: boolean | null
@@ -551,15 +551,19 @@ const LogEntryRow = memo(({
   // An ask's questions: the tool call's input (old `{ question }` calls too),
   // or, for an ask with no tool row, what its request carried.
   const askCardQuestions = useMemo<AskQuestion[]>(() => {
-    if (entry.type === 'tool_call' && toolName === 'ask') {
-      const fromInput = askQuestions(toolInput)
-      return fromInput.length > 0 ? fromInput : pendingAsk?.questions ?? []
-    }
-    if (entry.type === 'system' && entry.metadata?.isAsk) {
-      return entry.metadata.questions ? askQuestions({ questions: entry.metadata.questions }) : askQuestions({ question: entry.content })
-    }
+    if (entry.type === 'tool_call' && toolName === 'ask') return askQuestions(toolInput)
+    if (entry.type === 'system' && entry.metadata?.isAsk) return entry.metadata.questions as AskQuestion[]
     return []
-  }, [entry.type, entry.metadata?.isAsk, entry.metadata?.questions, entry.content, toolName, toolInput, pendingAsk?.questions])
+  }, [entry.type, entry.metadata?.isAsk, entry.metadata?.questions, toolName, toolInput])
+  const askCard = askCardQuestions.length > 0 && (
+    <AskCard
+      questions={askCardQuestions}
+      result={askAnswer}
+      drafts={pendingAsk?.drafts}
+      onDraftsChange={onAskDraftsChange && ((drafts) => onAskDraftsChange(entry.id, drafts))}
+      onSubmit={pendingAsk && onAskRespond ? (answers) => onAskRespond(pendingAsk.requestId, answers) : undefined}
+    />
+  )
   const toolInputRecord = getToolInputRecord(entry)
   const toolReason = getToolReason(entry)
   const shellCommand = toolName === 'adf_shell'
@@ -808,17 +812,7 @@ const LogEntryRow = memo(({
               </div>
             )}
           </div>
-          {entry.metadata?.name === 'ask' && askCardQuestions.length > 0 && (
-            <div className="mt-1">
-              <AskCard
-                questions={askCardQuestions}
-                pending={Boolean(pendingAsk)}
-                result={askAnswer}
-                draftKey={askDraftKey}
-                onSubmit={pendingAsk && onAskRespond ? (answers) => onAskRespond(entry.id, pendingAsk.requestId, askCardQuestions, answers) : undefined}
-              />
-            </div>
-          )}
+          {entry.metadata?.name === 'ask' && askCard && <div className="mt-1">{askCard}</div>}
           {entry.metadata?.name !== 'ask' && toolResultImageUrl && (
             <div className="mt-1">
               <AttachedImage
@@ -977,15 +971,7 @@ const LogEntryRow = memo(({
           <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
         </div>
       )}
-      {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && askCardQuestions.length > 0 && (
-        <AskCard
-          questions={askCardQuestions}
-          pending={Boolean(pendingAsk)}
-          result={askAnswer}
-          draftKey={askDraftKey}
-          onSubmit={pendingAsk && onAskRespond ? (answers) => onAskRespond(entry.id, pendingAsk.requestId, askCardQuestions, answers) : undefined}
-        />
-      )}
+      {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && askCard}
       {entry.type === 'system' && !isSuspendEntry && !entry.metadata?.isAsk && (
         <div className="text-center text-xs text-[var(--ink-faint)]">
           {entry.content}
@@ -1051,8 +1037,7 @@ function LoopStream({ loop }: { loop: string }) {
   const removePendingApproval = useAgentStore((s) => s.removePendingApproval)
   const markApprovalOutcome = useAgentStore((s) => s.markApprovalOutcome)
   const pendingAsks = useAgentStore((s) => selectLoopSlice(s, loop).pendingAsks)
-  const removePendingAsk = useAgentStore((s) => s.removePendingAsk)
-  const updateEntryAt = useAgentStore((s) => s.updateEntryAt)
+  const setAskDrafts = useAgentStore((s) => s.setAskDrafts)
   const pendingSuspend = useAgentStore((s) => selectLoopSlice(s, loop).pendingSuspend)
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
   // Keyed by agent file, not held in the view: a queue outlives an agent switch.
@@ -1170,31 +1155,17 @@ function LoopStream({ loop }: { loop: string }) {
     return true
   }, [setApprovalStatus, settleApprovalCard, loop])
 
-  const handleAskRespond = useCallback(async (logEntryId: string, requestId: string, questions: AskQuestion[], answers: AskAnswer[]): Promise<string | null> => {
+  // The ask_response event marks the card answered; only a refusal shows here.
+  const handleAskRespond = useCallback(async (requestId: string, answers: AskAnswer[]): Promise<string | null> => {
     const api = openApi()
     if (!api) return 'This agent is not connected.'
     const result = await api.respondAsk(requestId, answers)
-    if (result && result.success === false) return result.error ?? 'The answer was not accepted.'
-    let text: string
-    try {
-      text = formatAskAnswers(questions, normalizeAskAnswers(questions, answers))
-    } catch {
-      text = formatAskAnswers(questions, answers)
-    }
-    // The log may have grown while the answer was in flight: find the row now.
-    const current = selectLoopSlice(useAgentStore.getState(), loop).log
-    const idx = current.findIndex((entry) => entry.id === logEntryId)
-    if (idx >= 0 && !current[idx].metadata?.askAnswer) {
-      updateEntryAt(idx, (entry) => {
-        entry.metadata = {
-          ...entry.metadata,
-          askAnswer: text
-        }
-      }, loop)
-    }
-    removePendingAsk(logEntryId, loop)
-    return null
-  }, [removePendingAsk, updateEntryAt, loop])
+    return result && result.success === false ? result.error ?? 'The answer was not accepted.' : null
+  }, [])
+
+  const handleAskDraftsChange = useCallback((logEntryId: string, drafts: AskDraft[]) => {
+    setAskDrafts(logEntryId, drafts, loop)
+  }, [setAskDrafts, loop])
 
   const handleSuspendRespond = useCallback((resume: boolean) => {
     openApi()?.respondSuspend(resume)
@@ -2102,7 +2073,6 @@ function LoopStream({ loop }: { loop: string }) {
     const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask' && toolResultIsError !== true
       ? (toolPair?.result?.content ?? (entry.metadata?.result as string | undefined)) || null
       : null
-    const pendingAsk = pendingAsks.get(entry.id)
 
     return (
       <LogEntryRow
@@ -2119,9 +2089,9 @@ function LoopStream({ loop }: { loop: string }) {
         onApprovalRespond={handleApprovalRespond}
         onAlwaysApprove={handleAlwaysApprove}
         approvalStatus={statusFor(pendingApprovals.get(entry.id)?.requestId)}
-        pendingAsk={pendingAsk}
-        askDraftKey={pendingAsk ? `${filePath}|${loop}|${pendingAsk.requestId}` : undefined}
+        pendingAsk={pendingAsks.get(entry.id)}
         onAskRespond={handleAskRespond}
+        onAskDraftsChange={handleAskDraftsChange}
         isSuspendEntry={pendingSuspend === entry.id}
         onSuspendRespond={handleSuspendRespond}
         toolResultIsError={toolResultIsError}

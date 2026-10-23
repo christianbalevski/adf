@@ -2088,7 +2088,6 @@ export function createDaemonHttpApi(
   server.post<{ Params: AskIdParams; Body: AskRespondBody }>('/agents/:id/asks/:requestId/respond', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const answers = request.body?.answers
-    if (!Array.isArray(answers)) return badRequest(reply, 'answers is required: an array with one entry per question (a string, an array of strings, or null to skip)')
     const loop = request.body?.loop
     if (loop !== undefined && (typeof loop !== 'string' || !loop)) return badRequest(reply, 'loop must be a non-empty string')
     try {
