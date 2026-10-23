@@ -1,4 +1,5 @@
 import type { OwnerCommandResult } from '../shared/types/owner-command.types'
+import type { AskAnswer } from '../shared/utils/ask-form'
 import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentProviderKeySource, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
   QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
@@ -153,7 +154,8 @@ export interface AdfApi {
   alwaysApproveTool: (requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
   /** Approve all pending gated (restricted) tool approvals at once; protection overrides are excluded server-side. */
   approveAllGatedTools: () => Promise<{ success: boolean; approved?: number; skippedProtection?: number; error?: string }>
-  respondAsk: (requestId: string, answer: string) => Promise<{ success: boolean }>
+  /** One answer per question, `null` = skipped. */
+  respondAsk: (requestId: string, answers: AskAnswer[]) => Promise<{ success: boolean; error?: string }>
   respondSuspend: (resume: boolean) => Promise<{ success: boolean }>
 
   // Global HIL notifications menu — pending approvals AND asks across every
@@ -324,7 +326,7 @@ export interface AdfApi {
   stopBackgroundAgent: (filePath: string) => Promise<{ success: boolean }>
   /** Batched — the main process coalesces ~50ms of background agent events per send. */
   onBackgroundAgentEvents: (callback: (events: RendererBackgroundAgentEvent[]) => void) => () => void
-  respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) => Promise<{ success: boolean; error?: string }>
+  respondBackgroundAgentAsk: (filePath: string, requestId: string, answers: AskAnswer[]) => Promise<{ success: boolean; error?: string }>
   respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) => Promise<{ success: boolean; error?: string }>
 

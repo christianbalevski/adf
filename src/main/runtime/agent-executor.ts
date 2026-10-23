@@ -53,6 +53,8 @@ import { currentResourceWriter, documentRevision } from './resource-revisions'
 import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
+import { AskInputSchema } from '../tools/built-in/ask.tool'
+import { askQuestions, formatAskAnswers, normalizeAskAnswers, summarizeAsk, type AskAnswer, type AskQuestion } from '../../shared/utils/ask-form'
 import {
   callLlmWithMetadata,
   getAttachedLlmCallMetadata,
@@ -708,7 +710,7 @@ export class AgentExecutor extends EventEmitter {
   private deniedProtectionKeys = new Set<string>()
 
   // Ask tool: pause loop and wait for human answer
-  private pendingAsks = new Map<string, { resolve: (answer: string) => void; question: string }>()
+  private pendingAsks = new Map<string, { resolve: (answers: AskAnswer[]) => void; questions: AskQuestion[] }>()
   private askCounter = 0
 
   // Suspend flow: pause loop and wait for owner decision
@@ -1199,8 +1201,8 @@ export class AgentExecutor extends EventEmitter {
    * with prose, so the hub row carries no resolve callback and the UI offers
    * "jump to the agent" rather than a verdict.
    */
-  private trackPendingAsk(requestId: string, question: string, resolve: (answer: string) => void): void {
-    this.pendingAsks.set(requestId, { resolve, question })
+  private trackPendingAsk(requestId: string, questions: AskQuestion[], resolve: (answers: AskAnswer[]) => void): void {
+    this.pendingAsks.set(requestId, { resolve, questions })
     approvalHub.register({
       id: this.notificationKeyFor(requestId),
       kind: 'ask',
@@ -1208,8 +1210,8 @@ export class AgentExecutor extends EventEmitter {
       filePath: this.approvalFilePath(),
       agentName: this.config.name,
       loop: this.approvalLoopName(),
-      preview: summarizeQuestion(question),
-      question,
+      preview: summarizeQuestion(summarizeAsk(questions)),
+      question: questions.map((q) => q.question).join('\n'),
       requestedAt: Date.now(),
     })
   }
@@ -1220,7 +1222,7 @@ export class AgentExecutor extends EventEmitter {
     this.pendingAsks.clear()
     for (const [requestId, pending] of entries) {
       approvalHub.unregister(this.notificationKeyFor(requestId))
-      pending.resolve('')
+      pending.resolve(pending.questions.map(() => null))
     }
   }
 
@@ -1784,10 +1786,10 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /** Returns pending ask requests so the renderer can restore UI after navigation. */
-  getPendingAsks(): Array<{ requestId: string; question: string }> {
-    const result: Array<{ requestId: string; question: string }> = []
+  getPendingAsks(): Array<{ requestId: string; question: string; questions: AskQuestion[] }> {
+    const result: Array<{ requestId: string; question: string; questions: AskQuestion[] }> = []
     for (const [requestId, pending] of this.pendingAsks) {
-      result.push({ requestId, question: pending.question })
+      result.push({ requestId, question: summarizeAsk(pending.questions), questions: pending.questions })
     }
     return result
   }
@@ -1796,40 +1798,46 @@ export class AgentExecutor extends EventEmitter {
    * Request human input for an ask tool call. Emits an `ask_request`
    * event and pauses the executor until the user responds via `resolveAsk`.
    */
-  private requestAsk(question: string): Promise<string> {
+  private requestAsk(questions: AskQuestion[]): Promise<AskAnswer[]> {
     const requestId = `ask_${++this.askCounter}`
+    const question = summarizeAsk(questions)
     this.setState('awaiting_ask')
     this.emitEvent({
       type: 'ask_request',
-      payload: { requestId, question },
+      payload: { requestId, question, questions },
       timestamp: Date.now()
     })
-    this.emitRuntimeEvent('ask.requested', { request_id: requestId, question })
-    return new Promise<string>((resolve) => {
-      this.trackPendingAsk(requestId, question, resolve)
+    this.emitRuntimeEvent('ask.requested', { request_id: requestId, question, questions })
+    return new Promise<AskAnswer[]>((resolve) => {
+      this.trackPendingAsk(requestId, questions, resolve)
     })
   }
 
   /**
-   * Resolve a pending ask request. Called from the IPC handler
-   * when the human types an answer.
+   * Resolve a pending ask request with one answer per question (`null` =
+   * skipped). Throws AskAnswerError when the payload does not fit the form;
+   * the ask stays pending.
    */
-  resolveAsk(requestId: string, answer: string): void {
+  resolveAsk(requestId: string, answers: unknown): void {
     const pending = this.pendingAsks.get(requestId)
     if (pending) {
+      const normalized = normalizeAskAnswers(pending.questions, answers)
       this.pendingAsks.delete(requestId)
       // Clear the global menu row too — the ask is answered.
       approvalHub.unregister(this.notificationKeyFor(requestId), 'answered')
-      // The human's answer is not leaked wholesale onto the umbilical — taps
-      // get shape (length, a bounded preview), not the full text.
-      const text = typeof answer === 'string' ? answer : ''
+      // The human's answers are not leaked wholesale onto the umbilical — taps
+      // get shape (counts, a bounded preview), not the full text.
+      const answered = normalized.filter((a) => a !== null).length
+      const text = answered > 0 ? formatAskAnswers(pending.questions, normalized) : ''
       this.emitRuntimeEvent('ask.resolved', {
         request_id: requestId,
-        has_response: text.length > 0,
+        has_response: answered > 0,
+        answered,
+        skipped: normalized.length - answered,
         response_length: text.length,
-        ...(text.length > 0 ? { preview: text.slice(0, 200) } : {}),
+        ...(text.length > 0 ? { preview: sliceWellFormed(text, 0, 200) } : {}),
       })
-      pending.resolve(answer)
+      pending.resolve(normalized)
     }
   }
 
@@ -2875,33 +2883,44 @@ export class AgentExecutor extends EventEmitter {
 
             // Ask tool: intercept and block until human responds
             if (toolBlock.name === 'ask') {
-              const askInput = toolBlock.input as { question: string }
-              const answer = await this.requestAsk(askInput.question)
+              const parsed = AskInputSchema.safeParse(toolBlock.input)
+              if (!parsed.success) {
+                const content = `Invalid ask input: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')}`
+                toolResults.push({ type: 'tool_result', tool_use_id: toolBlock.id, content, is_error: true })
+                this.emitEvent({
+                  type: 'tool_call_result',
+                  payload: { name: 'ask', id: toolBlock.id, result: { content, isError: true } },
+                  timestamp: Date.now()
+                })
+                this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, { content, isError: true })
+                continue
+              }
+              const questions = askQuestions(parsed.data)
+              const answers = await this.requestAsk(questions)
               // The owner ended the turn while it asked: no answer came.
               if (this._interruptRestart || this._ownerStateTransitionRequested) break
               // Restore state after human responds
               this.setState('tool_use')
 
+              const content = formatAskAnswers(questions, answers)
               toolResults.push({
                 type: 'tool_result',
                 tool_use_id: toolBlock.id,
-                content: `Human answered: ${answer}`,
+                content,
                 is_error: false
               })
               this.emitEvent({
                 type: 'ask_response',
-                payload: { question: askInput.question, answer },
+                payload: { questions, answers, result: content },
                 timestamp: Date.now()
               })
               this.emitEvent({
                 type: 'tool_call_result',
-                payload: { name: 'ask', id: toolBlock.id, result: { content: `Human answered: ${answer}`, isError: false } },
+                payload: { name: 'ask', id: toolBlock.id, result: { content, isError: false } },
                 timestamp: Date.now()
               })
               // `ask` is intercepted before the registry, so emit its tool.* pair here.
-              this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, {
-                content: `Human answered: ${answer}`, isError: false
-              })
+              this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, { content, isError: false })
               continue
             }
 
