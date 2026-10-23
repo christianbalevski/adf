@@ -1073,7 +1073,7 @@ Grouped by area, then category.
 - **Identity-critical synchronous flush** — mnemonic/private-key/DID writes bypass debouncing and flush immediately.
 - **Cross-writer merge-on-stale** — before writing, detects if another process (e.g. the daemon) changed the file since last sync and merges rather than clobbering.
 - **Corrupt-file quarantine** — unreadable settings JSON is moved aside (never deleted) and defaults loaded; writes are refused entirely if quarantine itself fails, to avoid destroying the only copy.
-- **`safeStorage`-encrypted secrets** with plaintext fallback when encryption is unavailable.
+- **`safeStorage`-encrypted secrets**; without a keychain, plain text only after the user explicitly chooses it at launch (Settings → Identity → Secret storage switches back).
 - **Three-way secret status** (`absent`/`ok`/`locked`) so callers never mint new key material over an undecryptable-but-present secret.
 - **Renderer secret stripping** — `getAll()` deletes mnemonic, private keys, and the sealed MCP OAuth blob before the data ever reaches the UI process.
 
@@ -1575,7 +1575,7 @@ Grouped by area, then category.
 
 - **Three-tier DID identity** — Owner (BIP-39 seed, SLIP-0010 Ed25519 `m/44'/0'/0'`), Runtime (fresh per-install Ed25519, never seed-derived), Agent (Ed25519 `did:key` per `.adf`, mandatory at creation).
 - **Owner X25519 encryption key** — separate sibling-path key (`m/44'/0'/1'`) for envelope keyslots, distinct from the signing key; only public half stored.
-- **Seed phrase backup/recovery** — OS-keychain-encrypted storage (Electron safeStorage) with plaintext fallback warning; multi-machine import converges owner DID and triggers envelope re-wrap.
+- **Seed phrase backup/recovery** — OS-keychain-encrypted storage (Electron safeStorage), plain text only by explicit choice; multi-machine import converges owner DID and triggers envelope re-wrap.
 - **Runtime delegation certificate** — owner-signed cert proving a runtime install acts on the owner's behalf; never a trust anchor itself.
 - **DID rotation/history** — claiming/re-keying mints a new DID, appends old DID to `adf_did_history`, keeps lineage resolvable without rewriting child files.
 - **Three identity-data layers** — key material (`adf_identity`, sealed), runtime-asserted facts (`adf_meta`, unsigned/local-trust), signed proofs (`adf_attestations`, verifiable).

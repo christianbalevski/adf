@@ -1,4 +1,4 @@
-import { app, safeStorage } from 'electron'
+import { app } from 'electron'
 import { existsSync, mkdirSync, readFileSync, statSync } from 'fs'
 import { join, dirname } from 'path'
 import { createSettingsDefaults } from '../../shared/constants/settings-defaults'
@@ -9,9 +9,20 @@ import type { ProviderConfig } from '../../shared/types/ipc.types'
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import { OwnerIdentityService } from './owner-identity.service'
 import { KeychainProviderKeys, SECRET_STORE_KEY_STORAGE } from './provider-key-store'
-
-/** Prefix used to mark values encrypted via safeStorage in the JSON file */
-const SAFE_STORAGE_PREFIX = 'safe:'
+import { keyringAvailable, studioSafeStorage, studioSecretCipher } from '../utils/studio-safe-storage'
+import {
+  SAFE_STORAGE_PREFIX,
+  SECRET_STORAGE_POLICY_KEY,
+  SecretStorageRefusedError,
+  chooseKeyringStorage,
+  isSecretSettingsKey,
+  savedSecretStoragePolicy,
+  secretStorageView,
+  secretWriteRefusal,
+  type PolicyChangeResult,
+  type SecretStoragePolicy,
+  type SecretStorageView,
+} from './secret-storage-policy'
 
 /**
  * Keys whose loss is unrecoverable (mnemonic, private keys, DIDs and their
@@ -65,7 +76,7 @@ function recordQuarantine(originalPath: string, quarantinedTo: string): void {
   )
 }
 
-function getSettingsPath(): string {
+export function getSettingsPath(): string {
   // ADF_USER_DATA_DIR redirects the daemon's settings path; honor it here too
   // so an override never makes Studio and the daemon read DIFFERENT files.
   const userDataPath = process.env.ADF_USER_DATA_DIR ?? app.getPath('userData')
@@ -224,6 +235,12 @@ export class SettingsService {
   }
 
   set(key: string, value: unknown): void {
+    // Secrets go through setSecret (encrypted, or the user's plain-text
+    // choice); the choice itself only through useKeyringForSecrets and the
+    // launch prompt. Never as an ordinary setting, e.g. from the renderer.
+    if (isSecretSettingsKey(key) || key === SECRET_STORAGE_POLICY_KEY) {
+      throw new Error(`[Settings] ${key} cannot be written as an ordinary setting`)
+    }
     // Compute settings are updated from several independent controls. Merge
     // partial updates so an execution-target write cannot erase machine or
     // host-access settings (and vice versa).
@@ -240,13 +257,9 @@ export class SettingsService {
       ...('providers' in this.data ? { providers: this.withProviderKeys(this.data.providers, true) } : {}),
     }
     // Never ship key material to the renderer — even encrypted blobs have no
-    // business there, and the plaintext fallback (no safeStorage) definitely doesn't.
-    delete all.ownerMnemonic
-    for (const key of Object.keys(all)) if (key.startsWith('ownerMnemonicSuperseded:')) delete all[key]
-    delete all.runtimePrivateKey
-    delete all.runtimeEncPrivateKey
-    // Sealed MCP OAuth token blob (Phase 4 HTTP OAuth) — tokens never reach the renderer.
-    delete all.mcpOauthCredentials
+    // business there, and plain-text values (the user's no-keychain choice) definitely don't.
+    // Owner phrase (and superseded copies), runtime keys, the MCP OAuth token blob.
+    for (const key of Object.keys(all)) if (isSecretSettingsKey(key)) delete all[key]
     return all
   }
 
@@ -321,20 +334,60 @@ export class SettingsService {
   }
 
   /**
-   * Store a secret value encrypted via Electron's safeStorage.
-   * Falls back to plaintext if safeStorage is unavailable.
-   * Always flushed synchronously — secrets (mnemonic, private keys) must be
-   * durable before control returns to the caller.
+   * Store a secret: encrypted with the OS keychain (Electron safeStorage),
+   * or as plain text only when the user chose that (secret-storage-policy.ts).
+   * With the keychain chosen and unusable, nothing is written and
+   * SecretStorageRefusedError is thrown. Always flushed synchronously —
+   * secrets (mnemonic, private keys) must be durable before control returns
+   * to the caller.
    */
   setSecret(key: string, value: string): void {
-    if (safeStorage.isEncryptionAvailable()) {
-      const encrypted = safeStorage.encryptString(value)
-      this.data[key] = SAFE_STORAGE_PREFIX + encrypted.toString('base64')
-    } else {
+    if (!isSecretSettingsKey(key)) throw new Error(`[Settings] ${key} is not a secret settings key`)
+    const refusal = this.secretWriteRefusal()
+    if (refusal) throw new SecretStorageRefusedError(refusal)
+    if (this.secretStoragePolicy() === 'plaintext') {
       this.data[key] = value
+    } else {
+      const sealed = studioSecretCipher.encrypt(value)
+      if (studioSecretCipher.decrypt(sealed) !== value) throw new SecretStorageRefusedError('The OS keychain did not decrypt a value it had just encrypted, so it was not saved.')
+      this.data[key] = sealed
     }
     this.scheduleSave(key)
     this.flush()
+  }
+
+  /** The saved secret-storage choice, or null before one is saved (treated as the keychain). */
+  secretStoragePolicy(): SecretStoragePolicy | null {
+    return savedSecretStoragePolicy(this.data)
+  }
+
+  /** Why setSecret would refuse right now, or null. Message only, safe to show. */
+  secretWriteRefusal(): string | null {
+    return secretWriteRefusal(this.secretStoragePolicy(), keyringAvailable())
+  }
+
+  /** Settings → Identity: the saved choice, the keychain now, how many secrets are plain text. */
+  secretStorageStatus(): SecretStorageView {
+    return secretStorageView(this.data, keyringAvailable())
+  }
+
+  /**
+   * Switch back from plain-text storage: every plain-text secret is
+   * encrypted with the keychain and the choice saved, in one verified write
+   * (chooseKeyringStorage). On failure the file and this store are unchanged.
+   */
+  useKeyringForSecrets(): PolicyChangeResult {
+    this.flush()
+    if (this.dirtyKeys.size > 0 || this.writeBlocked) {
+      return { ok: false, error: 'Settings have changes that could not be saved yet. Nothing was changed; try again.' }
+    }
+    const path = getSettingsPath()
+    const result = chooseKeyringStorage(path, studioSecretCipher, keyringAvailable())
+    if (result.ok) {
+      this.data = { ...createSettingsDefaults(), ...result.data }
+      this.lastSynced = fileFingerprint(path)
+    }
+    return result
   }
 
   /**
@@ -346,15 +399,15 @@ export class SettingsService {
     if (typeof raw !== 'string') return String(raw)
 
     if (raw.startsWith(SAFE_STORAGE_PREFIX)) {
-      if (!safeStorage.isEncryptionAvailable()) {
-        console.warn(`[Settings] safeStorage unavailable, cannot decrypt "${key}"`)
+      if (!keyringAvailable()) {
+        console.warn(`[Settings] The OS keychain is unavailable, cannot decrypt "${key}"`)
         return null
       }
       try {
         const buf = Buffer.from(raw.slice(SAFE_STORAGE_PREFIX.length), 'base64')
-        return safeStorage.decryptString(buf)
+        return studioSafeStorage().decryptString(buf)
       } catch (err) {
-        console.warn(`[Settings] Failed to decrypt "${key}":`, err)
+        console.warn(`[Settings] Failed to decrypt "${key}":`, err instanceof Error ? err.message : err)
         return null
       }
     }
@@ -378,10 +431,11 @@ export class SettingsService {
   }
 
   /**
-   * Check if safeStorage encryption is available on this platform.
+   * Whether a real OS keychain is usable now (Linux basic_text obfuscation
+   * does not count).
    */
   isSafeStorageAvailable(): boolean {
-    return safeStorage.isEncryptionAvailable()
+    return keyringAvailable()
   }
 
   /**

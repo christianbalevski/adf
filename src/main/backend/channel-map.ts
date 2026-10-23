@@ -537,6 +537,8 @@ export const CHANNEL_MAP = {
 
   // --- Settings → Connections (W0-E) --------------------------------------------
   [IPC.BACKEND_SETTINGS_GET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; reads studio-backend.json.'),
+  [IPC.STUDIO_SECRET_STORAGE_GET]: local('invoke', 'How Studio stores its own secrets in its settings file (secret-storage-ipc.ts): SettingsService Inside Studio, the file itself otherwise; null when Studio holds none and no plain-text choice is saved. No values.'),
+  [IPC.STUDIO_SECRET_STORAGE_USE_KEYRING]: local('invoke', 'Encrypt Studio\'s plain-text secrets with the keychain and save that choice, in one verified swap (chooseKeyringStorage). Studio\'s own file in every mode; never the daemon\'s store.'),
   [IPC.BACKEND_SETTINGS_SET]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in both modes; writes studio-backend.json (token as safe:).'),
   [IPC.BACKEND_RESTART_STUDIO]: local('invoke', 'Registered in backend/backend-settings-ipc.ts in every mode: relaunchStudio (boot-handover.ts), then the normal quit path.'),
 

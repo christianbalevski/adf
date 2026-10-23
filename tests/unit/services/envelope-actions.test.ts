@@ -12,7 +12,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const h = vi.hoisted(() => ({ userDataDir: '' }))
 vi.mock('electron', () => ({
   app: { getPath: () => h.userDataDir, on: () => {}, getName: () => 't', getVersion: () => '0' },
-  safeStorage: { isEncryptionAvailable: () => false, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
+  // A usable (fake) keychain: Studio stores no secret without one unless the user chose plain text.
+  safeStorage: { isEncryptionAvailable: () => true, encryptString: (s: string) => Buffer.from(s), decryptString: (b: Buffer) => b.toString() },
   shell: { openExternal: async () => {} },
   ipcMain: { handle: () => {}, on: () => {}, removeHandler: () => {}, removeAllListeners: () => {} },
   BrowserWindow: class {},

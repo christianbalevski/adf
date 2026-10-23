@@ -3,9 +3,9 @@ import { mkdtempSync, rmSync, writeFileSync, mkdirSync, readFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 
-// encryptionAvailable/decryptThrows default to the plaintext-fallback behavior
-// the pre-existing tests assume; the locked-secret tests flip them per case.
-const h = vi.hoisted(() => ({ userDataDir: '', encryptionAvailable: false, decryptThrows: false }))
+// encryptionAvailable/decryptThrows default to a usable (fake) keychain; the
+// locked-secret tests flip them per case.
+const h = vi.hoisted(() => ({ userDataDir: '', encryptionAvailable: true, decryptThrows: false }))
 
 vi.mock('electron', () => ({
   app: { getPath: () => h.userDataDir, on: () => {}, getName: () => 't', getVersion: () => '0' },
@@ -64,7 +64,7 @@ function readMeta(filePath: string, key: string): string | null {
 }
 
 beforeEach(() => {
-  h.encryptionAvailable = false
+  h.encryptionAvailable = true
   h.decryptThrows = false
   rootDir = mkdtempSync(join(tmpdir(), 'adf-owner-identity-'))
   h.userDataDir = join(rootDir, 'userData')
@@ -248,6 +248,8 @@ describe('OwnerIdentityService.ensureIdentity with a locked mnemonic', () => {
     const mnemonic = generateMnemonic()
     h.encryptionAvailable = false
     seedSettings({
+      // A plain-text phrase with no keychain: the user kept unencrypted storage at launch.
+      secretStoragePolicy: 'plaintext',
       ownerDid: deriveOwnerIdentity(mnemonic).did,
       runtimeDid: EXISTING_RUNTIME,
       ownerMnemonic: mnemonic,

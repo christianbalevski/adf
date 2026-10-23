@@ -599,6 +599,10 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     ipcRenderer.invoke(IPC.IDENTITY_OWNER_CONFIRM_BACKUP),
   importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) =>
     ipcRenderer.invoke(IPC.IDENTITY_OWNER_IMPORT, mnemonic, expectedOwnerDid),
+  getStudioSecretStorage: () =>
+    ipcRenderer.invoke(IPC.STUDIO_SECRET_STORAGE_GET),
+  useKeyringForSecrets: () =>
+    ipcRenderer.invoke(IPC.STUDIO_SECRET_STORAGE_USE_KEYRING),
   getAgentAttestations: () =>
     ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_GET),
   reissueAgentAttestations: () =>

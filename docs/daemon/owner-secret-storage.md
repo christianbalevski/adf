@@ -10,11 +10,11 @@ itself is in [Security and Identity](../guides/security-and-identity.md).
 
 | Secret | What it is | Daemon | Studio |
 |---|---|---|---|
-| Owner seed phrase | The 12-word BIP-39 phrase. It derives the owner identity and opens every owner keyslot | OS keychain entry `ADF` / `owner-mnemonic`, or the passphrase file `owner-secrets.json` | `ownerMnemonic` in `adf-settings.json`, encrypted with Electron `safeStorage` when available. Also mirrored into the keychain entry `ADF` / `owner-mnemonic` when one is usable |
+| Owner seed phrase | The 12-word BIP-39 phrase. It derives the owner identity and opens every owner keyslot | OS keychain entry `ADF` / `owner-mnemonic`, or the passphrase file `owner-secrets.json` | `ownerMnemonic` in `adf-settings.json`, encrypted with Electron `safeStorage`, or plain text only if you chose that ([ADF Studio](#adf-studio)). Also mirrored into the keychain entry `ADF` / `owner-mnemonic` when one is usable |
 | Owner signing and encryption keys | Ed25519 at `m/44'/0'/0'`, X25519 at `m/44'/0'/1'` | Not stored. Derived from the phrase when needed | Same |
 | Daemon runtime signing key | The daemon's own runtime identity | The same store as the phrase, account `daemon-runtime-signing-key:<scope>` | n/a |
 | Daemon runtime encryption key | X25519 key that opens runtime and trusted-daemon keyslots | `runtime-enc-key` next to the settings file. Plain JSON, mode 0600, not covered by the passphrase | n/a |
-| Studio runtime keys | Studio's runtime signing and encryption keys | Read from keychain entry `studio-runtime:<scope>` when Studio shared it (Local mode) | `safeStorage` in `adf-settings.json` |
+| Studio runtime keys | Studio's runtime signing and encryption keys | Read from keychain entry `studio-runtime:<scope>` when Studio shared it (Local mode) | `safeStorage` in `adf-settings.json`, or plain text only if you chose that |
 | Per-agent envelope keys | A random key per agent envelope, wrapped once per keyslot | Inside each `.adf`. Opened by Studio's runtime key, then the daemon's `runtime-enc-key`, then the owner key | Same |
 | Provider API keys added through the daemon | `provider-api-key:<scope>:<id>` | Same store as the phrase | Read from the same keychain entry |
 
@@ -107,22 +107,98 @@ file that may belong to another owner.
 
 ## ADF Studio
 
-Studio encrypts its own copy of the phrase with Electron `safeStorage`
+Studio keeps its own secrets in `adf-settings.json`: the owner seed phrase
+(`ownerMnemonic`), copies of previous owners' phrases
+(`ownerMnemonicSuperseded:<owner DID>`), its runtime signing and encryption
+keys (`runtimePrivateKey`, `runtimeEncPrivateKey`) and app-level MCP sign-ins
+(`mcpOauthCredentials`). It encrypts them with Electron `safeStorage`
 (`SettingsService.setSecret`). On macOS that uses the Keychain, on Windows
-DPAPI, and on Linux a Secret Service keyring. If `safeStorage` reports
-encryption unavailable, Studio writes the phrase to `adf-settings.json` as
-plain text. Settings → Identity then shows "The OS keychain is unavailable, so
-the seed phrase is stored unencrypted in app settings."
+DPAPI, and on Linux a Secret Service keyring. Provider API keys typed into
+Studio and MCP server env and header values are ordinary settings in the same
+file, stored as plain JSON that the daemon reads; this section does not cover
+them.
 
-On Linux with no keyring, Electron selects the `basic_text` backend, and
-Studio does not call `safeStorage.setUsePlainTextEncryption`. In the Electron
+Studio never stores these secrets as plain text unless you choose it. When it
+cannot use a keychain, it asks at launch, before it creates or changes any
+identity:
+
+- **Retry**: set up or unlock the keychain (the dialog lists the steps for
+  your system), then Retry. Studio checks again.
+- **Store Unencrypted…**: a warning names the settings file and what plain
+  text means. Tick "I understand these secrets will not be encrypted" and
+  confirm. Studio saves `secretStoragePolicy: "plaintext"` and from then on
+  writes these secrets as plain text. Secrets that are already encrypted stay
+  encrypted.
+- **Quit**: nothing is written. Studio asks again at the next launch.
+
+Studio asks before anything else at launch: before it moves secrets between
+its settings file and the daemon at a backend switch, before the first-launch
+and remote-mode migrations, and before any identity exists. Inside Studio,
+the question comes up whenever there is no usable keychain and no saved
+plain-text choice. In Local mode the daemon stores the secrets, so Studio
+asks only when it finds secrets of its own stored as plain text. Its
+settings file can still hold its own copies (the phrase and runtime keys from
+Inside Studio, kept at a switch). Settings → Identity → **Secret storage**
+then shows them, with the plain-text warning and **Encrypt with Keychain**,
+in every mode, with a remote server picked in Settings too. The switch
+changes only Studio's settings file on this computer, never the daemon's or
+a remote server's secrets.
+
+Studio remembers the choice. While `plaintext` is saved, Settings → Identity →
+**Secret storage** shows **Unencrypted** with a warning, even after a keychain
+starts working. Studio never switches back by itself. Once the keychain works,
+**Encrypt with Keychain** switches back. The owner and runtime identity stay
+the same: values are moved, never generated. The switch:
+
+1. Reads the settings file and builds the whole new file in memory: every
+   plain-text secret encrypted, the `keyring` choice saved, every other key
+   as it was. Each value is decrypted again from that exact text and
+   compared before anything is written.
+2. Writes the new file to a temporary file next to it, syncs it to disk and
+   reads it back byte for byte.
+3. Replaces the settings file by renaming the temporary file over it, and
+   only if the settings file still holds the bytes read in step 1. That
+   check runs again before every rename attempt, including retries. If
+   another program, such as the daemon, wrote the file meanwhile, the switch
+   starts again from the new content, so that write is kept. After five
+   tries it gives up and says so. There is no operating-system file lock, so
+   a write that lands in the instant between the last check and the rename
+   itself can still be replaced.
+
+The settings file is never overwritten in place. When the rename keeps
+failing (on Windows, while another program holds the file open), the
+temporary file is removed and the settings file keeps its exact previous
+bytes. A crash at any point leaves either the previous file or the complete,
+checked new one.
+
+An install from before this choice that holds secrets as plain text gets the
+same question at its first launch, even if a keychain works now. Nothing
+changes until you answer: **Encrypt with Keychain** (when the keychain works),
+**Keep Unencrypted…** or **Quit**.
+
+If the keychain was in use and is unavailable now (a locked login keychain, a
+moved profile, an unsigned rebuild), the question also offers **Continue
+Without Keychain**. Studio then starts without reading or writing those
+secrets. The encrypted values stay as they are, nothing new is minted over
+them, and anything that needs to save a secret (creating an identity,
+importing a phrase, an MCP sign-in) fails with a message. They work again
+once the keychain does.
+
+On Linux with no keyring, Electron selects the `basic_text` backend, which only
+obfuscates with a fixed key. Studio never counts it as a keychain and does not
+call `safeStorage.setUsePlainTextEncryption`. In the Electron
 release Studio is built with (40.10.6, `package-lock.json`),
 `isEncryptionAvailable()` on Linux returns true only when Chromium has a key
 from a real keyring, or when plain-text encryption was turned on with
 `basic_text` ([`electron_api_safe_storage.cc` at v40.10.6](https://github.com/electron/electron/blob/v40.10.6/shell/browser/api/electron_api_safe_storage.cc);
 Chromium 144 [`os_crypt_linux.cc`](https://github.com/chromium/chromium/blob/144.0.7559.236/components/os_crypt/sync/os_crypt_linux.cc)).
-So under `basic_text` it returns false, and Studio writes the phrase as plain
-text with that warning.
+Studio also checks the selected backend. Installing a keyring package does not
+fix every case: the keyring must also be running and unlocked in the D-Bus
+session Studio runs in ([Linux desktop](#linux-desktop-secret-service)).
+
+Sources: `src/main/services/secret-storage-policy.ts` (the policy, the secret
+keys, the switch back), `src/main/services/secret-storage-launch.ts` (the
+launch question), `src/main/utils/studio-safe-storage.ts`.
 
 Studio has no passphrase file of its own. In Local mode, Studio starts the
 daemon with its own settings file (`ADF_DAEMON_SETTINGS` set to Studio's
@@ -716,8 +792,9 @@ there is one.
 | Native Vault, cloud secret manager or KMS client | An external agent or CSI driver writes the passphrase to a file |
 | Changing the passphrase, or re-sealing `owner-secrets.json` | None |
 | A check, at create or restore time, that the typed passphrase matches the boot passphrase | Restart and check `adf identity` (step 6 of [Setting up a server](#setting-up-a-server)) |
-| A passphrase-file store for Studio's own copy of the phrase | Studio uses `safeStorage`, or plain text with a warning when no keyring is available |
-| Encrypting Studio's copy on Linux without a keyring (`basic_text`) | Run a Secret Service keyring ([Linux desktop](#linux-desktop-secret-service)) |
+| A passphrase-file store for Studio's own copy of the phrase | Studio uses `safeStorage`, or plain text only after you choose it at launch ([ADF Studio](#adf-studio)) |
+| Encrypting Studio's copy on Linux without a keyring (`basic_text`) | Run a Secret Service keyring ([Linux desktop](#linux-desktop-secret-service)), then Settings → Identity → Encrypt with Keychain |
+| Switching from the keychain to plain text in Settings | Only the launch question offers plain text, and only when the keychain is unavailable |
 | A Studio prompt to unlock the daemon's passphrase file in Local mode | `adf identity unlock` in a terminal |
 | Reading the daemon's passphrase-file phrase back out | None. Keep the offline copy of the 12 words |
 

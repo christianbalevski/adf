@@ -60,6 +60,7 @@ import { readFileProviderConfig } from './path-agent-ops'
 import { parseBaseRevision } from '../runtime/resource-revisions'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
 import { ProviderKeyVaultLockedError, SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
+import { SECRET_STORAGE_POLICY_KEY, SETTINGS_SECRET_KEYS, isSecretSettingsKey } from '../services/secret-storage-policy'
 
 export interface DaemonHttpApiOptions {
   logger?: boolean
@@ -612,14 +613,8 @@ function getOpenApiSpec(): unknown {
 }
 
 // Key material must never leave the process over HTTP — same deny-list as
-// SettingsService.getAll() (settings.service.ts).
-const SETTINGS_SECRET_KEYS = ['ownerMnemonic', 'runtimePrivateKey', 'runtimeEncPrivateKey', 'mcpOauthCredentials']
-// Previous owners' phrases kept after an owner switch: `ownerMnemonicSuperseded:<did>`.
-const SUPERSEDED_MNEMONIC_PREFIX = 'ownerMnemonicSuperseded:'
-
-function isSecretSettingsKey(key: string): boolean {
-  return SETTINGS_SECRET_KEYS.includes(key) || key.startsWith(SUPERSEDED_MNEMONIC_PREFIX)
-}
+// SettingsService.getAll() (settings.service.ts): SETTINGS_SECRET_KEYS and
+// every `ownerMnemonicSuperseded:<did>` (isSecretSettingsKey).
 
 // Trust/identity-critical keys that must never be WRITTEN over HTTP either:
 // an unauthenticated loopback caller writing trustedDaemonEncKeys would enroll
@@ -631,6 +626,8 @@ function isSecretSettingsKey(key: string): boolean {
 // code calls the settings store directly and is unaffected.
 const SETTINGS_WRITE_DENY_KEYS = [
   ...SETTINGS_SECRET_KEYS,
+  // How Studio stores those secrets: the user's own choice in Studio, never set over HTTP.
+  SECRET_STORAGE_POLICY_KEY,
   'trustedDaemonEncKeys',
   // Owner/runtime identity: changed only through /identity (daemon) or Studio.
   'ownerDid',

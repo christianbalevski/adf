@@ -1101,7 +1101,7 @@ export class DaemonIdentity {
         // next start (it can decrypt it and knows its real owner).
         console.warn(`[ADF Daemon] Owner switch: ${key} already exists; left ADF Studio's stored phrase in place for Studio to move at its next start`)
       } else if (this.store.delete) {
-        // The value is Studio's `safe:` ciphertext (or its plaintext fallback),
+        // The value is Studio's `safe:` ciphertext (or plain text, if the user chose that),
         // moved verbatim: the daemon never decrypts it.
         this.store.set(key, studioCopy)
         this.store.delete('ownerMnemonic')

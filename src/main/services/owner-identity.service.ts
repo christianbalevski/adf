@@ -27,6 +27,7 @@ import { appendAdfAttestation, createAttestation, issueOwnerAttestation, readAdf
 import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
 import type { SharedMnemonicStore } from './owner-secret-store'
+import { SecretStorageRefusedError } from './secret-storage-policy'
 
 /**
  * The slice of settings the identity service needs. SettingsService (Studio,
@@ -36,7 +37,7 @@ import type { SharedMnemonicStore } from './owner-secret-store'
 export type OwnerIdentitySettings = Pick<
   SettingsService,
   'get' | 'set' | 'getSecret' | 'setSecret' | 'secretStatus' | 'isSafeStorageAvailable'
->
+> & Partial<Pick<SettingsService, 'secretWriteRefusal'>>
 
 export interface OwnerIdentityStatus {
   ownerDid: string
@@ -249,6 +250,12 @@ export class OwnerIdentityService {
     return phrase
   }
 
+  /** Throws when secrets cannot be saved right now (Studio's secret-storage choice), before any write. */
+  private assertSecretsWritable(): void {
+    const refusal = this.settings.secretWriteRefusal?.() ?? null
+    if (refusal) throw new SecretStorageRefusedError(refusal)
+  }
+
   // =========================================================================
   // Identity bootstrap + migration
   // =========================================================================
@@ -348,6 +355,10 @@ export class OwnerIdentityService {
         migrated: false
       }
     }
+
+    // Minting saves secrets: when they cannot be saved, refuse before the
+    // legacy lists below are touched, so nothing is half done.
+    this.assertSecretsWritable()
 
     const isUpgrade = !!existingOwnerDid
     if (isUpgrade) {
@@ -617,6 +628,8 @@ export class OwnerIdentityService {
     if (opts.expectedOwnerDid && owner.did !== opts.expectedOwnerDid) {
       throw new Error(`That phrase belongs to ${owner.did}, not this machine's owner ${opts.expectedOwnerDid}. Check the words, or use Import identity to switch owners.`)
     }
+    // Before legacyOwnerDids changes: a refused phrase write must leave nothing behind.
+    this.assertSecretsWritable()
 
     if (currentOwnerDid && currentOwnerDid !== owner.did) {
       const legacy = (this.settings.get('legacyOwnerDids') as string[] | undefined) ?? []

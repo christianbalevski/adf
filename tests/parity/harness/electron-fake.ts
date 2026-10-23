@@ -207,6 +207,8 @@ export function createFakeElectron(env: ParityEnv): FakeElectron {
 
   const safeStorage = {
     isEncryptionAvailable: () => true,
+    // A real keyring backend (never Linux basic_text): Studio's secrets are encrypted (studio-safe-storage.ts).
+    getSelectedStorageBackend: () => 'gnome_libsecret',
     encryptString: (value: string) => Buffer.from(SAFE_MARK + value, 'utf-8'),
     decryptString: (buf: Buffer) => {
       const text = buf.toString('utf-8')

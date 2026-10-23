@@ -1,4 +1,8 @@
 import {
+  closeSync,
+  fsyncSync,
+  openSync,
+  writeSync,
   readFileSync,
   writeFileSync,
   renameSync,
@@ -88,6 +92,117 @@ export function writeJsonAtomic(path: string, data: unknown): void {
     }
     throw err
   }
+  cleanStaleTmpFiles(path)
+}
+
+/** File operations replaceFileStrict uses; a seam for fault-injection tests. */
+export interface StrictReplaceFs {
+  writeTemp(path: string, text: string, mode: number): void
+  read(path: string): string
+  rename(from: string, to: string): void
+  unlink(path: string): void
+  syncDir(dir: string): void
+}
+
+const strictFs: StrictReplaceFs = {
+  writeTemp(path, text, mode) {
+    // 'wx': a fresh file of our own; fsync before the rename makes it durable.
+    const fd = openSync(path, 'wx', mode)
+    try {
+      writeSync(fd, text, null, 'utf-8')
+      fsyncSync(fd)
+    } finally {
+      closeSync(fd)
+    }
+  },
+  read: (path) => readFileSync(path, 'utf-8'),
+  rename: (from, to) => renameSync(from, to),
+  unlink: (path) => unlinkSync(path),
+  syncDir(dir) {
+    // Makes the rename durable on POSIX; directories cannot be opened this way on Windows.
+    let fd: number | null = null
+    try {
+      fd = openSync(dir, 'r')
+      fsyncSync(fd)
+    } catch {
+      // best effort
+    } finally {
+      if (fd !== null) closeSync(fd)
+    }
+  },
+}
+
+/** Why replaceFileStrict left `path` untouched. */
+export class StrictReplaceError extends Error {
+  constructor(readonly reason: 'temp-mismatch' | 'changed' | 'locked' | 'write', message: string) {
+    super(message)
+    this.name = 'StrictReplaceError'
+  }
+}
+
+/**
+ * Replace `path` with `text` for a change that must never leave a damaged or
+ * truncated file: unlike writeJsonAtomic there is no direct-overwrite fallback.
+ * The complete new content is written to a fresh temp file and synced, read
+ * back and compared byte for byte, then `unchanged()` (when given) is asked
+ * right before each rename attempt, so a write by another process since the
+ * caller read the file aborts instead of being overwritten (a throwing check
+ * counts as changed). Without an OS file lock a write landing between that
+ * check and rename() itself can still be replaced; the window is the gap
+ * between two syscalls, never a retry backoff. Only rename() ever
+ * touches `path`; when it keeps failing (a destination held open on Windows)
+ * the temp file is removed and `path` keeps its exact previous bytes.
+ * Throws StrictReplaceError; `path` is unchanged whenever it throws.
+ */
+export function replaceFileStrict(path: string, text: string, opts: { unchanged?: () => boolean; fs?: Partial<StrictReplaceFs> } = {}): void {
+  const fs: StrictReplaceFs = { ...strictFs, ...opts.fs }
+  const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
+  const drop = (): void => {
+    try { fs.unlink(tmp) } catch { /* best effort; cleanStaleTmpFiles removes leftovers */ }
+  }
+  try {
+    fs.writeTemp(tmp, text, existingFileMode(path) ?? 0o600)
+  } catch (err) {
+    drop()
+    throw new StrictReplaceError('write', `The new file could not be written (${(err as NodeJS.ErrnoException).code ?? 'write error'}).`)
+  }
+  let written: string
+  try {
+    written = fs.read(tmp)
+  } catch {
+    written = ''
+  }
+  if (written !== text) {
+    drop()
+    throw new StrictReplaceError('temp-mismatch', 'The new file did not read back as written.')
+  }
+  for (let attempt = 1; ; attempt++) {
+    // Asked again before every rename: a retry backoff is long enough for
+    // another writer to land, and that write must abort us, not be replaced.
+    let unchanged: boolean
+    try {
+      unchanged = !opts.unchanged || opts.unchanged()
+    } catch {
+      unchanged = false
+    }
+    if (!unchanged) {
+      drop()
+      throw new StrictReplaceError('changed', 'The file was changed by another writer meanwhile.')
+    }
+    try {
+      fs.rename(tmp, path)
+      break
+    } catch (err) {
+      if (!isDestinationLocked(err) || attempt >= RENAME_ATTEMPTS) {
+        drop()
+        const code = (err as NodeJS.ErrnoException).code ?? 'rename error'
+        throw new StrictReplaceError(isDestinationLocked(err) ? 'locked' : 'write', `The file could not be replaced (${code}); it was left as it was.`)
+      }
+      sleepSync(RENAME_RETRY_DELAY_MS)
+    }
+  }
+  // Replaced: from here on nothing may report failure (the new file is in place).
+  try { fs.syncDir(dirname(path)) } catch { /* best effort */ }
   cleanStaleTmpFiles(path)
 }
 
