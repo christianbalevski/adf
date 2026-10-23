@@ -36,3 +36,13 @@ describe('agent creation partial overrides', () => {
     } finally { db.close() }
   })
 })
+
+it('persists commands passed at creation and inherited from a template', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'adf-create-commands-'))
+  directories.push(dir)
+  const commands = [{ name: 'status', description: 'Status', lambda: 'lib/status.ts:run' }]
+  for (const inherited of [false, true]) {
+    const db = AdfDatabase.create(join(dir, `${inherited}.adf`), { name: 'Commands', ...(inherited ? { template: { commands } } : { commands }) })
+    try { expect(db.getConfig().commands).toEqual(commands) } finally { db.close() }
+  }
+})

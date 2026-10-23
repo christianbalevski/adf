@@ -8,7 +8,7 @@ import { createServer, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { DaemonClient as SharedDaemonClient, DaemonError, EventStream, staticCredentials, type ConnectionInfo, type DaemonCredentials } from '../../src/shared/daemon-client'
 import { DaemonClient as TuiDaemonClient } from '../../src/main/tui/api/client'
 import { daemonCredentials } from '../../src/main/cli/daemon-url'
@@ -194,6 +194,43 @@ describe('timeouts', () => {
   const hanging = (async (_input: string | URL | Request, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
     init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true })
   })) as typeof fetch
+
+  it('lets owner commands outlast the default client deadline while waiting for execution or approval', async () => {
+    vi.useFakeTimers()
+    try {
+      const result = { id: 'cmd_wait', name: 'status', loop: 'main', status: 'ok', authorized: false, result: 'Ready', durationMs: 60_000, deferred: false }
+      let signal: AbortSignal | null | undefined
+      const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
+        signal = init?.signal
+        return await new Promise<Response>((resolve, reject) => {
+          signal?.addEventListener('abort', () => reject(signal?.reason), { once: true })
+          setTimeout(() => resolve(new Response(JSON.stringify(result))), 60_000)
+        })
+      })
+      const client = new SharedDaemonClient({ baseUrl: 'http://127.0.0.1:7385', fetch })
+      const body = { args: '', authorize: false }
+      const outcome = expect(client.runCommand('agent/1', 'status', body)).resolves.toEqual(result)
+      await vi.advanceTimersByTimeAsync(60_000)
+      await outcome
+      expect(signal?.aborted).toBe(false)
+      expect(fetch).toHaveBeenCalledWith('http://127.0.0.1:7385/agents/agent%2F1/commands/status/run', expect.objectContaining({ method: 'POST', body: JSON.stringify(body) }))
+    } finally { vi.useRealTimers() }
+  })
+
+  it('preserves caller cancellation when a request deadline is disabled', async () => {
+    const client = new SharedDaemonClient({ baseUrl: 'http://127.0.0.1:7385', fetch: hanging })
+    const controller = new AbortController()
+    const outcome = expect(client.request('POST', '/commands/run', { timeoutMs: 0, signal: controller.signal }))
+      .rejects.toMatchObject({ status: null, message: expect.stringContaining('cancelled by caller') })
+    controller.abort(new Error('cancelled by caller'))
+    await outcome
+  })
+
+  it('reports command network failures with no client deadline', async () => {
+    const client = new SharedDaemonClient({ baseUrl: 'http://127.0.0.1:7385', fetch: async () => { throw new Error('connection reset') } })
+    await expect(client.runCommand('agent-1', 'status', { args: '', authorize: false }))
+      .rejects.toMatchObject({ status: null, message: expect.stringContaining('connection reset') })
+  })
 
   it('per call through request()', async () => {
     const client = new SharedDaemonClient({ baseUrl: 'http://127.0.0.1:7385', fetch: hanging, timeoutMs: 60_000 })

@@ -624,3 +624,60 @@ describe('event bridge: focus and lifecycle', () => {
     expect(batched).toEqual([{ type: 'agent_stopped', payload: { filePath: FILE_2 }, timestamp: 1 }])
   })
 })
+
+describe('owner command response ordering', () => {
+  const commandFrame = (agentId = AGENT_1, id = 'cmd_1', loop = 'main') => ({
+    kind: 'executor' as const, agentId, filePath: FILE_1,
+    event: { type: 'context_injected' as const, loop, timestamp: 1, payload: { category: 'owner_command', seq: 4, content: `[Owner command] ${JSON.stringify({ v: 1, id, command: 'test', lambda: 'test.js', authorized: false, duration_ms: 1, status: 'ok' })}\nresult` } },
+  })
+  it('registers before HTTP, matches agent/id/loop and settles after forwarding', async () => {
+    const f = setup()
+    await focus(f.session, FILE_1, AGENT_1)
+    const wait = f.bridge.waitForOwnerCommand(AGENT_1, 'cmd_1', 'side')
+    let settled = false
+    const done = wait.wait().then(() => { settled = true; expect(f.pushes.at(-1)?.channel).toBe(IPC.AGENT_EVENT) })
+    f.bridge.handleFrame(commandFrame(AGENT_2, 'cmd_1', 'side'))
+    f.bridge.handleFrame(commandFrame(AGENT_1, 'other', 'side'))
+    f.bridge.handleFrame(commandFrame())
+    await Promise.resolve()
+    expect(settled).toBe(false)
+    f.bridge.handleFrame(commandFrame(AGENT_1, 'cmd_1', 'side'))
+    await done
+    expect(settled).toBe(true)
+    expect((f.bridge as any).commandWaiters.size).toBe(0)
+    f.bridge.dispose()
+  })
+  it.each(['cancel', 'dispose', 'disconnect', 'detach', 'navigate'] as const)('releases waits on %s without keeping history', async action => {
+    const f = setup()
+    await focus(f.session, FILE_1, AGENT_1)
+    const wait = f.bridge.waitForOwnerCommand(AGENT_1, 'cmd_1')
+    if (action === 'cancel') wait.cancel()
+    if (action === 'dispose') f.bridge.dispose()
+    if (action === 'disconnect') f.bridge.failTurns('disconnected')
+    if (action === 'detach') f.bridge.detach(AGENT_1)
+    if (action === 'navigate') await focus(f.session, FILE_2, AGENT_2)
+    await wait.wait()
+    expect((f.bridge as any).commandWaiters.size).toBe(0)
+    f.bridge.dispose()
+  })
+  it('starts the short delivery deadline after the HTTP response, not during execution', async () => {
+    const f = setup()
+    ;(f.bridge as any).deps.ownerCommandTimeoutMs = 5
+    const pending = f.bridge.waitForOwnerCommand(AGENT_1, 'slow')
+    await new Promise(resolve => setTimeout(resolve, 15))
+    expect((f.bridge as any).commandWaiters.size).toBe(1)
+    f.bridge.handleFrame(commandFrame(AGENT_1, 'slow'))
+    await pending.wait()
+    expect((f.bridge as any).commandWaiters.size).toBe(0)
+    f.bridge.dispose()
+  })
+  it('bounds a missing event wait and cleans its timer', async () => {
+    const f = setup()
+    const deps = (f.bridge as any).deps
+    deps.ownerCommandTimeoutMs = 5
+    const wait = f.bridge.waitForOwnerCommand(AGENT_1, 'missing')
+    await wait.wait()
+    expect((f.bridge as any).commandWaiters.size).toBe(0)
+    f.bridge.dispose()
+  })
+})

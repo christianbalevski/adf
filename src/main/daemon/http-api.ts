@@ -2619,6 +2619,25 @@ export function createDaemonHttpApi(
     }
   })
 
+  server.post<{ Params: AgentIdParams & { name: string }; Body: { args?: string; loop?: string; authorize?: boolean; requestId?: string } | undefined }>('/agents/:id/commands/:name/run', async (request, reply) => {
+    const { id, name } = request.params
+    if (!runtime.getAgentOrDocument(id)) return notFound(reply, `Unknown agent "${id}"`)
+    if (!runtime.getAgent(id)) return notRunning(reply, id)
+    const body = request.body
+    if (body !== undefined && (!isRecord(body)
+      || (body.args !== undefined && typeof body.args !== 'string')
+      || (body.loop !== undefined && typeof body.loop !== 'string')
+      || (body.authorize !== undefined && typeof body.authorize !== 'boolean')
+      || (body.requestId !== undefined && typeof body.requestId !== 'string'))) {
+      return reply.code(400).send({ error: 'Command body must contain string args, loop and requestId, and a boolean authorize.', code: 'invalid_request' })
+    }
+    try {
+      return await runtime.runAgentCommand(id, name, body ?? {})
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
   // Compact one loop's history now (Studio's /compact). 409 while that loop is mid-turn.
   server.post<{ Params: AgentIdParams; Querystring: ChatClearQuery; Body: { loop?: string } | undefined }>('/agents/:id/compact', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)

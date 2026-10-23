@@ -1,3 +1,4 @@
+import { Tooltip } from '../common/Tooltip'
 import { useEffect, useRef } from 'react'
 import type { SlashCommand } from '../../utils/slash-commands'
 
@@ -15,11 +16,13 @@ import type { SlashCommand } from '../../utils/slash-commands'
  */
 export function SlashCommandPalette({
   commands,
+  authorize = false,
   activeIndex,
   listId,
   onSelect,
   onHighlight
 }: {
+  authorize?: boolean
   commands: readonly SlashCommand[]
   activeIndex: number
   listId: string
@@ -67,6 +70,7 @@ export function SlashCommandPalette({
             }`}
           >
             {command.label}
+            {command.locked && <Tooltip tip="Locked by the owner: the agent cannot change or remove it."><span aria-label="Locked by the owner"> 🔒</span></Tooltip>}
           </span>
           <span
             className={`min-w-0 flex-1 truncate text-[11px] ${
@@ -75,9 +79,10 @@ export function SlashCommandPalette({
                 : 'text-neutral-500 dark:text-neutral-400'
             }`}
           >
-            {command.description}
+            {command.kind === 'agent' && command.muted ? 'Start the agent to run this.' : command.kind === 'agent' && authorize && index === activeIndex ? 'Runs once as authorized code: restricted tools and methods are allowed.' : command.description}
           </span>
-          {command.muted && (
+          {command.kind === 'agent' && authorize && index === activeIndex && <span className="shrink-0 text-[10px] text-amber-600">authorized run</span>}
+          {command.kind === 'skill' && command.muted && (
             <span className="shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">(muted)</span>
           )}
         </button>

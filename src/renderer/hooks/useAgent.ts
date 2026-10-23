@@ -1,3 +1,4 @@
+import { isOwnerCommandRow } from '../../shared/utils/owner-command-row'
 import { useEffect } from 'react'
 import type { DisplayAttachment } from '../../shared/utils/file-ref'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentLogEntry } from '../stores/agent.store'
@@ -636,7 +637,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // starting a turn; same stamp, same block.
         const injectedLoopSend = parseLoopSendStamp(payload.content)
         // loop_inject sends its row text, marker and all: read it as reload does.
-        const stamped = injectedLoopSend || payload.content.startsWith('[Context: ') ? classifyInjectedText(payload.content) : null
+        const stamped = injectedLoopSend || isOwnerCommandRow(payload.content) || payload.content.startsWith('[Context: ') ? classifyInjectedText(payload.content) : null
         const injectedEntry: AgentLogEntry = {
           id: nanoid(),
           type: 'context',
@@ -649,6 +650,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // Loop deliveries defer to the block boundary; other injections keep
         // their current inline behaviour.
         if (injectedLoopSend) deliverLoopMessage(injectedEntry, loop, slice.state === 'active', slice.log)
+        else if (injectedEntry.metadata?.category === 'owner_command') agentStore.settleOwnerCommand(injectedEntry, loop)
         else agentStore.addLogEntry(injectedEntry, loop)
         break
       }

@@ -1361,6 +1361,23 @@ The umbilical is the runtime's event stream for one agent. `umbilical` sets emis
 
 ---
 
+### 5.25 Commands
+
+`commands` is an optional array of at most 64 owner slash commands. Each runs an agent lambda without a model turn.
+
+| Field | Type | Rule |
+|-------|------|------|
+| `name` | string | Unique case-insensitively; 1–32 lowercase letters, digits and hyphens, starts with a letter, ends with a letter or digit |
+| `description` | string | 1–200 characters |
+| `usage` | string, optional | At most 100 characters; `<` marks a required argument |
+| `lambda` | string | `path/file.ts:functionName`; `.ts`, `.js` and `.mjs` files, valid JavaScript function identifier |
+| `locked` | boolean, optional | Owner lock; the agent MUST NOT change or remove the entry |
+
+Names `compact`, `clear`, `skills`, `idle`, `hibernate`, `stop` and `off` are reserved. Only the owner or authorized code MAY set `locked: true`. Agent registration MUST reference an existing file. Each lambda receives `{ command, args, argv, invoker: "owner", loop, authorized, id }`.
+
+The standalone `!authorize` argument token authorizes that invocation and is removed from arguments. `\!authorize` passes through as literal `!authorize`. Commands otherwise use the source file's authorization. The runtime MUST execute each invocation in a fresh ephemeral sandbox and destroy it afterward. The bounded outcome is recorded as a user-role owner-command row in the selected loop, deferred to a safe model boundary when a turn is active. Commands MUST NOT start a model turn; an off agent refuses the invocation.
+
+
 ## 6. States and Loops
 
 ### 6.1 Agent States
@@ -1670,11 +1687,13 @@ Pipeline order on egress: sign payload, encrypt payload, sign message (the outer
 
 ### 8.6 Authorized Code
 
-Authorization applies to files. Code from a file with `authorized = 1` MAY call restricted tools and restricted code methods without owner approval; code from any other source MUST NOT.
+Authorization normally applies to files; the owner MAY authorize a single command invocation (§5.25). Code from a file with `authorized = 1` MAY call restricted tools and restricted code methods without owner approval; code from any other source MUST NOT.
 
 | Invocation | Authorization |
 |------------|---------------|
 | `sys_code` inline code | Unauthorized |
+| Owner command with `!authorize` | Authorized for this invocation only, in an ephemeral sandbox |
+| Owner command without `!authorize` | The source file's `authorized` flag |
 | Model calls `sys_lambda` on an unauthorized file | Runs unauthorized |
 | Model calls `sys_lambda` on an authorized file | Requires owner approval; the approved run is authorized |
 | Authorized code calls an authorized file | Allowed; the target runs authorized |

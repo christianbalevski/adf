@@ -159,6 +159,8 @@ interface AgentStoreState extends LoopSlice {
   setStarting: (starting: boolean) => void
   setSessionId: (id: string | null) => void
   addLogEntry: (entry: AgentLogEntry, loop?: string) => void
+  settleOwnerCommand: (entry: AgentLogEntry, loop?: string) => void
+  removePendingOwnerCommand: (id: string, loop?: string) => void
   /** Mutate the last log entry in place and bump logVersion. No array copy. */
   updateLastEntry: (mutator: (entry: AgentLogEntry) => void, loop?: string) => void
   /** Mutate a log entry at a specific index and bump logVersion. */
@@ -279,6 +281,15 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       log: [...s.log, entry],
       logVersion: s.logVersion + 1,
       structuralVersion: s.structuralVersion + 1
+    })),
+    settleOwnerCommand: (entry, loop) => patchSlice(loop, (s) => ({
+      log: [...s.log.filter((old) => typeof old.metadata?.seq === 'number' ||
+        (old.metadata?.ownerCommand as { id?: string } | undefined)?.id !== (entry.metadata?.ownerCommand as { id?: string } | undefined)?.id), entry],
+      logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1
+    })),
+    removePendingOwnerCommand: (id, loop) => patchSlice(loop, (s) => ({
+      log: s.log.filter((old) => typeof old.metadata?.seq === 'number' || (old.metadata?.ownerCommand as { id?: string } | undefined)?.id !== id),
+      logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1
     })),
     updateLastEntry: (mutator, loop) => patchSlice(loop, (s) => {
       const last = s.log[s.log.length - 1]

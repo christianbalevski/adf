@@ -189,6 +189,9 @@ export const CHANNEL_MAP = {
   [IPC.AGENT_INVOKE]: proxied('invoke', ['POST /agents/:id/chat'], {
     note: 'filePath may name a background agent; loop selects the stream. Sent echoed: the sending session alone skips the turn\'s trigger_message.',
   }),
+  [IPC.AGENT_RUN_COMMAND]: proxied('invoke', ['POST /agents/:id/commands/:name/run'], {
+    note: 'filePath may name a background agent; loop selects the stream. authorize is the owner\'s per-invocation grant.',
+  }),
   [IPC.AGENT_COMPACT]: proxied('invoke', ['POST /agents/:id/compact']),
   [IPC.AGENT_INTERRUPT]: proxied('invoke', ['POST /agents/:id/interrupt'], {
     note: 'filePath may name a background agent; loop selects the stream. The same interrupt as the terminal app\'s Esc.',

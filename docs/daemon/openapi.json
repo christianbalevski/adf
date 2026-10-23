@@ -16995,6 +16995,70 @@
           }
         ]
       }
+    },
+    "/agents/{id}/commands/{name}/run": {
+      "post": {
+        "tags": [
+          "Loops"
+        ],
+        "summary": "Run an owner slash command",
+        "description": "Runs a registered lambda without a model turn and records its bounded outcome in the selected loop. Requires a running agent; never starts it. Error and denied outcomes are recorded and return 200. The authorize boolean elevates only this invocation; chat text is never interpreted as a command.",
+        "operationId": "runAgentCommand",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "description": "Registered command name without the slash.",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/OwnerCommandBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/Conflict"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          },
+          "200": {
+            "description": "Recorded command outcome",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/OwnerCommandResult"
+                }
+              }
+            }
+          }
+        }
+      }
     }
   },
   "components": {
@@ -18810,8 +18874,27 @@
                 "additionalProperties": {
                   "type": "object",
                   "properties": {
-                    "support": { "type": "object", "properties": { "image": { "type": "boolean" }, "audio": { "type": "boolean" }, "video": { "type": "boolean" } } },
-                    "refusals": { "type": "object", "additionalProperties": { "type": "string" }, "description": "Why each modality not in support is refused, keyed image, audio or video." }
+                    "support": {
+                      "type": "object",
+                      "properties": {
+                        "image": {
+                          "type": "boolean"
+                        },
+                        "audio": {
+                          "type": "boolean"
+                        },
+                        "video": {
+                          "type": "boolean"
+                        }
+                      }
+                    },
+                    "refusals": {
+                      "type": "object",
+                      "additionalProperties": {
+                        "type": "string"
+                      },
+                      "description": "Why each modality not in support is refused, keyed image, audio or video."
+                    }
                   }
                 },
                 "description": "GET /agents/{id}/status of a running agent: each loop's effective media (main and live inner loops, keyed by loop name): what its provider connector carries, narrowed by the agent's model.multimodal toggles. POST /agents/{id}/chat refuses the rest with 400 media_unsupported."
@@ -31480,6 +31563,79 @@
             }
           }
         ]
+      },
+      "OwnerCommandBody": {
+        "type": "object",
+        "properties": {
+          "args": {
+            "type": "string",
+            "maxLength": 4096,
+            "pattern": "^[^\\n]*$",
+            "default": ""
+          },
+          "loop": {
+            "type": "string",
+            "default": "main"
+          },
+          "authorize": {
+            "type": "boolean",
+            "default": false,
+            "description": "Owner grant for this invocation only. Paired devices may grant it."
+          },
+          "requestId": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{1,64}$"
+          }
+        }
+      },
+      "OwnerCommandResult": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "loop",
+          "status",
+          "authorized",
+          "result",
+          "durationMs",
+          "deferred"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "error",
+              "denied"
+            ]
+          },
+          "authorized": {
+            "type": "boolean"
+          },
+          "result": {
+            "type": "string",
+            "description": "Bounded output exactly as recorded in the loop."
+          },
+          "durationMs": {
+            "type": "number"
+          },
+          "deferred": {
+            "type": "boolean",
+            "description": "The record waits for the current step to finish."
+          },
+          "seq": {
+            "type": "integer"
+          }
+        }
       }
     }
   }

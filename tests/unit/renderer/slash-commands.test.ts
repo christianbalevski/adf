@@ -291,3 +291,31 @@ describe('composeSkillMessage', () => {
     expect(fallbackSkillMessage('alpha', '')).toBe('Use the alpha skill.')
   })
 })
+
+describe('registered agent commands', () => {
+  const command = { name: 'weather', description: 'Forecast', usage: '<city>', lambda: 'lib/a.ts:run', locked: true }
+  it('orders registered commands before skills and shadows matching skills', () => {
+    const rows = buildSlashCommands([entry({ name: 'weather' }), entry({ name: 'aaa' })], [command])
+    expect(rows.slice(0, BUILTIN_COMMANDS.length)).toEqual(BUILTIN_COMMANDS)
+    expect(rows[BUILTIN_COMMANDS.length]).toMatchObject({ kind: 'agent', agentCommand: 'weather', locked: true })
+    expect(rows.filter((row) => row.key === 'weather')).toHaveLength(1)
+    expect(rows.at(-1)?.key).toBe('aaa')
+  })
+  it('drops invalid and reserved commands and marks off commands muted', () => {
+    const rows = buildSlashCommands([], [command, { ...command, name: 'stop' }, { ...command, name: 'BAD' }], { agentRunning: false })
+    expect(rows.filter((row) => row.kind === 'agent')).toHaveLength(1)
+    expect(rows.at(-1)?.muted).toBe(true)
+    expect(needsArgument(rows.at(-1)!, '')).toBe(true)
+  })
+})
+
+
+it('drops malformed hand-edited agent entries before sorting', () => {
+  const malformed = [null, { name: 5 }, { name: 'weather', description: 'Forecast', lambda: 'lib/a.ts:run' }]
+  const commands = buildSlashCommands([], malformed as unknown as import('../../../src/shared/types/adf-v02.types').AgentCommand[])
+  expect(commands.filter((command) => command.kind === 'agent').map((command) => command.key)).toEqual(['weather'])
+})
+
+it.each([null, {}, 'bad'])('ignores non-array raw command config: %j', commands => {
+  expect(buildSlashCommands([], commands as any)).toEqual(buildSlashCommands([]))
+})

@@ -1,3 +1,4 @@
+import { nanoid } from 'nanoid'
 import { basename, join } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { AgentStatus, AgentSummary, DaemonClient } from '../../../../shared/daemon-client'
@@ -141,6 +142,29 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     } catch (err) {
       if (notRunning(err, agentId)) return NOT_RUNNING
       return { success: false, error: errorMessage(err) }
+    }
+  },
+
+  [IPC.AGENT_RUN_COMMAND]: async (ctx, _event, args: { filePath?: string; loop?: string; name: string; args: string; authorize: boolean; requestId?: string }) => {
+    const off = { success: false, error: `Agent is off. Start it, then run /${args?.name ?? ''} again.`, code: 'agent_not_running' }
+    const target = args?.filePath
+    const agentId = target && !samePath(target, ctx.session.filePath, ctx.mode === 'remote')
+      ? await ctx.runningAgentAt(target)
+      : (ctx.session.filePath ? ctx.session.agentId : null)
+    if (!agentId) return off
+    try {
+      const client = await ctx.ready()
+      const { name, args: commandArgs, loop, authorize } = args
+      const requestId = args.requestId ?? nanoid()
+      const wait = ctx.bridge.waitForOwnerCommand(agentId, requestId, loop || 'main')
+      try {
+        const result = await client.runCommand(agentId, name, { args: commandArgs, loop, authorize, requestId })
+        if (!result.deferred && result.seq !== undefined) await wait.wait()
+        return { success: true, ...result }
+      } finally { wait.cancel() }
+    } catch (err) {
+      if (notRunning(err, agentId)) return off
+      return { success: false, error: errorMessage(err), code: daemonCode(err) ?? undefined }
     }
   },
 

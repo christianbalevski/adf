@@ -2554,6 +2554,7 @@ export class AdfDatabase {
         messaging: { ...base.messaging, ...options.messaging },
         audit: { ...base.audit, ...options.audit },
         pre_llm_hook: options.pre_llm_hook ?? base.pre_llm_hook,
+        commands: options.commands ?? base.commands,
         code_execution: { ...base.code_execution, ...options.code_execution },
         compute: { ...base.compute },
         logging: { ...base.logging, ...options.logging },

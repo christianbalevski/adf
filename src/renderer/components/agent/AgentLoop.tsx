@@ -18,7 +18,7 @@ import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../uti
 import { contextLabel, describeWake, mergeInstructionRows } from '../../utils/loop-labels'
 import { LOOP_ERROR_ACTION_LABELS, actionableErrorId, errorAction, isMissingProvider, type LoopErrorAction } from '../../utils/loop-error'
 import { restoreDraft, sendWithRecovery } from '../../utils/send-recovery'
-import { SKILLS_REGISTRY_PATH, parseSkillsRegistry } from '../../utils/skills-panel'
+import { SKILLS_REGISTRY_PATH, parseSkillsRegistry, type RegistryEntry } from '../../utils/skills-panel'
 import {
   buildSlashCommands,
   completionText,
@@ -30,7 +30,6 @@ import {
   parseSkillInterface,
   skillInterfacePath,
   slashQuery,
-  BUILTIN_COMMANDS,
   type SlashCommand,
 } from '../../utils/slash-commands'
 import { Button } from '../ui'
@@ -43,6 +42,9 @@ import { escStopsTurn } from '../../utils/keyboard'
 import { interruptOpenTurn } from '../../utils/turn-interrupt'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
+import { submitOwnerCommand } from '../../utils/owner-command-submit'
+import { parseAuthorizeToken } from '../../../shared/utils/agent-commands'
+import { OwnerCommandRow } from './OwnerCommandRow'
 import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
 import { AttachedImage, AttachmentList } from './ChatAttachments'
@@ -910,7 +912,7 @@ const LogEntryRow = memo(({
         </div>
         )
       })()}
-      {isSystemNotice(entry) && (() => {
+      {entry.metadata?.category !== 'owner_command' && isSystemNotice(entry) && (() => {
         // A notice is shown as it is, never folded. `runtime` is input the
         // model received; `status` is for the owner and never reached it.
         const forOwner = entry.metadata?.category === 'status'
@@ -932,7 +934,8 @@ const LogEntryRow = memo(({
           </div>
         )
       })()}
-      {entry.type === 'context' && !isLoopMessageEntry(entry) && !isSystemNotice(entry) && (() => {
+      {entry.metadata?.category === 'owner_command' && <OwnerCommandRow entry={entry} />}
+      {entry.type === 'context' && entry.metadata?.category !== 'owner_command' && !isLoopMessageEntry(entry) && !isSystemNotice(entry) && (() => {
         const label = contextLabel(entry)
         const isExpanded = expandedContexts.has(entry.id)
         return (
@@ -1568,7 +1571,8 @@ function LoopStream({ loop }: { loop: string }) {
   // Built-ins run a Studio/runtime action directly; skill commands only ever
   // compose a message and hand it to the ordinary send path. Nothing here
   // executes skill text — the catalog is read as data and painted as labels.
-  const [slashCommands, setSlashCommands] = useState<SlashCommand[]>(() => [...BUILTIN_COMMANDS])
+  const [skillEntries, setSkillEntries] = useState<RegistryEntry[]>([])
+  const slashCommands = useMemo(() => buildSlashCommands(skillEntries, config?.commands ?? [], { agentRunning: agentState !== 'off' }), [skillEntries, config?.commands, agentState])
   const [slashActive, setSlashActive] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState(false)
 
@@ -1591,7 +1595,7 @@ function LoopStream({ loop }: { loop: string }) {
   // The catalog belongs to the open agent, so it is re-read on every open
   // rather than cached — the indexer rewrites it whenever skills/ changes.
   useEffect(() => {
-    setSlashCommands([...BUILTIN_COMMANDS])
+    setSkillEntries([])
   }, [filePath])
   useEffect(() => {
     if (!slashOpen) return
@@ -1600,7 +1604,7 @@ function LoopStream({ loop }: { loop: string }) {
       try {
         const file = await openApi()?.readInternalFile(SKILLS_REGISTRY_PATH)
         if (cancelled || file?.binary) return
-        setSlashCommands(buildSlashCommands(parseSkillsRegistry(file?.content)?.entries ?? []))
+        setSkillEntries(parseSkillsRegistry(file?.content)?.entries ?? [])
       } catch { /* no catalog: the built-ins still work */ }
     })()
     return () => { cancelled = true }
@@ -1608,8 +1612,8 @@ function LoopStream({ loop }: { loop: string }) {
 
   /** Local, display-only feedback for a command. Never reaches the model. */
   const say = useCallback((text: string) => {
-    addLogEntry({ id: nanoid(), type: 'system', content: text, timestamp: Date.now() })
-  }, [addLogEntry])
+    addLogEntry({ id: nanoid(), type: 'system', content: text, timestamp: Date.now() }, loop)
+  }, [addLogEntry, loop])
 
   /**
    * The composer's Stop (and Esc, and `/stop`): end this loop's running turn.
@@ -1784,6 +1788,11 @@ function LoopStream({ loop }: { loop: string }) {
    */
   const runSlashCommand = async (command: SlashCommand, args: string) => {
     setInput('')
+    if (command.kind === 'agent') {
+      const api = openApi()
+      if (api) await submitOwnerCommand({ filePath: filePath ?? undefined, loop, name: command.agentCommand ?? command.key, args, run: api.runAgentCommand, say })
+      return
+    }
     if (command.kind === 'skill' && command.skill) {
       const name = command.skill
       let parsed = null
@@ -2446,6 +2455,7 @@ function LoopStream({ loop }: { loop: string }) {
             <div className="relative">
             {slashOpen && (
               <SlashCommandPalette
+                authorize={parseAuthorizeToken(input).authorize}
                 commands={slashRows}
                 activeIndex={slashIndex}
                 listId="loop-slash-palette"

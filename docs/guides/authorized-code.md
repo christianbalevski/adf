@@ -45,6 +45,7 @@ Authorization is **not** simply "is the file authorized?" — it depends on **wh
 | Invocation | Authorization | Rationale |
 |-----------|--------------|-----------|
 | **Trigger/timer lambda** | Based on file's `authorized` flag | System-initiated — the owner configured the trigger |
+| **Owner slash command** | File's `authorized` flag, or the owner's standalone `!authorize` token for this invocation | Runs in a temporary sandbox; the grant does not authorize the file or nested lambda targets. See [commands.md](commands.md). |
 | **Middleware lambda** | Based on file's `authorized` flag | System-initiated — runs in the ingress/egress pipeline |
 | **`sys_lambda` from the loop** | **HIL** if target is authorized; `false` otherwise | Agent-initiated — authorized targets require human approval before running with privileges |
 | **`sys_code` (inline)** | Always `false` | Agent-initiated — inline code has no provenance |

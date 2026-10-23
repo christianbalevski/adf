@@ -20,8 +20,8 @@ import { localDateKey } from '../../../src/shared/utils/date-key'
  * key counts, so `{x: undefined}` and `{}` differ for it). Object key order
  * is not compared (the formatter sorts keys; no consumer depends on it).
  *
- * Rules exist only for values observed to vary. The one duration rule (R21)
- * is keyed by its field and log message (a lambda's run in adf_logs), not a
+ * Rules exist only for values observed to vary. Duration rules (R21, R24)
+ * are keyed by the lambda log or owner-command record, not a
  * pattern over all numbers; add any other the same way.
  *
  * Two layers:
@@ -69,6 +69,7 @@ function isPlain(value: object): boolean {
 }
 
 export function normalizeRecording(recording: ComparableRecording, ctx: NormalizationContext): ComparableRecording {
+  const hasOwnerCommandHistory = recording.llm.some(request => request.messages.some(message => message.text.includes('[Owner command] ')))
   const counters = new Map<string, Map<string, number>>()
   /** Stable placeholder for a random value: same input, same number, within this recording. */
   const numbered = (kind: string, value: string): string => {
@@ -199,6 +200,12 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     // appearance as `<task-id#n>`. Hides: the random part only.
     s = s.replace(/(?<![A-Za-z0-9_-])task_[A-Za-z0-9_-]{12}(?![A-Za-z0-9_-])/g, (m) => numbered('task-id', m))
 
+    // Rule R24 — owner command wall-clock duration, only in the marker's
+    // JSON header (plain text or escaped inside an adf_loop JSON string).
+    // IDs, arguments, authority, status and output remain compared exactly.
+    s = s.replace(/(\[Owner command\] \{[^\n]*?(?:\\?")duration_ms(?:\\?"):)(\d+(?:\.\d+)?)/g,
+      (_match, prefix: string) => prefix + (prefix.includes('\\"') ? '\\"<duration>\\"' : '"<duration>"'))
+
     // Rule R10 — Ed25519 signatures. The fixture delegation's signature is
     // named by R3 (`<sig:runtime-delegation>`). Every other one was verified
     // against its issuer's DID before normalization (signatures.ts) and
@@ -284,6 +291,23 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
       return { ...row, value: row.value.replace(/"id":"([A-Za-z0-9_-]{10})"/, (_m, id: string) => `"id":"${numbered('turn-id', id)}"`) }
     }
     if (MESSAGE_ROW_PATH.test(path)) return messageRow(row)
+    // R24: the preflight character estimate includes the variable-width
+    // duration digits in owner-command history. Exact normalized model input
+    // and the provider's reported usage are still compared; only this UI
+    // estimate is nondeterministic once command records enter the request.
+    if (hasOwnerCommandHistory && row.estimated === true && typeof row.model === 'string' && row.usage && typeof row.usage === 'object') {
+      return { ...row, usage: { ...row.usage as Record<string, unknown>, input: '<command-history-estimate>' } }
+    }
+    // R24: the same duration in display headers and transport replies.
+    if (typeof row.id === 'string' && typeof row.authorized === 'boolean' && ['ok', 'error', 'denied'].includes(String(row.status))) {
+      if (row.v === 1 && typeof row.command === 'string' && typeof row.lambda === 'string' && typeof row.duration_ms === 'number') return { ...row, duration_ms: '<duration>' }
+      if (typeof row.name === 'string' && typeof row.loop === 'string' && typeof row.result === 'string' && typeof row.durationMs === 'number') return { ...row, durationMs: '<duration>' }
+    }
+    if (LOG_ROW_PATH.test(path) && row.origin === 'command' && row.event === 'run') {
+      return { ...row,
+        data: typeof row.data === 'string' ? row.data.replace(/("duration_ms":)\d+(?:\.\d+)?/g, '$1"<duration>"') : row.data,
+        message: typeof row.message === 'string' ? row.message.replace(/\(\d+(?:\.\d+)?ms\)/, '(<duration>ms)') : row.message }
+    }
     // Rule R21 — a system-scope lambda's run in `adf_logs` (origin `lambda`,
     // system-scope-handler.ts) records its wall-clock duration in `data`
     // (`duration_ms`) and in the message ("Lambda completed in Nms"). Both

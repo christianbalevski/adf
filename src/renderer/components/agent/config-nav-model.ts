@@ -8,7 +8,7 @@ export const CONFIG_NAV_GROUPS: ReadonlyArray<{ name: string; sections: readonly
   { name: 'Base', sections: ['Identity', 'Model', 'Instructions', 'Context'] },
   { name: 'Capabilities', sections: ['Tools', 'Loops', 'Code Execution', 'Compute', 'MCP Servers'] },
   { name: 'Communication', sections: ['Channels', 'Messaging', 'Security', 'Serving', 'WebSocket Connections', 'Stream Bindings'] },
-  { name: 'Automation', sections: ['Triggers', 'Hooks', 'Umbilical Taps'] },
+  { name: 'Automation', sections: ['Triggers', 'Hooks', 'Commands', 'Umbilical Taps'] },
   { name: 'Records', sections: ['Logging', 'Metadata', 'Meta Keys'] }
 ]
 

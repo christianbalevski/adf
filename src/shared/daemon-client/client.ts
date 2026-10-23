@@ -34,6 +34,8 @@ import {
   type AskListResult,
   type AutostartReport,
   type CompactResult,
+  type OwnerCommandBody,
+  type OwnerCommandResult,
   type AuthDiagnostics,
   type ChatHistory,
   type ContentResult,
@@ -160,7 +162,7 @@ export interface DaemonClientOptions {
   credentialsFor?: (baseUrl: string, token?: string) => DaemonCredentials | undefined
   /** Injected for tests. */
   fetch?: typeof fetch
-  /** Per-request timeout for non-streaming calls. Default 15s. */
+  /** Per-request timeout for non-streaming calls. Default 15s; 0 disables the deadline. */
   timeoutMs?: number
   /**
    * Client session the requests come from (X-ADF-Client-Session, own origin
@@ -181,7 +183,7 @@ export interface RequestOptions {
   query?: Query
   body?: unknown
   signal?: AbortSignal
-  /** This call's timeout; default the client's (package installs, MCP connects need longer). */
+  /** This call's timeout; default the client's. 0 disables the deadline; caller cancellation still applies. */
   timeoutMs?: number
 }
 
@@ -294,7 +296,7 @@ export class DaemonClient {
   async request<T>(method: Method, path: string, options: RequestOptions = {}, retried = false): Promise<T> {
     const controller = new AbortController()
     const timeoutMs = options.timeoutMs ?? this.timeoutMs
-    const timer = setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
+    const timer = timeoutMs === 0 ? undefined : setTimeout(() => controller.abort(new Error('timeout')), timeoutMs)
     const onAbort = () => controller.abort(options.signal?.reason)
     if (options.signal?.aborted) onAbort()
     else options.signal?.addEventListener('abort', onAbort, { once: true })
@@ -655,6 +657,11 @@ export class DaemonClient {
   /** Scan directories and start every reviewed agent configured for autostart. */
   autostart(trackedDirs: string[], maxDepth?: number): Promise<AutostartReport> {
     return this.post('/agents/autostart', { trackedDirs, ...(maxDepth !== undefined ? { maxDepth } : {}) })
+  }
+
+  /** Run an owner command. The server bounds execution; owner protection approval may take longer. */
+  runCommand(agentId: string, name: string, body: OwnerCommandBody): Promise<OwnerCommandResult> {
+    return this.request('POST', `/agents/${enc(agentId)}/commands/${enc(name)}/run`, { body, timeoutMs: 0 })
   }
 
   /** Compact one loop's history now. 409 while that loop is mid-turn. */

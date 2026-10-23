@@ -1,3 +1,4 @@
+import type { OwnerCommandResult } from '../shared/types/owner-command.types'
 import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentProviderKeySource, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
   QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
@@ -137,6 +138,7 @@ export interface AdfApi {
    */
   invokeAgent: (userMessage?: string, filePath?: string, content?: ContentBlock[], loop?: string) => Promise<{ success: boolean; error?: string; accepted?: boolean; code?: 'daemon_exited' }>
   /** Compact the loop now (Studio's `/compact`). Refused while a turn is running. */
+  runAgentCommand: (args: { filePath?: string; loop?: string; name: string; args: string; authorize: boolean; requestId?: string }) => Promise<({ success: true } & OwnerCommandResult) | { success: false; error: string; code?: string }>
   compactLoop: () => Promise<{ success: boolean; error?: string }>
   /**
    * End the running turn of one loop (default main) of the agent at

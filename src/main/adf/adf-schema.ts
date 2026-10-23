@@ -1,3 +1,4 @@
+import { COMMAND_NAME_PATTERN, RESERVED_COMMAND_NAMES, validateAgentCommands } from '../../shared/utils/agent-commands'
 import { z } from 'zod'
 import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, LOOP_PROHIBITED_TOOLS, MAX_SIDE_LOOPS, hasLoopGoal } from '../../shared/types/adf-v02.types'
 import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
@@ -509,6 +510,19 @@ export const PreLlmHookConfigSchema = z.object({
   }
 })
 
+export const AgentCommandSchema = z.object({
+  name: z.string().regex(COMMAND_NAME_PATTERN).describe(`Typed after the slash. 1–32 lowercase letters, digits, hyphens; starts with a letter. Not one of: ${RESERVED_COMMAND_NAMES.join(', ')}. Unique in commands.`),
+  description: z.string().min(1).max(200),
+  usage: z.string().max(100).optional(),
+  lambda: z.string().min(1).describe('"path/file.ts:functionName". The function receives one object: { command, args, argv, invoker, loop, authorized, id }.'),
+  locked: z.boolean().optional()
+})
+export const AgentCommandsSchema = z.array(AgentCommandSchema).max(64).superRefine((commands, ctx) => {
+  for (const issue of validateAgentCommands(commands)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.index, issue.field], message: issue.message })
+  }
+})
+
 export const AgentConfigSchema = z.object({
   adf_version: z.literal('0.2'),
   id: z.string().min(1),
@@ -656,6 +670,7 @@ export const AgentConfigSchema = z.object({
   logging: LoggingConfigSchema.optional(),
   adapters: z.record(AdapterInstanceConfigSchema).optional(),
   serving: ServingConfigSchema.optional(),
+  commands: AgentCommandsSchema.optional(),
   ws_connections: z.array(WsConnectionConfigSchema).optional(),
   stream_bind: StreamBindConfigSchema.optional(),
   stream_bindings: z.array(StreamBindingDeclarationSchema).optional(),

@@ -1,3 +1,4 @@
+import { parseOwnerCommandRow } from './owner-command-row'
 /**
  * Loop Parser
  *
@@ -95,11 +96,11 @@ export function isRuntimeNotice(text: string): boolean {
  * - `injected`: `loop_inject` context, with its `injectCategory` and `origin`.
  * - `loop`: a message from another of the agent's loops.
  */
-export type InjectedCategory = 'runtime' | 'status' | 'system_prompt' | 'dynamic_instructions' | 'provider_context' | 'injected' | 'loop'
+export type InjectedCategory = 'owner_command' | 'runtime' | 'status' | 'system_prompt' | 'dynamic_instructions' | 'provider_context' | 'injected' | 'loop'
 
 /** The categories shown as their own row rather than folded into a step block. */
 export function isNoticeCategory(category: unknown): boolean {
-  return category === 'runtime' || category === 'status'
+  return category === 'owner_command' || category === 'runtime' || category === 'status'
 }
 
 /** The `[Context: …]` head of a provider's input, naming the provider. */
@@ -108,6 +109,8 @@ export function providerContextCategory(addedBy: string): string {
 }
 
 export function classifyInjectedText(text: string): { content: string; metadata: Record<string, unknown> & { category: InjectedCategory | string } } | null {
+  const ownerCommand = parseOwnerCommandRow(text)
+  if (ownerCommand) return { content: ownerCommand.body, metadata: { category: 'owner_command', ownerCommand: ownerCommand.header } }
   const context = text.match(/^\[Context: ([^\]]+)\] ?([\s\S]*)$/)
   if (context) {
     const [name, ...fields] = context[1].split(' | ')

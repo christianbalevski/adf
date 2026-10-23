@@ -658,6 +658,26 @@ export type AgentTemplate = DeepPartial<Omit<AgentConfig, AgentTemplateExcludedK
  * Options for creating a new agent. `name` is required; everything else
  * overrides the AGENT_DEFAULTS when provided.
  */
+/** An owner slash command that runs one of the agent's lambdas. */
+export interface AgentCommand {
+  name: string
+  description: string
+  usage?: string
+  lambda: string
+  /** Owner lock: the agent cannot modify or remove this command. */
+  locked?: boolean
+}
+
+export interface AgentCommandInvocation {
+  command: string
+  args: string
+  argv: string[]
+  invoker: 'owner'
+  loop: string
+  authorized: boolean
+  id: string
+}
+
 export interface CreateAgentOptions {
   name: string
   /**
@@ -697,6 +717,7 @@ export interface CreateAgentOptions {
   mcp?: McpConfig
   adapters?: AdaptersConfig
   serving?: ServingConfig
+  commands?: AgentCommand[]
   providers?: AdfProviderConfig[]
   ws_connections?: WsConnectionConfig[]
   umbilical_taps?: UmbilicalTapConfig[]
@@ -1105,6 +1126,7 @@ export interface AgentConfig {
   compute?: ComputeConfig
   adapters?: AdaptersConfig
   serving?: ServingConfig
+  commands?: AgentCommand[]
   ws_connections?: WsConnectionConfig[]
   umbilical_taps?: UmbilicalTapConfig[]
   umbilical?: UmbilicalConfig
