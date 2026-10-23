@@ -139,6 +139,14 @@ describe('main loops section', () => {
     expect(with_).toContain('`loop_list` shows each loop')
   })
 
+  it('says "(no goal)" for a loop without one rather than a blank roster line', () => {
+    const text = buildMainLoopsSection([loop({ name: 'blank', goal: undefined }), loop({ name: 'spaces', goal: '  ' })], {
+      loopManageEnabled: true,
+    })!
+    expect(text).toContain('- **blank** — (no goal)')
+    expect(text).toContain('- **spaces** — (no goal)')
+  })
+
   it('truncates a long goal rather than inlining the whole charter', () => {
     const text = buildMainLoopsSection([loop({ goal: 'x'.repeat(400) })], {
       loopManageEnabled: false,

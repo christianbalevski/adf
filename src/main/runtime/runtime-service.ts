@@ -524,7 +524,8 @@ export interface RuntimeAgentLoopInfo extends LoopInfo {
 /** Owner-supplied loop declaration; absent fields take the `loop_manage` defaults. */
 export interface RuntimeLoopCreateInput {
   name: string
-  goal: string
+  /** Optional, as on `LoopConfig`; required when `autostart` (which defaults on) is true. */
+  goal?: string
   enabled?: boolean
   autostart?: boolean
   autonomous?: boolean
@@ -2370,7 +2371,7 @@ export class RuntimeService extends EventEmitter {
     }
     const side = (config.loops ?? []).map<RuntimeAgentLoopInfo>(loop => ({
       name: loop.name,
-      goal: loop.goal,
+      goal: loop.goal ?? '',
       status: 'idle',
       enabled: loop.enabled !== false,
       isMain: false,
@@ -2391,7 +2392,7 @@ export class RuntimeService extends EventEmitter {
     const available = new Set(listAvailableLoopTools(host))
     const candidate = {
       name: input.name,
-      goal: input.goal,
+      ...(input.goal !== undefined ? { goal: input.goal } : {}),
       enabled: input.enabled ?? true,
       autostart: input.autostart ?? true,
       ...(input.autonomous !== undefined ? { autonomous: input.autonomous } : {}),

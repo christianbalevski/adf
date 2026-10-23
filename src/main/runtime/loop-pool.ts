@@ -22,6 +22,7 @@
 
 import type { AgentExecutionEvent, AgentState } from '../../shared/types/ipc.types'
 import type { AgentConfig, LoopConfig } from '../../shared/types/adf-v02.types'
+import { hasLoopGoal } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import {
   createDispatch,
@@ -455,7 +456,7 @@ export class LoopPool implements LoopPoolApi {
     }
     const side = (host.loops ?? []).map<LoopInfo>(loop => ({
       name: loop.name,
-      goal: loop.goal,
+      goal: loop.goal ?? '',
       status: this.runtimes.get(loop.name)?.status() ?? 'idle',
       enabled: loop.enabled !== false,
       isMain: false,
@@ -796,6 +797,16 @@ export class LoopPool implements LoopPoolApi {
     for (const loop of this.declaredLoops()) {
       if (!loop.autostart || loop.enabled === false) continue
       if (!this.runtimes.has(loop.name)) continue
+      // The schema refuses this pair, but a config written past it (the
+      // Studio's config save, a hand edit) can still carry one. Kicking a
+      // loop "to work on its goal" with no goal would hand it nothing, so the
+      // kickoff is refused and the log names the fix.
+      if (!hasLoopGoal(loop)) {
+        const message = `Autostart of loop "${loop.name}" refused: it has no goal. Add a goal or turn autostart off.`
+        console.warn(`[LoopPool] ${message}`)
+        this.logLoop('warn', 'loop_autostart_refused', loop.name, message)
+        continue
+      }
       try {
         const result = await this.sendToLoop(MAIN_LOOP, loop.name, LOOP_AUTOSTART_MESSAGE, true)
         if (result.woke) woken.push(loop.name)

@@ -493,3 +493,15 @@ describe('deriveLoopConfig — shape', () => {
     expect(grantedNames(derived)).toContain('fs_read')
   })
 })
+
+describe('deriveLoopConfig — no goal', () => {
+  it('instructions are the preamble alone, with no empty goal heading', () => {
+    const preamble = buildLoopPreamble('reflector', 'agent-1', grantedNames(deriveLoopConfig(host(), loop())))
+    for (const goal of [undefined, '', '  \n ']) {
+      const derived = deriveLoopConfig(host(), loop({ goal }))
+      expect(derived.instructions).toBe(preamble)
+      expect(derived.instructions).not.toContain('Your goal')
+    }
+  })
+})
+

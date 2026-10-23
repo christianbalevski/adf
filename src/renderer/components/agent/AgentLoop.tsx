@@ -35,6 +35,10 @@ import {
 } from '../../utils/slash-commands'
 import { Button } from '../ui'
 import { Tooltip } from '../common/Tooltip'
+import { changeAgentConfig } from '../../utils/edit-conflict'
+import { newLoop, newLoopBlocker } from '../../utils/new-loop'
+import { openConfigLoop } from '../../utils/open-config-section'
+import type { AgentConfig } from '../../../shared/types/adf-v02.types'
 import { escStopsTurn } from '../../utils/keyboard'
 import { interruptOpenTurn } from '../../utils/turn-interrupt'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
@@ -2700,11 +2704,13 @@ const LOOP_DOT_APPEARANCE: Record<string, { color: string; label: string; pulse?
  * underline + label accent carry the loop's IDENTITY colour. The two are never
  * the same channel — see `loop-color.ts`.
  */
-function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false }: {
+function LoopTab({ name, label, active, onSelect, onOpenConfig, scrollIntoViewOnActive = false }: {
   name: string
   label: string
   active: boolean
   onSelect: (name: string) => void
+  /** Double-click: open this loop's card in the config panel. Inner loops only. */
+  onOpenConfig?: (name: string) => void
   /** Set for tabs inside the horizontal scroller, so selection can't leave one hidden. */
   scrollIntoViewOnActive?: boolean
 }) {
@@ -2744,6 +2750,7 @@ function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false
       role="tab"
       aria-selected={active}
       onClick={() => onSelect(name)}
+      onDoubleClick={onOpenConfig ? () => onOpenConfig(name) : undefined}
       title={`${name === MAIN_LOOP ? 'The host loop' : `Inner loop "${name}"`} — ${dot.label}`}
       // Identity is ALWAYS on the underline for an inner loop — muted when
       // inactive, full when active — so the strip stays a legend the eye can
@@ -2768,6 +2775,72 @@ function LoopTab({ name, label, active, onSelect, scrollIntoViewOnActive = false
       </span>
       <span className="max-w-[9rem] truncate">{label}</span>
     </button>
+  )
+}
+
+/**
+ * One click adds a blank inner loop (next free `loop-N`, no goal, autostart
+ * off — new-loop.ts, the same loop the config page's "+ Add loop" makes) and
+ * opens its tab, so the first thing typed there is its first piece of work.
+ *
+ * The write goes through `changeAgentConfig`: read with revision, append,
+ * save over that revision, the path every config change from outside the
+ * config panel takes. The name and the cap are decided on the config it just
+ * read, not on this render's copy, so two quick clicks make two loops.
+ */
+function NewLoopButton({ onCreated }: { onCreated: (name: string) => void }) {
+  const hasConfig = useAgentStore((s) => !!s.config)
+  const loops = useAgentStore((s) => s.config?.loops)
+  const [busy, setBusy] = useState(false)
+  const blocker = !hasConfig ? 'The agent config has not loaded yet.' : newLoopBlocker(loops)
+  const unavailable = blocker !== null || busy
+
+  const create = async () => {
+    if (unavailable) return
+    setBusy(true)
+    let created: string | null = null
+    try {
+      const saved = await changeAgentConfig<AgentConfig>((config) => {
+        const refused = newLoopBlocker(config.loops)
+        if (refused) throw new Error(refused)
+        const loop = newLoop(config.loops, config.tools)
+        created = loop.name
+        return { ...config, loops: [...(config.loops ?? []), loop] }
+      })
+      if (!saved) {
+        created = null
+        console.warn('[loops] New inner loop not added: the config save was refused.')
+      }
+    } catch (error) {
+      created = null
+      console.warn('[loops] New inner loop not added:', error instanceof Error ? error.message : error)
+    } finally {
+      setBusy(false)
+    }
+    // The store already holds the saved config here, so the new tab exists
+    // and the dead-tab fallback in AgentLoop leaves it selected.
+    if (created) onCreated(created)
+  }
+
+  // aria-disabled, not disabled: a disabled button gets no pointer events, and
+  // then the tooltip saying why could never show.
+  return (
+    <Tooltip tip={blocker ?? 'Add an inner loop'} className="flex shrink-0">
+      <button
+        type="button"
+        aria-label="Add an inner loop"
+        aria-disabled={unavailable || undefined}
+        onClick={() => void create()}
+        className={`flex h-6 w-6 items-center justify-center rounded-[var(--radius-sm)] text-[var(--ink-faint)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] ${
+          unavailable ? 'cursor-not-allowed opacity-40' : 'hover:bg-[var(--paper-sunken)] hover:text-[var(--ink-muted)]'
+        }`}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
+          <path d="M12 5v14" />
+          <path d="M5 12h14" />
+        </svg>
+      </button>
+    </Tooltip>
   )
 }
 
@@ -2862,19 +2935,17 @@ export function AgentLoop() {
     return () => observer.disconnect()
   }, [syncStripOverflow, sideLoops.length])
 
-  // Single-loop agents get no strip, but the promote affordance still has to be
-  // reachable — a bare right-aligned row, no divider, so the stream keeps its
-  // full height and the panel doesn't grow a second border under the dock's.
-  // On the stage there is nothing to promote and no strip to host, so the row
-  // disappears entirely and the stream takes the whole panel.
+  // Single-loop agents get no strip, but the add and promote affordances still
+  // have to be reachable — a bare right-aligned row, no divider, so the stream
+  // keeps its full height and the panel doesn't grow a second border under
+  // the dock's.
   if (sideLoops.length === 0) {
     return (
       <div className="flex h-full flex-col">
-        {canPromote && (
-          <div className="flex shrink-0 items-center justify-end px-1 py-0.5">
-            <PromoteChatToCenter />
-          </div>
-        )}
+        <div className="flex shrink-0 items-center justify-end px-1 py-0.5">
+          <NewLoopButton onCreated={setActiveLoop} />
+          {canPromote && <PromoteChatToCenter />}
+        </div>
         <div className="min-h-0 flex-1">
           <LoopStream loop={MAIN_LOOP} />
         </div>
@@ -2908,6 +2979,7 @@ export function AgentLoop() {
                   label={l.name}
                   active={current === l.name}
                   onSelect={setActiveLoop}
+                  onOpenConfig={openConfigLoop}
                   scrollIntoViewOnActive
                 />
               ))}
@@ -2920,6 +2992,9 @@ export function AgentLoop() {
             )}
           </div>
         </div>
+        {/* Outside the scroller (and the tablist: it is not a loop), so it
+            stays at the strip's right end however many loops there are. */}
+        <NewLoopButton onCreated={setActiveLoop} />
         {canPromote && <PromoteChatToCenter />}
       </div>
       {/* Remount per tab so the virtualiser measures the stream it is showing. */}

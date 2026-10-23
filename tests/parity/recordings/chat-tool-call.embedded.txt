@@ -1041,7 +1041,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 10622
+      input: 10651
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -1110,7 +1110,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 10663
+      input: 10692
       output: 0
   timestamp: "<t>"
   type: "response_metadata"

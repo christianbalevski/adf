@@ -63,7 +63,7 @@ Grouped by area, then category.
 - **`locked_fields`** — array of dot-paths the agent cannot self-modify via `sys_update_config`; several fields (`id`, `metadata`, `providers`, `restricted*`) are owner-only regardless.
 - **`bare_prompt` / `include_base_prompt`** — graduated control over how much runtime-authored prompt text surrounds `instructions`, including suppressing dynamic per-turn instructions.
 - **Tool declaration matrix** — `enabled` × `visible` × `restricted` jointly gate LLM-loop, authorized-code, and unauthorized-code access per tool.
-- **Side loops (`config.loops`)** — named secondary cognition streams with their own goal, model override, tool allow-list, autostart/autonomous flags, and prohibited-tool enforcement.
+- **Side loops (`config.loops`)** — named secondary cognition streams with their own optional goal (required for autostart), model override, tool allow-list, autostart/autonomous flags, and prohibited-tool enforcement.
 - **Compatibility shims** — legacy `autonomous: true|false` maps to `loop_mode`; deprecated `model.thinking_budget` folds into `model.reasoning.max_tokens`; dead `allow_protected_writes` stripped on migration.
 - **Recovery/backoff config** — `recovery.auto_retry`, `max_attempts`, `base_delay_ms`/`max_delay_ms` for transient provider-error retry, bounded to avoid `setTimeout` overflow.
 - **Stream binding config** — `stream_bind` gates (host/container/TCP process binds) plus `stream_bindings[]` declaring paired WS/process/TCP/umbilical endpoints with idle/duration/byte limits.

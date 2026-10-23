@@ -131,7 +131,8 @@ describe('loops manager', () => {
     await typeText(tui, 'Bad Name')
     await tui.press(KEY.ctrlS)
     const frame = await tui.waitFor('lowercase letters')
-    expect(frame).toContain('Goal is required')
+    // A blank goal is fine while autostart is off (the Blank template's default).
+    expect(frame).not.toContain('Autostart needs a goal')
     expect(frame).not.toContain('Create inner loop')
     await tui.press(KEY.esc)
   }, 15000)

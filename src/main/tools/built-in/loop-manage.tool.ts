@@ -38,13 +38,14 @@ const LoopConfigInputSchema = z.object({
   name: z.string().regex(LOOP_NAME_PATTERN, { message: LOOP_NAME_RULE }).optional().describe(
     'Loop name: 1-32 lowercase chars; unique here, "main" reserved.'
   ),
-  goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS).optional().describe(
-    "The loop's charter — it becomes the loop's instructions."
+  goal: z.string().max(LOOP_GOAL_MAX_CHARS).optional().describe(
+    "The loop's charter, appended to its instructions. Optional: without one the loop works on whatever it is sent. Required when autostart is true."
   ),
   enabled: z.boolean().optional().describe('Whether the loop runs. Default true on create.'),
   autostart: z.boolean().optional().describe(
     'Run a first turn on the goal without waiting to be addressed: now on create, and again whenever the agent starts. ' +
-    'Default true on create. false: it only runs when a trigger, timer or loop_send targets it.'
+    'Default true on create, and needs a goal: creating without a goal requires autostart false. ' +
+    'false: it only runs when a trigger, timer or loop_send targets it.'
   ),
   autonomous: z.boolean().optional().describe(
     'Keep turning after text-only responses until the loop calls sys_set_state. Not inherited from you; default false. Grant sys_set_state alongside.'
@@ -200,7 +201,7 @@ export class LoopManageTool implements Tool {
     nameArg: string | undefined,
     configArg: LoopConfigInput | undefined
   ): Promise<ToolResult> {
-    if (!configArg) return errorResult('create requires "config" (at least name and goal).')
+    if (!configArg) return errorResult('create requires "config" (at least a name).')
 
     const name = configArg.name ?? nameArg
     if (!name) return errorResult('create requires a loop name, in "config.name" or "name".')
@@ -228,7 +229,7 @@ export class LoopManageTool implements Tool {
 
     const candidate = {
       name,
-      goal: configArg.goal,
+      ...(configArg.goal !== undefined && { goal: configArg.goal }),
       enabled: configArg.enabled ?? true,
       // Persisted, like the agent's own `autostart`: the pool re-kicks the loop
       // on every agent start. Default on — a loop nobody addresses is idle,
@@ -286,7 +287,7 @@ export class LoopManageTool implements Tool {
     return {
       content:
         `Created loop "${name}"${validated.config.enabled ? ' (running)' : ' (disabled)'}.\n` +
-        `Goal: ${validated.config.goal}\n` +
+        `Goal: ${validated.config.goal?.trim() ? validated.config.goal : '(none)'}\n` +
         `Tools: ${toolLine}.${this.disabledNote(validated.disabled)}\n` +
         startLine,
       isError: false
