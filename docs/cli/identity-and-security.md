@@ -42,10 +42,23 @@ Runtime › Identity.
 | Storage | When | Notes |
 |---|---|---|
 | **OS keychain** | macOS Keychain, Windows Credential Manager, Linux Secret Service | Shared with Studio on the same machine (service `ADF`), so `adf identity` is usually `ready` right away |
-| **Passphrase file** | No usable keychain (a headless Linux server) | `owner-secrets.json` next to the daemon settings. You choose the passphrase (8+ characters) on create / restore. After every daemon restart: `adf identity unlock`, or start the daemon with `ADF_OWNER_PASSPHRASE` or `ADF_OWNER_PASSPHRASE_FILE` |
+| **Passphrase file** | No usable keychain (a headless Linux server; usually WSL) | `owner-secrets.json` next to the daemon settings. You choose the passphrase (8+ characters) on create / restore. After every daemon restart: `adf identity unlock`, or start the daemon with `ADF_OWNER_PASSPHRASE_FILE` (or `ADF_OWNER_PASSPHRASE`) |
 
-`ADF_SECRET_STORE=file|keychain` forces one; `ADF_KEYCHAIN=0` disables the
-keychain. Provider API keys added with `/provider add` go to the same store.
+`ADF_SECRET_STORE=file` or `ADF_KEYCHAIN=0` selects the passphrase file.
+`ADF_SECRET_STORE=keychain` only states a preference: with no usable keychain
+the daemon logs an error and uses the file anyway. Provider API keys added
+with `/provider add` go to the same store. `adf identity` shows which one is
+in use (`storage`).
+
+The boot passphrase only unlocks a file that already exists. On a fresh
+daemon, `adf identity new` and `restore` still ask for a passphrase and seal
+the file with what you type: type the same passphrase as in
+`ADF_OWNER_PASSPHRASE_FILE`, or the next restart stays `locked`.
+
+The passphrase protects the file at rest, not a running host. There is no
+variable or file for the seed phrase itself. Servers, systemd credentials,
+containers, WSL, and what each secret file holds:
+[Owner secret storage](../daemon/owner-secret-storage.md).
 
 On macOS the first time the daemon (a `node` process) reads the phrase Studio
 stored, the Keychain asks whether to allow it. Choose **Always Allow**, or it

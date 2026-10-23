@@ -73,8 +73,9 @@ On a machine where Studio is already set up, the daemon picks the phrase up
 from the OS keychain and reports `ready` with no steps. Without a usable OS
 keychain (e.g. headless Linux), the phrase is kept in a passphrase-encrypted
 file next to the daemon settings: unlock it after restarts with `adf identity
-unlock`, or start the daemon with `ADF_OWNER_PASSPHRASE` /
-`ADF_OWNER_PASSPHRASE_FILE`.
+unlock`, or start the daemon with `ADF_OWNER_PASSPHRASE_FILE` (or
+`ADF_OWNER_PASSPHRASE`). For a server, read
+[Owner secret storage](owner-secret-storage.md) first.
 
 Until the identity is ready, `adf new` is refused, credentials cannot be
 sealed, and agents spawned by agents (`sys_create_adf`) are created without

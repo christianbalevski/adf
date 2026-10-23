@@ -31,6 +31,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 - [Daemon Runtime Settings](daemon/runtime-settings.md) — The settings file, providers, MCP, channels, compute, mesh, and the settings API
 - [Daemon Runtime Architecture](daemon/runtime-architecture.md) — RuntimeService, AgentRuntimeBuilder, the request guard, triggers, MCP, channels, compute, and mesh
 - [Daemon Operations](daemon/operations.md) — Running and stopping the daemon, data directory, ports, access token, compatibility, and troubleshooting
+- [Owner Secret Storage](daemon/owner-secret-storage.md) — Where the seed phrase and keys are kept; Linux keyrings, the passphrase file, systemd credentials, containers, and WSL
 - [Headless Performance Harness](daemon/performance-harness.md) — Benchmark headless runtime behavior with mock providers
 
 ### Studio Getting Started

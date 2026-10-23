@@ -589,9 +589,15 @@ file next to its settings.
 | `restore-needed` | The machine knows an owner DID (e.g. from Studio) but the daemon lacks its phrase | `POST /identity/restore {mnemonic}` with that owner's phrase |
 | `ready` | Agents can be created and credentials sealed | |
 
-`passphraseRequired: true` means file storage: create, restore and unlock need
-a `passphrase`. The daemon can also unlock at boot from
-`ADF_OWNER_PASSPHRASE` or `ADF_OWNER_PASSPHRASE_FILE`.
+`passphraseRequired: true` means file storage that is not unlocked yet:
+create, restore and unlock need a `passphrase`. The daemon can also unlock an
+existing file at boot from `ADF_OWNER_PASSPHRASE` or
+`ADF_OWNER_PASSPHRASE_FILE` (first line). When the daemon has a boot
+passphrase, create, restore and import without a `passphrase` field use it.
+A `passphrase` in the body takes precedence, and the file is sealed with it
+even if it differs from the boot passphrase. `storage` (`keychain` or
+`file`) and `keychainProblem` say which store is in use and why. See
+[Owner secret storage](owner-secret-storage.md).
 
 - `POST /identity/create` returns the phrase (`mnemonic`, `words`) once, with
   `Cache-Control: no-store`, and never again. Show it, have the user write it
@@ -606,7 +612,10 @@ a `passphrase`. The daemon can also unlock at boot from
   `nothing_to_unlock`.
 
 Agents loaded while the identity was not ready run `degraded`
-(`CREDENTIALS_LOCKED`) without their sealed credentials. When the identity
+(`CREDENTIALS_LOCKED`) without their sealed credentials, unless a runtime key
+the daemon holds opens them first (Studio's runtime key when the daemon uses
+Studio's runtime identity, then its own `runtime-enc-key`, which also opens
+trusted-daemon slots). When the identity
 becomes ready (create, restore, unlock, or a phrase Studio put in the shared
 keychain; re-checked every minute while any agent is degraded), the daemon
 unlocks them in place, no reload: `degraded` clears, their channels restart,
