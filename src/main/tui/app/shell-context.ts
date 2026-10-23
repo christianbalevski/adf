@@ -1,4 +1,6 @@
-import { createContext, useContext } from 'react'
+import { createContext, useContext, useMemo } from 'react'
+import { useTuiSelector } from '../state/store'
+import { withAgentCommands } from '../commands/agent-commands'
 import type { CommandRegistry } from '../commands/registry'
 import type { ViewDefinition } from '../views/types'
 
@@ -17,8 +19,10 @@ export const ShellContext = createContext<ShellContextValue | null>(null)
 
 export function useShell(): ShellContextValue {
   const value = useContext(ShellContext)
+  const commands = useTuiSelector(state => state.agents[state.selectedAgentId ?? '']?.config?.commands)
+  const registry = useMemo(() => value ? withAgentCommands(value.registry, commands) : undefined, [value?.registry, commands])
   if (!value) throw new Error('useShell must be used inside the TUI shell')
-  return value
+  return { ...value, registry: registry! }
 }
 
 export function useView(id: string): ViewDefinition | undefined {

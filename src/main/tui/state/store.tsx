@@ -6,6 +6,10 @@
 // its outcome visibly (transcript item or toast); nothing fails silently.
 
 import { createContext, useContext, useRef, useSyncExternalStore, type ReactNode } from 'react'
+import { randomUUID } from 'node:crypto'
+import * as commandRulesNs from '../../../shared/utils/agent-commands'
+import { cjs } from '../interop'
+const { parseAuthorizeToken } = cjs(commandRulesNs)
 
 /**
  * The oldest client API whose sessions this app reads. Version 2 added turn
@@ -44,6 +48,7 @@ import { clientFrameEffects, TUI_CLIENT_NAME } from './client-stream'
 import {
   transcriptKey,
   type FocusZone,
+  type ContextItem,
   type Overlay,
   type ToastLevel,
   type TranscriptKey,
@@ -113,6 +118,8 @@ export interface TuiActions {
   loadTranscript(agentId: string, loop: string): Promise<void>
   loadOlder(agentId: string, loop: string): Promise<void>
   sendChat(text: string, target?: { agentId?: string; loop?: string }): Promise<boolean>
+  /** Run an owner command without starting an agent or creating a model turn. */
+  runAgentCommand(agentId: string, loop: string, name: string, rawArgs: string): Promise<void>
   clearLoopHistory(agentId: string, loop: string): Promise<void>
   /** Compact a loop's history now (refused by the daemon mid-turn). */
   compactLoop(agentId: string, loop: string): Promise<boolean>
@@ -695,6 +702,42 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       }
     },
 
+    async runAgentCommand(agentId, loop, name, rawArgs) {
+      const c = client
+      if (isTrackedKey(agentId)) { toast(`Agent is off. Start it, then run /${name} again.`, 'warn'); return }
+      // Validate before whitespace normalization can hide a multiline paste.
+      if (rawArgs.includes('\n') || rawArgs.includes('\r') || rawArgs.length > 4096) {
+        toast(`/${name}: arguments must be one line of at most 4096 characters.`, 'warn')
+        return
+      }
+      const { args, authorize } = parseAuthorizeToken(rawArgs)
+      const requestId = randomUUID()
+      const key = transcriptKey(agentId, loop)
+      const registered = state.agents[agentId]?.config?.commands
+      const lambda = Array.isArray(registered) ? registered.find(command => command?.name === name)?.lambda : undefined
+      const item: ContextItem = {
+        id: `command:${requestId}`, at: Date.now(), local: true, kind: 'context', category: 'owner_command', text: '',
+        ownerCommand: { v: 1, id: requestId, command: `/${name}${args ? ` ${args}` : ''}`, lambda: typeof lambda === 'string' ? lambda : '', authorized: authorize, status: 'running', duration_ms: 0 },
+      }
+      dispatch({ type: 'transcript/owner-command', key, item })
+      try {
+        const result = await c.runCommand(agentId, name, { args, authorize, loop, requestId })
+        if (stale(c) || stopped) return
+        dispatch({ type: 'transcript/owner-command', key, item: {
+          ...item, seq: result.seq, text: result.result, deferred: result.deferred,
+          unrecorded: !result.deferred && result.seq === undefined,
+          ownerCommand: { ...item.ownerCommand!, authorized: result.authorized, status: result.status, duration_ms: result.durationMs },
+        } })
+        const label = `${agentLabel(agentId)} /${name} (${loop})`
+        toast(`${label}: ${result.status === 'denied' ? 'permission denied; add !authorize for one authorized run' : result.status}${result.deferred ? ' — recording after the current step' : ''}`, result.status === 'ok' ? 'success' : result.status === 'denied' ? 'warn' : 'error')
+      } catch (err) {
+        if (stale(c) || stopped) return
+        dispatch({ type: 'transcript/remove', key, id: item.id })
+        if (err instanceof DaemonError && err.unreachable) dispatch({ type: 'daemon/reachable', reachable: false })
+        toast(`/${name}: ${describe(err)}`, 'error')
+      }
+    },
+
     async clearLoopHistory(agentId, loop) {
       const result = await run('Clear', c => c.clearChat(agentId, loop))
       if (result) {
@@ -973,6 +1016,11 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     const loop = eventLoop(event)
     const key = transcriptKey(agentId, loop)
     switch (event.event_type) {
+      case 'context.injected':
+        // Legacy /events and unfocused sessions carry provenance only. Read
+        // the durable record; no model turn is needed for this notification.
+        if (event.payload?.category === 'owner_command') debounce(`t:${key}`, () => { void actions.loadTranscript(agentId, loop) })
+        break
       case 'turn.completed':
       case 'loop.cleared':
       case 'loop.compacted':
@@ -1083,6 +1131,11 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   function onClientFrame(frame: ClientFrame) {
     const effects = clientFrameEffects(frame)
     for (const envelope of effects.frames) onFrame(envelope)
+    if (effects.ownerCommand) {
+      flushFrames()
+      const { agentId, loop, item } = effects.ownerCommand
+      dispatch({ type: 'transcript/owner-command', key: transcriptKey(agentId, loop), item })
+    }
     if (effects.toolResult) {
       // After the tool.completed already queued for this call.
       flushFrames()

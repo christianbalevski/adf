@@ -447,7 +447,8 @@ export function itemHeight(item: TranscriptItem, width: number, flags: RenderFla
     case 'notice':
       return 1
     case 'context':
-      return flags.expanded ? 1 + wrappedHeight(item.text || ' ', w - 2) + 1 : 1
+      return flags.expanded ? 1 + wrappedHeight(item.text || (item.ownerCommand?.status === 'running' ? 'Running…' : item.ownerCommand ? '(empty)' : ' '), w - 2) +
+        (item.ownerCommand?.status === 'denied' ? wrappedHeight('Add !authorize to allow restricted calls for one run.', w - 2) : 0) + 1 : 1
     case 'error':
       return wrappedHeight(item.text, w - 2) + 1
   }
@@ -483,6 +484,7 @@ export function itemText(item: TranscriptItem): string {
       }
     case 'hil': return `${item.tool} ${prettyJson(item.input)}`
     case 'ask': return item.answer ? `${item.question}\n\n${item.answer}` : item.question
+    case 'context': return item.ownerCommand ? `${item.ownerCommand.command} [${item.ownerCommand.status}${item.ownerCommand.authorized ? ', authorized' : ''}]\n${item.text}` : item.text
     default: return item.text
   }
 }

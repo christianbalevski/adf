@@ -33,6 +33,7 @@ import {
 import {
   transcriptKey,
   type AgentEntry,
+  type ContextItem,
   type FocusZone,
   type Overlay,
   type Toast,
@@ -70,6 +71,8 @@ export type TuiAction =
   | { type: 'transcript/history'; key: TranscriptKey; entries: LoopEntry[]; total: number; offset: number; mode: 'replace' | 'prepend' }
   | { type: 'transcript/error'; key: TranscriptKey; error: string }
   | { type: 'transcript/append'; key: TranscriptKey; item: TranscriptItem }
+  | { type: 'transcript/owner-command'; key: TranscriptKey; item: ContextItem }
+  | { type: 'transcript/remove'; key: TranscriptKey; id: string }
   | { type: 'transcript/update'; key: TranscriptKey; id: string; patch: Partial<TranscriptItem> }
   | { type: 'transcript/reset'; key: TranscriptKey }
   /** The loop's turn is over (interrupted, stopped): close streaming items, clear `live`. */
@@ -311,6 +314,16 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return patchTranscript(state, action.key, t => ({ ...t, loading: false, error: action.error }))
     case 'transcript/append':
       return patchTranscript(state, action.key, t => ({ ...t, items: [...t.items, action.item] }))
+    case 'transcript/owner-command':
+      return patchTranscript(state, action.key, t => {
+        const matches = (item: TranscriptItem) => item.kind === 'context' && item.ownerCommand?.id === action.item.ownerCommand?.id
+        const existing = t.items.find(matches)
+        // A durable event/history row wins over a late HTTP response.
+        if (existing?.seq !== undefined && (action.item.seq === undefined || existing.seq === action.item.seq)) return t
+        return { ...t, items: [...t.items.filter(item => !matches(item)), action.item] }
+      })
+    case 'transcript/remove':
+      return patchTranscript(state, action.key, t => ({ ...t, items: t.items.filter(item => item.id !== action.id || item.seq !== undefined) }))
     case 'transcript/update':
       return patchTranscript(state, action.key, t => {
         const index = t.items.findIndex(item => item.id === action.id)

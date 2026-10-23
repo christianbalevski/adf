@@ -119,6 +119,10 @@ export async function runSlash(text: string, registry: CommandRegistry, store: T
     store.actions.toast(`Unknown command /${parsed.name} — /help lists commands`, 'warn')
     return true
   }
+  if (command.agentCommand && /[\r\n]/.test(text)) {
+    store.actions.toast(`/${command.name}: agent commands must be one line`, 'warn')
+    return true
+  }
   if (command.available && !command.available(scope)) {
     store.actions.toast(`/${command.name} is not available here`, 'warn')
     return true

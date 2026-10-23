@@ -16,6 +16,7 @@ import type {
   UmbilicalEvent,
 } from '../api/types'
 import type { TrackedState } from './tracked'
+import type { OwnerCommandHeader } from '../../../shared/utils/owner-command-row'
 
 /** `${agentId}\u0000${loop}` — one transcript per (agent, loop). */
 export type TranscriptKey = string
@@ -139,6 +140,9 @@ export interface ContextItem extends ItemBase {
   kind: 'context'
   category: string
   text: string
+  ownerCommand?: Omit<OwnerCommandHeader, 'status'> & { status: OwnerCommandHeader['status'] | 'running' }
+  deferred?: boolean
+  unrecorded?: boolean
 }
 
 export type TranscriptItem =

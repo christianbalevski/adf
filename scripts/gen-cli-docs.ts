@@ -245,6 +245,7 @@ async function build(): Promise<string> {
 
   h('### Slash commands')
   h('Type `/` in the prompt; `Tab` completes names and arguments. Commands work from any view (some need a selected agent); the group is the view that owns it, and usually the one it opens. Unknown commands are reported, never sent to an agent.')
+  h('The selected agent’s registered lambda commands also appear in completion, help and the palette. Built-in names and aliases win; use `/command <name> [args]` for a collision such as `/command status`. Add `!authorize` for one authorized invocation. These commands target the selected loop without a model turn; Enter expands their result in the transcript. See [owner slash commands](../guides/commands.md#terminal-app).')
   for (const owner of owners) {
     const commands = registry.commands.filter(c => (c.view ?? 'builtin') === owner)
     if (!commands.length) continue

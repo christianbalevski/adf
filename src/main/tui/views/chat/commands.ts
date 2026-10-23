@@ -6,6 +6,7 @@ import { transcriptKey } from '../../state/types'
 import { oneLine, truncate } from '../../ui/text'
 import { CHAT_VIEW, INITIAL_CHAT_STATE, copyToClipboard, loopTabs, cycleLoop, pendingTasksFor, type ChatState } from './model'
 import { alwaysApprove } from './approvals'
+import { agentCommand } from '../../commands/agent-commands'
 
 /** Dispatchable ADF event types (docs/daemon/http-api.md, POST /agents/:id/trigger). */
 export const TRIGGER_TYPES = ['startup', 'timer', 'inbox', 'outbox', 'file_change', 'chat', 'tool_call', 'task_create', 'task_complete', 'log_entry', 'llm_call']
@@ -84,6 +85,7 @@ function stepLoop(ctx: CommandContext, delta: number) {
 
 export const chatCommands: CommandContribution = {
   commands: [
+    agentCommand,
     {
       name: 'interrupt',
       aliases: ['abort'],

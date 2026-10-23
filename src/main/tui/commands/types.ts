@@ -41,6 +41,8 @@ export interface SlashCommand {
   description: string
   /** Owning view id; set by the registry from the contributing view. */
   view?: string
+  /** Agent registration name; `*` is the /command fallback for TUI name collisions. */
+  agentCommand?: string
   /** Hide when not applicable (e.g. needs a selected agent). */
   available?: (scope: CommandScope) => boolean
   /** Argument completions for the partial text after the name. */

@@ -8,6 +8,7 @@
 import * as loopParserNs from '../../../shared/utils/loop-parser'
 import * as fileRefNs from '../../../shared/utils/file-ref'
 import type { DisplayAttachment } from '../../../shared/utils/file-ref'
+import type { OwnerCommandHeader } from '../../../shared/utils/owner-command-row'
 import type { LoopEntry, UmbilicalEvent } from '../api/types'
 import { cjs } from '../interop'
 import type { AssistantItem, ThinkingItem, ToolItem, Transcript, TranscriptItem, UserItem } from './types'
@@ -98,7 +99,8 @@ export function historyToItems(entries: LoopEntry[]): TranscriptItem[] {
           // A notice the model received, like a wake: the runtime speaking.
           items.push({ ...base, kind: 'user', text: entry.content, origin: 'runtime' })
         } else {
-          items.push({ ...base, kind: 'context', category: String(meta.category ?? 'context'), text: entry.content })
+          items.push({ ...base, kind: 'context', category: String(meta.category ?? 'context'), text: entry.content,
+            ...(meta.category === 'owner_command' ? { ownerCommand: meta.ownerCommand as OwnerCommandHeader } : {}) })
         }
         break
       case 'compaction':
@@ -175,6 +177,7 @@ export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptIte
     return { ...item, status: live.status, result: live.result, completedAt: live.completedAt }
   })
   const historyTools = new Set<string>()
+  const historyCommands = new Set(history.flatMap(item => item.kind === 'context' && item.ownerCommand ? [item.ownerCommand.id] : []))
   const historyTexts = new Map<string, number>()
   const countText = (key: string) => historyTexts.set(key, (historyTexts.get(key) ?? 0) + 1)
   for (const item of history) {
@@ -199,7 +202,7 @@ export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptIte
       case 'thinking':
         return !consume(`${item.kind}:${item.text.trim()}`)
       case 'context':
-        return false
+        return !!item.ownerCommand && !historyCommands.has(item.ownerCommand.id)
       case 'ask':
         return !consume(`ask:${item.question.trim()}`)
       default:
@@ -221,6 +224,13 @@ export function prependHistory(existing: TranscriptItem[], older: TranscriptItem
     if (item.kind === 'tool' && !item.local && item.toolUseId && item.status !== 'running') orphans.set(item.toolUseId, item)
   }
   const merged = new Set<TranscriptItem>()
+  const commands = new Set(older.flatMap(item => item.kind === 'context' && item.ownerCommand ? [item.ownerCommand.id] : []))
+  for (const item of existing) {
+    if (item.local && item.kind === 'context' && item.ownerCommand && commands.has(item.ownerCommand.id)) {
+      merged.add(item)
+      ids.delete(item.id)
+    }
+  }
   const page = older.filter(item => !ids.has(item.id)).map(item => {
     if (item.kind !== 'tool' || item.status !== 'running' || !item.toolUseId) return item
     const result = orphans.get(item.toolUseId)

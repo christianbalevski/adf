@@ -172,8 +172,21 @@ providers network compute settings events` belong to runtime; `loop main loops t
 belong to loops; `abort interrupt clear compact trigger copy thinking approve reject` to
 chat; `agents start stop unload load switch sw autostart` to fleet; `files
 open edit doc document mind new-file rm mv` to files; `inspect model config tasks
-instructions tools compaction` to inspect; `track untrack` to fleet. Pick new names inside your domain (`/loop …`, `/file …`,
+instructions tools compaction` to inspect; `track untrack` to fleet; `command` to chat. Pick new names inside your domain (`/loop …`, `/file …`,
 `/task …`). Unknown `/x` is reported, never sent to an agent.
+
+`commands/agent-commands.ts` adds the selected agent's valid registrations to
+the shell registry (completion, help and palette). Built-in names and aliases
+win; `/command <name> [args]` reaches every registration, including collisions
+such as `status`. Entries refresh with config and selection. These invoke
+`actions.runAgentCommand` for the captured agent + loop, never start an off
+agent and never send chat. Arguments use the shared whitespace parser over
+`ctx.rest` (not the TUI's quote-aware `ctx.args`); standalone `!authorize`
+grants just that run and is shown in the prompt before Enter. Usage remains
+a hint, including custom delimiters. Command context items retain their id,
+status and authorization, expand on Enter, and reconcile pending HTTP results,
+`context_injected` executor frames and durable history. The legacy event path
+refetches on `context.injected` with category `owner_command`.
 
 ## 5. Store (`state/`)
 
@@ -316,7 +329,8 @@ track the real shapes.
 - agents: `agents agent status agentUsage load review acceptReview start stop
   unload interrupt(id, loop?) abort(id, loop?) compact(id, loop?) autostart(dirs, maxDepth?) setState`
 - conversation: `chat(id, text, loop?) chatHistory(id, {loop, limit})
-  clearChat(id, loop?) loopHistory(id, {loop, limit, offset}) trigger`
+  clearChat(id, loop?) loopHistory(id, {loop, limit, offset}) trigger
+  runCommand(id, name, {args, loop, authorize, requestId})`
 - loops: `loops loop createLoop updateLoop setLoopEnabled deleteLoop`
 - resources: `config putConfig document putDocument mind putMind files file
   writeFile deleteFile renameFile renameFolder setFileProtection

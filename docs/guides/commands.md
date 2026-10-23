@@ -52,7 +52,13 @@ Only a standalone `!authorize` token grants authority. It can appear anywhere in
 
 Each invocation has an ephemeral sandbox that is destroyed when the command finishes, including its retained closures, timers and module state. The owner grants authority to the code as it exists at that moment. A locked registration prevents changes to the command definition; it does not prevent edits to its lambda file.
 
-Both embedded Studio and the local or remote daemon support commands. A paired remote device may send `authorize: true` to `POST /agents/:id/commands/:name/run`, using its authenticated device token. Ordinary chat, channel messages and agent tool calls cannot grant this per-invocation authority.
+Embedded Studio, the TUI, and the local or remote daemon support commands. A paired remote device may send `authorize: true` to `POST /agents/:id/commands/:name/run`, using its authenticated device token. Ordinary chat, channel messages and agent tool calls cannot grant this per-invocation authority.
+
+## Terminal app
+
+Select an agent and loop, then type `/` to see its registered commands alongside the TUI's commands. Tab completes a name; Enter runs it once its argument hint is satisfied. Commands also appear in `/help` and the Ctrl+K palette. TUI built-ins and their aliases keep precedence: for a registration named `status`, use `/command status` to run the lambda instead of the TUI's `/status`. `/command <name> [args]` works for every registered command.
+
+Add `!authorize` exactly as in Studio; the prompt shows “Authorized run” before submission. Argument parsing is identical to Studio: `args` contains normalized text and `argv` splits on whitespace, without shell-style quote grouping. A lambda can parse commas or other delimiters itself. Results appear in the selected loop's transcript with status and authorization; Enter expands the result. Commands may wait for the normal approval controls and do not block the prompt. They never start an off agent or create a model turn.
 
 ## Managing a loop
 
@@ -73,4 +79,4 @@ Names have 1–32 lowercase letters, digits or hyphens, start with a letter and 
 
 Lambda references require an explicit function: `path/file.ts:functionName` (`.js` and `.mjs` also work). Write the file before registering through `sys_update_config`. The function must exist at the top level when invoked. The owner can also edit registrations under Commands in the agent config. Only the owner or authorized code can set `locked: true`; an owner lock prevents the agent from changing or removing the registration.
 
-Commands run while idle, active, hibernating, suspended or in an error state. An off agent refuses the command and must be started by the owner. Multiple commands may run concurrently in separate temporary sandboxes. Refusals such as an unknown command or a disabled loop do not write history rows. Commands are available in Studio composers; channel messages and ordinary chat text do not invoke them.
+Commands run while idle, active, hibernating, suspended or in an error state. An off agent refuses the command and must be started by the owner. Multiple commands may run concurrently in separate temporary sandboxes. Refusals such as an unknown command or a disabled loop do not write history rows. Commands are available in Studio composers and the TUI prompt; channel messages and ordinary chat text do not invoke them.

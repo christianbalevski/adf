@@ -23,6 +23,11 @@
 
 import type { ClientFrame, UmbilicalEvent } from '../api/types'
 import type { LiveFrame } from './reducer'
+import * as commandRowNs from '../../../shared/utils/owner-command-row'
+import { cjs } from '../interop'
+import type { ContextItem } from './types'
+
+const { parseOwnerCommandRow } = cjs(commandRowNs)
 
 /** Client name the TUI's sessions are opened with (the daemon logs it). */
 export const TUI_CLIENT_NAME = 'tui'
@@ -34,6 +39,7 @@ export interface ClientFrameEffects {
   frames: LiveFrame[]
   /** A full tool result for the transcript's tool item. */
   toolResult?: { agentId: string; loop: string; toolUseId: string; result: string; isError: boolean }
+  ownerCommand?: { agentId: string; loop: string; item: ContextItem }
   /** Reload this transcript from history. */
   reload?: { agentId: string; loop: string }
   /** Something to tell the user (a toast). */
@@ -54,6 +60,15 @@ export function clientFrameEffects(frame: ClientFrame): ClientFrameEffects {
   const loop = frame.loop ?? event.loop ?? MAIN
   const payload = (event.payload ?? {}) as Record<string, unknown>
   switch (event.type) {
+    case 'context_injected': {
+      if (payload.category !== 'owner_command') return NONE
+      const record = typeof payload.content === 'string' ? parseOwnerCommandRow(payload.content) : null
+      if (!record || typeof payload.seq !== 'number') return { frames: [], reload: { agentId, loop } }
+      return { frames: [], ownerCommand: { agentId, loop, item: {
+        id: `command:${record.header.id}`, at: event.timestamp, local: true, seq: payload.seq,
+        kind: 'context', category: 'owner_command', ownerCommand: record.header, text: record.body,
+      } } }
+    }
     case 'text_delta':
     case 'text_delta_batch':
     case 'thinking_delta':

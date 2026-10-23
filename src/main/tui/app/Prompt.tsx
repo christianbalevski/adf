@@ -7,6 +7,7 @@ import { PROMPT_PREFILL_KEY, useStore, useTuiSelector } from '../state/store'
 import { useActiveView, useSelectedAgent, useSelectedLoop, useSelectedTracked, useViewState } from '../state/hooks'
 import { completeSlash, createScope, parseSlash, runSlash } from '../commands/registry'
 import type { SlashCommand } from '../commands/types'
+import { hasCommandArguments, isAuthorizedCommandInput } from '../commands/agent-commands'
 import { TextInput, type TextInputApi } from '../ui/TextInput'
 import { truncate } from '../ui/text'
 import { MAIN_LOOP } from '../api/types'
@@ -55,6 +56,11 @@ interface MenuItem {
  * trailing space; a path being completed (`/load C:\agents\`) keeps going.
  */
 export function slashEnterAction(value: string, command: SlashCommand): { run: string } | { insert: string } {
+  if (command.agentCommand && command.agentCommand !== '*') {
+    // Agent usage is a display hint: arguments may use any delimiter. Only
+    // require some input, and never count the elevation flag as an argument.
+    return command.args?.includes('<') && !hasCommandArguments(parseSlash(value)?.rest ?? '') ? { insert: `${value} ` } : { run: value }
+  }
   if (/[\\/]$/.test(value)) return { insert: value }
   const required = command.args?.match(/<[^>]+>/g)?.length ?? 0
   const given = parseSlash(value)?.args.length ?? 0
@@ -212,6 +218,7 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
       ) : null}
       {badge ? <ComposerTop width={width} focused={focused} badge={badge} /> : null}
       <Box borderStyle={theme.ascii ? 'classic' : 'round'} borderTop={!badge} borderColor={focused ? theme.color.borderFocus : theme.color.border} paddingX={1} width={width} flexDirection="column">
+        {isAuthorizedCommandInput(value, registry) && <Text color={theme.color.warn} wrap="truncate-end">{theme.glyph.warn} Authorized run</Text>}
         <TextInput
           value={value}
           onChange={next => { setValue(next); setMenuIndex(0); setDismissed(false) }}

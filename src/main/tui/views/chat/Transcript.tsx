@@ -267,6 +267,23 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
         </Text>
       )
     case 'context': {
+      if (item.ownerCommand) {
+        const command = item.ownerCommand
+        const tone = command.status === 'running' ? theme.color.tool : command.status === 'ok' ? theme.color.success : theme.color.error
+        return <Box flexDirection="column" width={w}>
+          <Text wrap="truncate-end">
+            <Text color={tone}>{command.status === 'running' ? <Spinner color={tone} /> : command.status === 'ok' ? g.check : g.cross}</Text>
+            <Text bold color={theme.color.tool}> You ran {command.command}</Text>
+            <Text color={tone}> [{command.status === 'denied' ? 'permission denied' : command.status}]</Text>
+            {command.authorized && <Text color={theme.color.warn}> [authorized]</Text>}
+            <Text color={theme.color.dim}> {item.unrecorded ? '[not recorded]' : item.deferred ? '[recording after current step]' : ''} {expanded ? g.expanded : `${g.collapsed} Enter`}</Text>
+          </Text>
+          {expanded && <Box flexDirection="column" paddingLeft={2}>
+            <Text wrap="wrap" color={theme.color.muted}>{item.text || (command.status === 'running' ? 'Running…' : '(empty)')}</Text>
+            {command.status === 'denied' && <Text wrap="wrap" color={theme.color.warn}>Add !authorize to allow restricted calls for one run.</Text>}
+          </Box>}
+        </Box>
+      }
       const label = item.category === 'compaction' ? 'compacted history summary' : `context ${g.sep} ${item.category}`
       return (
         <Box flexDirection="column" width={w}>

@@ -202,6 +202,8 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 
 Type `/` in the prompt; `Tab` completes names and arguments. Commands work from any view (some need a selected agent); the group is the view that owns it, and usually the one it opens. Unknown commands are reported, never sent to an agent.
 
+The selected agent’s registered lambda commands also appear in completion, help and the palette. Built-in names and aliases win; use `/command <name> [args]` for a collision such as `/command status`. Add `!authorize` for one authorized invocation. These commands target the selected loop without a model turn; Enter expands their result in the transcript. See [owner slash commands](../guides/commands.md#terminal-app).
+
 #### Shell (every view)
 
 | Command | Aliases | Description |
@@ -237,6 +239,7 @@ Type `/` in the prompt; `Tab` completes names and arguments. Commands work from 
 
 | Command | Aliases | Description |
 |---|---|---|
+| `/command <name> [args]` |  | Run an agent lambda command; add !authorize for one authorized run |
 | `/interrupt` | `/abort` | End the selected loop’s running turn; the loop goes idle and keeps working (Esc) |
 | `/clear` |  | Clear the selected loop’s history (archived per the agent’s audit settings) |
 | `/compact` |  | Summarize the selected loop’s history now to free context (not while it is mid-turn) |
