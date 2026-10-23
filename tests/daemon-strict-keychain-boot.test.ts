@@ -15,7 +15,7 @@
  * socket in the run's root, so its one read reaches no Secret Service on
  * this machine.
  */
-import { spawn, type ChildProcess } from 'node:child_process'
+import { execFile, spawn, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -31,12 +31,43 @@ const PASSPHRASE = 'fallback file passphrase 0123'
 const children: ChildProcess[] = []
 const roots: string[] = []
 
-afterEach(() => {
+/** Stop the process tree and wait for exit before removing its state. */
+async function terminateChild(child: ChildProcess): Promise<void> {
+  if (child.pid === undefined || child.exitCode !== null || child.signalCode !== null) return
+  const pid = child.pid
+  await new Promise<void>((done, fail) => {
+    let exited = false
+    let treeStopped = process.platform !== 'win32'
+    const finish = (error?: Error) => {
+      if (!error && (!exited || !treeStopped)) return
+      clearTimeout(timer)
+      child.removeListener('exit', onExit)
+      if (error) fail(error)
+      else done()
+    }
+    const onExit = () => { exited = true; finish() }
+    const timer = setTimeout(() => finish(new Error(`Daemon child ${pid} did not exit after termination`)), 10_000)
+    child.once('exit', onExit)
+    if (process.platform === 'win32') {
+      execFile('taskkill', ['/T', '/F', '/PID', String(pid)], { windowsHide: true, timeout: 10_000 }, (error) => {
+        treeStopped = true
+        if (error && child.exitCode === null && child.signalCode === null) finish(error)
+        else finish()
+      })
+    } else {
+      try { process.kill(-pid, 'SIGKILL') } catch {
+        try { child.kill('SIGKILL') } catch (error) { finish(error as Error) }
+      }
+    }
+  })
+}
+
+afterEach(async () => {
   for (const child of children.splice(0)) {
-    if (child.exitCode === null && child.pid !== undefined) try { process.kill(-child.pid, 'SIGKILL') } catch { /* gone */ }
+    await terminateChild(child)
   }
   for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true })
-})
+}, 15_000)
 
 async function freePort(): Promise<number> {
   return new Promise((done, fail) => {
@@ -97,19 +128,21 @@ async function runDaemon(vars: Record<string, string> | ((root: string) => Recor
     ...(typeof vars === 'function' ? vars(root) : vars),
   }
   const args = ['--import', 'tsx', ENTRY]
-  const child = spawn(process.execPath, args, { env, cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], detached: true })
+  const child = spawn(process.execPath, args, { env, cwd: REPO, stdio: ['ignore', 'pipe', 'pipe'], detached: true, windowsHide: true })
   children.push(child)
   let output = ''
-  const code = await new Promise<number | null>((done) => {
-    const timer = setTimeout(() => { try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ } done(null) }, 45_000)
+  const code = await new Promise<number | null>((done, fail) => {
+    const timer = setTimeout(() => done(null), 45_000)
     const onData = (chunk: Buffer) => {
       output += chunk.toString()
-      if (opts.until && opts.until.test(output)) { clearTimeout(timer); try { process.kill(-child.pid!, 'SIGKILL') } catch { /* gone */ } done(null) }
+      if (opts.until && opts.until.test(output)) { clearTimeout(timer); done(null) }
     }
     child.stdout!.on('data', onData)
     child.stderr!.on('data', onData)
     child.once('exit', (c) => { clearTimeout(timer); done(c) })
+    child.once('error', (error) => { clearTimeout(timer); fail(error) })
   })
+  await terminateChild(child)
   return { code, output, fallbackBytes, secretFile, mnemonic }
 }
 
@@ -141,6 +174,8 @@ describe('daemon start with ADF_SECRET_STORE=keychain', () => {
     const run = await runDaemon({ ADF_KEYCHAIN: '0' }, { until: /Owner identity: .*\n/ })
     expect(run.output).toMatch(/Owner identity: ready \(did:[^)]+\), file storage/)
     expect(run.output).not.toContain('Owner secret store:')
+    const child = children.at(-1)!
+    expect(child.exitCode !== null || child.signalCode !== null, 'the control daemon must exit before runDaemon returns').toBe(true)
   }, 60_000)
 
   it.skipIf(process.platform !== 'linux')('Linux with no Secret Service (real keyring binding, no session bus): exit code 1, fallback file untouched', async () => {
