@@ -414,7 +414,7 @@ function LoopCard({
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
-        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops get a tab and can be woken by triggers">
+        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops run and can be woken by triggers; a disabled loop keeps its tab, dimmed">
           <input
             type="checkbox"
             checked={entry.enabled}
@@ -2439,7 +2439,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <>
                 <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
                   Inner loops share this agent&apos;s body and identity but run their own stream,
-                  model and tool allow-list. Each enabled loop gets its own tab in the loop panel.
+                  model and tool allow-list. Each loop gets its own tab in the loop panel; right-click a tab to enable, disable or delete it.
                 </p>
 
                 {/* Row 0 — the implicit host loop. Never editable, never deletable. */}

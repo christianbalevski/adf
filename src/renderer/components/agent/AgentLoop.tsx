@@ -38,7 +38,11 @@ import { Tooltip } from '../common/Tooltip'
 import { changeAgentConfig } from '../../utils/edit-conflict'
 import { newLoop, newLoopBlocker } from '../../utils/new-loop'
 import { openConfigLoop } from '../../utils/open-config-section'
-import type { AgentConfig } from '../../../shared/types/adf-v02.types'
+import { deleteLoopConsequence, loopMenuState, patchLoopByName, removeLoopByName } from '../../utils/loop-menu'
+import type { AgentConfig, LoopConfig } from '../../../shared/types/adf-v02.types'
+import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
+import { useConfirm } from '../common/ConfirmDialog'
+import { useKeyboardContextMenu } from '../../hooks/useKeyboardContextMenu'
 import { escStopsTurn } from '../../utils/keyboard'
 import { interruptOpenTurn } from '../../utils/turn-interrupt'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
@@ -1235,6 +1239,9 @@ function LoopStream({ loop }: { loop: string }) {
   const autonomous = isMainLoop
     ? config?.autonomous === true
     : config?.loops?.find((l) => l.name === loop)?.autonomous === true
+  // The main process refuses a send to a disabled loop ("loop is disabled"),
+  // so its composer says so up front instead of letting the send fail.
+  const loopDisabled = !isMainLoop && config?.loops?.find((l) => l.name === loop)?.enabled === false
 
   // Every step stays in the transcript, including calls whose results have
   // not arrived. Agent activity outlives a tool's execution and result.
@@ -2348,8 +2355,22 @@ function LoopStream({ loop }: { loop: string }) {
       </div>
       </div>
 
-      {/* Input */}
-      {(() => {
+      {/* Input — or, for a disabled loop, why there is none. */}
+      {loopDisabled ? (
+        <div className={`px-3 pb-3 pt-2 ${columnClass}`}>
+          <div className="flex items-center gap-2 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-3 py-2.5 text-xs text-[var(--ink-muted)]">
+            <span className="min-w-0 flex-1">This loop is disabled. Enable it to send.</span>
+            <Button
+              type="button"
+              size="compact"
+              variant="secondary"
+              onClick={() => void changeLoops(`Loop "${loop}" not enabled`, (loops) => patchLoopByName(loops, loop, { enabled: true }))}
+            >
+              Enable
+            </Button>
+          </div>
+        </div>
+      ) : (() => {
         // Get the active pending ask (if any) to transform the input bar
         let activeAsk: { logEntryId: string; requestId: string; question: string } | null = null
         for (const [logEntryId, ask] of pendingAsks.entries()) {
@@ -2704,13 +2725,17 @@ const LOOP_DOT_APPEARANCE: Record<string, { color: string; label: string; pulse?
  * underline + label accent carry the loop's IDENTITY colour. The two are never
  * the same channel — see `loop-color.ts`.
  */
-function LoopTab({ name, label, active, onSelect, onOpenConfig, scrollIntoViewOnActive = false }: {
+function LoopTab({ name, label, active, onSelect, onOpenConfig, onOpenMenu, disabled = false, scrollIntoViewOnActive = false }: {
   name: string
   label: string
   active: boolean
   onSelect: (name: string) => void
   /** Double-click: open this loop's card in the config panel. Inner loops only. */
   onOpenConfig?: (name: string) => void
+  /** Right-click (or Shift+F10 / the Menu key): this loop's tab menu. Inner loops only. */
+  onOpenMenu?: (name: string, at: { x: number; y: number }) => void
+  /** A disabled inner loop: it keeps its tab, dimmed, so it can be enabled again from here. */
+  disabled?: boolean
   /** Set for tabs inside the horizontal scroller, so selection can't leave one hidden. */
   scrollIntoViewOnActive?: boolean
 }) {
@@ -2724,7 +2749,9 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, scrollIntoViewOn
   // this gate only; nothing here ever writes it (side-loop state must never
   // move the agent-level state).
   const agentState = useAgentStore((s) => s.state)
-  const state = name === MAIN_LOOP || agentState !== 'off' ? loopState : 'off'
+  // A disabled loop has no mind running whatever the agent does, and its
+  // slice may still hold the state it had before it was disabled.
+  const state = disabled ? 'off' : name === MAIN_LOOP || agentState !== 'off' ? loopState : 'off'
   const dot = LOOP_DOT_APPEARANCE[state] ?? LOOP_DOT_APPEARANCE.off
   const identity = loopColor(name)
   // Calm states (idle/off/hibernate/suspended) on an UNFOCUSED tab compete with
@@ -2735,6 +2762,12 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, scrollIntoViewOn
   const dotAttention = state === 'active' || state === 'error'
   const dotMuted = !active && !dotAttention
   const ref = useRef<HTMLButtonElement>(null)
+  const menuHandlers = useKeyboardContextMenu(useCallback((e: React.MouseEvent) => {
+    if (!onOpenMenu) return
+    e.preventDefault()
+    e.stopPropagation()
+    onOpenMenu(name, { x: e.clientX, y: e.clientY })
+  }, [onOpenMenu, name]))
 
   // Whichever way the tab became active — a click, or a programmatic switch —
   // bring it into the scroller. `nearest` is a no-op when it is already visible.
@@ -2751,13 +2784,18 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, scrollIntoViewOn
       aria-selected={active}
       onClick={() => onSelect(name)}
       onDoubleClick={onOpenConfig ? () => onOpenConfig(name) : undefined}
-      title={`${name === MAIN_LOOP ? 'The host loop' : `Inner loop "${name}"`} — ${dot.label}`}
+      onContextMenu={onOpenMenu ? menuHandlers.onContextMenu : undefined}
+      onKeyDown={onOpenMenu ? menuHandlers.onKeyDown : undefined}
+      aria-haspopup={onOpenMenu ? 'menu' : undefined}
+      title={`${name === MAIN_LOOP ? 'The host loop' : `Inner loop "${name}"`} — ${disabled ? 'Disabled' : dot.label}`}
       // Identity is ALWAYS on the underline for an inner loop — muted when
       // inactive, full when active — so the strip stays a legend the eye can
       // match a sender-coloured `loop_send` card against without clicking. The
       // label text stays neutral until selected, so selection still reads.
       // `main` is not in the legend and keeps its bare inactive strip.
       className={`flex shrink-0 items-center gap-1.5 border-b-2 px-2.5 py-1.5 text-xs font-medium transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] ${
+        disabled ? 'opacity-50 ' : ''
+      }${
         active
           ? `${identity.underline} ${identity.accent}`
           : `${identity.underlineMuted} text-[var(--ink-faint)] hover:text-[var(--ink-muted)]`
@@ -2776,6 +2814,24 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, scrollIntoViewOn
       <span className="max-w-[9rem] truncate">{label}</span>
     </button>
   )
+}
+
+/**
+ * A change to the inner loops from the chat panel (the tab menu, the disabled
+ * loop's Enable), through `changeAgentConfig` like the + button: applied to
+ * the config it just read, so a loop changed elsewhere in between is not
+ * reverted. The running agent's loop pool reconciles the save the same way it
+ * does a config-card edit. True when it saved.
+ */
+async function changeLoops(what: string, change: (loops: LoopConfig[] | undefined) => LoopConfig[]): Promise<boolean> {
+  try {
+    const saved = await changeAgentConfig<AgentConfig>((config) => ({ ...config, loops: change(config.loops) }))
+    if (!saved) console.warn(`[loops] ${what}: the config save was refused.`)
+    return !!saved
+  } catch (error) {
+    console.warn(`[loops] ${what}:`, error instanceof Error ? error.message : error)
+    return false
+  }
 }
 
 /**
@@ -2882,18 +2938,70 @@ function PromoteChatToCenter() {
 }
 
 /**
- * The agent's loop panel. With no enabled side loops this renders exactly what
- * it always did — a single `main` stream, no tab strip, zero visual change.
- * Otherwise it adds a tab strip: `main` first, then one tab per enabled
+ * The agent's loop panel. With no inner loops this renders exactly what it
+ * always did — a single `main` stream, no tab strip, zero visual change.
+ * Otherwise it adds a tab strip: `main` first, then one tab per
  * `AgentConfig.loops` entry, each showing that loop's own store slice and
- * sending through its own composer (§8).
+ * sending through its own composer (§8). A disabled loop keeps its tab,
+ * dimmed: its stream is still there to read, and its tab menu is where it is
+ * enabled again.
  */
 export function AgentLoop() {
   const configLoops = useAgentStore((s) => s.config?.loops)
   const sideLoops = useMemo(
-    () => (configLoops ?? []).filter((l) => l.enabled && l.name && l.name !== MAIN_LOOP),
+    () => (configLoops ?? []).filter((l) => l.name && l.name !== MAIN_LOOP),
     [configLoops]
   )
+  // With no agent running there is no loop pool to archive a deleted loop's
+  // stream, so the delete confirmation says what actually happens.
+  const agentRunning = useAgentStore((s) => s.state !== 'off')
+  const [menu, setMenu] = useState<{ name: string; x: number; y: number } | null>(null)
+  const closeMenu = useCallback(() => setMenu(null), [])
+  const openMenu = useCallback((name: string, at: { x: number; y: number }) => setMenu({ name, ...at }), [])
+  const [confirmDialog, confirm] = useConfirm()
+
+  const menuLoop = menu ? sideLoops.find((l) => l.name === menu.name) : undefined
+  const menuItems = useMemo<ContextMenuItem[]>(() => {
+    if (!menuLoop) return []
+    const name = menuLoop.name
+    const state = loopMenuState(menuLoop)
+    return [
+      { label: 'Open config', onSelect: () => openConfigLoop(name) },
+      {
+        label: state.toggleEnabled.label,
+        separatorBefore: true,
+        onSelect: () => void changeLoops(`Loop "${name}" not ${state.toggleEnabled.enabled ? 'enabled' : 'disabled'}`,
+          (loops) => patchLoopByName(loops, name, { enabled: state.toggleEnabled.enabled })),
+      },
+      {
+        label: state.toggleAutostart.label,
+        disabled: state.toggleAutostart.disabledReason !== null,
+        hint: state.toggleAutostart.disabledReason ?? undefined,
+        onSelect: () => void changeLoops(`Autostart of loop "${name}" not changed`,
+          (loops) => patchLoopByName(loops, name, { autostart: state.toggleAutostart.autostart || undefined })),
+      },
+      {
+        label: 'Delete',
+        danger: true,
+        separatorBefore: true,
+        onSelect: () => void (async () => {
+          const confirmed = await confirm({
+            title: `Delete ${name}?`,
+            body: deleteLoopConsequence(name, agentRunning),
+            confirmLabel: 'Delete loop',
+            danger: true,
+          })
+          if (!confirmed) return
+          const saved = await changeLoops(`Loop "${name}" not deleted`, (loops) => removeLoopByName(loops, name))
+          // Studio's own saves are not echoed back as a config change, so the
+          // stale-slice drop in useAgent does not run for this one. Drop it
+          // here, or a loop later added under the same name (the + button
+          // reuses freed names) would open on this loop's old stream.
+          if (saved) useAgentStore.getState().dropLoop(name)
+        })(),
+      },
+    ]
+  }, [menuLoop, agentRunning, confirm])
   const [activeLoop, setActiveLoop] = useState<string>(MAIN_LOOP)
   // Only the dock offers the promotion; on the stage the tab's X is the way out.
   // Also suppressed while the fleet map holds the center stage (B2): promoting
@@ -2901,8 +3009,9 @@ export function AgentLoop() {
   // vanish. selectCanPromoteChat = dock placement AND not on the map.
   const canPromote = useAppStore(selectCanPromoteChat)
 
-  // A loop the user was viewing can be disabled or deleted (config edit or
-  // `loop_manage`) — fall back to main rather than rendering a dead tab.
+  // A loop the user was viewing can be deleted (config edit, the tab menu or
+  // `loop_manage`) — fall back to main rather than rendering a dead tab. A
+  // disabled one keeps its tab, so it stays selected.
   useEffect(() => {
     if (activeLoop === MAIN_LOOP) return
     if (!sideLoops.some((l) => l.name === activeLoop)) setActiveLoop(MAIN_LOOP)
@@ -2954,6 +3063,8 @@ export function AgentLoop() {
   }
 
   const current = sideLoops.some((l) => l.name === activeLoop) ? activeLoop : MAIN_LOOP
+  // `main` has no menu: it is the agent itself, with nothing to enable,
+  // autostart or delete, and its config is the whole Config tab.
 
   return (
     <div className="flex h-full flex-col">
@@ -2980,6 +3091,8 @@ export function AgentLoop() {
                   active={current === l.name}
                   onSelect={setActiveLoop}
                   onOpenConfig={openConfigLoop}
+                  onOpenMenu={openMenu}
+                  disabled={!l.enabled}
                   scrollIntoViewOnActive
                 />
               ))}
@@ -3001,6 +3114,8 @@ export function AgentLoop() {
       <div className="min-h-0 flex-1">
         <LoopStream key={current} loop={current} />
       </div>
+      <ContextMenu position={menu} items={menuItems} onClose={closeMenu} label={menu ? `Loop ${menu.name}` : undefined} />
+      {confirmDialog}
     </div>
   )
 }

@@ -324,7 +324,8 @@ Grouped by area, then category.
 - **Loop preamble injection** — Every side loop's `instructions` is prefixed with a ~170-word standing preamble naming who it is, what it shares, and how to reach main.
 - **Main's Inner Loops prompt section** — Main's own system prompt gains a roster (or an invitation to create loops) whenever it has loops or `loop_manage` is enabled.
 - **Per-loop AdfCallHandler** — Each loop runs its own attenuated call handler built from the derived config, never sharing main's unattenuated handler.
-- **Loop UI tab strip** — Chat panel grows a per-loop tab strip with identity colors, muted/yellow/error status dots, and held mid-stream inter-loop delivery cards.
+- **Loop UI tab strip** — Chat panel grows a per-loop tab strip with identity colors, muted/yellow/error status dots, and held mid-stream inter-loop delivery cards. Disabled loops keep a dimmed tab with a read-only stream and an Enable button in place of the composer.
+- **Loop tab menu** — Right-clicking an inner-loop tab opens Open config, Enable/Disable, Autostart on/off (greyed out without a goal) and Delete, which confirms in-app and says whether the stream is archived (agent running) or stays in the file (agent stopped). No Rename: streams are keyed by loop name.
 - **Loop token counters** — The status-bar context gauge reflects whichever loop's stream is currently being viewed, with its own auto-compact threshold.
 
 ### Spawning & Child Agents
