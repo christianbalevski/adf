@@ -83,13 +83,14 @@ async function isRunning(ctx: DaemonModeContext): Promise<boolean> {
   return !!filePath && (await ctx.runningAgentAt(filePath)) !== null
 }
 
-/** Embedded's loop check for DOC_ADD_TIMER: a declared loop of the RUNNING agent (no assembled pool: main only). */
-async function unknownLoop(ctx: DaemonModeContext, client: DaemonClient, agentId: string, loop: string): Promise<string | null> {
-  let names = [MAIN_LOOP]
-  if (await isRunning(ctx)) {
-    const { loops } = await client.request<{ loops: Array<{ name: string }> }>('GET', `/agents/${enc(agentId)}/loops`)
-    names = loops.map((l) => l.name)
-  }
+/**
+ * Embedded's loop check for DOC_ADD_TIMER: a loop the agent declares, running
+ * or not. A stopped agent's declared loops are valid targets (the timer fires
+ * once it runs), and the daemon accepts them (RuntimeService.targetLoopName).
+ */
+async function unknownLoop(client: DaemonClient, agentId: string, loop: string): Promise<string | null> {
+  const { config } = await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(agentId)}/config`)
+  const names = [MAIN_LOOP, ...(config.loops ?? []).map((l) => l.name)]
   return names.includes(loop) ? null : `Unknown loop "${loop}". Available: ${names.join(', ')}`
 }
 
@@ -327,7 +328,7 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
   /** The loop is kept only for an agent-scope timer (embedded's effectiveLoop). */
   [IPC.DOC_ADD_TIMER]: (ctx, _event, args: TimerArgs) => onOpenFile(ctx, 'Adding a timer to the open agent', { success: false, error: 'No workspace open' }, async (client, id) => {
     if (args.loop && args.loop !== MAIN_LOOP) {
-      const unknown = await unknownLoop(ctx, client, id, args.loop)
+      const unknown = await unknownLoop(client, id, args.loop)
       if (unknown) return { success: false, error: unknown }
     }
     const refusal = await timerRefusal(args)

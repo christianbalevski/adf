@@ -167,7 +167,8 @@ describe('DOC_* on the open file', () => {
     expect(await call(IPC.DOC_ADD_TIMER, { mode: 'cron', scope: ['agent'] })).toEqual({ success: false, error: 'Cron expression required' })
     expect((await call(IPC.DOC_ADD_TIMER, { mode: 'cron', cron: 'not a cron', scope: ['agent'] })).error).toMatch(/^Invalid cron: /)
     expect(await call(IPC.DOC_ADD_TIMER, { mode: 'bogus', scope: ['agent'] })).toEqual({ success: false, error: 'Invalid mode' })
-    // Not running: no loop pool, main only (embedded's `Available: main`).
+    // A loop the config does not declare is refused before the timer request.
+    daemon.routes.set(`GET /agents/${AGENT}/config`, () => ({ agentId: AGENT, config: { loops: [] } }))
     expect(await call(IPC.DOC_ADD_TIMER, { mode: 'once_delay', delay_ms: 10, scope: ['agent'], loop: 'side' })).toEqual({ success: false, error: 'Unknown loop "side". Available: main' })
     expect(daemon.requests.filter((r) => r.path.endsWith('/timers'))).toEqual([])
     daemon.routes.set(`POST /agents/${AGENT}/timers`, () => ({ agentId: AGENT, success: true, id: 7 }))
@@ -175,9 +176,10 @@ describe('DOC_* on the open file', () => {
     expect(lastRequest('POST', `/agents/${AGENT}/timers`)?.body).toEqual({ mode: 'once_delay', delay_ms: 10, scope: ['system'] })
   })
 
-  it('DOC_ADD_TIMER checks a side loop against the running agent\'s loops', async () => {
-    daemon.routes.set('GET /files/agent', () => ({ filePath: file, agentId: AGENT, loaded: true, tracked: false }))
-    daemon.routes.set(`GET /agents/${AGENT}/loops`, () => ({ agentId: AGENT, loops: [{ name: 'main' }, { name: 'side' }] }))
+  it('DOC_ADD_TIMER checks a side loop against the declared loops, agent running or not', async () => {
+    // Not running: a declared loop is a valid target (the timer fires once the
+    // agent runs). The Timers dialog offers every declared loop.
+    daemon.routes.set(`GET /agents/${AGENT}/config`, () => ({ agentId: AGENT, config: { loops: [{ name: 'side', goal: '', enabled: true }] } }))
     daemon.routes.set(`POST /agents/${AGENT}/timers`, () => ({ agentId: AGENT, success: true, id: 8 }))
     expect(await call(IPC.DOC_ADD_TIMER, { mode: 'once_delay', delay_ms: 10, scope: ['agent'], loop: 'other' })).toEqual({ success: false, error: 'Unknown loop "other". Available: main, side' })
     expect(await call(IPC.DOC_ADD_TIMER, { mode: 'once_delay', delay_ms: 10, scope: ['agent'], loop: 'side' })).toEqual({ success: true, id: 8 })

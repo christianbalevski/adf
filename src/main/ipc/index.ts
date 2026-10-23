@@ -3220,14 +3220,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   }) => {
     if (!currentWorkspace) return { success: false, error: 'No workspace open' }
     // A10: validate args.loop against the declared loop set, same as the tool
-    // path (sys_set_timer → loopPool.hasLoop). Absent = main. An unknown loop
-    // would otherwise persist a timer that fires into a stream that does not
-    // exist; reject it and name the valid targets.
+    // path (sys_set_timer → loopPool.hasLoop, which also reads the declared
+    // loops). Absent = main. An unknown loop would otherwise persist a timer
+    // that fires into a stream that does not exist; reject it and name the
+    // valid targets. Read from the config, not the pool: a stopped agent has
+    // no pool, and a timer for one of its declared loops is valid (it fires
+    // once the agent runs). Requiring a pool refused every inner loop the
+    // Timers dialog offered while the agent was off.
     if (args.loop && args.loop !== MAIN_LOOP) {
-      const pool = currentAssembledAgent?.loopPool
-      if (!pool || !pool.hasLoop(args.loop)) {
-        const available = pool ? pool.listLoops().map(l => l.name).join(', ') : MAIN_LOOP
-        return { success: false, error: `Unknown loop "${args.loop}". Available: ${available}` }
+      const declared = [MAIN_LOOP, ...(currentWorkspace.getAgentConfig().loops ?? []).map(l => l.name)]
+      if (!declared.includes(args.loop)) {
+        return { success: false, error: `Unknown loop "${args.loop}". Available: ${declared.join(', ')}` }
       }
     }
     try {
