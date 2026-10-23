@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 332 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 333 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -28,7 +28,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Daemon](#tag-daemon) (3)
 - [Events](#tag-events) (2)
 - [Agents](#tag-agents) (33)
-- [Loops](#tag-loops) (8)
+- [Loops](#tag-loops) (9)
 - [Chat](#tag-chat) (7)
 - [Files](#tag-files) (15)
 - [Identity (agent)](#tag-identity-agent) (23)
@@ -2716,6 +2716,7 @@ Cognition loops: `main` plus an agent's inner loops, their persisted history, co
 | GET | [`/agents/{id}/loop`](#op-getagentloop) | Read persisted loop entries (paginated) |
 | GET | [`/agents/{id}/context`](#op-getagentcontext) | One loop's context usage |
 | POST | [`/agents/{id}/compact`](#op-compactagentloop) | Compact one loop's history now |
+| POST | [`/agents/{id}/commands/{name}/run`](#op-runagentcommand) | Run an owner slash command |
 
 <a id="op-listagentloops"></a>
 
@@ -3205,6 +3206,69 @@ Example 200 (`application/json`):
   "agentId": "Xk3v9QpLm2",
   "loop": "string",
   "success": true
+}
+```
+
+<a id="op-runagentcommand"></a>
+
+### POST `/agents/{id}/commands/{name}/run`
+
+**Run an owner slash command**
+
+Runs a registered lambda without a model turn and records its bounded outcome in the selected loop. Requires a running agent; never starts it. Error and denied outcomes are recorded and return 200. The authorize boolean elevates only this invocation; chat text is never interpreted as a command.
+
+Operation `runAgentCommand` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `name` | path | string | yes | Registered command name without the slash. |
+
+**Request body** (optional): [OwnerCommandBody](#schema-ownercommandbody)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `args` | string |  | Default `""`. |
+| `loop` | string |  | Default `"main"`. |
+| `authorize` | boolean |  | Owner grant for this invocation only. Paired devices may grant it. Default `false`. |
+| `requestId` | string |  |  |
+
+```json
+{
+  "args": "",
+  "loop": "main",
+  "authorize": false,
+  "requestId": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [OwnerCommandResult](#schema-ownercommandresult) | Recorded command outcome |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [ErrorResponse](#schema-errorresponse) | The resource is in a state that does not allow this now |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "id": "string",
+  "name": "string",
+  "loop": "string",
+  "status": "ok",
+  "authorized": true,
+  "result": "string",
+  "durationMs": 0,
+  "deferred": true,
+  "seq": 0
 }
 ```
 
@@ -23173,3 +23237,30 @@ Type: object \| object
 ### PairClaimResult
 
 Type: object \| object \| object
+
+<a id="schema-ownercommandbody"></a>
+
+### OwnerCommandBody
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `args` | string |  | Default `""`. |
+| `loop` | string |  | Default `"main"`. |
+| `authorize` | boolean |  | Owner grant for this invocation only. Paired devices may grant it. Default `false`. |
+| `requestId` | string |  |  |
+
+<a id="schema-ownercommandresult"></a>
+
+### OwnerCommandResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `id` | string | yes |  |
+| `name` | string | yes |  |
+| `loop` | string | yes |  |
+| `status` | `"ok"` \| `"error"` \| `"denied"` | yes |  |
+| `authorized` | boolean | yes |  |
+| `result` | string | yes | Bounded output exactly as recorded in the loop. |
+| `durationMs` | number | yes |  |
+| `deferred` | boolean | yes | The record waits for the current step to finish. |
+| `seq` | integer |  |  |
