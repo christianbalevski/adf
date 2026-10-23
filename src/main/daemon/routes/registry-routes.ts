@@ -20,6 +20,7 @@ import { AgentRegistryService } from '../../services/agent-registry.service'
 import { McpRegistryFetchService } from '../../services/mcp-registry-fetch.service'
 import { bringRegistryAgentHome } from '../../services/registry-bring-home'
 import { getUserDataPath } from '../../utils/user-data-path'
+import { defaultAgentsFolderName } from '../../utils/agents-folder-name'
 import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import { gapDeps } from './gap-deps'
 import type { DaemonRouteContext } from './index'
@@ -95,7 +96,7 @@ export function registerRegistryRoutes(server: FastifyInstance, ctx: DaemonRoute
       agentsFolder: () => {
         const configured = settings?.get('agentsFolder')
         const folder = factory?.defaultDirectory()
-          ?? (typeof configured === 'string' && configured.trim() ? resolve(configured.trim()) : join(homedir(), 'Documents', 'adf-agents'))
+          ?? (typeof configured === 'string' && configured.trim() ? resolve(configured.trim()) : join(homedir(), 'Documents', defaultAgentsFolderName()))
         mkdirSync(folder, { recursive: true })
         return folder
       },

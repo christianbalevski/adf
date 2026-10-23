@@ -135,6 +135,18 @@ describe('dashboard slices', () => {
   })
 })
 
+describe('ProviderChecks: subscriptions', () => {
+  afterEach(() => { auth.chatgpt = false })
+  it('read the sign-in state on every check, also with automatic checks off, so a sign-in shows at once', async () => {
+    const checks = new ProviderChecks({ isEnabled: () => false })
+    expect(await checks.autoCheck(chatgpt)).toBe('unconfigured')
+    auth.chatgpt = true
+    expect(await checks.autoCheck(chatgpt)).toBe('ok')
+    expect(await testProviderById([chatgpt], 'chatgpt', false, checks)).toEqual({ status: 'ok' })
+    expect(fetchMock).not.toHaveBeenCalled()
+  })
+})
+
 describe('ProviderChecks: openai-compatible without a base URL', () => {
   it('is unconfigured and sends nothing', async () => {
     const checks = new ProviderChecks({ isEnabled: () => true })

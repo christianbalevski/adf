@@ -6,6 +6,7 @@ import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { prepareFoundAgent } from '../utils/found-agent'
+import { defaultAgentsFolderName } from '../utils/agents-folder-name'
 import {
   AdapterAttachArgs, AdapterCredentialGetArgs, AdapterCredentialSetArgs, AdapterDetachArgs, AdapterListFilesArgs,
   AdapterPackageArgs, AdapterTypeArgs, McpAttachArgs, McpCredentialGetArgs, McpCredentialListArgs, McpCredentialSetArgs,
@@ -1479,7 +1480,7 @@ function resolveAgentsFolderPath(): string {
       return candidate
     }
   }
-  return join(app.getPath('documents'), 'adf-agents')
+  return join(app.getPath('documents'), defaultAgentsFolderName())
 }
 
 /** resolveAgentsFolderPath + creation. Created on first use, never at boot. */

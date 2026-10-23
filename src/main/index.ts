@@ -111,6 +111,8 @@ const instanceFromArg = instanceArg ? instanceArg.split('=')[1] : null
 const instanceId = process.env.ADF_INSTANCE || instanceFromArg
 
 if (instanceId) {
+  // The env carries it to the daemon and to every resolver (agents-folder-name.ts).
+  process.env.ADF_INSTANCE = instanceId
   const customUserDataPath = join(app.getPath('temp'), `adf-instance-${instanceId}`)
   app.setPath('userData', customUserDataPath)
   console.log(`[App] Running instance ${instanceId} with userData: ${customUserDataPath}`)
