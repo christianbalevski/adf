@@ -19,7 +19,10 @@ import { SettingsService } from '../../../src/main/services/settings.service'
 import { describeEnvelopeSweep } from '../../../src/main/services/owner-identity.service'
 import { AgentLeaseRegistry, openHereOrLeasedElsewhere } from '../../../src/main/runtime/agent-lease'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
-import { readAdfAttestations, verifyAttestation } from '../../../src/main/services/attestation.service'
+import { readAdfAttestations, verifyAttestation, writeAdfAttestations } from '../../../src/main/services/attestation.service'
+import { canonicalJsonStringify } from '../../../src/main/services/alf-pipeline'
+import { signEd25519 } from '../../../src/main/crypto/identity-crypto'
+import type { AlfAttestation } from '../../../src/shared/types/adf-v02.types'
 import { writeV2Adf, writeV31Adf } from '../../helpers/old-schema-adf'
 
 let rootDir: string
@@ -65,6 +68,44 @@ describe('ensureWorkspaceIdentity (spec D1)', () => {
     } finally {
       ws.close()
     }
+  })
+
+  it('re-signs the v1 attestations its own keys issued as v2 when a file opens, and the runtime delegation', () => {
+    const settings = makeSettings()
+    const svc = settings.getOwnerIdentity()
+    const filePath = join(trackedDir, 'v1.adf')
+    const ws = AdfWorkspace.create(filePath, { name: 'v1' })
+    // A v1 cert as earlier versions signed it: the six fields only, no `v`.
+    const v1 = (a: AlfAttestation, key: Buffer): AlfAttestation => {
+      const { issuer, subject, role, issued_at } = a
+      return { issuer, subject, role, issued_at, signature: `ed25519:${signEd25519(Buffer.from(canonicalJsonStringify({ issuer, subject, role, issued_at })), key)}` }
+    }
+    try {
+      svc.ensureWorkspaceIdentity(ws)
+      const issued = readAdfAttestations(ws)
+      expect(issued.every((a) => a.v === 2)).toBe(true)
+      const keyOf = (did: string) => (did === svc.getOwnerDid() ? svc.getOwnerSigningKey() : svc.getRuntimeSigningKey())!
+      writeAdfAttestations(ws, issued.map((a) => v1(a, keyOf(a.issuer))))
+      expect(readAdfAttestations(ws).every((a) => a.v === undefined && verifyAttestation(a))).toBe(true)
+    } finally {
+      ws.close()
+    }
+    const reopened = AdfWorkspace.open(filePath)
+    try {
+      svc.ensureWorkspaceIdentity(reopened)
+      const after = readAdfAttestations(reopened)
+      expect(after.map((a) => a.role).sort()).toEqual(['operator', 'owner'])
+      expect(after.every((a) => a.v === 2 && verifyAttestation(a, { expectedSubject: reopened.getDid()! }))).toBe(true)
+    } finally {
+      reopened.close()
+    }
+
+    const delegation = settings.get('runtimeDelegation') as AlfAttestation
+    settings.set('runtimeDelegation', v1(delegation, svc.getOwnerSigningKey()!))
+    svc.ensureRuntimeKey()
+    const upgraded = settings.get('runtimeDelegation') as AlfAttestation
+    expect(upgraded.v).toBe(2)
+    expect(verifyAttestation(upgraded, { expectedSubject: svc.getRuntimeDid() })).toBe(true)
   })
 
   it('is idempotent — a second run changes nothing', () => {

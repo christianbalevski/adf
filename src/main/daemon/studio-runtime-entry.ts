@@ -167,6 +167,8 @@ function normalizeDelegation(raw: unknown): AlfAttestation | null {
   for (const field of ['expires_at', 'scope'] as const) {
     if (d[field] !== undefined && typeof d[field] !== 'string') return null
   }
+  // v2 signs every field: kept whole, for verifyAttestation to judge.
+  if (d.v === 2) return d as unknown as AlfAttestation
   return {
     issuer: d.issuer as string,
     subject: d.subject as string,

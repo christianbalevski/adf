@@ -28,13 +28,20 @@ export function verifySignatures(root: unknown): Map<string, boolean> {
     const o = value as Record<string, unknown>
     if (typeof o.issuer === 'string' && typeof o.subject === 'string' && typeof o.signature === 'string' && o.signature.startsWith('ed25519:')) {
       // An adf_attestations row carries the attestation's columns plus `id`
-      // and `raw_json`; it is verified on the attestation columns (nulls
-      // dropped). Every occurrence must verify: a signature next to fields it
-      // does not sign is INVALID.
-      const candidate = 'raw_json' in o
-        ? Object.fromEntries(ATTESTATION_COLUMNS.filter((k) => o[k] !== null && o[k] !== undefined).map((k) => [k, o[k]]))
-        : o
-      const ok = verifyAttestation(candidate as unknown as AlfAttestation)
+      // and `raw_json`, the whole signed cert (a v2 cert signs `v` and
+      // `claims` too, which have no column). It is verified on `raw_json`,
+      // and each column must equal the cert's field (nulls = absent). Every
+      // occurrence must verify: a signature next to fields it does not sign
+      // is INVALID.
+      let ok: boolean
+      if ('raw_json' in o) {
+        let cert: Record<string, unknown> | null = null
+        try { cert = JSON.parse(String(o.raw_json)) as Record<string, unknown> } catch { cert = null }
+        ok = !!cert && ATTESTATION_COLUMNS.every((k) => (o[k] ?? undefined) === (cert![k] ?? undefined)) &&
+          verifyAttestation(cert as unknown as AlfAttestation)
+      } else {
+        ok = verifyAttestation(o as unknown as AlfAttestation)
+      }
       out.set(o.signature, (out.get(o.signature) ?? true) && ok)
     }
     for (const v of Object.values(o)) visit(v)

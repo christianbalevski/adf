@@ -6,11 +6,12 @@
   "runtimePrivateKey": "safe:cGFyaXR5LXNhZmU6TUM0Q0FRQXdCUVlESzJWd0JDSUVJSThxUlFtZGg5T1ZHSTJSY0hRbmxzRzIzWFp5TVo0VFg2VGRFajM5M3VVSQ==",
   "runtimeDid": "did:key:z6MkspiZFxZTL5GpHKjCJZXUubvGph5haZSFdwQVMCtC8vAA",
   "runtimeDelegation": {
+    "v": 2,
     "issuer": "did:key:z6MkqYByJUBDqjepHF4ziA4JwBzRSkmZB636BtnsasitLcQW",
     "subject": "did:key:z6MkspiZFxZTL5GpHKjCJZXUubvGph5haZSFdwQVMCtC8vAA",
     "role": "runtime",
     "issued_at": "2026-10-14T15:54:24.928Z",
-    "signature": "ed25519:c8iLBuQyod0um1thxGwd7FBnJA/zWKkXbrkm2si/TUiSBvfW6AWTS+a1y8dlGKmq8o+8vLYGtJjFThr8AIbrBA=="
+    "signature": "ed25519:Sfwu0nd61wYwvBw2EvsMCZZWT6a6eZR3ULxL3UCMWiue0xYhGGC0PaZVD7sdQsCyrJmFab2yhoymLniFIfNgBw=="
   },
   "ownerEncPublicKey": "6PZOUEhZ3xzk8dz7OlcCQ2ot9aXbGI2eHbWzFJZNxkc=",
   "runtimeEncPrivateKey": "safe:cGFyaXR5LXNhZmU6TUM0Q0FRQXdCUVlESzJWdUJDSUVJRGZhUEdwdnpLYWloZFdNUDJqZ1V3Mzd5cGhqdGFuemFxeVJQZHRaMHB5Ug==",

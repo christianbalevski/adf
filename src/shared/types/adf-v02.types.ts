@@ -1312,13 +1312,21 @@ export interface AlfAgentCard {
 }
 
 export interface AlfAttestation {
+  /** Format version: 2 signs every field but `signature`; absent = v1 (the six fields below only). */
+  v?: 2
   issuer: string          // DID of the attesting party
   subject: string         // DID the attestation is about — signed, so a cert can't be replayed onto another identity
   role: string            // 'owner' | 'operator' | 'runtime' | 'certifier' | etc.
   issued_at: string       // ISO 8601
   expires_at?: string     // ISO 8601
   scope?: string          // what the attestation covers
-  signature: string       // ed25519:<base64> over canonical JSON of all fields except signature
+  /**
+   * v2: any JSON the issuer signs (ATTESTATION_CLAIMS_MAX_BYTES at most).
+   * The runtime verifies it and passes it on; what it means is up to whoever
+   * reads it. Namespace the keys (`acme.grant`, `org.example/membership`).
+   */
+  claims?: Record<string, unknown>
+  signature: string       // ed25519:<base64>; v2: canonical JSON of every field but signature; v1: of the six fields above
 }
 
 // =============================================================================

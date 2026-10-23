@@ -23,7 +23,7 @@ import { generateEd25519KeyPair, extractRawPublicKey, publicKeyToDid } from '../
 import { generateMnemonic, validateMnemonic, deriveOwnerIdentity, deriveOwnerEncryptionKey } from '../crypto/mnemonic-identity'
 import { generateX25519KeyPair, extractRawX25519PublicKey, openKeySlot, type KeySlotRecord } from '../crypto/envelope-crypto'
 import { daemonEncKeyLabel } from '../daemon/daemon-enc-key'
-import { appendAdfAttestation, createAttestation, issueOwnerAttestation, readAdfAttestations, verifyAttestation } from './attestation.service'
+import { appendAdfAttestation, createAttestation, issueOwnerAttestation, readAdfAttestations, upgradeOwnAttestations, verifyAttestation } from './attestation.service'
 import { getReviewedIds } from './agent-review'
 import type { SettingsService } from './settings.service'
 import type { SharedMnemonicStore } from './owner-secret-store'
@@ -458,13 +458,28 @@ export class OwnerIdentityService {
     const runtimeDid = this.getRuntimeDid()
     if (!runtimeDid || keyStatus === 'absent') return this.mintRuntimeKey(ownerKey, ownerDid)
     const delegation = this.getRuntimeDelegation()
-    if (!delegation || delegation.issuer !== ownerDid || !verifyAttestation(delegation, { expectedSubject: runtimeDid })) {
+    // A v1 delegation is re-signed as v2 (same owner, same runtime).
+    if (!delegation || delegation.v !== 2 || delegation.issuer !== ownerDid || !verifyAttestation(delegation, { expectedSubject: runtimeDid })) {
       this.settings.set('runtimeDelegation', createAttestation(
         { issuer: ownerDid, subject: runtimeDid, role: 'runtime', issued_at: new Date().toISOString() },
         ownerKey
       ))
     }
     return runtimeDid
+  }
+
+  /** Own v1 attestations in the file re-signed as v2 (attestation.service.ts). Logged, never thrown. */
+  private upgradeAttestations(workspace: AdfWorkspace): void {
+    try {
+      // A file another connection is writing is not waited on: the next open retries.
+      const upgraded = upgradeOwnAttestations(workspace, [
+        { did: this.getOwnerDid(), privateKey: this.getOwnerSigningKey() },
+        { did: this.getRuntimeDid(), privateKey: this.getRuntimeSigningKey() },
+      ], PROVISION_BUSY_TIMEOUT_MS)
+      if (upgraded > 0) console.log(`[OwnerIdentity] Re-signed ${upgraded} attestation(s) as v2 in ${workspace.getFilePath()}`)
+    } catch (err) {
+      console.warn('[OwnerIdentity] Attestation v2 upgrade failed:', err)
+    }
   }
 
   /** Record that `ownerDid` is seed-derived (idempotent; no write when already set). */
@@ -859,6 +874,7 @@ export class OwnerIdentityService {
       }
 
       const sealed = workspace.sealPlainRowsIntoEnvelopes()
+      this.upgradeAttestations(workspace)
       return { keysGenerated, sealed }
     }
 

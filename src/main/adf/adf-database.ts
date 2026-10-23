@@ -3742,6 +3742,19 @@ export class AdfDatabase {
     this.db.prepare('DELETE FROM adf_attestations').run()
   }
 
+  /**
+   * Re-sign rows in place: each row whose signature is `from` takes `to`
+   * (same issuer, subject and role), keeping its id and place. A row changed
+   * or removed meanwhile matches nothing and is left as it is. Returns the
+   * rows updated.
+   */
+  resignAttestations(updates: Array<{ from: string; to: Parameters<AdfDatabase['insertAttestation']>[0] }>): number {
+    const stmt = this.db.prepare('UPDATE adf_attestations SET signature = ?, raw_json = ? WHERE signature = ?')
+    let changed = 0
+    for (const { from, to } of updates) changed += stmt.run(to.signature, JSON.stringify(to), from).changes
+    return changed
+  }
+
   deleteAllIdentity(): void {
     this.db.prepare('DELETE FROM adf_identity').run()
   }
