@@ -29,7 +29,7 @@ vi.mock('electron', () => ({
 }))
 
 import { SettingsService } from '../../../src/main/services/settings.service'
-import { SECRET_STORAGE_POLICY_KEY, SecretStorageRefusedError } from '../../../src/main/services/secret-storage-policy'
+import { SECRET_STORAGE_POLICY_KEY, SecretStorageRefusedError, choosePlaintextStorage } from '../../../src/main/services/secret-storage-policy'
 import { AppSettingsOAuthStore, MCP_OAUTH_SETTINGS_KEY, type McpOAuthRecord } from '../../../src/main/services/mcp-oauth-store'
 import { ownerMnemonicSupersededKey } from '../../../src/main/services/owner-identity.service'
 import { generateMnemonic, deriveOwnerIdentity } from '../../../src/main/crypto/mnemonic-identity'
@@ -112,6 +112,38 @@ describe('no keychain and no plain-text choice', () => {
 })
 
 describe('the plain-text choice', () => {
+  it.each(['unavailable', 'denied'] as const)('preserves existing MCP sign-ins when the keychain is %s, then merges after unlocking', async (state) => {
+    h.available = true
+    const settings = new SettingsService()
+    const original = record()
+    await new AppSettingsOAuthStore(settings).save(original.serverUrl!, original)
+    const sealed = disk()[MCP_OAUTH_SETTINGS_KEY]
+    expect(sealed).toMatch(/^safe:/)
+
+    // The launch choice permits new plaintext secrets, but keeps old ciphertext.
+    expect(choosePlaintextStorage(settingsPath()).ok).toBe(true)
+    h.available = state !== 'unavailable'
+    h.decryptThrows = state === 'denied'
+    const later = new SettingsService()
+    const store = new AppSettingsOAuthStore(later)
+    const bytes = readFileSync(settingsPath(), 'utf-8')
+    const next = { ...record(), serverUrl: 'https://new.example/mcp' }
+    expect(later.secretWriteRefusal()).toBeNull()
+    expect(later.secretStatus(MCP_OAUTH_SETTINGS_KEY)).toBe('locked')
+    await expect(store.get(original.serverUrl!)).resolves.toBeUndefined()
+    await expect(store.save(next.serverUrl, next)).rejects.toThrow(/existing.*locked/i)
+    await expect(store.invalidate(original.serverUrl!)).rejects.toThrow(/existing.*locked/i)
+    expect(readFileSync(settingsPath(), 'utf-8')).toBe(bytes)
+    expect(disk()[MCP_OAUTH_SETTINGS_KEY]).toBe(sealed)
+
+    h.available = true
+    h.decryptThrows = false
+    await expect(store.get(original.serverUrl!)).resolves.toEqual(original)
+    await store.save(next.serverUrl, next)
+    await expect(store.get(original.serverUrl!)).resolves.toEqual(original)
+    await expect(store.get(next.serverUrl)).resolves.toEqual(next)
+  })
+
   it('stores secrets as plain text, is remembered across restarts, and stays visible while the keychain works', () => {
     seed({ [SECRET_STORAGE_POLICY_KEY]: 'plaintext' })
     const first = new SettingsService()

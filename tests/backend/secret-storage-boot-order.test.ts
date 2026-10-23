@@ -40,7 +40,7 @@ describe('boot order: the secret-storage question comes first', () => {
 
   it('a launch that became Inside Studio at the guard is asked again right after it, before anything moves secrets or settings', () => {
     const guard = at('const bootGuard = await guardBoot(')
-    const embeddedAsk = at("backend.mode === 'embedded' && await askSecretStorage(true)")
+    const embeddedAsk = at("modeBeforeGuard !== 'embedded' && backend.mode === 'embedded' && await askSecretStorage(true)")
     expect(embeddedAsk).toBeGreaterThan(guard)
     // Nothing runs between the guard and the second question.
     expect(ready.slice(ready.indexOf('\n', guard) + 1, embeddedAsk).replace(/^\s*\/\/.*$/gm, '').trim()).toBe('if (')

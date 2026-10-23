@@ -96,6 +96,7 @@ function applyInvalidateScope(
 /** Structural slice of SettingsService the app store depends on. */
 export interface OAuthSettingsHandle {
   getSecret(key: string): string | null
+  secretStatus(key: string): 'absent' | 'ok' | 'locked'
   setSecret(key: string, value: string): void
   delete(key: string): void
   /** Why a secret cannot be stored right now, or null (SettingsService.secretWriteRefusal). */
@@ -110,14 +111,21 @@ export interface OAuthSettingsHandle {
 export class AppSettingsOAuthStore implements McpOAuthStore {
   constructor(private readonly settings: OAuthSettingsHandle) {}
 
-  private readBlob(): OAuthBlob {
+  private readBlob(forUpdate = false): OAuthBlob {
     const raw = this.settings.getSecret(MCP_OAUTH_SETTINGS_KEY)
-    if (!raw) return {}
+    if (!raw) {
+      // Plaintext consent permits new secrets, but does not unlock old ones.
+      // An update must merge every server's record, never replace locked ciphertext.
+      if (forUpdate && this.settings.secretStatus(MCP_OAUTH_SETTINGS_KEY) === 'locked') {
+        throw new Error('Cannot store MCP OAuth tokens: the existing sign-ins are locked. Restore OS keychain access before changing them.')
+      }
+      return {}
+    }
     try {
       const parsed = JSON.parse(raw)
       return parsed && typeof parsed === 'object' ? (parsed as OAuthBlob) : {}
     } catch {
-      // A corrupt/undecryptable blob is treated as empty rather than crashing
+      // A corrupt blob is treated as empty rather than crashing
       // connect — the user re-signs in. Never logs the value.
       return {}
     }
@@ -143,13 +151,13 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
   }
 
   async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
-    const blob = this.readBlob()
+    const blob = this.readBlob(true)
     blob[serverUrl] = { ...record, updatedAt: record.updatedAt || Date.now() }
     this.writeBlob(blob)
   }
 
   async invalidate(serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
-    const blob = this.readBlob()
+    const blob = this.readBlob(true)
     const existing = blob[serverUrl]
     if (!existing) return
     const next = applyInvalidateScope(existing, scope)

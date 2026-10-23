@@ -30,6 +30,7 @@ function memSettings(safeStorage = true): OAuthSettingsHandle & { map: Map<strin
   return {
     map,
     getSecret: (k) => map.get(k) ?? null,
+    secretStatus: (k) => map.has(k) ? 'ok' : 'absent',
     setSecret: (k, v) => { map.set(k, v) },
     delete: (k) => { map.delete(k) },
     secretWriteRefusal: () => (safeStorage ? null : 'The OS keychain is not available, and ADF Studio does not store secrets unencrypted unless you choose to.'),

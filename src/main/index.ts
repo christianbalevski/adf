@@ -772,11 +772,13 @@ app.whenReady().then(async () => {
     return
   }
   // W5-I: an unusable studio-backend.json is asked about first; an older daemon on the port makes a first launch Embedded for one session.
+  const modeBeforeGuard = backend.mode
   const bootGuard = await guardBoot(backend, getUserDataPath())
   // The boot guard may have made this launch Inside Studio for one session: Studio then saves secrets itself, so a
-  // missing keychain is asked about right now, before the handover and every migration move anything (a no-op when
-  // the first question already settled it). Quitting here changes nothing either.
-  if (backend.mode === 'embedded' && await askSecretStorage(true) === 'quit') {
+  // missing keychain is asked about right now, before the handover and every migration move anything. An already
+  // embedded launch has answered this, including Continue Without Keychain, which deliberately saves no choice.
+  // Quitting here changes nothing either.
+  if (modeBeforeGuard !== 'embedded' && backend.mode === 'embedded' && await askSecretStorage(true) === 'quit') {
     app.quit()
     return
   }
