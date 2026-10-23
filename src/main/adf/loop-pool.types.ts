@@ -38,6 +38,7 @@ export type LoopStatus = 'idle' | 'running'
  */
 export interface LoopInfo {
   name: string
+  /** Empty for a side loop declared without one. */
   goal: string
   status: LoopStatus
   enabled: boolean

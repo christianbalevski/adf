@@ -105,7 +105,7 @@ export function LoopWizard({ overlay, close, width, height }: OverlayProps) {
   const errors = useMemo(() => {
     const e: Record<string, string | undefined> = {}
     if (props.mode === 'create') e.name = validateLoopName(String(values.name ?? ''), takenNames) ?? undefined
-    e.goal = validateGoal(String(values.goal ?? '')) ?? undefined
+    e.goal = validateGoal(String(values.goal ?? ''), !!values.autostart) ?? undefined
     const compact = String(values.compact ?? '').trim()
     if (compact && !(Number.isInteger(Number(compact)) && Number(compact) > 0)) e.compact = 'Whole number of tokens, or empty to inherit'
     if (String(values.model ?? '').trim() && !String(values.provider ?? '').trim()) e.provider = 'Provider id is required with a model'
@@ -116,7 +116,7 @@ export function LoopWizard({ overlay, close, width, height }: OverlayProps) {
 
   const fields: FieldSpec[] = [
     { kind: 'text', key: 'name', label: 'Name', placeholder: 'e.g. consolidator', readOnly: props.mode === 'edit', hint: 'lowercase letters, digits, _ -; cannot be renamed later' },
-    { kind: 'text', key: 'goal', label: 'Goal', multiline: true, rows: 5, editor: true, placeholder: 'What this loop works on. Becomes its whole system instruction.', hint: 'Enter newline · Ctrl+O open in $EDITOR · ↓ next field' },
+    { kind: 'text', key: 'goal', label: 'Goal', multiline: true, rows: 5, editor: true, placeholder: 'Optional. What this loop works on; added to its instructions.', hint: 'Enter newline · Ctrl+O open in $EDITOR · ↓ next field' },
     { kind: 'checklist', key: 'tools', label: 'Tools', rows: 7, options: options.map(o => ({ value: o.name, note: o.unavailable ? 'not granted by host' : undefined })), hint: host ? 'restricted to tools the host has enabled; loop_compact/loop_clear are added by the runtime' : 'host tool list unknown: the daemon validates on save' },
     { kind: 'combo', key: 'model', label: 'Model', options: models.data?.models ?? [], placeholder: `inherit (${config?.model?.model_id ?? 'host model'})`, hint: models.data?.error ? `models: ${models.data.error}` : `←→ pick a ${provider ?? ''} model, type any id, empty = inherit` },
     { kind: 'text', key: 'provider', label: 'Provider', hidden: !String(values.model ?? '').trim(), hint: 'provider id for the override (another configured provider is allowed)' },
@@ -148,9 +148,10 @@ export function LoopWizard({ overlay, close, width, height }: OverlayProps) {
   const createInput = (): LoopCreateInput => {
     const model = String(values.model ?? '').trim()
     const compact = String(values.compact ?? '').trim()
+    const goal = String(values.goal ?? '').trim()
     return {
       name: String(values.name),
-      goal: String(values.goal).trim(),
+      ...(goal ? { goal } : {}),
       tools: wanted,
       enabled: !!values.enabled,
       autostart: !!values.autostart,
@@ -332,7 +333,7 @@ function initialValues(props: LoopWizardProps, existing: LoopConfig | undefined,
   if (props.mode === 'edit' && existing) {
     return {
       name: existing.name,
-      goal: existing.goal,
+      goal: existing.goal ?? '',
       tools: [...(existing.tools ?? [])],
       model: existing.model?.model_id ?? '',
       provider: existing.model?.provider ?? '',
@@ -392,7 +393,7 @@ function TemplatePicker({ width, height, onPick, onCancel }: { width: number; he
 
 function CreateReview({ input, schedulePreview, width, rows }: { input: LoopCreateInput; schedulePreview: string | null; width: number; rows: number }) {
   const theme = useTheme()
-  const goalLines = input.goal.split('\n')
+  const goalLines = (input.goal || '(none)').split('\n')
   const goalRows = Math.max(2, Math.min(goalLines.length, rows - 12))
   const line = (k: string, v: string) => (
     <Text key={k} wrap="truncate-end"><Text color={theme.color.muted}>{k.padEnd(14)}</Text><Text color={theme.color.text}>{truncate(v, width - 14)}</Text></Text>

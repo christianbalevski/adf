@@ -537,6 +537,20 @@ describe('LoopPool — autostartLoops', () => {
     expect(ws.forLoop('lazy').getLoop()).toHaveLength(0)
   })
 
+  it('refuses to kick an autostart loop with no goal, and logs the fix', async () => {
+    pool.dispose()
+    // Written past the schema (a Studio config save is not schema-checked).
+    pool = buildPool(c => { c.loops = [loop({ name: 'blank', goal: '', autostart: true })] })
+    const turn = vi.spyOn(pool.getRuntime('blank')!.executor, 'executeTurn').mockResolvedValue(undefined)
+
+    expect(await pool.autostartLoops()).toEqual([])
+    expect(turn).not.toHaveBeenCalled()
+    expect(ws.forLoop('blank').getLoop()).toHaveLength(0)
+    const row = ws.getLogs().find(l => l.event === 'loop_autostart_refused')
+    expect(row?.target).toBe('blank')
+    expect(row?.message).toMatch(/Add a goal or turn autostart off/)
+  })
+
   it('does nothing on a disposed pool', async () => {
     pool.dispose()
     pool = buildPool(c => { c.loops = [loop({ name: 'eager', autostart: true })] })

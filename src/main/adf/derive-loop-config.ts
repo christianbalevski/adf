@@ -27,6 +27,7 @@
 import {
   CODE_EXECUTION_DEFAULTS,
   LOOP_PROHIBITED_TOOLS,
+  hasLoopGoal,
   type AgentConfig,
   type CodeExecutionConfig,
   type LoopConfig,
@@ -137,14 +138,16 @@ export function buildLoopPreamble(
 
 ${reachParagraph}
 
-A timer, a trigger, or a message from another loop woke you. Do that work, write tersely, and end your turn.`
+A timer, a trigger, a message from another loop, or the human writing to you directly woke you. Do that work, write tersely, and end your turn.`
 }
 
 /** Goals can be paragraphs; the roster is a map, not the charters. */
 const LOOP_GOAL_SUMMARY_CHARS = 160
 
-function summarizeGoal(goal: string): string {
-  const flat = goal.replace(/\s+/g, ' ').trim()
+function summarizeGoal(goal: string | undefined): string {
+  const flat = (goal ?? '').replace(/\s+/g, ' ').trim()
+  // Said plainly so main does not read a blank roster line as a lost goal.
+  if (!flat) return '(no goal)'
   if (flat.length <= LOOP_GOAL_SUMMARY_CHARS) return flat
   return `${flat.slice(0, LOOP_GOAL_SUMMARY_CHARS - 1).trimEnd()}…`
 }
@@ -491,13 +494,17 @@ export function deriveLoopConfig(parent: AgentConfig, loop: LoopConfig): AgentCo
   derived.tools = deriveTools(parent, loop)
   const grantedNames = derived.tools.filter(t => t.enabled).map(t => t.name)
 
-  // Preamble first, then the goal — the loop's whole charter is `goal`, but it
-  // has to read it as "the loop I am" rather than "the agent I am".
-  derived.instructions = `${buildLoopPreamble(loop.name, parent.handle || parent.name, grantedNames)}
+  // Preamble first, then the goal — the goal is the loop's charter, but it
+  // has to read it as "the loop I am" rather than "the agent I am". No goal:
+  // the preamble stands alone rather than ending on an empty heading.
+  const preamble = buildLoopPreamble(loop.name, parent.handle || parent.name, grantedNames)
+  derived.instructions = hasLoopGoal(loop)
+    ? `${preamble}
 
 Your goal:
 
 ${loop.goal}`
+    : preamble
   derived.model = cloneJson(loop.model ?? parent.model)
   // Per-loop, never inherited: an autonomous host does not make every side
   // loop burn turns until it remembers to yield. Off unless the loop says so.

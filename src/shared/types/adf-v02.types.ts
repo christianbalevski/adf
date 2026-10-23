@@ -926,8 +926,14 @@ export interface CardOverrides {
 export interface LoopConfig {
   /** Unique within the array; `main` is reserved for the implicit host loop. */
   name: string
-  /** Becomes the derived config's `instructions`. */
-  goal: string
+  /**
+   * Appended to the derived config's `instructions`, after the preamble that
+   * says which agent the loop belongs to and what tools it holds. Optional:
+   * a loop with no goal still has those instructions, and takes its work from
+   * whatever addresses it (the owner typing into its tab, `loop_send`, a
+   * trigger or timer). Empty and absent mean the same thing.
+   */
+  goal?: string
   enabled: boolean
   /**
    * Run a first turn on the goal without waiting to be addressed — at create
@@ -936,6 +942,11 @@ export interface LoopConfig {
    * `loop_send` path with `wake: true`, so it is an audited stream row like
    * any other interior message. Absent = false: the loop only runs when a
    * trigger, timer or `loop_send` targets it. Ignored while `enabled: false`.
+   *
+   * Requires a non-empty `goal`: the kickoff says "begin working on your
+   * goal", and a loop without one would be woken with nothing to do. The
+   * schema rejects the pair, and the pool refuses (and logs) the kickoff for a
+   * config that got past it.
    */
   autostart?: boolean
   /**
@@ -981,6 +992,24 @@ export interface LoopConfig {
  * a deliberately mute loop is expressible.
  */
 export const DEFAULT_NEW_LOOP_TOOLS = ['loop_send', 'loop_list', 'sys_set_state'] as const
+
+/**
+ * How many side loops one agent may declare.
+ *
+ * Not a resource calculation — a structural brake. Loop concurrency is
+ * unbounded in the MVP (§3: concurrent-by-default, no semaphore) and HIL is
+ * per-call, so nothing else stops main from talking itself into hundreds of
+ * minds. Enforced by `loop_manage` at create and by the Studio's add-loop
+ * controls; a hand-edited config over the limit still loads (this is not a
+ * schema-level `.max()`), so an existing agent is never bricked by the cap.
+ * Lives here, not in adf-schema, so the renderer can read it too.
+ */
+export const MAX_SIDE_LOOPS = 16
+
+/** Whether a loop has a goal. Whitespace is no goal: it would add nothing to the instructions. */
+export function hasLoopGoal(loop: { goal?: string }): boolean {
+  return !!loop.goal?.trim()
+}
 
 /**
  * Never grantable to a side loop, at any layer.

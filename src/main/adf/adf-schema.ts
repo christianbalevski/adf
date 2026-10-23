@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, LOOP_PROHIBITED_TOOLS } from '../../shared/types/adf-v02.types'
+import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, LOOP_PROHIBITED_TOOLS, MAX_SIDE_LOOPS, hasLoopGoal } from '../../shared/types/adf-v02.types'
 import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
 
 /**
@@ -395,17 +395,8 @@ export const LOOP_GOAL_MAX_CHARS = 4000
 /** Allow-list length cap; a side loop is meant to be minimal. */
 export const LOOP_TOOLS_MAX = 64
 
-/**
- * How many side loops one agent may declare.
- *
- * Not a resource calculation — a structural brake. Loop concurrency is
- * unbounded in the MVP (§3: concurrent-by-default, no semaphore) and HIL is
- * per-call, so nothing else stops main from talking itself into hundreds of
- * minds. Enforced by `loop_manage` at create; a hand-edited config over the
- * limit still loads (this is not a schema-level `.max()`), so an existing agent
- * is never bricked by the cap.
- */
-export const MAX_SIDE_LOOPS = 16
+/** Re-exported: the cap is shared with the renderer (see the shared types). */
+export { MAX_SIDE_LOOPS }
 
 export const LoopConfigSchema = z.object({
   name: z.string()
@@ -413,10 +404,15 @@ export const LoopConfigSchema = z.object({
     .refine(n => n !== 'main', {
       message: "'main' is the implicit host loop and cannot be declared as an inner loop"
     }),
-  goal: z.string().min(1).max(LOOP_GOAL_MAX_CHARS),
+  // Optional and may be empty: the derived preamble alone is a usable
+  // instruction set, and a blank loop takes its work from whoever addresses it.
+  goal: z.string().max(LOOP_GOAL_MAX_CHARS).optional()
+    .describe("Appended to the loop's instructions. Optional; required (non-empty) when autostart is true."),
   enabled: z.boolean(),
+  // The goal rule is restated here because zodToJsonSchema drops the
+  // superRefine below that enforces it.
   autostart: z.boolean().optional()
-    .describe('Run a first turn on the goal at create and whenever the agent starts, instead of waiting to be addressed.'),
+    .describe('Run a first turn on the goal at create and whenever the agent starts, instead of waiting to be addressed. Requires a non-empty goal.'),
   autonomous: z.boolean().optional()
     .describe('Keep turning after text-only responses until the loop calls sys_set_state. Per-loop; not inherited from the host. Default false.'),
   model: ModelConfigSchema.optional()
@@ -437,6 +433,15 @@ export const LoopConfigSchema = z.object({
   tools: z.array(z.string().min(1)).max(LOOP_TOOLS_MAX).optional()
     .describe('Absolute allow-list, intersected with host-enabled tools at derive time. Nothing is implicit — loop_send/loop_list must be listed to be granted.')
 }).superRefine((loop, ctx) => {
+  // The kickoff tells the loop to work on its goal; without one it would be
+  // woken with nothing to do. Refused rather than quietly not kicked.
+  if (loop.autostart === true && !hasLoopGoal(loop)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `loop "${loop.name}" has autostart on but no goal; add a goal or turn autostart off`,
+      path: ['autostart']
+    })
+  }
   for (const tool of loop.tools ?? []) {
     if (PROHIBITED_LOOP_TOOL_NAMES.includes(tool)) {
       ctx.addIssue({

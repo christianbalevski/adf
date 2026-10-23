@@ -208,6 +208,11 @@ export interface AppState {
    * the overview's stat popovers). The matching Section consumes it.
    */
   pendingConfigSection: string | null
+  /**
+   * Inner loop whose card in the Loops section to expand and scroll to (set
+   * by double-clicking its tab). The matching LoopCard consumes it.
+   */
+  pendingConfigLoop: string | null
   /** Global, persisted: which slot the Loops chat panel is mounted in. */
   chatPlacement: ChatPlacement
   /** Global, persisted: reading-column width of the chat. Center placement only. */
@@ -304,6 +309,7 @@ export interface AppState {
   setRightPanel: (panel: RightPanel) => void
   setAgentSubTab: (tab: AgentSubTab) => void
   setPendingConfigSection: (section: string | null) => void
+  setPendingConfigLoop: (loop: string | null) => void
   /**
    * Move the chat between the dock and the center stage. Persists the choice
    * and lands the user on the chat in its new slot: to `center` it selects the
@@ -424,6 +430,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   rightPanel: loadChoice(DOCK_TAB_KEY, RIGHT_PANELS, 'overview'),
   agentSubTab: loadChoice(DOCK_AGENT_SUBTAB_KEY, AGENT_SUB_TABS, 'timers'),
   pendingConfigSection: null,
+  pendingConfigLoop: null,
   chatPlacement: loadChatPlacement(),
   chatWidth: loadChatWidth(),
   computerMatchTab: loadComputerMatchTab(),
@@ -491,6 +498,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setRightPanel: (panel) => set({ rightPanel: panel }),
   setAgentSubTab: (tab) => set({ agentSubTab: tab }),
   setPendingConfigSection: (section) => set({ pendingConfigSection: section }),
+  setPendingConfigLoop: (loop) => set({ pendingConfigLoop: loop }),
   setComputerMatchTab: (on) => {
     try {
       localStorage.setItem(COMPUTER_MATCH_TAB_KEY, on ? '1' : '0')

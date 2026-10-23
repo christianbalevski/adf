@@ -5,7 +5,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
-import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, LOOP_PROHIBITED_TOOLS, DEFAULT_NEW_LOOP_TOOLS } from '../../../shared/types/adf-v02.types'
+import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, hasLoopGoal } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpToolInfo, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
@@ -17,6 +17,7 @@ import { IconPicker } from '../common/IconPicker'
 import { Tooltip } from '../common/Tooltip'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { loopColor } from '../../utils/loop-color'
+import { grantableLoopTools, newLoop, newLoopBlocker } from '../../utils/new-loop'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { ConfigNavProvider, useConfigNavEntry, CONFIG_NAV_OFFSET_CLASS } from './ConfigNav'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -371,12 +372,31 @@ function LoopCard({
 }) {
   const [expanded, setExpanded] = useState(defaultExpanded)
   const selected = new Set(entry.tools ?? [])
+  const allSelected = grantableTools.every((t) => selected.has(t))
+  const rootRef = useRef<HTMLDivElement>(null)
+  // A double-clicked loop tab asks for this card (openConfigLoop): open it and
+  // bring it into view. Two frames, so the Loops section's own jump to its
+  // header (one frame) lands first and this one wins.
+  const inTemplate = useContext(TemplateModeContext)
+  const isTarget = useAppStore((s) => !inTemplate && !!entry.name && s.pendingConfigLoop === entry.name)
+  useEffect(() => {
+    if (!isTarget) return
+    setExpanded(true)
+    let inner = 0
+    const outer = requestAnimationFrame(() => {
+      inner = requestAnimationFrame(() => {
+        rootRef.current?.scrollIntoView({ block: 'start' })
+        useAppStore.getState().setPendingConfigLoop(null)
+      })
+    })
+    return () => { cancelAnimationFrame(outer); cancelAnimationFrame(inner) }
+  }, [isTarget])
   const inherits = !entry.model
   const nameInvalid = duplicate || entry.name === 'main' || !entry.name.trim()
   const colors = loopColor(entry.name || 'loop')
 
   return (
-    <div className={`mb-2 p-2 rounded border border-l-2 ${colors.rail} border-neutral-200 dark:border-neutral-700 space-y-1.5`}>
+    <div ref={rootRef} className={`${CONFIG_NAV_OFFSET_CLASS} mb-2 p-2 rounded border border-l-2 ${colors.rail} border-neutral-200 dark:border-neutral-700 space-y-1.5`}>
       {/* Header row — always visible. */}
       <div className="flex gap-1.5 items-center">
         <button
@@ -431,10 +451,10 @@ function LoopCard({
         <>
           {/* goal */}
           <textarea
-            value={entry.goal}
+            value={entry.goal ?? ''}
             onChange={(e) => patchLoop({ goal: e.target.value })}
             rows={2}
-            placeholder="Goal — becomes this loop's instructions"
+            placeholder="Goal (optional) — added to this loop's instructions"
             className="w-full px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400 resize-y"
           />
 
@@ -465,6 +485,11 @@ function LoopCard({
                 <InfoHint tip="Keep turning after text-only responses until the loop calls sys_set_state. Not inherited from the agent; off by default." />
               </label>
             </div>
+            {entry.autostart && !hasLoopGoal(entry) && (
+              <p className="text-[10px] text-red-500 mt-0.5">
+                Autostart needs a goal. Add one above or turn autostart off.
+              </p>
+            )}
             {entry.autonomous && !selected.has('sys_set_state') && (
               <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-0.5">
                 Autonomous without sys_set_state: this loop cannot yield on its own and only stops when the narration breaker trips.
@@ -533,13 +558,29 @@ function LoopCard({
               <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                 Tools ({selected.size === 0 ? 'none — a mute loop' : `${selected.size} selected`})
               </span>
-              {selected.size > 0 && (
-                <button
-                  onClick={() => patchLoop({ tools: undefined })}
-                  className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300"
-                >
-                  Clear
-                </button>
+              {grantableTools.length > 0 && (
+                <span className="flex items-center gap-2">
+                  {/* "All" is every tool this host can grant a loop — never a
+                      prohibited or restricted one. Names already on the list
+                      that the host has since disabled are kept, as a single
+                      tick would keep them. */}
+                  <button
+                    type="button"
+                    disabled={allSelected}
+                    onClick={() => patchLoop({ tools: [...new Set([...selected, ...grantableTools])].sort((a, b) => a.localeCompare(b)) })}
+                    className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300 disabled:opacity-40 disabled:cursor-default"
+                  >
+                    Select all
+                  </button>
+                  <button
+                    type="button"
+                    disabled={selected.size === 0}
+                    onClick={() => patchLoop({ tools: undefined })}
+                    className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300 disabled:opacity-40 disabled:cursor-default"
+                  >
+                    Select none
+                  </button>
+                </span>
               )}
             </div>
             {grantableTools.length === 0 ? (
@@ -2389,15 +2430,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               saveLoops(next)
             }
             // A loop's allow-list is intersected with the host's enabled tools at
-            // derive time, so only offer what the host actually has. Restricted
-            // tools are excluded — HIL approval can't be routed to a side-loop
-            // executor (MVP) — as are the never-grantable names.
-            const grantableTools = local.tools
-              .filter((t) => t.enabled && !t.restricted && !(LOOP_PROHIBITED_TOOLS as readonly string[]).includes(t.name))
-              .map((t) => t.name)
-              .sort((a, b) => a.localeCompare(b))
+            // derive time, so only offer what the host actually has.
+            const grantableTools = grantableLoopTools(local.tools)
             const adfProviders: AdfProviderConfig[] = local.providers ?? []
-            const takenNames = new Set(['main', ...loops.map((l) => l.name)])
+            const addBlocker = newLoopBlocker(loops)
 
             return (
               <>
@@ -2422,25 +2458,23 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-xs text-neutral-500 dark:text-neutral-400">Inner loops</label>
                   <button
+                    disabled={addBlocker !== null}
                     onClick={() => {
-                      let name = 'loop-1'
-                      for (let n = 1; takenNames.has(name); n++) name = `loop-${n + 1}`
-                      // Pre-ticked, not implicit: a new loop starts able to
-                      // talk back to main, and un-ticking these is how you make
-                      // a mute loop. Filtered by what the host can grant, so
-                      // the seed never names a tool the derive would drop.
-                      const seeded = DEFAULT_NEW_LOOP_TOOLS.filter((t) => grantableTools.includes(t))
                       // The appended loop takes the next index — mark it so its
                       // card opens expanded for immediate editing.
                       setNewLoopIndex(loops.length)
                       loopKeys.append()
-                      saveLoops([...loops, { name, goal: '', enabled: true, autostart: true, ...(seeded.length > 0 && { tools: seeded }) }])
+                      // Same blank loop the loop strip's + creates (new-loop.ts).
+                      saveLoops([...loops, newLoop(loops, local.tools)])
                     }}
-                    className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+                    className="text-[11px] text-blue-500 hover:text-blue-700 font-medium disabled:text-[var(--adf-ui-text-subtle)] disabled:cursor-not-allowed"
                   >
                     + Add loop
                   </button>
                 </div>
+                {addBlocker && (
+                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">{addBlocker}</p>
+                )}
 
                 {loops.length === 0 && (
                   <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">

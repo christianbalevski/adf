@@ -42,8 +42,9 @@ export function validateLoopName(name: string, existing: string[] = []): string 
   return null
 }
 
-export function validateGoal(goal: string): string | null {
-  if (!goal.trim()) return 'Goal is required: it becomes the loop\'s whole system instruction'
+/** A goal is optional, except that autostart kicks the loop off on it. Same rule as LoopConfigSchema. */
+export function validateGoal(goal: string, autostart = false): string | null {
+  if (!goal.trim() && autostart) return 'Autostart needs a goal: add one or turn autostart off'
   if (goal.length > LOOP_GOAL_MAX_CHARS) return `Goal is ${goal.length} chars; the limit is ${LOOP_GOAL_MAX_CHARS}`
   return null
 }

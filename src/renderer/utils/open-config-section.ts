@@ -14,3 +14,16 @@ export function openConfigSection(section: string): void {
     if (useAppStore.getState().pendingConfigSection === section) useAppStore.getState().setPendingConfigSection(null)
   }, 2000)
 }
+
+/**
+ * Open the Loops section with `loop`'s card expanded and scrolled into view
+ * (pendingConfigLoop, consumed by that LoopCard). Dropped like a section
+ * request if no card picks it up.
+ */
+export function openConfigLoop(loop: string): void {
+  openConfigSection('Loops')
+  useAppStore.getState().setPendingConfigLoop(loop)
+  setTimeout(() => {
+    if (useAppStore.getState().pendingConfigLoop === loop) useAppStore.getState().setPendingConfigLoop(null)
+  }, 2000)
+}

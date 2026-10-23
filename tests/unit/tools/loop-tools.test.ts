@@ -338,10 +338,28 @@ describe('LoopConfigSchema', () => {
     }
   })
 
-  it('caps the goal — it becomes the whole system instruction', () => {
+  it('caps the goal', () => {
     expect(parse({ goal: 'x'.repeat(LOOP_GOAL_MAX_CHARS) }).success).toBe(true)
     expect(parse({ goal: 'x'.repeat(LOOP_GOAL_MAX_CHARS + 1) }).success).toBe(false)
-    expect(parse({ goal: '' }).success).toBe(false)
+  })
+
+  it('accepts an empty or absent goal: the preamble alone is a usable charter', () => {
+    expect(parse({ goal: '' }).success).toBe(true)
+    expect(LoopConfigSchema.safeParse({ name: 'reflector', enabled: true }).success).toBe(true)
+    expect(parse({ goal: '', autostart: false }).success).toBe(true)
+  })
+
+  it('rejects autostart with no goal, naming the fix', () => {
+    for (const goal of ['', '   \n', undefined]) {
+      const result = parse({ goal, autostart: true })
+      expect(result.success).toBe(false)
+      if (!result.success) {
+        expect(result.error.issues.map(i => i.message).join(' ')).toMatch(/add a goal or turn autostart off/)
+        expect(result.error.issues[0].path).toEqual(['autostart'])
+      }
+    }
+    // Disabled does not excuse it: enabling later would wake it with nothing.
+    expect(parse({ goal: '', autostart: true, enabled: false }).success).toBe(false)
   })
 
   it('caps the tool allow-list length', () => {
@@ -427,7 +445,7 @@ describe('loop_manage', () => {
     const cases: Array<{ label: string; config: Record<string, unknown>; match: RegExp }> = [
       { label: 'bad name', config: { name: 'MAIN', goal: 'g' }, match: /Invalid loop config/ },
       { label: 'name with a colon', config: { name: 'loop:main', goal: 'g' }, match: /Invalid loop config/ },
-      { label: 'missing goal', config: { name: 'reflector' }, match: /Invalid loop config/ },
+      { label: 'missing goal with autostart on (the default)', config: { name: 'reflector' }, match: /add a goal or turn autostart off/ },
       { label: 'over-long goal', config: { name: 'reflector', goal: 'x'.repeat(LOOP_GOAL_MAX_CHARS + 1) }, match: /Invalid loop config/ },
       { label: 'prohibited tool', config: { name: 'reflector', goal: 'g', tools: ['sys_update_config'] }, match: /prohibited tool/ },
       { label: 'unknown tool', config: { name: 'reflector', goal: 'g', tools: ['no_such_tool'] }, match: /no such tool on this agent/ },
@@ -605,6 +623,19 @@ describe('loop_manage', () => {
       expect(pool.calls.send).toEqual([['main', 'reflector', LOOP_AUTOSTART_MESSAGE, true]])
       expect(result.content).toMatch(/running its first turn/)
       expect(result.content).toMatch(/whenever this agent starts/)
+    })
+
+    it('creates a loop with no goal when autostart is off', async () => {
+      const pool = fakePool()
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'blank', autostart: false } },
+        fakeWorkspace(),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.send).toHaveLength(0)
+      expect(result.content).toMatch(/Goal: \(none\)/)
+      expect(pool.calls.create[0]).toMatchObject({ name: 'blank', autostart: false })
+      expect(pool.calls.create[0].goal).toBeUndefined()
     })
 
     it('autostart: false leaves the loop waiting for a trigger, timer or loop_send', async () => {
