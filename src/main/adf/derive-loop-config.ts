@@ -138,7 +138,7 @@ export function buildLoopPreamble(
 
 ${reachParagraph}
 
-A timer, a trigger, or a message from another loop woke you. Do that work, write tersely, and end your turn.`
+A timer, a trigger, a message from another loop, or the human writing to you directly woke you. Do that work, write tersely, and end your turn.`
 }
 
 /** Goals can be paragraphs; the roster is a map, not the charters. */
