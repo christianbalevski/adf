@@ -1,6 +1,6 @@
 # Agent Commands: owner slash commands that run an agent's lambda
 
-**Status:** Design · Not yet implemented
+**Status:** Design · Approved by the owner, ready to implement. Every decision is settled; see [Decisions](#decisions).
 **Schema impact:** one optional top-level config field, `commands`. No schema version bump, no migration.
 **Difficulty:** 6 / 10. Every piece reuses an existing mechanism (lambda execution, `withAuthorization`, the chat queue's safe boundary, the daemon proxy table). The parts that take care are where the elevated flag enters, the deferred loop write and the two transports.
 
@@ -108,6 +108,7 @@ Add `commands: AgentCommandsSchema.optional()` to `AgentConfigSchema`. The `supe
 - `schemaIssueKeys` already rejects any *introduced* violation. A config that was already invalid stays editable, so a future built-in that collides with an existing command does not freeze the config.
 - One extra check in `validateField` for `commands`, `commands.N` and `commands.N.lambda`: the referenced file must exist (`workspace.readFile(file) !== null`). The error is `Lambda file "lib/x.ts" not found. Write it first, then register the command.` The function is checked at invocation, not here, because finding a function would mean parsing the source.
 - `sys_update_config` stays HIL-gated by default (enabled + restricted in `DEFAULT_TOOLS`), so a command the agent adds needs the owner's approval unless the owner unlocked the tool.
+- **The agent cannot lock a command.** In `checkDeclarationIntegrity`, a `commands` entry that an unauthorized caller adds or modifies with `locked: true` is refused with `Only the owner can lock a command.` This is stricter than serving routes, which only refuse paths ending in `locked`, and it is deliberate: the palette shows the lock as an *owner* lock, so the badge must always mean the owner set it. Authorized code may set it, as it may for every other owner-only write.
 
 ### 1.5 Owner writes
 
@@ -226,7 +227,9 @@ It is never written to config, files, `adf_meta`, the task table or `AdfCallHand
 | The palette list | Command names and descriptions are agent-writable and are rendered as sanitized text (`sanitizeDisplayText`), never as actions. The `authorize` flag comes only from the owner's own keystrokes. |
 | Changing what `/deploy` runs | The agent can rewrite the file or, with approval, the registration. That is the risk the owner accepts when typing `!authorize`: they authorize the code as it is at that moment, as with authorizing a file. `locked: true` stops registration changes. It does not stop file edits, and the guide says so. |
 
-Existing exposure, unchanged by this design: an agent with `compute.host_access` and a host shell can already read the daemon token file and call `PATCH /agents/:id/files/authorized`. Commands add no new route for it. Paired remote devices (device tokens) can call the run route, as they can call the file-authorize route today. Neither route is in `isLocalOnlyRoute`.
+Existing exposure, unchanged by this design: an agent with `compute.host_access` and a host shell can already read the daemon token file and call `PATCH /agents/:id/files/authorized`. Commands add no new route for it.
+
+**Paired remote devices may send `authorize: true`.** A device token can already authorize files through `PATCH /agents/:id/files/authorized`, so an elevated command run adds no power a paired device lacks. The run route is not in `isLocalOnlyRoute`, and the route handler does not special-case device tokens. `docs/guides/commands.md` says so.
 
 ## 4. The loop record
 
@@ -393,6 +396,7 @@ Run with `npm test`. With Studio running, use the `ELECTRON_RUN_AS_NODE` vitest 
 - The schema rejects an invalid entry. `AgentConfigSchema.shape` still has `commands`, so it is not wrapped in effects. `zodToJsonSchema(AgentCommandSchema)` keeps the name `pattern` and the restated description.
 - `sys_update_config`: append succeeds when the file exists. A missing file is refused with the fix sentence. A duplicate name is refused. A locked command cannot be modified, removed or unlocked. `commands.weather.lambda` resolves by name. A pre-existing invalid entry does not freeze other edits.
 - Template merge carries locked commands forward. Create with `commands` persists them.
+- An unauthorized `sys_update_config` that adds a command with `locked: true`, or sets `locked: true` on an existing one, is refused with `Only the owner can lock a command.` The same write from authorized code succeeds.
 
 **Phase 2:** `tests/unit/runtime/owner-command.test.ts`, `tests/unit/runtime/owner-command-record.test.ts`, `tests/unit/shared/owner-command-row.test.ts`
 - **Refusals:** unknown loop (404), disabled loop (409), unknown command (404), bad `args` (newline, more than 4096 chars), bad `requestId`, no sandbox. None writes a row.
@@ -417,7 +421,7 @@ Run with `npm test`. With Studio running, use the `ELECTRON_RUN_AS_NODE` vitest 
 - **Display:** `classifyInjectedText` and `parseLoopToDisplay` yield a `context` entry with category `owner_command`, and `isNoticeCategory('owner_command')` is true.
 
 **Phase 3:** `tests/unit/daemon/commands-route.test.ts`, `tests/backend/channel-map.test.ts` (existing, now covers the new entry), `tests/unit/ipc/run-command.test.ts`
-- The route returns 404, 409 `agent_not_running`, 400 and 200 for each outcome. It requires the bearer token. A chat body containing `/x !authorize` does not run a command.
+- The route returns 404, 409 `agent_not_running`, 400 and 200 for each outcome. It requires the bearer token. A paired-device token with `authorize: true` runs elevated. A chat body containing `/x !authorize` does not run a command.
 - The embedded handler resolves foreground and background agents and returns the off sentence.
 - The daemon-mode handler maps errors to the embedded sentences.
 - **Parity scenario** `agent-command` (`tests/parity/commands/scenarios.ts`, run through `parityCases`). Fixture `agent-1` gets `commands` and a seeded `lib/commands.ts`; add `commands?` and `files?: Record<string, string>` to `FixtureSpec`. The scenario:
@@ -440,7 +444,13 @@ Run with `npm test`. With Studio running, use the `ELECTRON_RUN_AS_NODE` vitest 
 **Phase 5:** `tests/unit/renderer/agent-commands-config.test.ts`
 - Draft round-trip. Validation messages match the shared validator. A save is blocked on errors. A missing file is only a warning. The section-lock key is `commands`.
 
-## Open questions
+## Decisions
 
-1. **May the agent set `locked: true` on a command it adds?** Serving routes allow it today (only paths ending in `locked` are refused). The palette shows the lock as an *owner* lock, though, so an agent-set lock would mislabel it. **Recommendation:** in `checkDeclarationIntegrity`, refuse a `commands` entry carrying `locked: true` from an unauthorized caller with `Only the owner can lock a command.` Then the badge always means the owner.
-2. **Should paired remote devices be able to send `authorize: true`?** They can already authorize files through `PATCH /agents/:id/files/authorized`, so allowing it adds no power. **Recommendation:** allow it, and say so in the guide. If you'd rather make elevation local-only, refuse `authorize: true` from device tokens in the route handler. Don't put the whole route in `isLocalOnlyRoute`, because a remote device should still be able to run commands without elevation.
+Settled with the owner. Implement as written; do not reopen.
+
+1. **Authority:** a command runs at the agent's normal lambda authority. The owner's `!authorize` token runs that one invocation as authorized code, with no other confirmation (§3, §5).
+2. **No dry-run or preview.** The command runs, fails with an error, or fails on permissions, and the outcome is recorded (§2.2).
+3. **The record is a user-role row shown as a tool card**, not a synthetic tool_use/tool_result pair (§4). The owner asked for "a user-initiated tool call"; this is that, in the only shape every provider accepts.
+4. **The agent cannot lock a command** (§1.4). Only the owner, or authorized code, sets `locked: true`.
+5. **Paired remote devices may send `authorize: true`** (§3.3).
+6. **Out of scope:** channels, buttons, dry-run, the TUI and the `adf` CLI (§10).
