@@ -74,6 +74,7 @@ import { lockedCredentialCancelled, lockedCredentialWrite, replaceLockedCredenti
 import { askReplaceLockedCredential } from '../services/locked-credential-dialog'
 import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { interruptLoopTurn } from '../runtime/interrupt-turn'
@@ -3001,10 +3002,13 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // host fan-out and must not run twice.
     if (currentAssembledAgent) {
       currentAssembledAgent.applyConfigChange(config, { notifyHost: false })
-    } else if (agentExecutor) {
-      // No assembled handle (config edited while no agent runs): the executor
-      // is all there is to update.
-      agentExecutor.updateConfig(config)
+    } else {
+      // No assembled handle means no loop pool to reconcile a removed loop,
+      // so give it the pool's teardown here: archive its stream, drop its
+      // timers. Otherwise a later loop of the same name inherits the stream.
+      await teardownRemovedLoopsOffline(currentWorkspace, previousConfig, config)
+      // Config edited while no agent runs: the executor is all there is to update.
+      agentExecutor?.updateConfig(config)
     }
 
     if (agentExecutor) {

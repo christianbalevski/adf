@@ -18,6 +18,7 @@ import { Tooltip } from '../common/Tooltip'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { loopColor } from '../../utils/loop-color'
 import { grantableLoopTools, newLoop, newLoopBlocker } from '../../utils/new-loop'
+import { deleteLoopConsequence } from '../../utils/loop-menu'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { ConfigNavProvider, useConfigNavEntry, CONFIG_NAV_OFFSET_CLASS } from './ConfigNav'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -631,6 +632,7 @@ const TemplateModeContext = createContext(false)
 export function AgentConfig({ template }: { template?: AgentConfigTemplateProps } = {}) {
   const agentAvatars = useAppStore((s) => s.agentAvatars)
   const storeConfig = useAgentStore((s) => s.config)
+  const agentRunning = useAgentStore((s) => s.state !== 'off')
   const config = template ? template.value : storeConfig
   const setConfig = useAgentStore((s) => s.setConfig)
   const docFilePath = useDocumentStore((s) => s.filePath)
@@ -706,6 +708,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [runtimeHostApprovedSources, setRuntimeHostApprovedSources] = useState<Record<string, string>>({})
   const [hostAllowError, setHostAllowError] = useState<string | null>(null)
   const [hostConfirmDialog, confirmHost] = useConfirm()
+  const [loopConfirmDialog, confirmLoop] = useConfirm()
   /** settings.defaultProviderId: what a template's empty Provider falls back to. */
   const [runtimeDefaultProviderId, setRuntimeDefaultProviderId] = useState<string | undefined>(undefined)
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
@@ -2496,8 +2499,18 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       providers.find((p) => p.id === picked)?.defaultModel ?? ''
                     }
                     patchLoop={(patch) => patchLoop(i, patch)}
-                    onRemove={() => {
-                      if (!window.confirm(`Remove loop "${loops[i].name || 'unnamed'}"?`)) return
+                    onRemove={async () => {
+                      // In-app, never window.confirm: a native dialog blocks the
+                      // renderer, CDP automation included. Same wording as the
+                      // loop tab menu's Delete.
+                      const name = loops[i].name || 'unnamed'
+                      const confirmed = await confirmLoop({
+                        title: `Delete ${name}?`,
+                        body: deleteLoopConsequence(name, agentRunning),
+                        confirmLabel: 'Delete loop',
+                        danger: true,
+                      })
+                      if (!confirmed) return
                       loopKeys.removeAt(i); saveLoops(loops.filter((_, j) => j !== i))
                     }}
                     defaultExpanded={i === newLoopIndex}
@@ -5804,6 +5817,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       )}
 
       {hostConfirmDialog}
+      {loopConfirmDialog}
 
       {/* Tool definition modal */}
       <Dialog

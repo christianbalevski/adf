@@ -316,7 +316,7 @@ Grouped by area, then category.
 - **No side-loop system lambdas** — Inner loops cannot create system-scope lambda timers or `locked` timers; those must be requested from `main` via `loop_send`.
 - **loop_manage delete archival** — Stops the loop (aborting any in-flight turn), archives its stream to `adf_audit` under `loop:<name>`, then removes config + runtime.
 - **Locked-timer survival on loop delete** — A `locked:true` timer stamped to a deleted loop is preserved and logged rather than deleted.
-- **Every-teardown-archives rule** — A loop removed by config edit (not just `loop_manage delete`) still crosses the same stop-then-archive path and writes `adf_audit` regardless of `audit.loop`.
+- **Every-teardown-archives rule** — A loop removed by config edit (not just `loop_manage delete`) still crosses the same stop-then-archive path and writes `adf_audit` regardless of `audit.loop`. With the agent stopped, the config save archives it instead (`teardownRemovedLoopsOffline`).
 - **Config-change immediacy** — A revoked tool grant bites at the loop's next model call inside a running turn, not just at the next turn boundary.
 - **Concurrent-by-default loop execution** — Each inner loop keeps its own self-queue and runs concurrently with main and siblings; serialization (`max_concurrent`) is a deferred extra.
 - **LoopScopedWorkspace (forLoop)** — An in-class `AdfWorkspace.forLoop(name)` factory auto-filters/stamps `appendToLoop`/`insertLog`/`insertAudit`/`setTimer` to one loop's stream without touching call sites.
@@ -325,7 +325,7 @@ Grouped by area, then category.
 - **Main's Inner Loops prompt section** — Main's own system prompt gains a roster (or an invitation to create loops) whenever it has loops or `loop_manage` is enabled.
 - **Per-loop AdfCallHandler** — Each loop runs its own attenuated call handler built from the derived config, never sharing main's unattenuated handler.
 - **Loop UI tab strip** — Chat panel grows a per-loop tab strip with identity colors, muted/yellow/error status dots, and held mid-stream inter-loop delivery cards. Disabled loops keep a dimmed tab with a read-only stream and an Enable button in place of the composer.
-- **Loop tab menu** — Right-clicking an inner-loop tab opens Open config, Enable/Disable, Autostart on/off (greyed out without a goal) and Delete, which confirms in-app and says whether the stream is archived (agent running) or stays in the file (agent stopped). No Rename: streams are keyed by loop name.
+- **Loop tab menu** — Right-clicking an inner-loop tab opens Open config, Enable/Disable, Autostart on/off (greyed out without a goal) and Delete, which confirms in-app and says the stream is archived to the audit log. No Rename: streams are keyed by loop name.
 - **Loop token counters** — The status-bar context gauge reflects whichever loop's stream is currently being viewed, with its own auto-compact threshold.
 
 ### Spawning & Child Agents

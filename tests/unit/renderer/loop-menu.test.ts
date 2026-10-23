@@ -47,9 +47,8 @@ describe('deleteLoopConsequence', () => {
     expect(deleteLoopConsequence('loop-2', true)).toBe('The loop stops and its stream is archived to the audit log as loop:loop-2.')
   })
 
-  it('says the stream stays in the file when the agent is stopped', () => {
-    expect(deleteLoopConsequence('loop-2', false)).toMatch(/not archived/)
-    expect(deleteLoopConsequence('loop-2', false)).toMatch(/added later as loop-2/)
+  it('says the stream is archived when the agent is stopped too', () => {
+    expect(deleteLoopConsequence('loop-2', false)).toBe('Its stream is archived to the audit log as loop:loop-2.')
   })
 })
 

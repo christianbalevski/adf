@@ -32,16 +32,16 @@ export function loopMenuState(loop: Pick<LoopConfig, 'enabled' | 'autostart' | '
 
 /**
  * What deleting `name` does to its stream. A config edit that drops a loop is
- * torn down by the running agent's loop pool (stop, archive to adf_audit as
- * `loop:<name>`, drop timers), exactly as `loop_manage delete`. With no agent
- * running there is no pool: the config entry goes and the stream rows stay in
- * adf_loop under that name, where a loop added later with the same name
- * reads them again.
+ * torn down like `loop_manage delete`: archived to adf_audit as `loop:<name>`,
+ * timers dropped. With the agent running the loop pool also stops it first;
+ * with the agent stopped the config save does the archive itself
+ * (`teardownRemovedLoopsOffline`), so a loop added later under the same name
+ * starts empty either way.
  */
 export function deleteLoopConsequence(name: string, agentRunning: boolean): string {
   return agentRunning
     ? `The loop stops and its stream is archived to the audit log as loop:${name}.`
-    : `The agent is not running, so the stream is not archived. It stays in the agent file, and a loop added later as ${name} shows it again.`
+    : `Its stream is archived to the audit log as loop:${name}.`
 }
 
 /** `loops` with `name` patched; untouched when no loop has that name. */
