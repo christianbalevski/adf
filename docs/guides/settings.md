@@ -49,7 +49,7 @@ Your user identity as a `did:key` DID, derived from a 12-word seed phrase genera
 - **Back up seed phrase** — reveals the 12 words (numbered for order, with a copy button) and asks you to confirm you've written them down. Until confirmed, a "Seed not backed up" badge shows.
 - **Import identity** — enter a seed phrase from another computer to become the same owner there; agent files you own locally are restamped to the imported DID, and the result reports how many files were updated. Because the owner changes, Studio asks first; the button reads **Replace owner**.
 - Previously used (migrated) owner DIDs are listed so you can see what older files were stamped with.
-- If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted.
+- If OS keychain encryption is unavailable, a warning notes the phrase is stored unencrypted. On Linux, that means no Secret Service keyring (GNOME Keyring, KWallet) is running and unlocked; see [Owner secret storage](../daemon/owner-secret-storage.md#adf-studio).
 
 ![Settings → Identity showing the Owner Identity card with owner DID, alias field, mesh-sharing checkbox, Back up seed phrase and Import identity buttons plus a "Seed not backed up" badge, and the Runtime Identity card below with the runtime DID, a green "Delegation valid" badge, and the agent directory URL.](../assets/screenshots/settings-identity.png)
 

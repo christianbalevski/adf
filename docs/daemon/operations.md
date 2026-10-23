@@ -16,7 +16,9 @@ Studio compatibility, and troubleshooting. Building a client instead? See the
 - **Server or always-on host:** run `adf daemon` (foreground) under a service
   manager, with a dedicated settings file (`ADF_DAEMON_SETTINGS`), dedicated
   tracked folders, and a passphrase-file owner identity unlocked at boot
-  (`ADF_OWNER_PASSPHRASE_FILE`) when the machine has no OS keychain.
+  (`ADF_OWNER_PASSPHRASE_FILE`) when the machine has no OS keychain. See
+  [Owner secret storage](owner-secret-storage.md) for systemd credentials,
+  containers and WSL.
 
 ## Running and stopping
 
@@ -120,12 +122,15 @@ use `adf daemon token`.
 `adf identity` shows the owner identity: `none`, `locked`, `restore-needed` or
 `ready` (`adf identity new|restore|unlock|lock`; `/identity` in the terminal
 app). These routes answer only on the daemon's machine. With passphrase-file
-storage, unlock after every restart, or set `ADF_OWNER_PASSPHRASE` /
-`ADF_OWNER_PASSPHRASE_FILE` for the daemon.
+storage, unlock after every restart, or set `ADF_OWNER_PASSPHRASE_FILE` (or
+`ADF_OWNER_PASSPHRASE`) for the daemon. The boot passphrase unlocks an
+existing file only; when you create the owner, type the same passphrase
+([Owner secret storage](owner-secret-storage.md#the-passphrase-file)).
 
 Agent credentials (channel tokens, MCP keys, per-agent provider keys) are
 sealed in each agent's file. The API returns only metadata about them (set,
-sealed, locked, length). Agents loaded while the identity is not ready run
+sealed, locked, length). Agents loaded while the identity is not ready, and
+whose credentials no runtime key on this daemon opens, run
 `degraded` without them and unlock in place once it is (checked again every
 minute). While an agent's credentials are locked, saving one answers `409
 credentials_locked`: unlock and save again, or replace the value (`"replace":

@@ -22,6 +22,7 @@ exhaustive `daemon` capability profile.
 - [API reference](api-reference.md): every endpoint, generated from [`openapi.json`](openapi.json)
 - [HTTP API overview](http-api.md): the API at a glance, by area
 - [Operations](operations.md): running and stopping the daemon, data directory, ports, token, Studio compatibility, troubleshooting
+- [Owner secret storage](owner-secret-storage.md): where the seed phrase and keys are kept; Linux keyrings, the passphrase file, systemd credentials, containers, WSL
 - [Runtime Settings](runtime-settings.md): the settings file, providers, MCP, channels, compute, mesh, and the settings API
 - [Runtime Architecture](runtime-architecture.md): RuntimeService, AgentRuntimeBuilder, the request guard, triggers, MCP, channels, compute and mesh serving
 - [Lifecycle Assembly Contract](lifecycle-assembly.md): shared profiles, dispatch boundary, ownership, startup, transfer and shutdown
@@ -36,7 +37,7 @@ exhaustive `daemon` capability profile.
 | Agent control | Renderer UI and main-process IPC | HTTP API on `127.0.0.1:7385` (bearer token), the terminal app and the CLI |
 | Agent visibility | Loop panel, logs panel, agent panels | Terminal app, `/events` stream, diagnostics and resource endpoints, daemon log |
 | Settings | App settings UI | The same `adf-settings.json` (edited by the terminal app, the API, or by hand) |
-| Owner identity | Seed phrase in the OS keychain | The same identity (shared keychain), or a passphrase file where there is none |
+| Owner identity | Seed phrase in `adf-settings.json` (encrypted with `safeStorage` when available), mirrored to the OS keychain | The same identity (shared keychain), or a passphrase file where there is none |
 | Mesh serving | Mesh server on port `7295` | Same mesh server on port `7295`, on by default |
 | Runtime wiring | Canonical assembler with Studio foreground/background profiles | Canonical assembler with the `daemon` profile, hosted by `RuntimeService` |
 
