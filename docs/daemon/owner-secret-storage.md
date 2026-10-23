@@ -38,24 +38,72 @@ At start the daemon chooses one backend and keeps it until it restarts
 (`selectBackend` in `src/main/daemon/daemon-identity.ts`):
 
 1. `ADF_SECRET_STORE=file`: the passphrase file.
-2. `ADF_KEYCHAIN=0` or `off`: the passphrase file.
-3. Otherwise it reads the keychain once through `@napi-rs/keyring`. On Linux
+2. `ADF_SECRET_STORE=keychain`: the keychain, or the daemon does not start
+   ([Requiring the keychain](#requiring-the-keychain)).
+3. `ADF_SECRET_STORE` set to any other value: the daemon does not start. An
+   empty value counts as unset.
+4. `ADF_KEYCHAIN=0` or `off`: the passphrase file.
+5. Otherwise it reads the keychain once through `@napi-rs/keyring`. On Linux
    that reaches only the Secret Service API over D-Bus, never the kernel
    keyring. A successful read selects the keychain.
-4. On Windows and macOS, a keychain that does not answer is retried twice,
+6. On Windows and macOS, a keychain that does not answer is retried twice,
    after 1 s and 4 s. If it still fails, the daemon uses the passphrase file
    and reports `keychainProblem`. While it runs that way, it refuses create,
    restore, import and trust-daemon with `409 keychain_unavailable`. Setting
    `ADF_SECRET_STORE=file` lifts the refusal.
-5. On Linux, a read that fails for any reason (no Secret Service, no session
+7. On Linux, a read that fails for any reason (no Secret Service, no session
    bus, a locked keyring), or a missing native keyring binary, selects the
    passphrase file with no retry and no `keychainProblem`.
 
-`ADF_SECRET_STORE=keychain` does not force the keychain. When none is usable,
-the daemon logs an error and uses the passphrase file anyway.
-
 `adf identity` and `GET /identity` show the result in `storage`
 (`keychain` or `file`).
+
+### Requiring the keychain
+
+With `ADF_SECRET_STORE=keychain`, the daemon reads the keychain with the
+same tries as steps 5 to 7: once on Linux, up to three times over 5 s on
+Windows and macOS. It does not start when:
+
+- no read succeeds (no Secret Service, no session bus, a locked keyring, a
+  keychain that does not answer);
+- the native keyring binary does not load;
+- `ADF_KEYCHAIN` is `0` or `off` as well.
+
+The daemon then logs `[ADF Daemon] Owner secret store:` with the reason and
+exits with code 1 before it listens. `adf daemon start` reports "The daemon
+exited during startup (code 1)" and the end of the log.
+
+On that path the daemon does not create, open or unlock `owner-secrets.json`,
+also when `ADF_OWNER_PASSPHRASE` or `ADF_OWNER_PASSPHRASE_FILE` is set. A file
+already there keeps its bytes. Nothing is copied between the keychain and the
+file, and nothing is deleted.
+
+Once the daemon runs on the keychain, it keeps it until it restarts. A
+keychain read that fails later does not switch it to the file.
+
+To start the daemon again, choose one:
+
+- Make the keychain usable, then start the daemon. On Linux see
+  [Linux desktop: Secret Service](#linux-desktop-secret-service). On macOS
+  and Windows, sign in to the desktop session and unlock the keychain.
+- Unset `ADF_KEYCHAIN` when it conflicts.
+- Set `ADF_SECRET_STORE=file`, or unset it, to run on the passphrase file.
+
+Switching stores does not move secrets. The keychain entries and
+`owner-secrets.json` each keep what they hold, and the daemon reads only the
+store it selected. If `owner-secrets.json` already exists, the file store
+opens that file (with the boot passphrase or `adf identity unlock`) and its
+owner. `adf identity` then shows `locked` while that file is not unlocked.
+If the selected store has no owner phrase, `adf identity` shows `none` on a
+fresh install and `restore-needed` when the settings already record an
+owner. In both cases restore that owner there with `adf identity restore`
+and its 12 words.
+Provider API keys added through the daemon stay in the store they were
+added to; add them again on the new store.
+
+Rationale: a daemon that fell back to the file would keep new owner secrets
+where Studio does not read them, and a boot passphrase would unlock an older
+file that may belong to another owner.
 
 ## ADF Studio
 

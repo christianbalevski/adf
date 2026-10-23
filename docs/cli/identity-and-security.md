@@ -45,8 +45,12 @@ Runtime › Identity.
 | **Passphrase file** | No usable keychain (a headless Linux server; usually WSL) | `owner-secrets.json` next to the daemon settings. You choose the passphrase (8+ characters) on create / restore. After every daemon restart: `adf identity unlock`, or start the daemon with `ADF_OWNER_PASSPHRASE_FILE` (or `ADF_OWNER_PASSPHRASE`) |
 
 `ADF_SECRET_STORE=file` or `ADF_KEYCHAIN=0` selects the passphrase file.
-`ADF_SECRET_STORE=keychain` only states a preference: with no usable keychain
-the daemon logs an error and uses the file anyway. Provider API keys added
+`ADF_SECRET_STORE=keychain` requires the keychain: with no usable keychain,
+or with `ADF_KEYCHAIN=0` as well, the daemon does not start (exit code 1) and
+leaves the passphrase file alone
+([Requiring the keychain](../daemon/owner-secret-storage.md#requiring-the-keychain)).
+Any other nonempty `ADF_SECRET_STORE` value also stops the daemon; unset or
+empty lets the daemon choose. Provider API keys added
 with `/provider add` go to the same store. `adf identity` shows which one is
 in use (`storage`).
 
