@@ -1,3 +1,4 @@
+import { parseLambdaRef } from '../../../shared/utils/agent-commands'
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
 import type { Tool } from '../tool.interface'
@@ -81,7 +82,7 @@ function expectsNumber(path: string): boolean {
 
 /** Config arrays whose elements are identified by `name`/`id` declarations. */
 const DECLARATION_ARRAYS = new Set([
-  'tools', 'serving.api', 'ws_connections', 'stream_bindings', 'umbilical_taps', 'mcp.servers'
+  'commands', 'tools', 'serving.api', 'ws_connections', 'stream_bindings', 'umbilical_taps', 'mcp.servers'
 ])
 
 function declarationKey(value: unknown): string | null {
@@ -214,9 +215,13 @@ export class SysUpdateConfigTool implements Tool {
       const action = parsed.data.action ?? 'set'
       const segments = this.parsePath(path)
 
+      if (!isAuthorized && segments[0] === 'commands' && segments[segments.length - 1] === 'locked' && value === true) {
+        return this.err('Only the owner can lock a command.')
+      }
+
       // Self-protection: reject paths that target lock or restriction properties
       for (const seg of segments) {
-        if (seg === 'locked' || seg === 'locked_fields') {
+        if ((seg === 'locked' && !(isAuthorized && segments[0] === 'commands')) || seg === 'locked_fields') {
           return this.err('Cannot modify locking configuration.')
         }
         if (seg === 'restricted' || seg === 'restricted_methods') {
@@ -270,11 +275,11 @@ export class SysUpdateConfigTool implements Tool {
       }
 
       // Field-specific validation (uses original path for pattern matching)
-      const valErr = this.validateField(path, value, action)
+      const valErr = this.validateField(resolved.join('.'), value, action, workspace)
       if (valErr) return this.err(valErr)
 
       // Declaration integrity: no shadowing duplicates, no self-de-restriction
-      const declErr = this.checkDeclarationIntegrity(config, resolved, value, action)
+      const declErr = this.checkDeclarationIntegrity(config, resolved, value, action, isAuthorized)
       if (declErr) return this.err(declErr)
 
       // Snapshot for the schema before/after comparison + rollback below
@@ -282,7 +287,7 @@ export class SysUpdateConfigTool implements Tool {
       const issuesBefore = schemaIssueKeys(snapshot)
 
       // Apply the change
-      const applyErr = this.applyChange(config, resolved, value, action, index, isOverride)
+      const applyErr = this.applyChange(config, resolved, value, action, index, isOverride || isAuthorized)
       if (applyErr) return typeof applyErr === 'string'
         ? this.err(applyErr)
         : this.errProtected(applyErr, this.lockDescription(path, value, action))
@@ -446,7 +451,18 @@ export class SysUpdateConfigTool implements Tool {
   // Field validation
   // ---------------------------------------------------------------------------
 
-  private validateField(path: string, value: unknown, action: string): string | null {
+  private validateField(path: string, value: unknown, action: string, workspace: AdfWorkspace): string | null {
+    if (action !== 'remove' && /^commands(?:\.\d+(?:\.lambda)?)?$/.test(path)) {
+      const entries = path.endsWith('.lambda') ? [{ lambda: value }]
+        : Array.isArray(value) ? value : [value]
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object' || typeof entry.lambda !== 'string') continue
+        const ref = parseLambdaRef(entry.lambda)
+        if ('error' in ref) return ref.error
+        if (workspace.readFile(ref.file) === null) return `Lambda file "${ref.file}" not found. Write it first, then register the command.`
+      }
+    }
+
     if (path === 'name') {
       if (typeof value !== 'string' || value.trim().length === 0) {
         return 'name must be a non-empty string'
@@ -588,7 +604,8 @@ export class SysUpdateConfigTool implements Tool {
     config: AgentConfig,
     segments: Segment[],
     value: unknown,
-    action: 'set' | 'append' | 'remove'
+    action: 'set' | 'append' | 'remove',
+    isAuthorized: boolean
   ): string | null {
     if (action === 'remove') return null
 
@@ -608,10 +625,14 @@ export class SysUpdateConfigTool implements Tool {
     // Existing siblings, minus the element being replaced in an element-set.
     const existingArray = this.readArrayAt(config, isElementSet ? segments.slice(0, -1) : segments)
     const replacedIndex = isElementSet ? (segments[segments.length - 1] as number) : -1
-    const siblings = (existingArray ?? []).filter((_, i) => i !== replacedIndex)
+    const siblings = normalized === 'commands' && action === 'set' && !isElementSet
+      ? [] : (existingArray ?? []).filter((_, i) => i !== replacedIndex)
 
     const seen = new Set<string>()
     for (const entry of incoming) {
+      if (normalized === 'commands' && !isAuthorized && entry && typeof entry === 'object' && (entry as Record<string, unknown>).locked === true) {
+        return 'Only the owner can lock a command.'
+      }
       const key = declarationKey(entry)
       if (!key) continue
 

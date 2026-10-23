@@ -63,6 +63,7 @@ export const DOCS = {
   logging: guideUrl('logging'),
   metadata: guideUrl('creating-agents', 'metadata'),
   limits: guideUrl('creating-agents', 'limits'),
+  commands: guideUrl('commands'),
   skills: guideUrl('skills'),
   memory: guideUrl('agent-memory'),
   files: guideUrl('documents-and-files'),

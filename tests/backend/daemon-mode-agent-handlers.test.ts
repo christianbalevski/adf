@@ -68,6 +68,7 @@ beforeEach(() => {
     recordRecentFile: () => {},
     bridge: {
       holdForeground: () => () => {},
+      waitForOwnerCommand: () => ({ wait: () => Promise.resolve(), cancel: () => {} }),
       seed: (statuses: Array<{ id: string; filePath: string; handle?: string; runtimeState: string }>) => {
         for (const s of statuses) if (!bridgeAgents.some((a) => a.agentId === s.id)) bridgeAgents.push({ agentId: s.id, filePath: s.filePath, handle: s.handle, mapping: { state: s.runtimeState, activeLoops: 0 }, shownInBackground: false })
       },
@@ -234,6 +235,57 @@ describe('the open file\'s agent', () => {
     // Another agent by path (one Studio navigated away from).
     daemon.routes.set(`POST /agents/${OTHER}/interrupt`, () => ({ success: true, interrupted: true, loop: 'main' }))
     expect(await call(IPC.AGENT_INTERRUPT, { filePath: file2 })).toEqual({ success: true, interrupted: true })
+  })
+
+  it('AGENT_RUN_COMMAND forwards foreground/background requests and preserves refusal codes', async () => {
+    const args = { name: 'echo', args: 'hi', authorize: true, requestId: 'command-1', loop: 'reflection' }
+    const off = { success: false, error: 'Agent is off. Start it, then run /echo again.', code: 'agent_not_running' }
+    expect(await call(IPC.AGENT_RUN_COMMAND, args)).toEqual(off)
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    const result = { id: 'command-1', name: 'echo', loop: 'reflection', status: 'ok', authorized: true, result: 'hi', durationMs: 1, deferred: false, seq: 2 }
+    daemon.routes.set(`POST /agents/${AGENT}/commands/echo/run`, () => ({ status: 200, body: result }))
+    expect(await call(IPC.AGENT_RUN_COMMAND, { ...args, filePath: file1 })).toEqual({ success: true, ...result })
+    expect(last('POST', `/agents/${AGENT}/commands/echo/run`)?.body).toEqual({ args: 'hi', authorize: true, requestId: 'command-1', loop: 'reflection' })
+    daemon.routes.set(`POST /agents/${OTHER}/commands/echo/run`, () => ({ status: 200, body: result }))
+    expect(await call(IPC.AGENT_RUN_COMMAND, { ...args, filePath: file2 })).toEqual({ success: true, ...result })
+    daemon.routes.set(`POST /agents/${AGENT}/commands/echo/run`, () => ({ status: 409, body: { error: 'not running', code: 'agent_not_running' } }))
+    expect(await call(IPC.AGENT_RUN_COMMAND, args)).toEqual(off)
+    daemon.routes.set(`POST /agents/${AGENT}/commands/echo/run`, () => ({ status: 404, body: { error: 'No command "/echo" on this agent.', code: 'command_not_found' } }))
+    expect(await call(IPC.AGENT_RUN_COMMAND, args)).toEqual({ success: false, error: 'No command "/echo" on this agent.', code: 'command_not_found' })
+  })
+
+  it('command ordering wait registers before POST and delays immediate response until event forwarding', async () => {
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    let release!: () => void
+    let accepted!: () => void
+    const posted = new Promise<void>(resolve => { accepted = resolve })
+    const cancel = vi.fn()
+    const register = vi.spyOn(ctx.bridge, 'waitForOwnerCommand').mockImplementation(() => ({ wait: () => new Promise<void>(resolve => { release = resolve }), cancel }))
+    daemon.routes.set(`POST /agents/${AGENT}/commands/echo/run`, () => {
+      expect(register).toHaveBeenCalledWith(AGENT, 'cmd', 'main')
+      accepted()
+      return { status: 200, body: { id: 'cmd', seq: 1, deferred: false } }
+    })
+    let finished = false
+    const result = call(IPC.AGENT_RUN_COMMAND, { name: 'echo', args: '', authorize: false, requestId: 'cmd' }).then(value => { finished = true; return value })
+    await posted
+    await new Promise(resolve => setImmediate(resolve))
+    expect(finished).toBe(false)
+    release()
+    expect(await result).toMatchObject({ success: true, seq: 1 })
+    expect(cancel).toHaveBeenCalledOnce()
+  })
+
+  it.each(['deferred', 'unrecorded', 'refused'] as const)('cancels ordering wait without awaiting it for %s commands', async outcome => {
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    const cancel = vi.fn()
+    vi.spyOn(ctx.bridge, 'waitForOwnerCommand').mockReturnValue({ wait: () => new Promise(() => {}), cancel })
+    daemon.routes.set(`POST /agents/${AGENT}/commands/echo/run`, () => outcome === 'refused'
+      ? { status: 400, body: { code: 'invalid_request', error: 'invalid' } }
+      : { status: 200, body: { id: 'cmd', deferred: outcome === 'deferred' } })
+    const result = await call(IPC.AGENT_RUN_COMMAND, { name: 'echo', args: '', authorize: false, requestId: 'cmd' })
+    expect(result.success).toBe(outcome !== 'refused')
+    expect(cancel).toHaveBeenCalledOnce()
   })
 
   it('approval, ask and suspend answers resolve through the task routes; a stale ask or suspend is a logged success, as embedded ignores it', async () => {

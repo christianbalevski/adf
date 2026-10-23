@@ -99,6 +99,7 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
   stopAgent: () => ipcRenderer.invoke(IPC.AGENT_STOP),
   invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) =>
     ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop }),
+  runAgentCommand: (args) => ipcRenderer.invoke(IPC.AGENT_RUN_COMMAND, args),
   compactLoop: () => ipcRenderer.invoke(IPC.AGENT_COMPACT),
   interruptTurn: (filePath?: string, loop?: string) => ipcRenderer.invoke(IPC.AGENT_INTERRUPT, { filePath, loop }),
   getAgentStatus: (opts?: { mediaFor?: string }) => opts ? ipcRenderer.invoke(IPC.AGENT_STATUS, opts) : ipcRenderer.invoke(IPC.AGENT_STATUS),

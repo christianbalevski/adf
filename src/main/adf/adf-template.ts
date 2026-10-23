@@ -239,7 +239,7 @@ export function mergeTemplateWithOverrides(
     'description', 'instructions', 'icon', 'handle', 'autonomous', 'autostart',
     'start_in_state', 'model', 'context', 'tools', 'triggers',
     'security', 'limits', 'messaging', 'audit', 'pre_llm_hook', 'code_execution',
-    'logging', 'mcp', 'adapters', 'serving', 'providers',
+    'logging', 'mcp', 'adapters', 'serving', 'commands', 'providers',
     'ws_connections', 'locked_fields', 'card', 'metadata'
   ]
   for (const key of sectionKeys) {
@@ -268,6 +268,13 @@ export function mergeTemplateWithOverrides(
   // ---- 4. Serving merge ----
   const mergedServing = mergeServing(templateConfig.serving, overrides.serving)
   if (!mergedServing.ok) return mergedServing
+
+  const lockedCommands = (templateConfig.commands ?? []).filter(command => command.locked)
+  if (overrides.commands?.some(command => lockedCommands.some(locked => locked.name === command.name))) {
+    return { ok: false, error: 'Cannot override a locked template command' }
+  }
+  const commands = overrides.commands === undefined ? templateConfig.commands
+    : [...lockedCommands, ...overrides.commands]
 
   // ---- 5. Build final CreateAgentOptions ----
   const options: CreateAgentOptions = {
@@ -327,6 +334,7 @@ export function mergeTemplateWithOverrides(
     ...(overrides.adapters ?? templateConfig.adapters
       ? { adapters: overrides.adapters ?? templateConfig.adapters }
       : {}),
+    ...(commands ? { commands } : {}),
     ...(mergedServing.value ? { serving: mergedServing.value } : {}),
     ...(overrides.providers ?? templateConfig.providers
       ? { providers: overrides.providers ?? templateConfig.providers }

@@ -276,6 +276,7 @@ const ROUTES: RouteCase[] = [
   // Runtime actions.
   { method: 'POST', path: `${A}/abort`, url: c => `/agents/${c.id}/abort`, expect: 'notRunning' },
   { method: 'POST', path: `${A}/interrupt`, url: c => `/agents/${c.id}/interrupt`, expect: 'notRunning' },
+  { method: 'POST', path: `${A}/commands/{name}/run`, url: c => `/agents/${c.id}/commands/echo/run`, body: { args: '' }, expect: 'notRunning' },
   { method: 'POST', path: `${A}/compact`, url: c => `/agents/${c.id}/compact`, expect: 'notRunning' },
   { method: 'POST', path: `${A}/trigger`, url: c => `/agents/${c.id}/trigger`, body: { type: 'startup' }, expect: 'notRunning' },
   // Stop and unload of a document that is not running: nothing to stop, it stays open.

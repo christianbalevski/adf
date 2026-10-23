@@ -1,7 +1,7 @@
 import { join } from 'node:path'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { extractRawX25519PublicKey, generateX25519KeyPair } from '../../../src/main/crypto/envelope-crypto'
-import type { LoopConfig, StartInState } from '../../../src/shared/types/adf-v02.types'
+import type { AgentCommand, LoopConfig, StartInState } from '../../../src/shared/types/adf-v02.types'
 import type { ParityEnv } from './env'
 import identityFixture from './identity.fixture.json'
 import { MOCK_MODEL_ID, type MockLlm } from './mock-llm'
@@ -72,6 +72,8 @@ export interface FixtureSpec {
   /** `config.autostart`: started by the boot autostart when its folder is tracked. */
   autostart?: boolean
   /** Inner loops (`config.loops`), e.g. one a scenario chats with by name. */
+  commands?: readonly AgentCommand[]
+  files?: Record<string, string>
   loops?: readonly LoopConfig[]
 }
 
@@ -102,6 +104,8 @@ export function createFixtureAgents(env: ParityEnv, specs: readonly FixtureSpec[
       const config = workspace.getAgentConfig()
       config.id = FIXTURE_IDS[spec.name]
       if (spec.createdAt) config.metadata.created_at = spec.createdAt
+      if (spec.commands) config.commands = spec.commands.map(command => ({ ...command }))
+      for (const [path, content] of Object.entries(spec.files ?? {})) workspace.writeFile(path, content)
       if (spec.autostart) config.autostart = true
       if (spec.loops) config.loops = spec.loops.map((loop) => ({ ...loop }))
       for (const name of spec.enableTools ?? []) {

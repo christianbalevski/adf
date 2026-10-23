@@ -69,6 +69,8 @@ import { deriveHandle } from '../utils/handle'
 import { toDisplayState } from './display-state'
 import type { AgentHostBindings, AgentStopMode, AssembledAgentBase, HostAttachment } from './assemble-agent'
 import { LoopPoolError, stripLoopNameMarker } from './loop-pool'
+import { runOwnerCommand, OwnerCommandRefusedError, type OwnerCommandResult } from './owner-command'
+import type { OwnerCommandBody } from '../../shared/types/owner-command.types'
 import { interruptLoopTurn, InterruptRefusedError, type InterruptTurnResult } from './interrupt-turn'
 import { LOOP_AUTOSTART_MESSAGE, type LoopDeleteResult, type LoopInfo, type LoopSendResult } from '../adf/loop-pool.types'
 import { LoopConfigSchema } from '../adf/adf-schema'
@@ -1602,6 +1604,16 @@ export class RuntimeService extends EventEmitter {
       return interruptLoopTurn(managed.agent.executor, managed.agent.loopPool, loop)
     } catch (err) {
       if (err instanceof InterruptRefusedError) throw new RuntimeLoopError(err.message, err.statusCode)
+      throw err
+    }
+  }
+
+  async runAgentCommand(agentId: string, name: string, body: OwnerCommandBody): Promise<OwnerCommandResult> {
+    const managed = this.requireAgent(agentId)
+    try {
+      return await runOwnerCommand(managed.agent, { ...body, name, args: body.args ?? '', authorize: body.authorize === true })
+    } catch (err) {
+      if (err instanceof OwnerCommandRefusedError) throw new RuntimeLoopError(err.message, err.statusCode, err.code)
       throw err
     }
   }

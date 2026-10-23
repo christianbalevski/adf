@@ -110,6 +110,8 @@ export interface SuccessResult {
   success: boolean
 }
 
+export type { OwnerCommandResult, OwnerCommandBody } from '../types/owner-command.types'
+
 export interface InterruptResult extends SuccessResult {
   /** False when nothing was running in that loop. */
   interrupted: boolean

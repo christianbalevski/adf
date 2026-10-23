@@ -1,3 +1,4 @@
+import { parseOwnerCommandRow } from '../../../shared/utils/owner-command-row'
 import { IPC } from '../../../shared/constants/ipc-channels'
 import type { DaemonClient, AgentSummary, AgentStatus } from '../../../shared/daemon-client'
 import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, NotificationsSnapshot } from '../../../shared/types/ipc.types'
@@ -130,6 +131,8 @@ export interface EventBridgeDeps {
    * (agent-windows.md): the main window's bridge does it once.
    */
   trackCreatedFiles?: boolean
+  /** Delivery grace after a command HTTP response, in milliseconds. Default 5000. */
+  ownerCommandTimeoutMs?: number
   /** Upper bound of one AGENT_INVOKE wait. Default TURN_WAIT_TIMEOUT_MS. */
   turnTimeoutMs?: number
   log?: Log
@@ -200,6 +203,7 @@ interface ForegroundHold {
 
 export class EventBridge {
   private readonly agents = new Map<string, BridgeAgent>()
+  private readonly commandWaiters = new Set<{ agentId: string; id: string; loop: string; resolve: () => void }>()
   private readonly waiters = new Set<TurnWaiter>()
   /** Insertion-ordered ring of ended turns, oldest first, keyed by turnKey(agentId, turnId). */
   private readonly ended = new Map<string, EndedTurn>()
@@ -268,6 +272,13 @@ export class EventBridge {
       if (frame.kind === 'executor') {
         // The executor frame first, then the turn end it carries (D5): the order the umbilical turn end had.
         try { this.onExecutor(frame) } finally {
+          if (frame.event.type === 'context_injected') {
+            const content = (frame.event.payload as { content?: unknown })?.content
+            const record = typeof content === 'string' ? parseOwnerCommandRow(content) : null
+            if (record) for (const waiter of [...this.commandWaiters]) {
+              if (waiter.agentId === frame.agentId && waiter.id === record.header.id && waiter.loop === (frame.event.loop ?? 'main')) waiter.resolve()
+            }
+          }
           const end = turnEndOf(frame)
           if (end) this.onTurn(end)
         }
@@ -278,6 +289,38 @@ export class EventBridge {
     } catch (err) {
       this.log.warn(`[Backend] Event bridge could not map a ${frame.kind} frame:`, err)
     }
+  }
+
+  /** Register before POST: fast command events can precede the HTTP response.
+   * No history is retained. Transport/lifecycle loss only releases ordering;
+   * the HTTP response remains the source of the command's outcome. */
+  waitForOwnerCommand(agentId: string, id: string, loop = 'main'): { wait: () => Promise<void>; cancel: () => void } {
+    let cancel = () => {}
+    let armDeliveryTimeout = () => {}
+    const promise = new Promise<void>(resolve => {
+      let timer: ReturnType<typeof setTimeout> | undefined
+      let settled = false
+      const waiter = { agentId, id, loop, resolve: () => {
+        settled = true
+        if (timer) clearTimeout(timer)
+        this.commandWaiters.delete(waiter)
+        resolve()
+      } }
+      cancel = waiter.resolve
+      if (this.disposed || this.detached.has(agentId)) { waiter.resolve(); return }
+      this.commandWaiters.add(waiter)
+      // Execution may take the full lambda timeout. The short delivery grace
+      // begins when the HTTP result is available and its caller awaits us.
+      armDeliveryTimeout = () => {
+        if (settled) return
+        if (timer) clearTimeout(timer)
+        timer = setTimeout(waiter.resolve, this.deps.ownerCommandTimeoutMs ?? 5000)
+        timer.unref?.()
+      }
+      timer = setTimeout(waiter.resolve, TURN_WAIT_TIMEOUT_MS)
+      timer.unref?.()
+    })
+    return { wait: () => { armDeliveryTimeout(); return promise }, cancel }
   }
 
   /**
@@ -385,6 +428,7 @@ export class EventBridge {
 
   /** End every open wait (the connector failed, the daemon stayed away past the grace period, or its process exited). */
   failTurns(outcome: Extract<TurnOutcome, 'disconnected' | 'exited' | 'stopped'>): void {
+    for (const w of [...this.commandWaiters]) w.resolve()
     for (const w of [...this.waiters]) w.resolve(outcome)
   }
 
@@ -396,6 +440,7 @@ export class EventBridge {
    */
   detach(agentId: string): void {
     this.detached.add(agentId)
+    for (const w of [...this.commandWaiters]) if (w.agentId === agentId) w.resolve()
   }
 
   attach(agentId: string): void {
@@ -404,6 +449,7 @@ export class EventBridge {
 
   handleGap(gap: StreamGap): Promise<void> {
     if (this.disposed) return Promise.resolve()
+    for (const w of [...this.commandWaiters]) w.resolve()
     this.log.warn(`[Backend] The client event stream lost frames (${gap.reason}${gap.dropped !== undefined ? `, ${gap.dropped} dropped` : ''}); resyncing`)
     // A wait whose end was among the lost frames settles when its loop is not busy (resync reads it, or the next state change says so).
     for (const w of this.waiters) w.lenient = true
@@ -419,6 +465,7 @@ export class EventBridge {
   dispose(): void {
     // Quitting is not a file switch: the session's release must not move agents to the background list.
     this.disposed = true
+    for (const w of [...this.commandWaiters]) w.resolve()
     for (const w of [...this.waiters]) w.resolve('stopped')
     this.deps.batcher.flush()
   }
@@ -472,6 +519,7 @@ export class EventBridge {
    * AGENT_EVENTs.
    */
   private focusChanged(next: string | null): void {
+    for (const w of [...this.commandWaiters]) w.resolve()
     const prev = this.focus
     this.focus = next
     if (this.disposed) return
@@ -692,6 +740,7 @@ export class EventBridge {
     if (stopped && frame.agentId) {
       const wasDetached = this.detached.delete(frame.agentId)
       this.agents.delete(frame.agentId)
+      for (const w of [...this.commandWaiters]) if (w.agentId === frame.agentId) w.resolve()
       for (const w of [...this.waiters]) if (w.agentId === frame.agentId) w.resolve('stopped')
       if (focused && agent && !wasDetached) this.foregroundStopped(agent, frame.timestamp)
     }

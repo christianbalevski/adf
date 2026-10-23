@@ -77,6 +77,7 @@ import { AdfWorkspace } from '../adf/adf-workspace'
 import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
+import { runOwnerCommand, OwnerCommandRefusedError, type OwnerCommandRequest } from '../runtime/owner-command'
 import { interruptLoopTurn } from '../runtime/interrupt-turn'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
@@ -5122,6 +5123,22 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { success: true, interrupted: result.interrupted }
     } catch (error) {
       return { success: false, error: error instanceof Error ? error.message : String(error) }
+    }
+  })
+
+  ipcMain.handle(IPC.AGENT_RUN_COMMAND, async (_event, args: OwnerCommandRequest & { filePath?: string }) => {
+    const targetFile = args?.filePath
+    const background = targetFile && targetFile !== currentFilePath
+    const assembled = background
+      ? backgroundAgentManager?.getAgent(targetFile)?.assembledAgent ?? null
+      : currentAssembledAgent
+    if (!assembled) return { success: false, error: `Agent is off. Start it, then run /${args?.name ?? ''} again.`, code: 'agent_not_running' }
+    try {
+      if (background) backgroundAgentManager?.ensureSessionHydrated(targetFile)
+      return { success: true, ...await runOwnerCommand(assembled, args) }
+    } catch (error) {
+      return { success: false, error: error instanceof Error ? error.message : String(error),
+        ...(error instanceof OwnerCommandRefusedError ? { code: error.code } : {}) }
     }
   })
 

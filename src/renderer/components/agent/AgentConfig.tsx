@@ -1,3 +1,5 @@
+import { AgentCommandsSection } from './AgentCommandsSection'
+import { AGENT_COMMANDS_SECTION_LOCK, agentCommandsSaveError } from './agent-commands-config'
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
@@ -1003,6 +1005,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   /** The actual write: SQLite + side-loop/MCP reconcile on the main side. */
   const persistConfig = useCallback(
     (updated: AgentConfigType, owner: string | null, baseRevision?: number, baseConfig: AgentConfigType | null = null) => {
+      const commandsError = agentCommandsSaveError(updated.commands)
+      if (commandsError) { setSaveStatus({ kind: 'error', error: commandsError }); return }
       // The agent moved on between scheduling and delivery — writing now would
       // put one agent's config into another agent's workspace.
       if (owner !== useDocumentStore.getState().filePath) return
@@ -1145,6 +1149,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   // rest of the UI stay instantly responsive; only the write is coalesced.
   const save = useCallback(
     (updated: AgentConfigType) => {
+      const commandsError = agentCommandsSaveError(updated.commands)
+      if (commandsError) { setSaveStatus({ kind: 'error', error: commandsError }); return }
       savingRef.current = true
       setLocal(updated)
       if (templateRef.current) {
@@ -5485,6 +5491,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </div>
             </div>
           ))}
+        </Section>
+
+        <Section title="Commands" docs={DOCS.commands}
+          hint="Slash commands the owner can run from the composer. Each runs one of this agent's lambdas, with no model turn."
+          locked={isSectionLocked(AGENT_COMMANDS_SECTION_LOCK)} onToggleLock={() => toggleSectionLock(AGENT_COMMANDS_SECTION_LOCK)}
+          summary={`${local.commands?.length ?? 0} commands`}>
+          <AgentCommandsSection key={`${filePath ?? 'template'}:${local.id}`} commands={local.commands} template={!!template}
+            onSave={(commands) => save({ ...local, commands })} />
         </Section>
 
         {/* Umbilical Taps */}

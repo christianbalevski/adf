@@ -623,6 +623,8 @@ export class AgentExecutor extends EventEmitter {
   // Turns running OR already committed to run (see isTurnActive). Not a state
   // machine — a counter, because error-recovery retries nest executeTurn calls
   // and a re-entrant successor claims its slot before its predecessor releases.
+  private pendingOwnerCommandRecords: string[] = []
+  private ownerCommandRecordsClosed = false
   private activeTurnCount = 0
   // Agent-scope subset of activeTurnCount. The concurrent-turn guard reads THIS
   // one: a system-scope dispatch (lambda handler) never touches the session, so
@@ -1931,6 +1933,7 @@ export class AgentExecutor extends EventEmitter {
         // unrelated agent turn to run — drain it here instead.
         this.drainPendingTriggers()
       }
+      if (this.activeTurnCount === 0) this.flushOwnerCommandRecords()
       if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
       // True turn boundary: a successor scheduled by scheduleReentrantTurn has
       // already claimed its slot, so a zero here means nothing is queued behind
@@ -2072,6 +2075,7 @@ export class AgentExecutor extends EventEmitter {
       if (!replayed && this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         this.drainPendingTriggers()
       }
+      if (this.activeTurnCount === 0) this.flushOwnerCommandRecords()
       if (this.activeAgentTurnCount === 0) this.writeDiscardNotice()
       if (this.activeTurnCount === 0 && this.onTurnSettled) {
         try { this.onTurnSettled() } catch (error) {
@@ -2499,6 +2503,7 @@ export class AgentExecutor extends EventEmitter {
         // not started, so an injected user message can never split a
         // tool_use/tool_result exchange.
         this.session.drainContextInjections()
+        this.flushOwnerCommandRecords()
         // Owner chats that arrived while the agent worked join here, at the
         // same safe boundary, as their own user rows after the tool results.
         if (!opts?.nested) this.deliverQueuedChats('next_step')
@@ -5052,6 +5057,47 @@ export class AgentExecutor extends EventEmitter {
    * Truncate oversized tool results to protect the context window.
    * Uses a fast char-based pre-filter; only tokenizes when borderline.
    */
+  /** Apply the configured tool-result bounds before retaining a command result. */
+  boundToolResult(content: string, label: string): string {
+    return this.enforceToolResultLimit({ content, isError: false }, label).content
+  }
+
+  recordOwnerCommand(text: string): { deferred: boolean; seq?: number } {
+    if (this.ownerCommandRecordsClosed) {
+      try { this.session.getWorkspace().insertLog('warn', 'command', 'record_discarded', null, 'Command completed after executor disposal.') } catch { /* closed workspace */ }
+      return { deferred: false }
+    }
+    if (this.isTurnActive()) {
+      this.pendingOwnerCommandRecords.push(text)
+      return { deferred: true }
+    }
+    const content: ContentBlock[] = [{ type: 'text', text }]
+    const seq = this.session.getWorkspace().appendToLoop('user', content)
+    if (this.session.getMessages().length > 0) this.session.addMessage({ role: 'user', content }, undefined, { skipLoop: true, seq })
+    this.emitEvent({ type: 'context_injected', payload: { category: 'owner_command', content: text, seq }, timestamp: Date.now() })
+    return { deferred: false, seq }
+  }
+
+  private flushOwnerCommandRecords(): void {
+    while (this.pendingOwnerCommandRecords.length > 0) {
+      const text = this.pendingOwnerCommandRecords[0]
+      const message: LLMMessage = { role: 'user', content: [{ type: 'text', text }] }
+      // System-scope work can hold an active slot while the idle-swept
+      // session is empty. Keep it empty so the next model dispatch restores
+      // the complete durable history rather than seeing only this record.
+      let seq: number | undefined
+      if (this.session.getMessages().length === 0) {
+        seq = this.session.getWorkspace().appendToLoop('user', message.content as ContentBlock[])
+      } else {
+        this.session.addMessage(message)
+        this.session.flushToLoop()
+        seq = message.seq
+      }
+      this.pendingOwnerCommandRecords.shift()
+      this.emitEvent({ type: 'context_injected', payload: { category: 'owner_command', content: text, seq }, timestamp: Date.now() })
+    }
+  }
+
   private enforceToolResultLimit(result: ToolResult, toolName: string): ToolResult {
     const maxTokens = this.config.limits?.max_tool_result_tokens ?? 16000
     const content = result.content
@@ -5125,6 +5171,7 @@ export class AgentExecutor extends EventEmitter {
       this._errorReason = null
       this._recoverySuppressedLogged = false
     }
+    if (state !== 'stopped') this.ownerCommandRecordsClosed = false
     this.state = state
     this.emitEvent({
       type: 'state_changed',
@@ -6323,6 +6370,9 @@ export class AgentExecutor extends EventEmitter {
    * a System notice goes to the live transcript, adf_logs and the loop.
    */
   private discardQueuedChats(reason: 'stopped' | 'off'): void {
+    // An in-flight tool result must close its exchange before records land.
+    if (this.activeAgentTurnCount === 0) this.flushOwnerCommandRecords()
+    this.ownerCommandRecordsClosed = true
     const chats = this.pendingChats.splice(0)
     const unanswered = this.absorbedTurnIds.splice(0)
     if (this.runningTurnId && !unanswered.includes(this.runningTurnId)) unanswered.push(this.runningTurnId)

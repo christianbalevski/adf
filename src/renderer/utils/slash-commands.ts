@@ -18,9 +18,11 @@
  * turned into an action.
  */
 
+import type { AgentCommand } from '../../shared/types/adf-v02.types'
+import { RESERVED_COMMAND_NAMES, validateAgentCommands } from '../../shared/utils/agent-commands'
 import { sanitizeDisplayText, type RegistryEntry } from './skills-panel'
 
-export type SlashCommandKind = 'builtin' | 'skill'
+export type SlashCommandKind = 'builtin' | 'skill' | 'agent'
 
 /**
  * One row in the palette.
@@ -34,8 +36,12 @@ export interface SlashCommand {
   label: string
   kind: SlashCommandKind
   description: string
-  /** Skill rows only: muted in skills-state.json, so it has no description. */
+  /** Muted skill, or an agent command whose agent is off. */
   muted?: boolean
+  /** Agent rows only: the registered command name. */
+  agentCommand?: string
+  /** Agent rows only: the registration is locked by the owner. */
+  locked?: boolean
   /** Skill rows only: the package name, which is also the first key word. */
   skill?: string
 }
@@ -148,9 +154,21 @@ export function matchSlashCommand(
  * Names are sanitized before they become labels; a name that sanitizes to
  * something other than itself cannot be typed reliably and is dropped.
  */
-export function buildSlashCommands(entries: readonly RegistryEntry[]): SlashCommand[] {
+export function buildSlashCommands(entries: readonly RegistryEntry[], agentCommands: readonly AgentCommand[] = [], opts: { agentRunning: boolean } = { agentRunning: true }): SlashCommand[] {
   const commands: SlashCommand[] = [...BUILTIN_COMMANDS]
-  const seen = new Set(BUILTIN_COMMANDS.map((c) => c.key));
+  const seen = new Set<string>(RESERVED_COMMAND_NAMES)
+  const registered = Array.isArray(agentCommands) ? agentCommands : []
+  const invalid = new Set(validateAgentCommands(registered).map((issue) => issue.index))
+  registered.map((command, index) => ({ command, index }))
+    .filter(({ index }) => !invalid.has(index))
+    .sort((a, b) => a.command.name.localeCompare(b.command.name))
+    .forEach(({ command }) => {
+      if (seen.has(command.name)) return
+      seen.add(command.name)
+      commands.push({ key: command.name, label: '/' + command.name + (command.usage ? ' ' + sanitizeDisplayText(command.usage) : ''),
+        kind: 'agent', agentCommand: command.name, description: sanitizeDisplayText(command.description) || 'no description',
+        locked: command.locked, muted: !opts.agentRunning })
+    });
   [...entries]
     .sort((a, b) => a.name.localeCompare(b.name))
     .forEach((entry) => {
