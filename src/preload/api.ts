@@ -118,9 +118,14 @@ export interface AdfApi {
   }>
 
   // Agent runtime
-  /** `code` names a failure the renderer can resolve in place: 'provider_missing' (the model's provider is not on this install) or 'provider_unconfigured' (it is, but has no key). */
+  /** `code` names a failure the renderer can resolve in place: 'provider_missing' (the model's provider is not on this install) or 'provider_unconfigured' (it is, but has no key); 'kill_in_progress': a Kill is still stopping agents. */
   /** `loopStates`: side-loop display states, on a re-attach of a running agent. */
-  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; loopStates?: Record<string, string>; code?: 'provider_missing' | 'provider_unconfigured' }>
+  startAgent: (filePath?: string, hasUserMessage?: boolean) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; loopStates?: Record<string, string>; code?: 'provider_missing' | 'provider_unconfigured' | 'kill_in_progress' }>
+  /**
+   * Re-attach the open file's agent that ran when it was opened: never a
+   * start. `code: 'not_running'` when it no longer runs (a Kill stopped it).
+   */
+  reattachAgent: (filePath?: string) => Promise<{ success: boolean; sessionId?: string; error?: string; agentState?: string; loopStates?: Record<string, string>; code?: 'not_running' | 'kill_in_progress' }>
   stopAgent: () => Promise<{ success: boolean }>
   /** `loop` routes the turn to that loop's executor; omitted/'main' = the host loop. */
   /**

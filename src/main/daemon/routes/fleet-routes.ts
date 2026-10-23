@@ -243,14 +243,25 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
     fetchPeerSharedFile(request.query.baseUrl, request.query.path))
 
   // Studio's teardownRuntime({ disposeMode: 'emergency' }) on the daemon:
-  // close the runtime gate first (resumable: the next deliberate start
-  // reopens it), mesh off (not persisted), every agent unloaded at once,
-  // WS connections, mesh server, tracked children, host execs and sandbox
-  // workers stopped, then the compute containers. Files stay reopenable.
+  // close the runtime gate first and hold it closed until the Kill is done
+  // (RuntimeGate.beginKill: every start and load in between is refused; the
+  // next deliberate start after it reopens the gate), mesh off (not
+  // persisted), every agent unloaded at once, WS connections, mesh server,
+  // tracked children, host execs and sandbox workers stopped, then the
+  // compute containers. Files stay reopenable.
   // A part this daemon could not stop (not wired) or failed to stop makes
   // the answer `success: false` naming it: a partial stop never reads as a
   // full one.
   server.post('/runtime/emergency-stop', async () => {
+    const releaseKill = RuntimeGate.beginKill()
+    try {
+      return await emergencyStop()
+    } finally {
+      releaseKill()
+    }
+  })
+
+  const emergencyStop = async () => {
     console.log('[EmergencyStop] Shutting down everything...')
     const deps = gapDeps(ctx)
     const skipped: string[] = []
@@ -263,17 +274,30 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
         console.error(`[EmergencyStop] ${name} error:`, e)
       }
     }
-    RuntimeGate.stop()
     await step('mesh', () => {
       if (!mesh?.isEnabled()) return
       if (mesh.disableMesh) mesh.disableMesh()
       else skipped.push('mesh')
     })
-    const agents = runtime.listAgents()
-    await Promise.all(agents.map((agent) =>
-      step(`agent ${agent.id}`, () => runtime.unloadAgent(agent.id, { mode: 'immediate' }))))
+    // A load already in flight when the Kill began is refused registration
+    // while the Kill runs; the second pass, once those loads settle, unloads
+    // any that got in. One still loading at the deadline is reported: it
+    // cannot start afterwards (its start sees the Kill), and the Kill goes on.
+    let listedAgents = 0
+    for (let pass = 0; pass < 2; pass++) {
+      if (pass > 0) {
+        const loading = await runtime.settleLoads()
+        if (loading.length > 0) failed.push(...loading.map((filePath) => `still loading: ${filePath}`))
+      }
+      const agents = runtime.listAgents()
+      listedAgents += agents.length
+      await Promise.all(agents.map((agent) =>
+        step(`agent ${agent.id}`, () => runtime.unloadAgent(agent.id, { mode: 'immediate' }))))
+    }
+    const left = runtime.listAgents()
+    if (left.length > 0) failed.push(...left.map((agent) => `still loaded: ${agent.id}`))
     // What the Kill button reports back ("Stopped N agents"): the ones that did stop.
-    const stoppedAgents = agents.length - failed.filter((name) => name.startsWith('agent ')).length
+    const stoppedAgents = listedAgents - failed.filter((name) => name.startsWith('agent ')).length
     await step('ws connections', () => (options.wsService as Stoppable | undefined)?.stopAll?.())
     await step('mesh server', async () => {
       if (deps.meshServer) await deps.meshServer.stop()
@@ -308,5 +332,5 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
       ...(skipped.length ? { skipped } : {}),
       ...(failed.length ? { failed } : {}),
     }
-  })
+  }
 }

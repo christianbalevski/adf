@@ -167,6 +167,85 @@ describe('BackgroundAgentManager start races', () => {
     expect(manager.getAgentCount()).toBe(1)
     await manager.stopAgent(filePath)
   })
+
+  // The Kill race: a click that opens a background agent mid-stopAll would
+  // take it to the foreground, out of the stop's reach.
+  it('a background agent cannot be extracted for the foreground while stopAll stops it', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-bam-extract-'))
+    const filePath = createAdfFile(dir, 'extract-agent')
+    const manager = makeManager()
+    expect(await manager.startAgent(filePath)).toBe(true)
+
+    // A start in flight makes stopAll wait before it clears its agents: the
+    // window in which extract-agent is still listed but already being stopped.
+    const racing = manager.startAgent(createAdfFile(dir, 'racing-agent'))
+    const stopPromise = manager.stopAll()
+    expect(manager.hasAgent(filePath)).toBe(true)
+    expect(manager.extractBackgroundAgent(filePath)).toBeNull()
+    await stopPromise
+    await racing
+    expect(manager.getAgentCount()).toBe(0)
+  })
+
+  it('a start that lands during a Kill, after stopAll finished, is refused', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-bam-kill-'))
+    const filePath = createAdfFile(dir, 'late-agent')
+    const manager = makeManager()
+    await manager.stopAll()
+    const release = RuntimeGate.beginKill()
+    try {
+      expect(await manager.startAgent(filePath)).toBe(false)
+    } finally {
+      release()
+    }
+    expect(manager.getAgentCount()).toBe(0)
+  })
+})
+
+describe('RuntimeGate during a Kill', () => {
+  it('resume() is refused until the Kill releases; the gate then stays stopped until a deliberate start', async () => {
+    const release = RuntimeGate.beginKill()
+    expect(RuntimeGate.stopped).toBe(true)
+    expect(RuntimeGate.killing).toBe(true)
+    let settled = false
+    void RuntimeGate.whenKillSettled().then(() => { settled = true })
+
+    RuntimeGate.resume()
+    expect(RuntimeGate.stopped).toBe(true)
+
+    release()
+    release() // a second release is a no-op
+    await Promise.resolve()
+    expect(settled).toBe(true)
+    expect(RuntimeGate.killing).toBe(false)
+    expect(RuntimeGate.stopped).toBe(true)
+
+    RuntimeGate.resume()
+    expect(RuntimeGate.stopped).toBe(false)
+  })
+
+  it('overlapping Kills hold the gate until the last one releases', async () => {
+    const first = RuntimeGate.beginKill()
+    const second = RuntimeGate.beginKill()
+    let settled = false
+    void RuntimeGate.whenKillSettled().then(() => { settled = true })
+    first()
+    await Promise.resolve()
+    expect(RuntimeGate.killing).toBe(true)
+    expect(settled).toBe(false)
+    second()
+    await Promise.resolve()
+    expect(RuntimeGate.killing).toBe(false)
+    expect(settled).toBe(true)
+  })
+
+  it('killedSince: a Kill begun after the epoch was taken, even one already over', () => {
+    const epoch = RuntimeGate.killEpoch
+    expect(RuntimeGate.killedSince(epoch)).toBe(false)
+    RuntimeGate.beginKill()()
+    expect(RuntimeGate.killedSince(epoch)).toBe(true)
+    expect(RuntimeGate.killedSince(RuntimeGate.killEpoch)).toBe(false)
+  })
 })
 
 describe('BackgroundAgentManager adapter inbox pushes', () => {

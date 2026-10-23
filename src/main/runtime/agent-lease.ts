@@ -1547,13 +1547,30 @@ export class LeasedStartTracker {
   wrap<A extends unknown[], R>(handler: (...args: A) => Promise<R>): (...args: A) => Promise<R> {
     return async (...args: A) => {
       this.inFlight++
+      const run = handler(...args)
+      this.pending.add(run)
       try {
-        return await handler(...args)
+        return await run
       } finally {
+        this.pending.delete(run)
         this.inFlight--
         await this.registry().reconcile()
       }
     }
+  }
+
+  private readonly pending = new Set<Promise<unknown>>()
+
+  /** Resolves once the starts in flight have finished, or after `timeoutMs`; answers how many still run. */
+  async settle(timeoutMs: number): Promise<number> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs) })
+    try {
+      await Promise.race([Promise.allSettled([...this.pending]), timedOut])
+    } finally {
+      clearTimeout(timer)
+    }
+    return this.pending.size
   }
 }
 

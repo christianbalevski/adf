@@ -162,6 +162,36 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
       pendingAsks: [{ requestId: 'ask_1', question: 'Why?' }],
     })
   })
+  // The Kill race: FILE_OPEN saw the agent running, a Kill stopped it before
+  // the re-attach. The re-attach answers not_running and never restarts it.
+  it('AGENT_START reattachOnly of an agent a Kill stopped (stopped, then gone) stops and starts nothing', async () => {
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'idle' }))
+    expect(await call(IPC.FILE_OPEN, { filePath: file1 })).toMatchObject({ success: true, agentWasRunning: true })
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'stopped' }))
+    expect(await call(IPC.AGENT_START, { reattachOnly: true })).toEqual({ success: false, code: 'not_running', error: 'agent-1 is not running.' })
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => ({ status: 404, body: { error: `Unknown agent "${AGENT}"` } }))
+    expect(await call(IPC.AGENT_START, { reattachOnly: true })).toEqual({ success: false, code: 'not_running', error: 'agent-1 is not running.' })
+    expect(daemon.requests.some((r) => r.method === 'POST')).toBe(false)
+  })
+
+  // An agent in error is alive (it may recover on its next trigger): the re-attach shows it; only Start rebuilds it.
+  it('AGENT_START reattachOnly of an agent in error re-attaches it, without a stop or a start', async () => {
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'error', sessionId: 'session-4' }))
+    daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ agentId: AGENT, displayState: 'error', configured: [] }))
+    daemon.routes.set('GET /approvals/interactions', () => [])
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    expect(await call(IPC.AGENT_START, { reattachOnly: true })).toMatchObject({ success: true, sessionId: 'session-4', agentState: 'error' })
+    expect(daemon.requests.some((r) => r.method === 'POST')).toBe(false)
+  })
+
+  it('AGENT_START reattachOnly of a running agent re-attaches it', async () => {
+    daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'idle', sessionId: 'session-3' }))
+    daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ agentId: AGENT, displayState: 'idle', configured: [] }))
+    daemon.routes.set('GET /approvals/interactions', () => [])
+    await call(IPC.FILE_OPEN, { filePath: file1 })
+    expect(await call(IPC.AGENT_START, { reattachOnly: true })).toMatchObject({ success: true, sessionId: 'session-3', agentState: 'idle' })
+  })
+
   it('AGENT_START reuse: a failed side read never fails the re-attach', async () => {
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'idle', sessionId: 'session-8' }))
     daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ status: 500, body: { error: 'boom' } }))

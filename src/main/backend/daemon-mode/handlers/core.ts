@@ -10,6 +10,8 @@ import type { FleetPendingInteraction } from '../../../../shared/types/ipc.types
 import { DaemonModeUnavailableError } from '../errors'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { samePath } from '../session'
+import { killCount } from '../kill-epoch'
+import { KILL_IN_PROGRESS_ERROR } from '../../../runtime/runtime-gate'
 import { TURN_WAIT_TIMEOUT_MS } from '../event-bridge'
 import { isAgentGone, notOpenError, onOpenFile, requireOpenAgent } from '../documents/open-file'
 import { isTempLocation } from '../documents/file-handlers'
@@ -243,15 +245,28 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     return { running: true, state: status.runtimeState, ...(media ? { media } : {}) }
   },
 
-  [IPC.AGENT_START]: async (ctx, _event, args?: { filePath?: string; hasUserMessage?: boolean }) => {
+  /**
+   * `reattachOnly`: the renderer re-attaching an agent that ran when its file
+   * was opened, not a Start. It answers the running agent (in error too) or
+   * `not_running`, and never stops or starts one: an agent a Kill is stopping
+   * stays stopped.
+   */
+  [IPC.AGENT_START]: async (ctx, _event, args?: { filePath?: string; hasUserMessage?: boolean; reattachOnly?: boolean }) => {
     const filePath = ctx.session.filePath
     if (!filePath) return { success: false, error: 'No file open' }
     if (args?.filePath && !samePath(args.filePath, filePath, ctx.mode === 'remote')) {
       return { success: false, error: 'Agent file changed since start was requested' }
     }
+    // A Kill sent while this start awaits: the start is not carried out after it (kill-epoch.ts).
+    const kills = killCount(ctx)
+    const killed = () => killCount(ctx) !== kills
     const client = await ctx.ready()
     let running = await agentStatus(ctx, ctx.session.agentId ?? await ctx.runningAgentAt(filePath))
-    if (running && (running.runtimeState === 'stopped' || running.runtimeState === 'error')) {
+    // A re-attach takes an agent in error too (it is alive and may recover); only Start rebuilds it.
+    if (args?.reattachOnly && (!running || running.runtimeState === 'stopped')) {
+      return { success: false, code: 'not_running', error: `${basename(filePath, '.adf')} is not running.` }
+    }
+    if (!args?.reattachOnly && running && (running.runtimeState === 'stopped' || running.runtimeState === 'error')) {
       // Embedded rebuilds an executor in error or stopped state instead of
       // re-attaching it: the daemon's equivalent is a stop and a fresh start.
       ctx.log.log(`[Backend] AGENT_START: ${filePath} is "${running.runtimeState}" in the daemon; restarting it`)
@@ -302,10 +317,17 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     // Fresh start: W1-A's start route, with Studio's provider gate
     // (`preflight`: provider_missing / provider_unconfigured), the startup
     // turn (on the held document's workspace, W2-A) and `hasUserMessage`.
+    if (killed()) return { success: false, code: 'kill_in_progress', error: KILL_IN_PROGRESS_ERROR }
     const release = ctx.bridge.holdForeground(filePath)
     try {
       const started = await client.request<{ agent?: AgentStatus & { id: string }; sessionId?: string; preflight?: { code: string; message: string } }>(
         'POST', `/agents/${enc(documentId ?? filePath)}/start`, { query: { preflight: 1, ...(args?.hasUserMessage ? { hasUserMessage: 1 } : {}) }, timeoutMs: 120_000 })
+      if (killed()) {
+        // The start reached the daemon after the Kill did: stop what it started.
+        const startedId = started.agent?.id ?? await ctx.runningAgentAt(filePath)
+        if (startedId) await client.request('POST', `/agents/${enc(startedId)}/stop`, { timeoutMs: 60_000 }).catch(() => {})
+        return { success: false, code: 'kill_in_progress', error: KILL_IN_PROGRESS_ERROR }
+      }
       const agentId = started.agent?.id ?? await ctx.runningAgentAt(filePath)
       if (agentId) ctx.session.noteAgent(filePath, agentId)
       const config = agentId ? (await client.request<{ config: AgentConfig }>('GET', `/agents/${enc(agentId)}/config`)).config : null
