@@ -540,7 +540,7 @@ export class BackgroundAgentManager extends EventEmitter {
 
   /** Actual start body — filePath is already canonical and the in-flight slot is claimed. */
   private async doStartAgent(filePath: string, derivedKey?: Buffer | null): Promise<boolean> {
-    if (RuntimeGate.tearingDown || this.stopAllInProgress) {
+    if (RuntimeGate.tearingDown || RuntimeGate.killing || this.stopAllInProgress) {
       console.warn(`[BackgroundAgent] Refusing to start ${basename(filePath, '.adf')} — runtime teardown in progress`)
       return false
     }
@@ -711,6 +711,8 @@ export class BackgroundAgentManager extends EventEmitter {
     streamBindingManager: StreamBindingManager | null
     displayState: string
   } | null {
+    // stopAll is stopping it: handed to the foreground, it would escape the stop.
+    if (this.stopAllInProgress) return null
     filePath = this.canonicalPath(filePath)
     const managed = this.agents.get(filePath)
     if (!managed) return null
@@ -1011,7 +1013,7 @@ export class BackgroundAgentManager extends EventEmitter {
     assembledAgent: AssembledAgent<AgentProfileName>,
     derivedKey?: Buffer | null,
   ): BackgroundManagedAgent {
-    if (RuntimeGate.tearingDown || this.stopAllInProgress) {
+    if (RuntimeGate.tearingDown || RuntimeGate.killing || this.stopAllInProgress) {
       // Shutdown race: never adopt a new owner mid-teardown — dispose instead.
       void assembledAgent.disposeAsync({ mode: 'immediate' }).catch(() => {})
       throw new Error(`Runtime teardown in progress — cannot adopt agent for ${filePath}`)
@@ -1784,7 +1786,8 @@ export class BackgroundAgentManager extends EventEmitter {
       effectiveRuntime: { settings: this.settings },
       registry: agentToolRegistry,
       session,
-      basePrompt: this.basePrompt,
+      basePrompt: (this.settings.get('globalSystemPrompt') as string | undefined) ?? this.basePrompt,
+      basePromptSource: () => this.settings.get('globalSystemPrompt'),
       toolPrompts: this.toolPrompts,
       compactionPrompt: this.compactionPrompt,
       adfCallHandler,
@@ -1902,7 +1905,7 @@ export class BackgroundAgentManager extends EventEmitter {
     // Shutdown race: stopAll may have snapshotted (and cleared) the agents map
     // while this setup was in flight. Registering now would let the agent
     // escape teardown entirely — dispose it instead.
-    if (RuntimeGate.tearingDown || this.stopAllInProgress) {
+    if (RuntimeGate.tearingDown || RuntimeGate.killing || this.stopAllInProgress) {
       managed.hostAttachment?.detach()
       managed.hostAttachment = null
       await assembledAgent.disposeAsync({ mode: 'immediate' })

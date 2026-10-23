@@ -87,16 +87,46 @@ export class KeychainSecretBackend implements SecretBackend {
   isUnlocked(): boolean { return true }
 
   get(account: string): string | null {
+    const read = prereadValue(this.service, account)
+    if (read !== undefined) return read
     return this.entry(account).getPassword() ?? null
   }
 
   set(account: string, value: string): void {
     this.entry(account).setPassword(value)
+    if (preread?.service === this.service) preread.values.set(account, value)
   }
 
   delete(account: string): void {
     try { this.entry(account).deleteCredential() } catch { /* absent */ }
+    if (preread?.service === this.service) preread.values.delete(account)
   }
+}
+
+/**
+ * How long the values of the last read of every item (readKeychainItemsAsync)
+ * serve this process's reads. On macOS each read of an item this app is not
+ * trusted for asks again, even after "Allow" once; the reads right after the
+ * async read (the handover, a connection's token) take its values instead.
+ */
+const PREREAD_TTL_MS = 60_000
+let preread: { service: string; at: number; values: Map<string, string> } | null = null
+let prereading: Promise<number> | null = null
+
+/** A value of the last read of every item while it is fresh; undefined when not in it (then the item is read). */
+function prereadValue(service: string, account: string): string | undefined {
+  if (!preread || preread.service !== service) return undefined
+  if (Date.now() - preread.at > PREREAD_TTL_MS) {
+    preread = null
+    return undefined
+  }
+  return preread.values.get(account)
+}
+
+/** Test hook: forget the last read of every item. */
+export function resetKeychainPreread(): void {
+  preread = null
+  prereading = null
 }
 
 /**
@@ -117,25 +147,40 @@ export function openKeychainBackend(): KeychainSecretBackend | null {
   }
 }
 
-type FindCredentialsAsync = (service: string, target?: string | null, signal?: AbortSignal | null) => Promise<Array<{ account: string }>>
+type FindCredentialsAsync = (service: string, target?: string | null, signal?: AbortSignal | null) => Promise<Array<{ account: string; password: string }>>
 
 /**
  * Read every keychain item of `service` off the main thread, and say how many
  * there are; null when no keychain binding loads here. The sync reads block
  * the main thread while macOS asks whether this binary may use an item (an
  * unsigned dev "Electron", or a rebuilt one): reading the items this way
- * first lets those prompts be answered while Studio stays responsive.
+ * first lets those prompts be answered while Studio stays responsive. The
+ * values then serve this process's reads for PREREAD_TTL_MS, so each item is
+ * asked for once, not once per read.
  */
-export async function readKeychainItemsAsync(service = KEYCHAIN_SERVICE): Promise<number | null> {
-  let find: FindCredentialsAsync | undefined
+export async function readKeychainItemsAsync(service = KEYCHAIN_SERVICE, find: FindCredentialsAsync | undefined = loadFindCredentials()): Promise<number | null> {
+  if (!find) return null
+  // Read once: a fresh read, or one under way, serves every caller (a
+  // connector retrying, the handover and a token read at the same boot).
+  if (preread?.service === service && Date.now() - preread.at <= PREREAD_TTL_MS) return preread.values.size
+  if (!prereading) {
+    const started = find(service).then((items) => {
+      preread = { service, at: Date.now(), values: new Map(items.map((item) => [item.account, item.password])) }
+      return items.length
+    })
+    prereading = started
+    void started.finally(() => { if (prereading === started) prereading = null }).catch(() => {})
+  }
+  return prereading
+}
+
+function loadFindCredentials(): FindCredentialsAsync | undefined {
   try {
     const req = createRequire(import.meta.url)
-    find = (req('@napi-rs/keyring') as { findCredentialsAsync?: FindCredentialsAsync }).findCredentialsAsync
+    return (req('@napi-rs/keyring') as { findCredentialsAsync?: FindCredentialsAsync }).findCredentialsAsync
   } catch {
-    return null
+    return undefined
   }
-  if (!find) return null
-  return (await find(service)).length
 }
 
 /** One keychain probe: the backend when usable; whether a keychain binding exists here; why the read failed. */

@@ -239,16 +239,19 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     return () => clearInterval(timer)
   }, [claudeAuth.flowPending, refreshClaude])
 
-  // Sign-in state changed: re-test Claude rows so their status dot follows.
-  const claudeSignedIn = claudeAuth.authenticated
-  const prevClaudeSignedIn = useRef(claudeSignedIn)
+  // A sign-in state changed: re-test that subscription's rows so their status
+  // follows (a row tested before sign-in says "Not configured" until then).
+  const signedIn = `${chatgptAuth.authenticated}|${grokAuth.authenticated}|${claudeAuth.authenticated}`
+  const prevSignedIn = useRef({ 'chatgpt-subscription': chatgptAuth.authenticated, 'grok-subscription': grokAuth.authenticated, 'claude-subscription': claudeAuth.authenticated })
   useEffect(() => {
-    if (prevClaudeSignedIn.current === claudeSignedIn) return
-    prevClaudeSignedIn.current = claudeSignedIn
+    const now = { 'chatgpt-subscription': chatgptAuth.authenticated, 'grok-subscription': grokAuth.authenticated, 'claude-subscription': claudeAuth.authenticated }
+    const changed = (Object.keys(now) as (keyof typeof now)[]).filter((type) => now[type] !== prevSignedIn.current[type])
+    prevSignedIn.current = now
     for (const p of providersRef.current) {
-      if (p.type === 'claude-subscription') void runTest(p.id, true)
+      if ((changed as string[]).includes(p.type)) void runTest(p.id, true)
     }
-  }, [claudeSignedIn, runTest])
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [signedIn, runTest])
 
   // Poll while a Grok device-code flow is pending.
   useEffect(() => {

@@ -95,6 +95,7 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
 
   // Agent
   startAgent: (filePath?: string, hasUserMessage?: boolean) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, hasUserMessage }),
+  reattachAgent: (filePath?: string) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, reattachOnly: true }),
   stopAgent: () => ipcRenderer.invoke(IPC.AGENT_STOP),
   invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) =>
     ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop }),

@@ -6,6 +6,7 @@ import type { FleetMessageResult, FleetPendingInteraction, FleetStateResult, Fle
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import { countActiveLoops } from '../../../runtime/background-event-mapping'
 import type { DaemonHandlerTable, DaemonModeContext } from '../context'
+import { noteKill } from '../kill-epoch'
 import { pathKey, samePath } from '../session'
 import { fleetState, hydrateBurn } from './poll'
 
@@ -387,6 +388,8 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
    * (log and a warning dialog), never read as a full stop.
    */
   [IPC.EMERGENCY_STOP]: async (ctx) => {
+    // Before any await: a start already under way sees this Kill (kill-epoch.ts).
+    noteKill(ctx)
     const client = await ctx.ready()
     ctx.log.log('[EmergencyStop] Asking the ADF daemon to stop everything...')
     // Embedded detaches the foreground host first: the renderer sees none of

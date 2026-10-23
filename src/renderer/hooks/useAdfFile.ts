@@ -104,10 +104,15 @@ export async function fetchFileContents(agentFilePath: string | null, api: AdfAp
 
 /**
  * Apply AGENT_START's answer for an agent that was already running (the
- * re-attach): its executor state, pending approvals and asks. A failed
- * re-attach is said in the status line: the agent still runs in main.
+ * re-attach): its executor state, pending approvals and asks. An agent that
+ * stopped in between (a Kill) shows off: the re-attach never starts it. A
+ * failed re-attach is said in the status line: the agent still runs in main.
  */
-function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.startAgent>>, filePath: string | null): void {
+function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.reattachAgent>>, filePath: string | null): void {
+  if (!startResult.success && (startResult.code === 'not_running' || startResult.code === 'kill_in_progress')) {
+    console.log(`[useAdfFile] Not re-attached: ${startResult.error}`)
+    return
+  }
   if (startResult.success) {
     // Use the actual executor state (may be mid-turn: thinking/tool_use)
     const reattachedState = toDisplayState(startResult.agentState ?? 'idle')
@@ -392,7 +397,7 @@ export function useAdfFile() {
     if (filePath && openKey && reattachAfterUnlock.delete(openKey) && opts.reattach !== false) {
       // A running agent skips the review check, as openFile's re-attach does.
       useAppStore.getState().addStartingFilePath(openKey)
-      const startResult = await openApi().startAgent().finally(() => useAppStore.getState().removeStartingFilePath(openKey))
+      const startResult = await openApi().reattachAgent().finally(() => useAppStore.getState().removeStartingFilePath(openKey))
       applyReattach(startResult, filePath)
       return
     }
@@ -559,7 +564,7 @@ export function useAdfFile() {
           }
         }
 
-        // If the agent was running in the background, auto-start it
+        // If the agent was running in the background, re-attach it (never a start)
         if (result.agentWasRunning) {
           t1 = performance.now()
           // The re-attach is NOT instant: an executor that was in error/stopped
@@ -570,7 +575,7 @@ export function useAdfFile() {
           // row) show "Starting…" until the real state arrives. That mark went
           // on above, before the reset.
           startHandedOff = true
-          const startResult = await api.startAgent().finally(() => {
+          const startResult = await api.reattachAgent().finally(() => {
             // Clears on both outcomes — including the re-attach failure below,
             // whose message must not be hidden behind a stuck spinner.
             for (const fp of marked) useAppStore.getState().removeStartingFilePath(fp)

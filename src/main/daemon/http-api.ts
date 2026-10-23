@@ -2545,6 +2545,8 @@ export function createDaemonHttpApi(
 
   server.post<{ Params: AgentIdParams; Querystring: { preflight?: string; hasUserMessage?: string } }>('/agents/:id/start', async (request, reply) => {
     try {
+      // Taken before the provider check's await: a Kill during it refuses the start.
+      const killEpoch = RuntimeGate.killEpoch
       // Client-initiated starts ask for Studio's AGENT_START provider gate;
       // autostart never does (Studio's background starts skip it too).
       const preflight = request.query?.preflight === '1' || request.query?.preflight === 'true'
@@ -2556,7 +2558,7 @@ export function createDaemonHttpApi(
         if (!check.ok) return reply.code(409).send({ error: check.error, code: check.code ?? 'provider_check_failed' })
         credentialsLocked = check.credentialsLocked
       }
-      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage })
+      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage, killEpoch })
       return {
         success: true,
         loaded: result.loaded,

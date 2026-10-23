@@ -24,6 +24,7 @@ import { constants as fsConstants, createReadStream, createWriteStream, existsSy
 import { copyFile, link, lstat, mkdir, mkdtemp, open, readdir, readFile, realpath, rename, rmdir, stat, unlink, writeFile } from 'node:fs/promises'
 import { execFile } from 'node:child_process'
 import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
+import { defaultAgentsFolderName } from '../utils/agents-folder-name'
 import { homedir, tmpdir } from 'node:os'
 import { basename, delimiter, dirname, isAbsolute, join, resolve } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -346,15 +347,16 @@ export function resetDocumentsDirCache(): void {
 /**
  * Where reviewed agents from untracked places and quick creates go: the
  * `agentsFolder` setting (ignored when it points into the OS temp dir, as in
- * Studio), else <Documents>/adf-agents. Never created here.
+ * Studio), else <Documents>/adf-agents (adf-agents-<n> for ADF_INSTANCE=n).
+ * Never created here.
  */
 export async function resolveAgentsFolder(settings?: TrackedDirsSettings): Promise<{ path: string; source: 'setting' | 'default' }> {
-  return configuredAgentsFolder(settings) ?? { path: join(await documentsDir(), 'adf-agents'), source: 'default' }
+  return configuredAgentsFolder(settings) ?? { path: join(await documentsDir(), defaultAgentsFolderName()), source: 'default' }
 }
 
 /** resolveAgentsFolder for synchronous callers (DaemonAgentFactory.defaultDirectory); see documentsDirSync. */
 export function resolveAgentsFolderSync(settings?: TrackedDirsSettings): { path: string; source: 'setting' | 'default' } {
-  return configuredAgentsFolder(settings) ?? { path: join(documentsDirSync(), 'adf-agents'), source: 'default' }
+  return configuredAgentsFolder(settings) ?? { path: join(documentsDirSync(), defaultAgentsFolderName()), source: 'default' }
 }
 
 function configuredAgentsFolder(settings?: TrackedDirsSettings): { path: string; source: 'setting' } | null {

@@ -575,6 +575,8 @@ export class AgentExecutor extends EventEmitter {
   private session: AgentSession
   private config: AgentConfig
   private basePrompt: string
+  /** Settings' app system prompt, read each turn: an edit applies at the next turn (setBasePromptSource). */
+  private basePromptSource: (() => unknown) | null = null
   private toolPrompts: Record<string, string>
   private compactionPrompt: string
   private abortController: AbortController | null = null
@@ -5902,7 +5904,23 @@ export class AgentExecutor extends EventEmitter {
     return prompt
   }
 
+  /**
+   * Read the app system prompt from the host's settings at every turn, so an
+   * edit applies at the next turn, not the next start. A non-string value
+   * keeps the prompt the executor has.
+   */
+  setBasePromptSource(read: (() => unknown) | null): void {
+    this.basePromptSource = read
+  }
+
+  /** The app system prompt this executor assembles with now. */
+  getBasePrompt(): string {
+    return this.basePrompt
+  }
+
   private assembleSystemPrompt(): string {
+    const live = this.basePromptSource?.()
+    if (typeof live === 'string') this.basePrompt = live
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
@@ -5952,6 +5970,8 @@ export class AgentExecutor extends EventEmitter {
       JSON.stringify({
         name: this.config.name,
         instructions: this.config.instructions,
+        // The app system prompt can change mid-session (setBasePromptSource).
+        base_prompt: this.hashString(this.basePrompt),
         include_base_prompt: this.config.include_base_prompt,
         bare_prompt: this.config.bare_prompt,
         tools: enabledToolNames,

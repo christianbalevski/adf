@@ -4,6 +4,8 @@ import type { AgentStatus, AgentSummary, DaemonClient } from '../../../../shared
 import type { BackgroundAgentStatus } from '../../../../shared/types/ipc.types'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { samePath } from '../session'
+import { killCount } from '../kill-epoch'
+import { KILL_IN_PROGRESS_ERROR } from '../../../runtime/runtime-gate'
 import { daemonCode, daemonStatus, errorMessage, errorString, isAgentGone } from './open-file'
 
 /**
@@ -96,10 +98,18 @@ async function mapSettled<T>(items: readonly string[], limit: number, fn: (item:
  * Embedded BAM.startAgent: load the file and dispatch its startup turn
  * (POST /agents/load assembles without it; POST /agents/:id/start on the
  * loaded agent dispatches it). `requireReview` is the daemon's review gate.
+ * `kills`: killCount when the caller's action began; a Kill sent since then
+ * refuses the start, or stops what reached the daemon after the Kill did.
  */
-async function startInBackground(client: DaemonClient, filePath: string, requireReview: boolean): Promise<string> {
+async function startInBackground(ctx: DaemonModeContext, client: DaemonClient, filePath: string, requireReview: boolean, kills: number): Promise<string> {
+  const killed = () => killCount(ctx) !== kills
+  if (killed()) throw new Error(KILL_IN_PROGRESS_ERROR)
   const ref = await client.request<{ id: string }>('POST', '/agents/load', { body: { filePath, requireReview }, timeoutMs: 120_000 })
-  await client.request('POST', `/agents/${enc(ref.id)}/start`, { timeoutMs: 120_000 })
+  if (!killed()) await client.request('POST', `/agents/${enc(ref.id)}/start`, { timeoutMs: 120_000 })
+  if (killed()) {
+    await client.request('POST', `/agents/${enc(ref.id)}/stop`, { timeoutMs: 60_000 }).catch(() => {})
+    throw new Error(KILL_IN_PROGRESS_ERROR)
+  }
   return ref.id
 }
 
@@ -197,6 +207,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
   [IPC.BACKGROUND_AGENT_START]: async (ctx, _event, args: { filePath: string }) => {
     const filePath = args?.filePath
     if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return { success: false, error: 'Cannot start background agent for the foreground file' }
+    const kills = killCount(ctx)
     const client = await ctx.ready()
     // GET /files/agent peeks a file that is not loaded: its review mark and its legacy file password.
     const info = await client.request<{ loaded: boolean; reviewed?: boolean; passwordProtected?: boolean }>('GET', '/files/agent', { query: { path: filePath } })
@@ -207,7 +218,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
       return { success: false, error: 'Agent is password-protected. Open it in the foreground and unlock first.' }
     }
     try {
-      await startInBackground(client, filePath, true)
+      await startInBackground(ctx, client, filePath, true, kills)
       return { success: true }
     } catch (err) {
       const code = daemonCode(err)
@@ -321,6 +332,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
    */
   [IPC.DIRECTORY_START_ALL]: async (ctx, _event, args: { dirPath: string }) => {
     try {
+      const kills = killCount(ctx)
       const client = await ctx.ready()
       const files = await adfFilesIn(ctx, client, args.dirPath)
       const settled = await mapSettled(files, DIRECTORY_START_CONCURRENCY, async (filePath) => {
@@ -328,7 +340,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
         // Loaded already: running, or the open file held as a document (also when reached through a link).
         if (await ctx.runningAgentAt(filePath)) return
         try {
-          await startInBackground(client, filePath, false)
+          await startInBackground(ctx, client, filePath, false, kills)
         } catch (err) {
           ctx.log.warn(`[Backend] DIRECTORY_START_ALL: ${filePath} did not start: ${errorMessage(err)}`)
           throw new Error('Failed to start agent')

@@ -906,3 +906,22 @@ describe('an unsent message lives in one place', () => {
     expect(queued(AGENT_1)).toEqual([])
   })
 })
+
+describe('opening an agent a Kill stops during the open', () => {
+  it('shows it off and never starts it: the re-attach is not a start', async () => {
+    const adfApi = (window as unknown as { adfApi: Record<string, unknown> }).adfApi
+    const startAgent = vi.fn(adfApi.startAgent as (...args: unknown[]) => Promise<unknown>)
+    adfApi.startAgent = startAgent
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      // FILE_OPEN saw it running; the Kill stops it before the re-attach.
+      main.duringOpen = () => { queueMicrotask(() => main.agents.delete(AGENT_1)) }
+      await main.openFile(AGENT_1)
+      expect(useAgentStore.getState().state).toBe('off')
+      expect(useAgentStore.getState().statusText).not.toMatch(/could not attach/)
+      expect(startAgent).not.toHaveBeenCalled()
+    } finally {
+      log.mockRestore()
+    }
+  })
+})

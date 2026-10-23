@@ -74,7 +74,7 @@ import { LoopConfigSchema } from '../adf/adf-schema'
 import { MAIN_LOOP, listAvailableLoopTools, validateLoopToolList } from '../adf/derive-loop-config'
 import { DEFAULT_NEW_LOOP_TOOLS } from '../../shared/types/adf-v02.types'
 import type { AgentProfileName } from './agent-capability-profiles'
-import { RuntimeGate } from './runtime-gate'
+import { KILL_IN_PROGRESS_ERROR, RuntimeGate } from './runtime-gate'
 import { currentAgentId, currentTurnId, withSource } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { getUmbilicalReplayBuffer } from './umbilical-replay-buffer'
@@ -459,6 +459,8 @@ export interface RuntimeAgentLoopPage {
 }
 
 /** A caller-visible loop API failure; `statusCode` is the HTTP status to answer with. */
+const KILL_STOPPED_AUTOSTART = 'A Kill stopped this autostart. Start the agent again.'
+
 export class RuntimeLoopError extends Error {
   /** `details`: extra fields for the HTTP error body (e.g. `candidates`). */
   constructor(message: string, readonly statusCode: 400 | 403 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
@@ -851,6 +853,8 @@ export class RuntimeService extends EventEmitter {
   }
 
   async loadAgent(filePath: string, opts: RuntimeLoadAgentOptions = {}): Promise<RuntimeAgentRef> {
+    // Nothing loads while a Kill is stopping agents: it would come up behind the Kill's back.
+    if (RuntimeGate.killing) throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
     const canonicalPath = this.canonicalFilePath(filePath)
     const existingId = this.filePathToAgentId.get(canonicalPath)
     if (existingId) return this.toRef(this.requireAgent(existingId))
@@ -872,6 +876,25 @@ export class RuntimeService extends EventEmitter {
       // Releases the lease when the load failed (the agent is not registered).
       await this.agentLeases?.reconcile()
     }
+  }
+
+  /**
+   * Waits for the loads in flight to finish (or fail), so a Kill can unload
+   * what they registered. Answers the files still loading after `timeoutMs`:
+   * a stuck load never holds up the rest of the Kill.
+   */
+  async settleLoads(timeoutMs = 10_000): Promise<string[]> {
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const timedOut = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs) })
+    const settled = (async () => {
+      while (this.inFlightLoads.size > 0) await Promise.allSettled([...this.inFlightLoads.values()])
+    })()
+    try {
+      await Promise.race([settled, timedOut])
+    } finally {
+      clearTimeout(timer)
+    }
+    return [...this.inFlightLoads.keys()]
   }
 
   /**
@@ -1471,6 +1494,7 @@ export class RuntimeService extends EventEmitter {
    * active-state greeting, as Studio's foreground start does.
    */
   async startAgent(agentId: string, opts: { hasUserMessage?: boolean } = {}): Promise<boolean> {
+    if (RuntimeGate.killing) throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
     RuntimeGate.resume()
     const managed = this.requireAgent(agentId)
     // A start that raced a stop (the agent is stopping or already torn down)
@@ -1503,7 +1527,12 @@ export class RuntimeService extends EventEmitter {
     return raced.status === 'resolved' ? raced.dispatched : true
   }
 
-  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean } = {}): Promise<RuntimeAgentStartResult> {
+  /**
+   * `killEpoch`: RuntimeGate.killEpoch when the caller's start began (before
+   * its own awaits); a Kill since then refuses the start.
+   */
+  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean; killEpoch?: number } = {}): Promise<RuntimeAgentStartResult> {
+    const killEpoch = opts.killEpoch ?? RuntimeGate.killEpoch
     let managed = this.resolveAgent(identifier)
     let loaded = false
 
@@ -1516,7 +1545,12 @@ export class RuntimeService extends EventEmitter {
       loaded = true
     }
 
-    const startupTriggered = await this.startAgent(managed.id, opts)
+    // A load that outlived a Kill (past its settle deadline) is not started after it.
+    if (RuntimeGate.killedSince(killEpoch)) {
+      if (loaded) await this.unloadAgent(managed.id, { mode: 'immediate' })
+      throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
+    }
+    const startupTriggered = await this.startAgent(managed.id, { hasUserMessage: opts.hasUserMessage })
     return {
       ref: this.toRef(managed),
       loaded,
@@ -1574,6 +1608,8 @@ export class RuntimeService extends EventEmitter {
     trackedDirs: string[],
     opts: RuntimeAutostartOptions = {},
   ): Promise<RuntimeAutostartReport> {
+    // A Kill during the scan or the starts stops what is left of the autostart.
+    const killEpoch = RuntimeGate.killEpoch
     RuntimeGate.resume()
     const files = await this.scanAdfFilesAsync(trackedDirs, opts.maxDepth ?? 5)
     const report: RuntimeAutostartReport = {
@@ -1629,9 +1665,14 @@ export class RuntimeService extends EventEmitter {
       }
 
       try {
+        if (RuntimeGate.killedSince(killEpoch)) throw new RuntimeLoopError(KILL_STOPPED_AUTOSTART, 409, 'kill_in_progress')
         // Review verified above — disable loadAgent's own gate so the file is
         // opened exactly once more (the real open): 2 opens per candidate.
         const ref = await this.loadAgent(filePath, { enforceReviewGate: false })
+        if (RuntimeGate.killedSince(killEpoch)) {
+          await this.unloadAgent(ref.id, { mode: 'immediate' })
+          throw new RuntimeLoopError(KILL_STOPPED_AUTOSTART, 409, 'kill_in_progress')
+        }
         // startAgent dispatches the startup turn fire-and-forget, so the
         // report is emitted once loads complete — not after first LLM turns.
         const startupTriggered = await this.startAgent(ref.id)
@@ -3938,6 +3979,8 @@ export class RuntimeService extends EventEmitter {
     if (RuntimeGate.tearingDown) {
       throw new Error('RuntimeService: runtime teardown in progress — agent not registered.')
     }
+    // A load in flight when a Kill began: its build is disposed, not registered.
+    if (RuntimeGate.killing) throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
     const id = idOverride ?? config.id
     // Two files with one id that loaded concurrently both passed the check
     // before their builds; the second to finish is refused here.
@@ -4450,6 +4493,7 @@ export class RuntimeService extends EventEmitter {
     const compaction = this.settings?.get('compactionPrompt')
     return {
       basePrompt: typeof base === 'string' ? base : this.basePrompt,
+      ...(this.settings ? { basePromptSource: () => this.settings?.get('globalSystemPrompt') } : {}),
       toolPrompts: tools && typeof tools === 'object' && !Array.isArray(tools) ? tools as Record<string, string> : this.toolPrompts,
       compactionPrompt: typeof compaction === 'string' ? compaction : this.compactionPrompt,
     }

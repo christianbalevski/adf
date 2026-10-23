@@ -14,6 +14,7 @@ import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { writeSettings } from '../settings/settings-save'
 import { Dialog } from '../common/Dialog'
 import { IconPicker } from '../common/IconPicker'
+import { Tooltip } from '../common/Tooltip'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { loopColor } from '../../utils/loop-color'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -102,7 +103,7 @@ const RUNTIME_TOOLS: ToolDeclaration[] = [
 
 /** Logical tool groups for the UI. Order matters — rendered top to bottom. */
 const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
-  { label: 'ADF Shell', tools: new Set(['adf_shell']), note: 'Bash-like interface alongside your tools; can run any of them by name. Hide tools (visibility) to save context.' },
+  { label: 'ADF Shell', tools: new Set(['adf_shell']), note: 'Bash-like shell that can run any enabled tool by name. Hide the other tools to save context.' },
   { label: 'Filesystem', tools: new Set(['fs_read', 'fs_write', 'fs_list', 'fs_delete']) },
   { label: 'System', tools: new Set(['sys_get_config', 'sys_update_config', 'sys_code', 'sys_lambda', 'sys_create_adf', 'sys_get_meta', 'sys_set_meta', 'sys_delete_meta']) },
   { label: 'Timers', tools: new Set(['sys_set_timer', 'sys_list_timers', 'sys_delete_timer']) },
@@ -2215,11 +2216,16 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <div key={group.label}>
                   {gi > 0 && <div className="border-t border-neutral-200 dark:border-neutral-700 my-1" />}
                   <div className="flex items-center justify-between mb-0.5">
-                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
+                    <p className="flex items-center text-[10px] text-[var(--adf-ui-text-subtle)]">
                       {group.label}
-                      {group.note && <span className="ml-1 italic">({group.note})</span>}
+                      {group.note && (
+                        <Tooltip tip={group.note} className="ml-1 inline-flex">
+                          <button type="button" aria-label={`About ${group.label}`} className="leading-none text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]">ⓘ</button>
+                        </Tooltip>
+                      )}
                     </p>
-                    <span className={`flex items-center gap-3 shrink-0 ${sectionDisabled ? 'cursor-not-allowed' : ''}`}>
+                    {/* One row: its own toggles are the group's, so the group's are not repeated above it. */}
+                    {groupTools.length > 1 && <span className={`flex items-center gap-3 shrink-0 ${sectionDisabled ? 'cursor-not-allowed' : ''}`}>
                       {showSectionRestricted ? (
                         <button
                           type="button"
@@ -2267,7 +2273,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         disabled={sectionDisabled}
                         onChange={onToggleSectionEnabled}
                       />
-                    </span>
+                    </span>}
                   </div>
                   {groupTools.map((tool) => {
                     const i = local.tools.findIndex((t) => t.name === tool.name)

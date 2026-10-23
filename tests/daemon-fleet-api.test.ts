@@ -310,6 +310,112 @@ describe('POST /runtime/emergency-stop: partial stops and the daemon wiring', ()
   })
 })
 
+describe('POST /runtime/emergency-stop: nothing starts while it runs', () => {
+  // Held open on the mesh server stop, after the agents are unloaded.
+  function heldKill() {
+    let finish: (() => void) | null = null
+    const meshServer = { stop: vi.fn(() => new Promise<void>((resolve) => { finish = resolve })) }
+    const gaps = { codeSandboxService: { destroyAll: () => {} } as never, meshServer }
+    // A failed assertion before finish() must not leave the request (and server.close) hanging.
+    cleanups.push(() => finish?.())
+    return {
+      gaps,
+      finish: () => finish?.(),
+      stopping: () => vi.waitFor(() => expect(meshServer.stop).toHaveBeenCalled(), { timeout: 5_000 }),
+    }
+  }
+
+  it('a start or load mid-Kill (the click that re-attached an agent) is refused, and the gate stays closed', async () => {
+    const kill = heldKill()
+    const { dir, runtime, server } = setup({ routes: { gaps: kill.gaps } })
+    const agent = seedAgent(dir, 1)
+    await runtime.loadAgent(agent.filePath)
+    const killed = server.inject({ method: 'POST', url: '/runtime/emergency-stop' })
+    await kill.stopping()
+    expect(RuntimeGate.killing).toBe(true)
+
+    const start = await server.inject({ method: 'POST', url: `/agents/${encodeURIComponent(agent.filePath)}/start` })
+    expect(start.statusCode).toBe(409)
+    expect(start.json()).toMatchObject({ code: 'kill_in_progress' })
+    const load = await server.inject({ method: 'POST', url: '/agents/load', payload: { filePath: agent.filePath } })
+    expect(load.statusCode).toBe(409)
+    expect(RuntimeGate.stopped).toBe(true)
+
+    kill.finish()
+    expect((await killed).json()).toEqual({ success: true, stoppedAgents: 1 })
+    expect(runtime.listAgents()).toEqual([])
+    expect(RuntimeGate.killing).toBe(false)
+    expect(RuntimeGate.stopped).toBe(true)
+  })
+
+  it('an agent whose load was in flight when the Kill began is unloaded too', async () => {
+    const kill = heldKill()
+    const { dir, runtime, server } = setup({ routes: { gaps: kill.gaps } })
+    // Either it registers before the first pass (and is unloaded) or the Kill refuses its registration.
+    const loading = runtime.loadAgent(seedAgent(dir, 1).filePath).then(() => 'loaded', (err) => err.code)
+    const killed = server.inject({ method: 'POST', url: '/runtime/emergency-stop' })
+    await kill.stopping()
+    kill.finish()
+    expect((await killed).json()).toMatchObject({ success: true })
+    expect(['loaded', 'kill_in_progress']).toContain(await loading)
+    expect(runtime.listAgents()).toEqual([])
+  })
+
+  it('an agent already loaded cannot be started mid-Kill', async () => {
+    const { dir, runtime } = setup()
+    const { id } = await runtime.loadAgent(seedAgent(dir, 1).filePath)
+    const release = RuntimeGate.beginKill()
+    try {
+      await expect(runtime.startAgent(id)).rejects.toMatchObject({ statusCode: 409, code: 'kill_in_progress' })
+    } finally {
+      release()
+    }
+    expect(RuntimeGate.stopped).toBe(true)
+  })
+
+  // A start that awaited (a provider check) while a whole Kill ran is not carried out after it.
+  it('a start whose Kill came and went during its own awaits is refused and leaves nothing loaded', async () => {
+    const { dir, runtime } = setup()
+    const agent = seedAgent(dir, 1)
+    const killEpoch = RuntimeGate.killEpoch
+    RuntimeGate.beginKill()()
+    await expect(runtime.startOrLoadAgent(agent.filePath, { killEpoch })).rejects.toMatchObject({ code: 'kill_in_progress' })
+    expect(runtime.listAgents()).toEqual([])
+    expect(RuntimeGate.stopped).toBe(true)
+  })
+
+  it('an autostart a Kill interrupts starts nothing after the Kill', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-daemon-fleet-'))
+    cleanups.push(() => rmSync(dir, { recursive: true, force: true }))
+    const agent = seedAgent(dir, 1)
+    const ws = AdfWorkspace.open(agent.filePath)
+    ws.setAgentConfig({ ...ws.getAgentConfig(), autostart: true })
+    ws.close()
+    const { runtime } = setup({}, { reviewedAgents: [agent.agentId] })
+    const autostart = runtime.autostartFromDirectories([dir], { maxDepth: 0 })
+    // The Kill runs (and ends) while the autostart scans the folder.
+    RuntimeGate.beginKill()()
+    const report = await autostart
+    expect(report.started).toEqual([])
+    expect(report.failed).toEqual([expect.objectContaining({ name: 'agent-1', error: expect.stringContaining('Kill') })])
+    expect(runtime.listAgents()).toEqual([])
+    expect(RuntimeGate.stopped).toBe(true)
+  })
+
+  it('after the Kill, a deliberate start reopens the gate', async () => {
+    const kill = heldKill()
+    const { dir, runtime, server } = setup({ routes: { gaps: kill.gaps } })
+    const killed = server.inject({ method: 'POST', url: '/runtime/emergency-stop' })
+    await kill.stopping()
+    kill.finish()
+    await killed
+    const res = await server.inject({ method: 'POST', url: `/agents/${encodeURIComponent(seedAgent(dir, 1).filePath)}/start` })
+    expect(res.statusCode).toBe(200)
+    expect(RuntimeGate.stopped).toBe(false)
+    expect(runtime.listAgents()).toHaveLength(1)
+  })
+})
+
 describe('POST /agents/load after an emergency stop', () => {
   it('reopens the runtime gate, so the loaded agent runs turns', async () => {
     const { dir, runtime, server } = setup({ routes: { gaps: { codeSandboxService: { destroyAll: () => {} } as never, meshServer: { stop: async () => {} } } } })

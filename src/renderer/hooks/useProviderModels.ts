@@ -12,7 +12,10 @@ export interface ProviderModelList {
 // agent's own key — a provider copy on an agent can see a different catalog
 // than the app's entry of the same id. The list comes from the open agent's
 // runtime: another runtime's key is its runtime and the rest.
-let cache = new Map<string, ProviderModelList>()
+// Lists go stale after MODELS_TTL_MS (main keeps Claude Code's list as long),
+// so a model the provider adds shows without a restart.
+const MODELS_TTL_MS = 10 * 60_000
+let cache = new Map<string, { at: number; list: ProviderModelList }>()
 const inflight = new Map<string, Promise<ProviderModelList>>()
 
 const cacheKey = (providerId: string, filePath?: string, runtimeId: RuntimeId = LOCAL_RUNTIME) => {
@@ -34,13 +37,24 @@ export function dropProviderModels(runtimeId: RuntimeId): void {
 }
 
 /**
- * The provider's model list, fetched once per key, from the open agent's
+ * The provider's model list, fetched once per key (again after
+ * MODELS_TTL_MS), from the open agent's
  * runtime. Pass `filePath` when the provider is stored on that agent so the
  * backend lists with the agent's key.
  */
+function cachedList(key: string): ProviderModelList | undefined {
+  const entry = cache.get(key)
+  if (!entry) return undefined
+  if (Date.now() - entry.at > MODELS_TTL_MS) {
+    cache.delete(key)
+    return undefined
+  }
+  return entry.list
+}
+
 export function loadProviderModels(providerId: string, filePath?: string): Promise<ProviderModelList> {
   const key = cacheKey(providerId, filePath, useDocumentStore.getState().runtimeId)
-  const cached = cache.get(key)
+  const cached = cachedList(key)
   if (cached) return Promise.resolve(cached)
   let pending = inflight.get(key)
   if (!pending) {
@@ -48,7 +62,7 @@ export function loadProviderModels(providerId: string, filePath?: string): Promi
       .catch((err: unknown) => ({ models: [], error: String(err) }))
       .then((result) => {
         // Dropped meanwhile (its runtime left the set): answered, not kept.
-        if (inflight.get(key) === pending) cache.set(key, result)
+        if (inflight.get(key) === pending) cache.set(key, { at: Date.now(), list: result })
         return result
       })
       .finally(() => { if (inflight.get(key) === pending) inflight.delete(key) })
@@ -72,6 +86,6 @@ export function useProviderModels(providerId: string | undefined, filePath?: str
   }, [providerId, filePath, key])
 
   if (!providerId) return { models: [], loading: false }
-  const list = state?.key === key ? state.list : cache.get(key)
+  const list = state?.key === key ? state.list : cachedList(key)
   return list ? { ...list, loading: false } : { models: [], loading: true }
 }

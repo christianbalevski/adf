@@ -55,6 +55,10 @@ export function createOpenFileHarness(): OpenFileHarness {
     invokeAgent: vi.fn(async () => ({ success: true }))
   }
 
+  const attach = () => {
+    const agent = current ? harness.agents.get(current) : undefined
+    return { success: true, sessionId: 's-1', agentState: agent?.state ?? 'idle', loopStates: agent?.loopStates, pendingApprovals: [], pendingAsks: [] }
+  }
   const adfApi = {
       platform: 'linux',
       openFile: async (filePath: string) => {
@@ -66,10 +70,11 @@ export function createOpenFileHarness(): OpenFileHarness {
       getBatch: async () => ({ document: '', agentConfig: null, statusText: '', chat: { uiLog: [] } }),
       readInternalFile: async () => null,
       checkAgentReview: async () => ({ needsReview: false }),
-      startAgent: async () => {
-        const agent = current ? harness.agents.get(current) : undefined
-        return { success: true, sessionId: 's-1', agentState: agent?.state ?? 'idle', loopStates: agent?.loopStates, pendingApprovals: [], pendingAsks: [] }
-      },
+      startAgent: async () => attach(),
+      // Main's answer for an agent that stopped after FILE_OPEN saw it running (a Kill).
+      reattachAgent: async () => (current && harness.agents.has(current)
+        ? attach()
+        : { success: false, code: 'not_running', error: 'not running' }),
       invokeAgent: harness.invokeAgent,
       getBackgroundAgentStatus: () => new Promise(() => {}),
       onBackgroundAgentEvents: (cb: typeof pushBatch) => { pushBatch = cb; return () => {} },

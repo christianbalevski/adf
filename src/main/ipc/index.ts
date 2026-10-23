@@ -6,6 +6,7 @@ import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
 import { prepareFoundAgent } from '../utils/found-agent'
+import { defaultAgentsFolderName } from '../utils/agents-folder-name'
 import {
   AdapterAttachArgs, AdapterCredentialGetArgs, AdapterCredentialSetArgs, AdapterDetachArgs, AdapterListFilesArgs,
   AdapterPackageArgs, AdapterTypeArgs, McpAttachArgs, McpCredentialGetArgs, McpCredentialListArgs, McpCredentialSetArgs,
@@ -95,7 +96,7 @@ import { isValidAgentFileName } from '../../shared/utils/agent-file-name'
 import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-conflicts'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
-import { RuntimeGate } from '../runtime/runtime-gate'
+import { KILL_IN_PROGRESS_ERROR, RuntimeGate } from '../runtime/runtime-gate'
 import { MeshManager } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
@@ -1479,7 +1480,7 @@ function resolveAgentsFolderPath(): string {
       return candidate
     }
   }
-  return join(app.getPath('documents'), 'adf-agents')
+  return join(app.getPath('documents'), defaultAgentsFolderName())
 }
 
 /** resolveAgentsFolderPath + creation. Created on first use, never at boot. */
@@ -2183,6 +2184,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       let t1 = performance.now()
       await cleanupCurrentFile()
       perfLog(`[PERF] FILE_OPEN.cleanup: ${(performance.now() - t1).toFixed(1)}ms`)
+
+      // An open during a Kill waits for it: a background agent the Kill has
+      // not reached yet must not be taken to the foreground, out of its reach.
+      if (RuntimeGate.killing) await RuntimeGate.whenKillSettled()
 
       // Check for running background agent
       let agentWasRunning = false
@@ -3688,12 +3693,18 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- Agent runtime ---
 
-  ipcMain.handle(IPC.AGENT_START, foregroundStarts.wrap(async (_event: Electron.IpcMainInvokeEvent, args?: { filePath?: string; hasUserMessage?: boolean }) => {
+  // `reattachOnly`: the renderer re-attaching an agent that ran when its file
+  // was opened, not a Start. It answers the running executor or `not_running`,
+  // and never rebuilds one: an agent a Kill stopped stays stopped.
+  ipcMain.handle(IPC.AGENT_START, foregroundStarts.wrap(async (_event: Electron.IpcMainInvokeEvent, args?: { filePath?: string; hasUserMessage?: boolean; reattachOnly?: boolean }) => {
     const t0 = performance.now()
     if (!currentWorkspace || !currentFilePath) {
       return { success: false, error: 'No file open' }
     }
-    RuntimeGate.resume()
+    if (RuntimeGate.killing) return { success: false, code: 'kill_in_progress', error: KILL_IN_PROGRESS_ERROR }
+    // A Kill that begins while this start builds the agent: the build is disposed, never installed.
+    const killEpoch = RuntimeGate.killEpoch
+    if (!args?.reattachOnly) RuntimeGate.resume()
     // Guard: if the caller captured a filePath, ensure it still matches the current file
     if (args?.filePath && args.filePath !== currentFilePath) {
       return { success: false, error: 'Agent file changed since start was requested' }
@@ -3706,7 +3717,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // here: the executor was already admitted when it started, and refusing
     // now would leave it running with no host attached (invisible to the UI,
     // unregistered from the mesh). The gate applies to fresh construction only.
-    if (agentExecutor && agentExecutor.getState() !== 'stopped' && agentExecutor.getState() !== 'error') {
+    // A re-attach takes an executor in error too: it is still alive (it may
+    // recover on its next trigger); the owner's Start rebuilds it.
+    const reusable = agentExecutor && agentExecutor.getState() !== 'stopped'
+      && (agentExecutor.getState() !== 'error' || args?.reattachOnly)
+    if (reusable && agentExecutor) {
       if (currentAssembledAgent) {
         const handle = currentAssembledAgent
         const capturedWorkspace = currentWorkspace
@@ -3800,6 +3815,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
       }
       throw new Error('Running foreground executor is missing its assembled lifecycle handle')
+    }
+
+    if (args?.reattachOnly) {
+      return { success: false, code: 'not_running', error: `${basename(currentFilePath, '.adf')} is not running.` }
     }
 
     // Error/stopped handles cannot restart. Dispose the old recipe once, retain
@@ -4777,6 +4796,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       registry: agentToolRegistry,
       session,
       basePrompt,
+      basePromptSource: () => settings.get('globalSystemPrompt'),
       toolPrompts,
       compactionPrompt,
       adfCallHandler,
@@ -4908,6 +4928,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     // Emit initial display state based on start_in_state config
     const initialDisplayState = resolveStartInState(finalConfig)
+
+    // A Kill began while this agent was being built: dispose it, install nothing.
+    if (RuntimeGate.killedSince(killEpoch)) {
+      console.log(`[AGENT_START] A Kill began during startup of ${capturedFilePath}; disposing it`)
+      // Its workspace is the open file's unless the user navigated away.
+      if (fileChanged()) assembled.setWorkspaceOwnership(true)
+      await assembled.disposeAsync({ mode: 'immediate' })
+      startingFilePaths.delete(capturedFilePath)
+      return { success: false, code: 'kill_in_progress', error: KILL_IN_PROGRESS_ERROR }
+    }
 
     // If the user navigated away during setup, transition to background instead
     // of installing into foreground globals — mirrors what cleanupCurrentFile does.
@@ -6366,6 +6396,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     filePath: string
   ): Promise<{ success: boolean; error?: string; code?: string }> {
     if (!backgroundAgentManager) return { success: false, error: 'Background agent manager not initialized' }
+    if (RuntimeGate.killing) return { success: false, code: 'kill_in_progress', error: KILL_IN_PROGRESS_ERROR }
     RuntimeGate.resume()
     rememberAdfDirectory(filePath)
 
@@ -6460,6 +6491,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.DIRECTORY_START_ALL, async (_event, args: { dirPath: string }) => {
     if (!backgroundAgentManager) return { success: false }
+    if (RuntimeGate.killing) return { success: false, error: KILL_IN_PROGRESS_ERROR }
     RuntimeGate.resume()
     rememberTrackedDirectory(args.dirPath)
 
@@ -8128,7 +8160,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     console.log('[EmergencyStop] Shutting down everything...')
     // What the Kill button reports back ("Stopped N agents"): foreground plus background.
     const stoppedAgents = (currentAssembledAgent ? 1 : 0) + (backgroundAgentManager?.getAgentCount() ?? 0)
-    await teardownRuntime({ disposeMode: 'emergency' })
+    // Held until the teardown is done: no start, load or re-attach in between.
+    const releaseKill = RuntimeGate.beginKill()
+    try {
+      await teardownRuntime({ disposeMode: 'emergency' })
+      // A foreground start that was building when the Kill began disposes
+      // its agent when the build ends (AGENT_START's kill check): wait for it.
+      const stillStarting = await foregroundStarts.settle(10_000)
+      if (stillStarting > 0) console.warn(`[EmergencyStop] ${stillStarting} foreground start(s) still building; each disposes its agent when it finishes`)
+    } finally {
+      releaseKill()
+    }
     console.log('[EmergencyStop] All agents stopped, mesh disabled.')
     return { success: true, stoppedAgents }
   })

@@ -120,6 +120,8 @@ export interface AssembleAgentOptions<P extends AgentProfileName> {
   session?: AgentSession
   restoreLoop?: boolean
   basePrompt?: string
+  /** The host's live app system prompt (settings), read each turn; basePrompt is the start value. */
+  basePromptSource?: () => unknown
   toolPrompts?: Record<string, string>
   compactionPrompt?: string
   adfCallHandler?: AdfCallHandler | null
@@ -341,6 +343,7 @@ export function assembleAgent<P extends AgentProfileName>(
     options.compactionPrompt,
     preLlmHookRunner,
   )
+  if (options.basePromptSource) executor.setBasePromptSource(options.basePromptSource)
   // context.compaction_model reuses the model_invoke factory (any configured provider).
   executor.setModelProviderFactory(adfCallHandler ? (model) => adfCallHandler.providerForModel(model) : null)
   executor.recoverStaleTurnCheckpoint()
@@ -359,7 +362,7 @@ export function assembleAgent<P extends AgentProfileName>(
       host: profile,
       config: snapshotConfig,
       provider: executor.getProvider() ?? provider,
-      basePrompt: options.basePrompt ?? '',
+      basePrompt: executor.getBasePrompt(),
       toolPrompts: options.toolPrompts ?? {},
       compactionPrompt: options.compactionPrompt,
       sources,
@@ -737,6 +740,7 @@ export function assembleAgent<P extends AgentProfileName>(
     // model override must follow it.
     getProvider: () => executor.getProvider() ?? provider,
     basePrompt: options.basePrompt ?? '',
+    basePromptSource: options.basePromptSource,
     toolPrompts: options.toolPrompts ?? {},
     compactionPrompt: options.compactionPrompt,
     adfCallHandler,

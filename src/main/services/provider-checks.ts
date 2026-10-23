@@ -7,11 +7,14 @@
  *
  * Checks the host starts on its own go through autoCheck, which honours the
  * owner's `providerChecksEnabled` opt-out: off = no request, the last result
- * from this session if there is one, else 'unchecked'. An explicit Test click
+ * from this session if there is one, else 'unchecked' (a subscription's
+ * check reads its sign-in state, never cached, and runs either way: it sends
+ * nothing). An explicit Test click
  * calls test(cfg, true) directly. Requests time out after 5 s.
  */
 
 import type { ProviderConfig } from '../../shared/types/ipc.types'
+import { isSubscriptionType } from '../../shared/constants/provider-catalog'
 
 export type ProviderCheckResult = 'ok' | 'failed' | 'unconfigured'
 
@@ -40,7 +43,8 @@ export class ProviderChecks {
 
   /** A check the host starts on its own: honours the opt-out (see file header). */
   async autoCheck(cfg: ProviderConfig): Promise<ProviderCheckResult | 'unchecked'> {
-    if (!this.opts.isEnabled()) {
+    // A subscription's check is its local sign-in state, no request: always run.
+    if (!this.opts.isEnabled() && !isSubscriptionType(cfg.type)) {
       return this.cache.get(providerTestCacheKey(cfg)) ?? 'unchecked'
     }
     return this.test(cfg)
@@ -57,20 +61,21 @@ export class ProviderChecks {
       return result
     }
 
+    // Subscriptions: the sign-in state, read here and never cached, so a
+    // sign-in after the first check shows at once (no request is made).
     if (cfg.type === 'chatgpt-subscription') {
-      // No /models endpoint we can hit cheaply — treat session-auth presence as "ok".
       const { getChatGptAuthManager } = await import('../providers/chatgpt-subscription/auth-manager')
-      return finish(getChatGptAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
+      return getChatGptAuthManager().isAuthenticated() ? 'ok' : 'unconfigured'
     }
 
     if (cfg.type === 'grok-subscription') {
       const { getGrokAuthManager } = await import('../providers/grok-subscription/auth-manager')
-      return finish(getGrokAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
+      return getGrokAuthManager().isAuthenticated() ? 'ok' : 'unconfigured'
     }
 
     if (cfg.type === 'claude-subscription') {
       const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
-      return finish(await getClaudeAuthManager().isAuthenticated() ? 'ok' : 'unconfigured')
+      return await getClaudeAuthManager().isAuthenticated() ? 'ok' : 'unconfigured'
     }
 
     if (cfg.type === 'anthropic') {
