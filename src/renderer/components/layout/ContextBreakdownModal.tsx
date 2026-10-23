@@ -172,13 +172,15 @@ export function ContextBreakdownModal({
   // the record would re-render it on every token.
   const reportedLoops = useAgentStore((s) => Object.keys(s.sideLoops).sort().join('\u0000'))
 
-  // Selector contents: main, then every ENABLED inner loop that has actually
-  // reported something this session (a slice exists). A declared-but-silent
-  // loop would only ever offer an empty tab, so it stays out of the strip.
+  // Selector contents: main, then every inner loop that has actually reported
+  // something this session (a slice exists). A declared-but-silent loop would
+  // only ever offer an empty tab, so it stays out of the strip. Disabled loops
+  // stay in, as they do in the loop strip, so the modal opens on the tab the
+  // user is viewing; they measure nothing and say why.
   const loopTabs = useMemo(() => {
     const reported = new Set(reportedLoops ? reportedLoops.split('\u0000') : [])
     const declared = (config?.loops ?? []).filter(
-      (l) => l.enabled && l.name && l.name !== MAIN_LOOP && reported.has(l.name)
+      (l) => l.name && l.name !== MAIN_LOOP && reported.has(l.name)
     )
     return [MAIN_LOOP, ...declared.map((l) => l.name)]
   }, [config?.loops, reportedLoops])
@@ -192,6 +194,7 @@ export function ContextBreakdownModal({
   // A loop can be disabled or dropped while the modal is open.
   const loop = loopTabs.includes(selected) ? selected : MAIN_LOOP
   const isMain = loop === MAIN_LOOP
+  const loopDisabled = !isMain && config?.loops?.find((l) => l.name === loop)?.enabled === false
 
   const tokenUsage = useAgentStore((s) => selectLoopSlice(s, loop).tokenUsage)
   const loopThreshold = isMain ? threshold : resolveLoopThreshold(config, loop)
@@ -272,7 +275,9 @@ export function ContextBreakdownModal({
         <p className="text-xs text-[var(--adf-ui-text-muted)]">
           {isMain
             ? 'No breakdown available — the agent hasn’t run yet.'
-            : 'No context data yet — this loop has not run in this session.'}
+            : loopDisabled
+              ? 'This loop is disabled, so it has no context to measure.'
+              : 'No context data yet — this loop has not run in this session.'}
         </p>
       ) : (
         <div className="space-y-4">

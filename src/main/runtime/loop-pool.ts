@@ -57,6 +57,7 @@ import type {
   LoopStatus,
 } from '../adf/loop-pool.types'
 import { LOOP_AUTOSTART_MESSAGE } from '../adf/loop-pool.types'
+import { dropTimersForLoop } from '../adf/loop-teardown'
 import { LoopSendTool, LoopListTool, ShellTool, SysCodeTool, SysLambdaTool } from '../tools/built-in'
 
 export { MAIN_LOOP }
@@ -1029,15 +1030,7 @@ export class LoopPool implements LoopPoolApi {
     let dropped = 0
     let kept = 0
     try {
-      for (const timer of this.deps.workspace.getTimers()) {
-        if ((timer.loop ?? MAIN_LOOP) !== name) continue
-        // A lock is a human-only assertion: no agent path may delete a locked
-        // timer, and deleting the loop it targets is not a loophole (review S2).
-        // It stays (inert, since its loop is gone) until a human unlocks it.
-        if (timer.locked) { kept++; continue }
-        this.deps.workspace.deleteTimer(timer.id)
-        dropped++
-      }
+      ({ dropped, kept } = dropTimersForLoop(this.deps.workspace, name))
     } catch (error) {
       console.error(`[LoopPool] Failed to drop timers for loop "${name}":`, error)
     }

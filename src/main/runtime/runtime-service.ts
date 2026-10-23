@@ -6,6 +6,7 @@ import { readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { templateFilePath } from '../adf/agent-templates'
 import { canProvisionWorkspaceIdentity, ensureWorkspaceIdentity, unlockWorkspaceEnvelopes } from './identity-provisioner'
@@ -2553,7 +2554,11 @@ export class RuntimeService extends EventEmitter {
     if (!target.managed) {
       const doc = target.doc!
       stripLoopNameMarker(config)
+      const previousConfig = doc.workspace.getAgentConfig()
       doc.workspace.setAgentConfig(config)
+      // Not running, so no pool reconciles a removed loop: archive its stream
+      // and drop its timers here, as the pool would.
+      await teardownRemovedLoopsOffline(doc.workspace, previousConfig, config)
       doc.config = config
       doc.configWrites++
       const revision = configRevision(doc.workspace, currentResourceWriter()).revision

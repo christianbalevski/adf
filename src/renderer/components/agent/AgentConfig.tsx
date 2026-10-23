@@ -18,6 +18,7 @@ import { Tooltip } from '../common/Tooltip'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
 import { loopColor } from '../../utils/loop-color'
 import { grantableLoopTools, newLoop, newLoopBlocker } from '../../utils/new-loop'
+import { deleteLoopConsequence } from '../../utils/loop-menu'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { ConfigNavProvider, useConfigNavEntry, CONFIG_NAV_OFFSET_CLASS } from './ConfigNav'
 import { DOCS } from '../../../shared/constants/docs-links'
@@ -338,6 +339,36 @@ function SandboxInstallModal({ open, onClose, packages }: SandboxInstallModalPro
   )
 }
 
+/** Shown beside a loop name that can no longer be edited. */
+export const LOOP_NAME_LOCKED_TIP =
+  'This loop has history, so its name is fixed. A loop\'s history and timers are stored under its name: renaming would start a new, empty loop. Create a new loop instead.'
+
+/**
+ * Has this loop's stream any rows? Its name is the stream's key, so once there
+ * is history a rename is a delete (archive, timers dropped) plus an empty new
+ * loop, which surprises. The card only lets a loop be named while it is empty.
+ *
+ * Two sources: the tab's live slice (the stream filling while the card is
+ * open), and one row fetched from the file (a tab never opened this session
+ * has an empty slice). Until the fetch answers, the name stays editable:
+ * locking while it is pending would swap the input out from under every
+ * keystroke of a new loop's name. Templates have no stream.
+ */
+function useLoopHasHistory(name: string, inTemplate: boolean): boolean {
+  const live = useAgentStore((s) => !inTemplate && !!name && (s.sideLoops[name]?.log.length ?? 0) > 0)
+  const [stored, setStored] = useState<{ name: string; has: boolean } | null>(null)
+  useEffect(() => {
+    if (inTemplate || !name) return
+    let cancelled = false
+    void Promise.resolve(openApi()?.getChatOlder(Number.MAX_SAFE_INTEGER, 1, name))
+      .then((page) => { if (!cancelled) setStored({ name, has: (page?.uiLog.length ?? 0) > 0 || (page?.earlierCount ?? 0) > 0 }) })
+      .catch(() => { if (!cancelled) setStored({ name, has: false }) })
+    return () => { cancelled = true }
+  }, [name, inTemplate])
+  if (inTemplate || !name) return false
+  return live || (stored?.name === name && stored.has)
+}
+
 /**
  * One inner-loop card in the Loops config section. Collapsed by default: the
  * header (expand chevron, enabled toggle, name, delete) is always shown, and the
@@ -394,6 +425,9 @@ function LoopCard({
   const inherits = !entry.model
   const nameInvalid = duplicate || entry.name === 'main' || !entry.name.trim()
   const colors = loopColor(entry.name || 'loop')
+  // Only the saved name has a stream behind it. While the owner is typing a
+  // new loop's name, each keystroke is a new (empty) name and stays editable.
+  const nameLocked = useLoopHasHistory(entry.name, inTemplate)
 
   return (
     <div ref={rootRef} className={`${CONFIG_NAV_OFFSET_CLASS} mb-2 p-2 rounded border border-l-2 ${colors.rail} border-neutral-200 dark:border-neutral-700 space-y-1.5`}>
@@ -414,7 +448,7 @@ function LoopCard({
             <polyline points="9 18 15 12 9 6" />
           </svg>
         </button>
-        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops get a tab and can be woken by triggers">
+        <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Enabled loops run and can be woken by triggers; a disabled loop keeps its tab, dimmed">
           <input
             type="checkbox"
             checked={entry.enabled}
@@ -422,17 +456,25 @@ function LoopCard({
             className="rounded text-blue-500"
           />
         </label>
-        <input
-          type="text"
-          value={entry.name}
-          onChange={(e) => patchLoop({ name: e.target.value })}
-          placeholder="loop-name"
-          className={`flex-1 px-2 py-1 text-xs font-mono border rounded-md focus:outline-none dark:bg-neutral-700 dark:text-neutral-100 ${
-            nameInvalid
-              ? 'border-red-400 dark:border-red-500'
-              : 'border-neutral-300 dark:border-neutral-600 focus:border-blue-400'
-          }`}
-        />
+        {nameLocked ? (
+          <Tooltip tip={LOOP_NAME_LOCKED_TIP} className="flex-1 min-w-0">
+            <span className="block px-2 py-1 text-xs font-mono truncate text-neutral-600 dark:text-neutral-300">
+              {entry.name}
+            </span>
+          </Tooltip>
+        ) : (
+          <input
+            type="text"
+            value={entry.name}
+            onChange={(e) => patchLoop({ name: e.target.value })}
+            placeholder="loop-name"
+            className={`flex-1 px-2 py-1 text-xs font-mono border rounded-md focus:outline-none dark:bg-neutral-700 dark:text-neutral-100 ${
+              nameInvalid
+                ? 'border-red-400 dark:border-red-500'
+                : 'border-neutral-300 dark:border-neutral-600 focus:border-blue-400'
+            }`}
+          />
+        )}
         <button
           onClick={onRemove}
           className="text-xs text-red-400 hover:text-red-600 px-1"
@@ -631,6 +673,7 @@ const TemplateModeContext = createContext(false)
 export function AgentConfig({ template }: { template?: AgentConfigTemplateProps } = {}) {
   const agentAvatars = useAppStore((s) => s.agentAvatars)
   const storeConfig = useAgentStore((s) => s.config)
+  const agentRunning = useAgentStore((s) => s.state !== 'off')
   const config = template ? template.value : storeConfig
   const setConfig = useAgentStore((s) => s.setConfig)
   const docFilePath = useDocumentStore((s) => s.filePath)
@@ -706,6 +749,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [runtimeHostApprovedSources, setRuntimeHostApprovedSources] = useState<Record<string, string>>({})
   const [hostAllowError, setHostAllowError] = useState<string | null>(null)
   const [hostConfirmDialog, confirmHost] = useConfirm()
+  const [loopConfirmDialog, confirmLoop] = useConfirm()
   /** settings.defaultProviderId: what a template's empty Provider falls back to. */
   const [runtimeDefaultProviderId, setRuntimeDefaultProviderId] = useState<string | undefined>(undefined)
   const [executionTargets, setExecutionTargets] = useState<ExecutionTarget[]>([])
@@ -2439,7 +2483,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <>
                 <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
                   Inner loops share this agent&apos;s body and identity but run their own stream,
-                  model and tool allow-list. Each enabled loop gets its own tab in the loop panel.
+                  model and tool allow-list. Each loop gets its own tab in the loop panel; right-click a tab to enable, disable or delete it.
                 </p>
 
                 {/* Row 0 — the implicit host loop. Never editable, never deletable. */}
@@ -2496,8 +2540,18 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       providers.find((p) => p.id === picked)?.defaultModel ?? ''
                     }
                     patchLoop={(patch) => patchLoop(i, patch)}
-                    onRemove={() => {
-                      if (!window.confirm(`Remove loop "${loops[i].name || 'unnamed'}"?`)) return
+                    onRemove={async () => {
+                      // In-app, never window.confirm: a native dialog blocks the
+                      // renderer, CDP automation included. Same wording as the
+                      // loop tab menu's Delete.
+                      const name = loops[i].name || 'unnamed'
+                      const confirmed = await confirmLoop({
+                        title: `Delete ${name}?`,
+                        body: deleteLoopConsequence(name, agentRunning),
+                        confirmLabel: 'Delete loop',
+                        danger: true,
+                      })
+                      if (!confirmed) return
                       loopKeys.removeAt(i); saveLoops(loops.filter((_, j) => j !== i))
                     }}
                     defaultExpanded={i === newLoopIndex}
@@ -5804,6 +5858,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       )}
 
       {hostConfirmDialog}
+      {loopConfirmDialog}
 
       {/* Tool definition modal */}
       <Dialog
