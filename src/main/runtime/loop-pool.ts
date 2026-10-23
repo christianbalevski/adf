@@ -91,6 +91,8 @@ export interface LoopPoolDeps {
    */
   getProvider: () => LLMProvider
   basePrompt: string
+  /** Main's live app system prompt source: loops follow an edit as main does. */
+  basePromptSource?: () => unknown
   toolPrompts: Record<string, string>
   compactionPrompt?: string
   /** Main's call handler — the template every loop handler is forked from. */
@@ -1210,6 +1212,7 @@ export class LoopPool implements LoopPoolApi {
         this.deps.compactionPrompt,
         preLlmHookRunner,
       )
+      if (this.deps.basePromptSource) executor.setBasePromptSource(this.deps.basePromptSource)
       callHandler?.attachSession(session)
       const modelHandler = callHandler ?? this.deps.adfCallHandler
       executor.setModelProviderFactory(modelHandler ? (model) => modelHandler.providerForModel(model) : null)

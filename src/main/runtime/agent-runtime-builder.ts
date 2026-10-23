@@ -133,6 +133,8 @@ export interface BuildAgentRuntimeOptions {
 /** The three prompt settings an agent is assembled with. */
 export interface AgentRuntimePrompts {
   basePrompt: string
+  /** The settings' app system prompt, read each turn (an edit applies at the next turn). */
+  basePromptSource?: () => unknown
   toolPrompts: Record<string, string>
   compactionPrompt?: string
 }
@@ -377,6 +379,7 @@ export class AgentRuntimeBuilder {
         ...(this.settings ? { effectiveRuntime: { settings: this.settings } } : {}),
         restoreLoop: opts.restoreLoop,
         basePrompt: opts.prompts ? opts.prompts.basePrompt : this.basePrompt,
+        basePromptSource: opts.prompts?.basePromptSource,
         toolPrompts: opts.prompts ? opts.prompts.toolPrompts : this.toolPrompts,
         compactionPrompt: opts.prompts ? opts.prompts.compactionPrompt : this.compactionPrompt,
         adfCallHandler,

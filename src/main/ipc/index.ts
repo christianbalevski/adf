@@ -4778,6 +4778,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       registry: agentToolRegistry,
       session,
       basePrompt,
+      basePromptSource: () => settings.get('globalSystemPrompt'),
       toolPrompts,
       compactionPrompt,
       adfCallHandler,

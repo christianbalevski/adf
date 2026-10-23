@@ -381,9 +381,12 @@ describe('prompt settings are read at each start', () => {
 
     const prompts = build.mock.calls.map(([opts]) => (opts as BuildAgentRuntimeOptions).prompts)
     expect(prompts).toEqual([
-      { basePrompt: 'prompt v1', toolPrompts: { fs_read: 'v1' }, compactionPrompt: 'compact v1' },
-      { basePrompt: 'prompt v2', toolPrompts: { fs_read: 'v2' }, compactionPrompt: 'compact v2' },
+      { basePrompt: 'prompt v1', basePromptSource: expect.any(Function), toolPrompts: { fs_read: 'v1' }, compactionPrompt: 'compact v1' },
+      { basePrompt: 'prompt v2', basePromptSource: expect.any(Function), toolPrompts: { fs_read: 'v2' }, compactionPrompt: 'compact v2' },
     ])
+    // The running agent reads the system prompt each turn: an edit applies without a restart.
+    values.globalSystemPrompt = 'prompt v3'
+    expect(prompts[1]?.basePromptSource?.()).toBe('prompt v3')
   })
 
   it('falls back to the constructor prompts while the store has no value', async () => {
@@ -392,7 +395,7 @@ describe('prompt settings are read at each start', () => {
     const build = vi.spyOn(builder, 'build')
     const runtime = runtimeWith({ agentRuntimeBuilder: builder, basePrompt: 'boot prompt', toolPrompts: { a: 'b' }, settings: { get: () => undefined } })
     await runtime.loadAgent(filePath)
-    expect((build.mock.calls[0][0] as BuildAgentRuntimeOptions).prompts).toEqual({ basePrompt: 'boot prompt', toolPrompts: { a: 'b' }, compactionPrompt: undefined })
+    expect((build.mock.calls[0][0] as BuildAgentRuntimeOptions).prompts).toEqual({ basePrompt: 'boot prompt', basePromptSource: expect.any(Function), toolPrompts: { a: 'b' }, compactionPrompt: undefined })
   })
 })
 

@@ -4450,6 +4450,7 @@ export class RuntimeService extends EventEmitter {
     const compaction = this.settings?.get('compactionPrompt')
     return {
       basePrompt: typeof base === 'string' ? base : this.basePrompt,
+      ...(this.settings ? { basePromptSource: () => this.settings?.get('globalSystemPrompt') } : {}),
       toolPrompts: tools && typeof tools === 'object' && !Array.isArray(tools) ? tools as Record<string, string> : this.toolPrompts,
       compactionPrompt: typeof compaction === 'string' ? compaction : this.compactionPrompt,
     }
