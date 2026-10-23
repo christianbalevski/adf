@@ -1,6 +1,7 @@
 import { Tooltip } from '../common/Tooltip'
 import { useEffect, useRef } from 'react'
 import type { SlashCommand } from '../../utils/slash-commands'
+import { LockIcon, PERMISSION_ON_CLASS, ShieldIcon } from './config-panel-parts'
 
 /**
  * The `/` command palette over the composer (design doc §5).
@@ -45,7 +46,7 @@ export function SlashCommandPalette({
       id={listId}
       role="listbox"
       aria-label="Commands"
-      className="absolute bottom-full left-0 right-0 z-50 mb-1 max-h-64 overflow-y-auto rounded-xl border border-neutral-200 bg-white py-1 shadow-lg dark:border-neutral-700 dark:bg-neutral-800"
+      className="absolute bottom-full left-0 right-0 z-50 mb-1 max-h-64 overflow-y-auto rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] py-1 shadow-float"
     >
       {commands.map((command, index) => (
         <button
@@ -59,29 +60,29 @@ export function SlashCommandPalette({
           onMouseDown={(e) => { e.preventDefault(); onSelect(command) }}
           onMouseEnter={() => onHighlight(index)}
           className={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${
-            index === activeIndex ? 'bg-neutral-100 dark:bg-neutral-700' : ''
+            index === activeIndex ? 'bg-[var(--adf-ui-surface-hover)]' : ''
           }`}
         >
           <span
             className={`shrink-0 font-mono text-xs ${
               command.muted
                 ? 'text-[var(--adf-ui-text-subtle)]'
-                : 'text-neutral-700 dark:text-neutral-200'
+                : 'text-[var(--adf-ui-text)]'
             }`}
           >
             {command.label}
-            {command.locked && <Tooltip tip="Locked by the owner: the agent cannot change or remove it."><span aria-label="Locked by the owner"> 🔒</span></Tooltip>}
+            {command.locked && <Tooltip tip="Locked by the owner: the agent cannot change or remove it." className="ml-1 inline-flex align-middle"><span aria-label="Locked by the owner" role="img" className={PERMISSION_ON_CLASS.locked}><LockIcon size={12} /></span></Tooltip>}
           </span>
           <span
             className={`min-w-0 flex-1 truncate text-[11px] ${
               command.muted
                 ? 'italic text-[var(--adf-ui-text-subtle)]'
-                : 'text-neutral-500 dark:text-neutral-400'
+                : 'text-[var(--adf-ui-text-muted)]'
             }`}
           >
-            {command.kind === 'agent' && command.muted ? 'Start the agent to run this.' : command.kind === 'agent' && authorize && index === activeIndex ? 'Runs once as authorized code: restricted tools and methods are allowed.' : command.description}
+            {command.kind === 'agent' && command.muted ? 'Start the agent to run this.' : command.description}
           </span>
-          {command.kind === 'agent' && authorize && index === activeIndex && <span className="shrink-0 text-[10px] text-amber-600">authorized run</span>}
+          {command.kind === 'agent' && authorize && index === activeIndex && <Tooltip tip="Runs once as authorized code: restricted tools and methods are allowed." className="inline-flex shrink-0"><span aria-label="Authorized run" role="img" className="text-[var(--adf-ui-warning)]"><ShieldIcon size={12} filled /></span></Tooltip>}
           {command.kind === 'skill' && command.muted && (
             <span className="shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)]">(muted)</span>
           )}

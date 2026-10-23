@@ -86,7 +86,7 @@ it('renders the owner result card and a UI-only permission hint', () => {
   const html = renderToStaticMarkup(createElement(OwnerCommandRow, { entry }))
   expect(html).toContain('You ran /cmd Berlin')
   expect(html).toContain('permission denied')
-  expect(html).toContain('authorized')
+  expect(html).toContain('aria-label="Authorized run"')
   expect(html).toContain('Run again with !authorize')
   expect(html).toContain('Restricted tool refused')
   expect(entry.content).not.toContain('Run again')
