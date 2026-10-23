@@ -216,6 +216,12 @@ describe('the rows of the Connection page', () => {
     expect(currentConnection({ active: { mode: 'local' }, daemon: null })).toMatchObject({ id: 'local', state: 'connecting' })
   })
 
+  it('a connected saved runtime carries the ADF version its daemon reported; not connected, none', () => {
+    const versions = { 'remote:box-1': '0.8.0' }
+    expect(local({ runtimeStates: { local: 'connected', 'remote:box-1': 'connected' }, runtimeVersions: versions }).rows.find((r) => r.id === 'remote:box-1')?.version).toBe('0.8.0')
+    expect(local({ runtimeStates: { local: 'connected', 'remote:box-1': 'retrying' }, runtimeVersions: versions }).rows.find((r) => r.id === 'remote:box-1')).not.toHaveProperty('version')
+  })
+
   it('the mode saved for the next launch is `next`; a remote is never the next one (multi-runtime.md §7.2)', () => {
     expect(local({ configured: { ...defaultBackendConfig(), mode: 'embedded' } }).next).toEqual({ id: 'embedded', name: 'Inside Studio (legacy)' })
     expect(buildConnectionsView({ active: { mode: 'embedded' }, configured: defaultBackendConfig(), daemon: null, saved, discovery: null }).next).toEqual({ id: 'local', name: 'Local' })

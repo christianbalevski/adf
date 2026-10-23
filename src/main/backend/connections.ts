@@ -419,6 +419,8 @@ export interface ConnectionsViewInput {
    * connections are listed with no state (§7.2).
    */
   runtimeStates?: Record<string, ConnectionCurrent['state']>
+  /** The ADF version each runtime's daemon reported, by id; a runtime not in it shows none. */
+  runtimeVersions?: Record<string, string>
   /** The local runtime's name, `<name> (Local)` (shared/runtime-name.ts); default "Local". */
   localName?: string
 }
@@ -460,6 +462,8 @@ export function buildConnectionsView(input: ConnectionsViewInput): ConnectionsVi
     action: null,
     url, address: hostOf(url), fingerprint, encrypted: encryptedUrl(url), pairingOpen: false,
     removable: true,
+    // Only while connected: a version from before a disconnect may no longer be what runs there.
+    ...(states?.[id] === 'connected' && input.runtimeVersions?.[id] ? { version: input.runtimeVersions[id] } : {}),
   })
   // The remote URL of studio-backend.json: one row, unless its paired fingerprint is a saved connection (runtimeSlot).
   const slot = runtimeSlot(input.configured, input.saved)

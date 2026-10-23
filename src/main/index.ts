@@ -542,6 +542,7 @@ function runtimeViews(): RuntimeView[] {
     name: rt.name(),
     url: rt.kind === 'remote' ? rt.connection.baseUrl : null,
     state: LINK_STATE[rt.connection.state.state],
+    version: rt.status().version,
   }))
 }
 

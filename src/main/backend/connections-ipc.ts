@@ -93,7 +93,10 @@ export function createConnections(deps: ConnectionsDeps): Connections {
       saved: saved(),
       discovery: deps.discovery(),
       ...(deps.localName ? { localName: deps.localName() } : {}),
-      ...(runtimeSet ? { runtimeStates: Object.fromEntries(runtimes.map((r) => [r.id, r.state])) } : {}),
+      ...(runtimeSet ? {
+        runtimeStates: Object.fromEntries(runtimes.map((r) => [r.id, r.state])),
+        runtimeVersions: Object.fromEntries(runtimes.flatMap((r) => (r.version ? [[r.id, r.version]] : []))),
+      } : {}),
     })
     // One runtime: the view is the one sent before (multi-runtime.md §4.6).
     return runtimes.length > 1 ? { ...built, runtimes } : built

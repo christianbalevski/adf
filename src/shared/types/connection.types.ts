@@ -55,6 +55,8 @@ export interface ConnectionRow {
   pairingOpen: boolean
   /** Remove in the row's More menu: every saved connection. */
   removable: boolean
+  /** A saved connection's ADF version, from its daemon while connected; absent otherwise. */
+  version?: string
 }
 
 export interface ConnectionsView {
@@ -95,6 +97,8 @@ export interface RuntimeView {
   /** Remote: the address (the tooltip). */
   url: string | null
   state: ConnectionCurrent['state']
+  /** The runtime's ADF version, from its daemon; null until it answered. */
+  version?: string | null
 }
 
 export type ConnectionResult =

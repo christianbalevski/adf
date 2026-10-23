@@ -175,9 +175,9 @@ export function nextLaunchLine(view: BackendSettingsView, next: ConnectionsView[
   return `Next launch: ${next.name}.`
 }
 
-/** A row's detail line: the address and fingerprint, and "Pairing open". */
+/** A row's detail line: the address, fingerprint and ADF version, and "Pairing open". */
 export function connectionDetail(row: ConnectionRow): string | null {
-  const parts = [row.address, row.fingerprint].filter((p): p is string => !!p)
+  const parts = [row.address, row.fingerprint, row.version ? `ADF ${row.version}` : null].filter((p): p is string => !!p)
   if (row.pairingOpen && row.action === 'pair') parts.push('Pairing open')
   return parts.length > 0 ? parts.join(' · ') : null
 }
