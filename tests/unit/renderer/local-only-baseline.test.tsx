@@ -16,7 +16,9 @@
  * Two baselines are newer, by owner request (the Connections and Networking
  * redesign, 2026-10-21): connections.html and networking.html were rendered
  * from that redesign, local only, and pin what a local-only user sees there.
- * Only those two were written then; every other baseline is d00491a0's.
+ * Only those two were written then. sidebar.html was updated on 2026-10-23
+ * for the requested selected-agent marker and distinct sidebar hover tint.
+ * Every other baseline is d00491a0's.
  *
  * Normalization: React's useId ids (`:R…:` / `«r…»`) are replaced by their
  * order of appearance, as they depend on the shape of the whole tree. Nothing

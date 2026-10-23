@@ -248,14 +248,6 @@ export function TitleBar() {
 
   // Home only navigates: the open agent stays open (Close Agent closes it).
   const handleHome = useCallback(() => setShowHome(true), [setShowHome])
-  const handleOpenAgent = useCallback(() => {
-    setShowSettings(false)
-    setShowMeshGraph(false)
-    setShowHome(false)
-  }, [setShowHome, setShowMeshGraph, setShowSettings])
-  // The open agent's views are on screen (not Home, Settings or the map).
-  const agentOnStage = !!filePath && !showHome && !showSettings && !showMeshGraph
-
   const handleStart = useCallback(async () => {
     setStarting(true)
     try {
@@ -353,11 +345,8 @@ export function TitleBar() {
           {/* Global notifications — app-level surface, so it lives with the
               app-global nav cluster, not the per-agent controls. */}
           <ApprovalsMenu align="left" />
-          {filePath && config && (
-            <>
-              <span aria-hidden className="mx-1 h-3.5 border-l border-hairline" />
-              <OpenAgentNavButton active={agentOnStage} onClick={handleOpenAgent} />
-            </>
+          {sidebarCollapsed && filePath && config && !showHome && (
+            <span aria-hidden className="ml-1 h-3.5 border-l border-hairline" />
           )}
         </nav>}
         {/* An agent window has no app nav, but other agents can still be waiting on you. */}

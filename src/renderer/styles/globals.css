@@ -223,6 +223,8 @@ samp,
   --adf-ui-surface: var(--paper-raised);
   --adf-ui-surface-raised: var(--paper-raised);
   --adf-ui-surface-hover: var(--paper-sunken);
+  /* The rail already uses paper-sunken, so its hover needs a distinct tint. */
+  --adf-ui-sidebar-hover: color-mix(in srgb, var(--ink) 7%, var(--paper-sunken));
   --adf-ui-text: var(--ink);
   --adf-ui-text-muted: var(--ink-muted);
   --adf-ui-text-subtle: var(--ink-faint);

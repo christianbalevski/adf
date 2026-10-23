@@ -16,6 +16,7 @@ import { useKeyboardContextMenu } from '../../hooks/useKeyboardContextMenu'
 import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
 import { Tooltip } from '../common/Tooltip'
+import { HoverLabel } from '../common/HoverLabel'
 import { RemoteMark } from '../common/RemoteMark'
 import { CloneDialog } from '../common/CloneDialog'
 import { Dialog } from '../common/Dialog'
@@ -709,7 +710,7 @@ export function Sidebar() {
   if (collapsed) {
     return (
       <div className="w-10 bg-surface-2 border-r border-hairline flex flex-col items-center py-2 gap-1 min-h-0">
-        <Tooltip tip="Expand sidebar" shortcut={formatKey(ACCELERATORS.toggleSidebar, IS_MAC)} className="flex shrink-0">
+        <Tooltip tip="Expand sidebar" shortcut={formatKey(ACCELERATORS.toggleSidebar, IS_MAC)} placement="right" className="flex shrink-0">
           <button
             onClick={toggleSidebar}
             aria-label="Expand sidebar"
@@ -1680,13 +1681,14 @@ const AgentFileRow = memo(function AgentFileRow({
       onContextMenu={rowMenu.onContextMenu}
       onKeyDown={rowMenu.onKeyDown}
       data-active={isActive || undefined}
-      className={`group flex items-center gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer ${
+      className={`group flex items-center relative gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer transition-colors ${
         isActive
-          ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)] [--row-bg:var(--adf-ui-accent-subtle)]'
-          : `${isRunning ? 'text-[var(--adf-ui-text)]' : 'text-[var(--adf-ui-text-muted)]'} hover:bg-[var(--adf-ui-surface-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-surface-hover)]`
+          ? 'bg-[var(--adf-ui-selection)] text-[var(--adf-ui-text)] [--row-bg:var(--adf-ui-selection)]'
+          : `${isRunning ? 'text-[var(--adf-ui-text)]' : 'text-[var(--adf-ui-text-muted)]'} hover:bg-[var(--adf-ui-sidebar-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-sidebar-hover)]`
       }`}
       style={{ paddingLeft: `${12 + depth * 16}px`, paddingRight: '6px' }}
     >
+      {isActive && <span aria-hidden className="absolute inset-y-0 left-0 w-0.5 bg-[var(--adf-ui-accent)]" />}
       <AgentAvatar
         seed={seed}
         icon={icon}
@@ -1705,7 +1707,7 @@ const AgentFileRow = memo(function AgentFileRow({
       <Tooltip tip={runtimeId ? `${file.filePath} · ${REMOTE_DRAG_TIP}` : file.filePath} delay={1000} className="flex min-w-0 shrink">
         {/* No handler of its own: the click bubbles to the row. It stays a
             button so the row is reachable and openable from the keyboard. */}
-        <button className="block w-full min-w-0 text-left truncate">
+        <button aria-current={isActive || undefined} className={`block w-full min-w-0 text-left truncate ${isActive ? 'font-medium' : ''}`}>
           {/* Always the file's name on disk, selected or not. The open
               agent's config.name is deliberately not used: it can run ahead
               of the file while a rename waits for the agent to stop. */}
@@ -1856,30 +1858,32 @@ const RailAvatar = memo(function RailAvatar({
   const showBadge = busy || state !== 'not_participating'
 
   const name = file.agentName ?? file.fileName.replace(/\.adf$/i, '')
-  const tip = [
-    name,
+  const status = [
     isStarting ? 'Starting' : isStopping ? 'Stopping' : RAIL_STATE_LABEL[state] ?? state,
     waitingLabel(waiting),
     activeLoops > 0 ? `${activeLoops} inner ${activeLoops === 1 ? 'loop' : 'loops'} working` : null
   ].filter(Boolean).join(' · ')
+  // The visible label is only the name; screen readers still get the icon's status.
+  const accessibleLabel = `${name} · ${status}`
 
   const emoji = useAgentAvatarMode() === 'emoji'
   const quiet = isRunning || busy ? '' : emoji ? 'grayscale opacity-70' : 'opacity-70'
 
   return (
-    <Tooltip tip={tip} delay={300} className="flex shrink-0">
+    <HoverLabel name={name} className="flex shrink-0">
       <button
         type="button"
         onClick={() => onOpenFile(file.filePath, runtimeId)}
         onContextMenu={dirPath ? (e) => onFileContextMenu(e, file, dirPath, runtimeId) : undefined}
-        aria-label={tip}
+        aria-label={accessibleLabel}
         aria-current={isActive || undefined}
         className={`relative w-7 h-7 flex items-center justify-center rounded-md transition-colors ${
           isActive
-            ? 'bg-[var(--adf-ui-accent-subtle)] [--row-bg:var(--adf-ui-accent-subtle)]'
-            : 'hover:bg-[var(--adf-ui-surface-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-surface-hover)]'
+            ? 'bg-[var(--adf-ui-selection)] shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--adf-ui-accent)_25%,transparent)] [--row-bg:var(--adf-ui-selection)]'
+            : 'hover:bg-[var(--adf-ui-sidebar-hover)] focus-visible:bg-[var(--adf-ui-sidebar-hover)] [--row-bg:var(--adf-surface-2)] hover:[--row-bg:var(--adf-ui-sidebar-hover)] focus-visible:[--row-bg:var(--adf-ui-sidebar-hover)]'
         }`}
       >
+        {isActive && <span aria-hidden className="absolute -left-1 top-1.5 bottom-1.5 w-0.5 rounded-full bg-[var(--adf-ui-accent)]" />}
         {waiting && (
           <span className="absolute inset-0.5 rounded-full ring-2 ring-amber-400 dark:ring-amber-400 animate-pulse" aria-hidden />
         )}
@@ -1904,7 +1908,7 @@ const RailAvatar = memo(function RailAvatar({
           </span>
         )}
       </button>
-    </Tooltip>
+    </HoverLabel>
   )
 })
 
