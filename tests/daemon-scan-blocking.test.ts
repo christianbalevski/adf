@@ -9,7 +9,10 @@
 // (CI run 38749217035: 226 ms; locally reproduced with 40 CPU burners on 32
 // cores, every route 65-390 ms). The event loop was not busy then, and
 // wall-clock time alone cannot tell that from a scan that blocks. A blocking
-// scan burns its whole stall on this thread.
+// scan burns its whole stall on this thread. Busy time still picks up GC and
+// JIT noise on a shared runner (CI: 54 ms), so the bound sits at 100 ms: well
+// under what one blocking pass over 300 files costs, and under the meter's own
+// 120 ms self-check.
 import { copyFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -19,7 +22,7 @@ import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 
 const FILES = 300
-const MAX_STALL_MS = 50
+const MAX_STALL_MS = 100
 
 let root: string
 let server: ReturnType<typeof createDaemonHttpApi>
