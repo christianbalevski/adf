@@ -1,5 +1,5 @@
 import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
-import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync } from 'node:fs'
+import { mkdtempSync, rmSync, mkdirSync, readFileSync, existsSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -45,6 +45,8 @@ beforeEach(() => {
   rootDir = mkdtempSync(join(tmpdir(), 'adf-settings-flush-'))
   h.userDataDir = join(rootDir, 'userData')
   mkdirSync(h.userDataDir, { recursive: true })
+  // No keychain here (safeStorage mock): the user chose plain-text secret storage, so secrets are written as is.
+  writeFileSync(settingsPath(), JSON.stringify({ secretStoragePolicy: 'plaintext' }))
   h.failWrites = false
   delete process.env.ADF_USER_DATA_DIR
 })
@@ -114,13 +116,13 @@ describe('ADF_USER_DATA_DIR override', () => {
   it('wins over app.getPath so Studio and the daemon share one settings file', () => {
     const override = join(rootDir, 'override-data')
     mkdirSync(override, { recursive: true })
+    writeFileSync(settingsPath(override), JSON.stringify({ secretStoragePolicy: 'plaintext' }))
     process.env.ADF_USER_DATA_DIR = override
 
     const settings = new SettingsService()
     settings.setSecret('ownerMnemonic', 'override words')
 
-    expect(existsSync(settingsPath(override))).toBe(true)
     expect(readDisk(override).ownerMnemonic).toBe('override words')
-    expect(existsSync(settingsPath(h.userDataDir))).toBe(false)
+    expect(readDisk(h.userDataDir)).toEqual({ secretStoragePolicy: 'plaintext' })
   })
 })

@@ -435,6 +435,9 @@ export const IPC = {
   // Settings → Connections (studio-backend.json). Registered in every backend
   // mode. GET never returns the remote token; SET may carry a new one.
   BACKEND_SETTINGS_GET: 'adf:backend:settings-get',
+  // Studio's own secret storage (secret-storage-policy.ts), in every mode
+  STUDIO_SECRET_STORAGE_GET: 'adf:studio:secret-storage:get',
+  STUDIO_SECRET_STORAGE_USE_KEYRING: 'adf:studio:secret-storage:use-keyring',
   BACKEND_SETTINGS_SET: 'adf:backend:settings-set',
 
   // Remote access (docs/design/remote-access.md §9.1).

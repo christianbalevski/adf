@@ -124,6 +124,8 @@ import type { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
+import { SecretStorageRefusedError } from '../services/secret-storage-policy'
+import type { StudioSecretAccess } from '../backend/secret-storage-ipc'
 import { readAdfAttestations, verifyAttestation } from '../services/attestation.service'
 import { MeshServer } from '../services/mesh-server'
 import { MdnsService, type DiscoveredRuntime } from '../services/mdns-service'
@@ -1858,10 +1860,17 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // install has the owner DID but cannot read its own copy.
   settings.getOwnerIdentity().setSharedMnemonicStore(openSharedMnemonicStore())
 
-  // Generate owner + runtime DIDs on first launch
-  const { ownerDid, runtimeDid } = settings.ensureRuntimeIdentity()
-  console.log(`[Runtime] Owner DID: ${ownerDid}`)
-  console.log(`[Runtime] Runtime DID: ${runtimeDid}`)
+  // Generate owner + runtime DIDs on first launch. Refused when the user kept
+  // the keychain at launch and it is unavailable (Continue Without Keychain):
+  // nothing is minted or saved then, and Studio runs without an identity.
+  try {
+    const { ownerDid, runtimeDid } = settings.ensureRuntimeIdentity()
+    console.log(`[Runtime] Owner DID: ${ownerDid}`)
+    console.log(`[Runtime] Runtime DID: ${runtimeDid}`)
+  } catch (err) {
+    if (!(err instanceof SecretStorageRefusedError)) throw err
+    console.error(`[Runtime] Owner and runtime identity not set up: ${err.message}`)
+  }
 
   // Workspace identity hooks (spec D1/D10): creation and agent-start paths
   // provision/unlock through these instead of threading the service around.
@@ -8477,6 +8486,13 @@ export function getCurrentWorkspace(): AdfWorkspace | null {
 /** Read one app setting from outside the IPC layer (undefined before registration). */
 export function readAppSetting(key: string): unknown {
   return settings?.get(key)
+}
+
+/** Studio's own secret storage through the settings store (secret-storage-ipc.ts); null before registration. */
+export function studioSecretStorage(): StudioSecretAccess | null {
+  if (!settings) return null
+  const store = settings
+  return { status: () => store.secretStorageStatus(), useKeyring: () => store.useKeyringForSecrets() }
 }
 
 /** Write one app setting from outside the IPC layer (no-op before registration). */

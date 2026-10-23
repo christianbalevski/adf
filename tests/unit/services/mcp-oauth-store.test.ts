@@ -24,7 +24,7 @@ function record(overrides: Partial<McpOAuthRecord> = {}): McpOAuthRecord {
   }
 }
 
-/** SettingsService-shaped mock backed by a Map (safeStorage available by default). */
+/** SettingsService-shaped mock backed by a Map (secrets storable by default). */
 function memSettings(safeStorage = true): OAuthSettingsHandle & { map: Map<string, string> } {
   const map = new Map<string, string>()
   return {
@@ -32,7 +32,7 @@ function memSettings(safeStorage = true): OAuthSettingsHandle & { map: Map<strin
     getSecret: (k) => map.get(k) ?? null,
     setSecret: (k, v) => { map.set(k, v) },
     delete: (k) => { map.delete(k) },
-    isSafeStorageAvailable: () => safeStorage,
+    secretWriteRefusal: () => (safeStorage ? null : 'The OS keychain is not available, and ADF Studio does not store secrets unencrypted unless you choose to.'),
   }
 }
 
@@ -136,10 +136,10 @@ describe('AppSettingsOAuthStore', () => {
     expect(settings.map.has(MCP_OAUTH_SETTINGS_KEY)).toBe(true)
   })
 
-  it('fails plainly when safeStorage is unavailable (never writes plaintext)', async () => {
+  it('fails plainly when secrets cannot be stored (no keychain, no plain-text choice): never writes', async () => {
     const settings = memSettings(false)
     const store = new AppSettingsOAuthStore(settings)
-    await expect(store.save(URL_A, record())).rejects.toThrow(/secure storage \(safeStorage\) is unavailable/)
+    await expect(store.save(URL_A, record())).rejects.toThrow(/Cannot store MCP OAuth tokens\. The OS keychain is not available/)
     expect(settings.map.size).toBe(0)
   })
 })

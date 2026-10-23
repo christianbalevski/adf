@@ -209,6 +209,14 @@ describe('daemon HTTP API', () => {
     expect(secretPut.statusCode).toBe(403)
     expect(set).not.toHaveBeenCalled()
 
+    // Studio's secret-storage choice is the user's, made in Studio: never set over HTTP (single key or bulk).
+    const policyPut = await server.inject({ method: 'PUT', url: '/settings/secretStoragePolicy', payload: { value: 'plaintext' } })
+    expect(policyPut.statusCode).toBe(403)
+    const policyPatch = await server.inject({ method: 'PATCH', url: '/settings', payload: { secretStoragePolicy: 'plaintext' } })
+    expect(policyPatch.statusCode).toBe(403)
+    expect(set).not.toHaveBeenCalled()
+    expect(data.secretStoragePolicy).toBeUndefined()
+
     // Bulk PATCH containing any denied key is rejected wholesale — no
     // partial application of the allowed keys.
     const bulk = await server.inject({

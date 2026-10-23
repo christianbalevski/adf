@@ -69,7 +69,7 @@ export { RuntimeManager, RuntimeRouteError } from './runtime-manager'
  * daemon mode (tests/backend/daemon-mode-isolation.test.ts).
  */
 
-/** Registered in both modes outside the backend registration (main/index.ts, app-updater, spellcheck, orbital cache, backend settings, edit recovery). */
+/** Registered in both modes outside the backend registration (main/index.ts, app-updater, spellcheck, orbital cache, backend settings, secret storage, edit recovery). */
 export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.OPEN_FILE_GET_PENDING,
   IPC.APP_GET_FULLSCREEN,
@@ -83,6 +83,8 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.ORBITAL_CACHE_PUT,
   IPC.BACKEND_SETTINGS_GET,
   IPC.BACKEND_SETTINGS_SET,
+  IPC.STUDIO_SECRET_STORAGE_GET,
+  IPC.STUDIO_SECRET_STORAGE_USE_KEYRING,
   IPC.RECOVERY_STASH,
   IPC.RECOVERY_LIST,
   IPC.RECOVERY_ARCHIVE,

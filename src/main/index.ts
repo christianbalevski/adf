@@ -14,7 +14,11 @@ import { installMainLogFile } from './utils/main-log-file'
 import { startStallMonitor, stopStallMonitor } from './utils/stall-monitor'
 import { resolveLoginShellPath } from './utils/login-shell-path'
 import { showOrCreateMainWindow } from './utils/main-window'
-import { closeBootWindow, dismissBootDialogs, noteMainWindowClosed } from './utils/boot-window'
+import { BootDialogDismissedError, closeBootWindow, dismissBootDialogs, noteMainWindowClosed } from './utils/boot-window'
+import { showWindowlessMessageBox } from './utils/windowless-dialog'
+import { keyringAvailable, studioSecretCipher } from './utils/studio-safe-storage'
+import { settleSecretStorageAtLaunch, type LaunchOutcome } from './services/secret-storage-launch'
+import { registerSecretStorageHandlers } from './backend/secret-storage-ipc'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
@@ -725,6 +729,24 @@ app.on('web-contents-created', (_event, contents) => {
   })
 })
 
+/** The secret-storage question (secret-storage-launch.ts) on the boot window. Closing Studio while asked quits. */
+async function askSecretStorage(writesSecrets: boolean): Promise<LaunchOutcome> {
+  try {
+    return await settleSecretStorageAtLaunch({
+      settingsPath: join(getUserDataPath(), 'adf-settings.json'),
+      writesSecrets,
+      platform: process.platform,
+      keyring: () => keyringAvailable(),
+      cipher: studioSecretCipher,
+      ask: (options) => showWindowlessMessageBox('how to store ADF Studio secrets', options),
+      log: (line) => console.log(line),
+    })
+  } catch (err) {
+    if (err instanceof BootDialogDismissedError) return 'quit'
+    throw err
+  }
+}
+
 app.whenReady().then(async () => {
   // Dev/diagnostic only: logs one line per multi-hundred-ms main-thread freeze.
   // Creates nothing in a packaged build unless ADF_STALL_MONITOR=1.
@@ -740,8 +762,24 @@ app.whenReady().then(async () => {
   const sessionBackend = sessionBackendEnv(process.argv, process.env)
   const backend = resolveBootBackend(backendConfigPath(getUserDataPath()), sessionBackend.env)
   if (sessionBackend.session) backend.source = 'session'
+  // How Studio stores its own secrets (secret-storage-policy.ts), asked FIRST: before the boot guard, the
+  // handover (which moves Studio's secrets between its settings file and the daemon's store), the first-launch
+  // and remote-mode migrations, any settings store, identity or daemon. Secrets an earlier start left
+  // unencrypted are asked about in every mode; a missing keychain only where Studio saves secrets itself.
+  // Quitting here changes nothing.
+  if (await askSecretStorage(backend.mode === 'embedded') === 'quit') {
+    app.quit()
+    return
+  }
   // W5-I: an unusable studio-backend.json is asked about first; an older daemon on the port makes a first launch Embedded for one session.
   const bootGuard = await guardBoot(backend, getUserDataPath())
+  // The boot guard may have made this launch Inside Studio for one session: Studio then saves secrets itself, so a
+  // missing keychain is asked about right now, before the handover and every migration move anything (a no-op when
+  // the first question already settled it). Quitting here changes nothing either.
+  if (backend.mode === 'embedded' && await askSecretStorage(true) === 'quit') {
+    app.quit()
+    return
+  }
   // A mode this launch overrides for one session (ADF_STUDIO_BACKEND, or the
   // version-mismatch choice) moves client keys only: credentials stay where
   // the configured mode keeps them (§8.2).
@@ -1006,6 +1044,8 @@ app.whenReady().then(async () => {
     daemonStatus: () => daemonMode?.status() ?? null,
     onKeepDaemonRunningChange: (keep) => { void daemonMode?.setKeepDaemonRunning(keep) },
   })
+  // Settings → Identity → Secret storage: Studio's own settings file, in every mode (secret-storage-ipc.ts).
+  registerSecretStorageHandlers({ settingsPath: join(getUserDataPath(), 'adf-settings.json'), embedded: () => embeddedIpc?.studioSecretStorage() ?? null })
   const settingsStore = backendStore
   savedBackendMode = () => settingsStore.config().mode
   remoteAccess = registerRemoteAccessHandlers({

@@ -71,6 +71,9 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'ipcMain.handle(adf:remote:picker-respond)',
     'ipcMain.handle(adf:remote:fs-browse)',
     'ipcMain.handle(adf:remote:fs-mkdir)',
+    // Settings → Identity → Secret storage: Studio's own settings file, every mode (secret-storage-ipc.ts).
+    'ipcMain.handle(adf:studio:secret-storage:get)',
+    'ipcMain.handle(adf:studio:secret-storage:use-keyring)',
     // remote-access.md §9.1: registered in every mode; the host channels answer "unavailable" here, discovery and pairing work.
     'ipcMain.handle(adf:remote-access:get)',
     'ipcMain.handle(adf:remote-access:set)',

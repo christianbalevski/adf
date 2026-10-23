@@ -11,6 +11,7 @@ import type { ContentBlock } from '../shared/types/provider.types'
 import type { ResourceConflict, ResourceWriter } from '../shared/types/resource-revision.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ComputeSetupResult, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
 import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
+import type { SecretStorageView } from '../shared/types/secret-storage.types'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
 import type { BackendSettingsPatch, BackendSettingsSaveResult, BackendSettingsView, RemoteBrowseResult, RemotePickAnswer, RemotePickRequest, RemoteMkdirResult } from '../shared/types/backend.types'
@@ -642,6 +643,10 @@ export interface AdfApi {
     runtimeDelegation: { issuer: string; subject: string; role: string; issued_at: string; expires_at?: string; scope?: string; signature: string } | null
     runtimeDelegationValid: boolean
   }>
+  /** How Studio stores its own secrets in its settings file, in every mode; null when it holds none (no plain-text choice saved). */
+  getStudioSecretStorage: () => Promise<SecretStorageView | null>
+  /** Encrypt Studio's plain-text secrets with the keychain and save that choice, in one verified swap. */
+  useKeyringForSecrets: () => Promise<{ success: boolean; encrypted?: number; error?: string }>
   revealOwnerMnemonic: () => Promise<{ mnemonic: string | null; reason?: string }>
   confirmOwnerBackup: () => Promise<{ success: boolean }>
   /** `expectedOwnerDid`: restore only that owner (a different phrase is refused, not switched to). */

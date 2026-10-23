@@ -13,6 +13,7 @@ import {
   settingsKeyClass,
 } from '../../src/shared/constants/client-settings-keys'
 import { createSettingsDefaults } from '../../src/shared/constants/settings-defaults'
+import { SECRET_STORAGE_POLICY_KEY, SETTINGS_SECRET_KEYS } from '../../src/main/services/secret-storage-policy'
 
 const ROOT = join(__dirname, '..', '..')
 
@@ -179,7 +180,8 @@ describe('settings key classes', () => {
       const body = api.slice(start, api.indexOf(']', start))
       return [...body.matchAll(/'([A-Za-z][\w:.-]*)'/g)].map((m) => m[1])
     }
-    const denied = new Set([...listOf('SETTINGS_SECRET_KEYS'), ...listOf('SETTINGS_WRITE_DENY_KEYS')])
+    // The secret keys and the secret-storage choice come from secret-storage-policy.ts (imported by http-api.ts).
+    const denied = new Set([...SETTINGS_SECRET_KEYS, SECRET_STORAGE_POLICY_KEY, ...listOf('SETTINGS_WRITE_DENY_KEYS')])
     expect(denied.has('trustedDaemonEncKeys')).toBe(true)
     const rendererKeys = new Set<string>()
     for (const f of files) if (relative(ROOT, f.path).startsWith(join('src', 'renderer'))) for (const key of rendererWriteKeys(f.text)) rendererKeys.add(key)

@@ -37,6 +37,8 @@ function createBootHarness() {
     loadURL = rec('window.loadURL')
     loadFile = () => { calls.push('window.loadFile') }
     show = () => {}
+    /** The boot window (boot-window.ts) closes once the main window shows. */
+    close = () => {}
     isDestroyed = () => false
     isMinimized = () => false
     isVisible = () => true

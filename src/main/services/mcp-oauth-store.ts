@@ -98,7 +98,8 @@ export interface OAuthSettingsHandle {
   getSecret(key: string): string | null
   setSecret(key: string, value: string): void
   delete(key: string): void
-  isSafeStorageAvailable(): boolean
+  /** Why a secret cannot be stored right now, or null (SettingsService.secretWriteRefusal). */
+  secretWriteRefusal(): string | null
 }
 
 /**
@@ -123,15 +124,11 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
   }
 
   private writeBlob(blob: OAuthBlob): void {
-    // Guard BEFORE writing: SettingsService.setSecret falls back to PLAINTEXT
-    // when safeStorage is unavailable, which would strand OAuth tokens on disk
-    // in the clear. Fail plainly instead.
-    if (!this.settings.isSafeStorageAvailable()) {
-      throw new Error(
-        'Cannot store MCP OAuth tokens — OS secure storage (safeStorage) is unavailable on this system, ' +
-        'and these tokens must never be written unencrypted. Enable the OS keychain/credential store and retry.',
-      )
-    }
+    // Guard BEFORE writing: tokens are stored encrypted with the OS keychain,
+    // or as plain text only when the user chose that for every Studio secret
+    // (secret-storage-policy.ts). Anything else fails plainly.
+    const refusal = this.settings.secretWriteRefusal()
+    if (refusal) throw new Error(`Cannot store MCP OAuth tokens. ${refusal}`)
     if (Object.keys(blob).length === 0) {
       this.settings.delete(MCP_OAUTH_SETTINGS_KEY)
       return

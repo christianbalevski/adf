@@ -127,6 +127,8 @@ export const BACKEND_SETTINGS_KEYS = [
   // Owner and runtime identity (§5). Key material never crosses HTTP
   // (SETTINGS_SECRET_KEYS, SETTINGS_WRITE_DENY_KEYS in daemon/http-api.ts).
   'ownerMnemonic',
+  // How Studio stores the secrets above (src/main/services/secret-storage-policy.ts).
+  'secretStoragePolicy',
   'ownerDid',
   'ownerDidSeedDerived',
   'ownerEncPublicKey',

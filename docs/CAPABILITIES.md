@@ -375,7 +375,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Coalesced writes** — bursts collapse into one flush; identity-critical writes flush synchronously.
 - **Merge on stale** — a write detects another process changed the file and merges rather than clobbering.
 - **Corrupt-file quarantine** — an unreadable settings file is moved aside, never deleted, and writes are refused if quarantine fails.
-- **Secret handling** — OS keychain encryption with a plaintext fallback warning; three-way secret status (absent, ok, locked) so keys are never minted over an undecryptable one; secrets stripped before reaching the UI process.
+- **Secret handling** — OS keychain encryption; without a keychain, plain-text storage only after an explicit, warned choice at launch (remembered, shown in Settings, switchable back with a verified migration); three-way secret status (absent, ok, locked) so keys are never minted over an undecryptable one; secrets stripped before reaching the UI process.
 - **Owner-only guard set** — unsigned-message acceptance, middleware authorization, middleware chains, fetch middleware; unreachable from the agent even via approval.
 - **Locked-by-default** — local-network fetch and stream binding require a deliberate owner override per agent.
 

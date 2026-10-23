@@ -1,8 +1,9 @@
-import { app, BrowserWindow, dialog, safeStorage } from 'electron'
+import { app, BrowserWindow, dialog } from 'electron'
 import { join } from 'node:path'
 import type { StudioRunMode } from '../../shared/types/backend.types'
 import { decryptCredential, encryptCredential } from '../utils/credential-cipher'
 import { showWindowlessMessageBox } from '../utils/windowless-dialog'
+import { isObfuscationOnly as studioIsObfuscationOnly, keyringAvailable, studioSecretCipher } from '../utils/studio-safe-storage'
 import { BootDialogDismissedError, showBootWindow } from '../utils/boot-window'
 import { flushMainLogSync } from '../utils/main-log-file'
 import { DaemonProcessController, decideAttach, type AttachDecision } from './daemon-process'
@@ -54,34 +55,26 @@ export const SESSION_BACKEND_ARG = '--adf-session-backend=embedded'
  * remote daemon token or a moved-back session.
  */
 export function isObfuscationOnly(): boolean {
-  if (process.platform !== 'linux') return false
-  const backend = (safeStorage as { getSelectedStorageBackend?: () => string }).getSelectedStorageBackend?.()
-  return backend === 'basic_text'
+  return studioIsObfuscationOnly()
 }
 
 /**
- * The settings-secret format SettingsService uses: safeStorage when
- * available. Under `basic_text` (obfuscationOnly) the handover writes
- * moved-back sessions with the key-file cipher and moves MCP sign-ins back
- * as SettingsService stores them, with a note in the report.
+ * The settings-secret format SettingsService uses: safeStorage with a real
+ * keychain (basic_text never counts, studio-safe-storage.ts). Without one the
+ * handover writes moved-back sessions with the key-file cipher and leaves MCP
+ * sign-ins with the daemon: they are never stored unencrypted by a move.
  */
 export const studioSecretCodec: StudioSecretCodec = {
-  available: () => safeStorage.isEncryptionAvailable(),
+  // The safeStorage Studio's own secrets use (studio-safe-storage.ts): the same keychain check as SettingsService.
+  available: () => keyringAvailable(),
   obfuscationOnly: () => isObfuscationOnly()
     ? 'No OS keyring is available, so safeStorage only obfuscates. Install and unlock a Secret Service keyring such as GNOME Keyring or KWallet, then restart Studio.'
     : null,
   encrypt: (plain) => {
-    if (!safeStorage.isEncryptionAvailable()) throw new Error('OS secure storage (safeStorage) is not available')
-    return 'safe:' + safeStorage.encryptString(plain).toString('base64')
+    if (!keyringAvailable()) throw new Error('OS secure storage (safeStorage) is not available')
+    return studioSecretCipher.encrypt(plain)
   },
-  decrypt: (stored) => {
-    if (!stored.startsWith('safe:') || !safeStorage.isEncryptionAvailable()) return null
-    try {
-      return safeStorage.decryptString(Buffer.from(stored.slice('safe:'.length), 'base64'))
-    } catch {
-      return null
-    }
-  },
+  decrypt: (stored) => studioSecretCipher.decrypt(stored),
 }
 
 /**

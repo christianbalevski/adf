@@ -8,6 +8,7 @@ import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEF
 import { addCatalogSource, normalizeCatalogSources, MAX_CATALOG_SOURCES } from '../../utils/skills-panel'
 import { invalidateConfigCaches } from '../agent/AgentConfig'
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration } from '../../../shared/types/ipc.types'
+import type { SecretStorageView } from '../../../shared/types/secret-storage.types'
 import { McpStatusDashboard } from '../mcp/McpStatusDashboard'
 import { ChannelsPanel } from '../adapters/ChannelsPanel'
 import { ProvidersPanel } from '../providers/ProvidersPanel'
@@ -109,6 +110,86 @@ type OwnerIdentityStatusView = {
   runtimeDelegationValid: boolean
 }
 
+/**
+ * Where Studio keeps its own secrets (seed phrase, runtime keys, app
+ * sign-ins) in its settings file on this computer. Studio-scope: shown
+ * whichever runtime Settings has picked, a remote one included. The
+ * plain-text choice made at launch is shown, with its warning, for as long
+ * as it is saved; switching back to the keychain is the user's move, offered
+ * once the keychain works.
+ */
+export function secretStorageDescription(view: SecretStorageView, remoteName: string | null): string | undefined {
+  if (remoteName) {
+    return `Studio's own secrets, in its settings file on this computer, not ${remoteName}'s. ${remoteName} keeps its secrets on that computer; nothing here moves or changes them.`
+  }
+  if (view.scope === 'studio-copies') {
+    return `Agents run on the ADF daemon, which keeps its own secrets. Studio's settings file still holds ${view.storedSecrets} secret${view.storedSecrets === 1 ? '' : 's'} of its own (kept from Inside Studio).`
+  }
+  return undefined
+}
+
+export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCheckAgain }: {
+  view: SecretStorageView
+  /** The remote runtime Settings has picked, if any: the group still shows this computer's Studio file. */
+  remoteName?: string | null
+  onUseKeyring: () => Promise<{ success: boolean; encrypted?: number; error?: string } | undefined>
+  /** Asks main again whether the keychain works (Retry). */
+  onCheckAgain: () => void
+}) {
+  const [busy, setBusy] = useState(false)
+  const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const plaintext = view.policy === 'plaintext'
+  const useKeyring = async () => {
+    setBusy(true)
+    setResult(null)
+    try {
+      const r = await onUseKeyring()
+      setResult(r?.success
+        ? { ok: true, message: `Secrets are now encrypted with the system keychain (${r.encrypted ?? 0} encrypted). Your identity is unchanged.` }
+        : { ok: false, message: r?.error ?? 'Switching to the system keychain failed. Nothing was changed.' })
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <div data-settings-anchor="secret-storage">
+      <SettingsGroup
+        title="Secret storage"
+        hint="Your owner seed phrase, this runtime's keys and app-level MCP sign-ins, as Studio stores them in adf-settings.json. Provider API keys and MCP server settings are ordinary settings and are not covered."
+        description={secretStorageDescription(view, remoteName)}
+        docs={DOCS.settingsIdentity}
+      >
+        <SettingsRow
+          label={<>Stored{plaintext ? <StateBadge tone="bad">Unencrypted</StateBadge> : <StateBadge tone={view.keyringAvailable ? 'ok' : 'warn'}>{view.keyringAvailable ? 'Encrypted' : 'Keychain unavailable'}</StateBadge>}</>}
+          description={plaintext ? 'Unencrypted on this computer, as you chose.' : 'Encrypted with the system keychain.'}
+          error={plaintext
+            ? 'Anyone, and any program, that can read your files or a backup of them can copy your seed phrase and keys and act as you.'
+            : view.writesBlocked
+              ? 'The system keychain is not available: Studio cannot read these secrets or save new ones until it is. Nothing is stored unencrypted.'
+              : undefined}
+          help={plaintext && view.plaintextSecrets > 0 ? `${view.plaintextSecrets} secret${view.plaintextSecrets === 1 ? '' : 's'} stored as plain text now.` : undefined}
+        >
+          {plaintext && (
+            <Button variant="primary" onClick={() => { void useKeyring() }} disabled={busy || !view.keyringAvailable}>
+              {busy ? 'Encrypting…' : 'Encrypt with Keychain'}
+            </Button>
+          )}
+        </SettingsRow>
+        {plaintext && !view.keyringAvailable && (
+          <SettingsRow separator label="Switch back" description="Set up and unlock your system keychain, then check again: Encrypt with Keychain becomes available.">
+            <Button onClick={onCheckAgain}>Check Again</Button>
+          </SettingsRow>
+        )}
+        {result && (
+          <div className={`border-t border-[var(--adf-ui-separator)] px-4 py-2 text-[12px] ${result.ok ? 'text-[var(--adf-ui-success)]' : 'text-[var(--adf-ui-danger)]'}`} role="status">
+            {result.message}
+          </div>
+        )}
+      </SettingsGroup>
+    </div>
+  )
+}
+
 /** A copyable monospace DID or URL, as the control of a SettingsRow on the Identity page. */
 function DidValue({ copyKey, value, copied, onCopy }: {
   copyKey: string
@@ -178,8 +259,11 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
     void commit(which === 'owner' ? { ownerAlias: next } : { runtimeAlias: next }, () => { savedAliases.current[which] = prev; set(prev) })
   }
 
+  // Studio's own secrets in its settings file: a Studio call, in every mode (null when it holds none).
+  const [secretStorage, setSecretStorage] = useState<SecretStorageView | null>(null)
   const refresh = useCallback(() => {
     api?.getOwnerIdentityStatus().then(setStatus)
+    api?.getStudioSecretStorage?.().then(setSecretStorage)
     api?.getMeshServerStatus().then(setMeshServer)
     api?.getSettings?.().then((s: unknown) => {
       const cfg = s as { ownerAlias?: string; runtimeAlias?: string; shareOwnerIdentity?: boolean } | undefined
@@ -269,6 +353,11 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
         </div>
       )}
 
+      {/* Studio-scope (this computer's settings file): shown with a remote picked too. */}
+      {secretStorage && (
+        <SecretStorageGroup view={secretStorage} remoteName={remote ? runtimeName : null} onCheckAgain={refresh} onUseKeyring={async () => { const r = await api?.useKeyringForSecrets(); refresh(); return r }} />
+      )}
+
       {/* Owner identity */}
       <SettingsGroup
         title="Owner identity"
@@ -278,7 +367,6 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
         <SettingsRow
           label="DID"
           stacked
-          error={status && !status.safeStorageAvailable ? 'The OS keychain is unavailable, so the seed phrase is stored unencrypted in app settings.' : undefined}
           help={status && status.legacyOwnerDids.length > 0 ? <>Previous: <span className="font-mono break-all">{status.legacyOwnerDids.join(', ')}</span></> : undefined}
         >
           <DidValue copyKey="owner" value={status?.ownerDid} copied={copied} onCopy={handleCopy} />
