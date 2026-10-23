@@ -104,7 +104,9 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
           <span aria-hidden className="relative z-10 w-px shrink-0 self-stretch bg-hairline" />
         </>
       )}
-      <div className="scrollbar-autohide flex flex-1 min-w-0 items-stretch overflow-x-auto">
+      {/* A scrollbar gutter would shorten only the file tabs, misaligning
+          them with Loops. Keep horizontal scrolling without reserving height. */}
+      <div className="scrollbar-none flex flex-1 min-w-0 items-stretch overflow-x-auto overflow-y-hidden">
         {tabs.map((tab) => {
           const isActive = tab.path === activeTabPath
           const isBrowser = tab.kind === 'browser'
@@ -126,7 +128,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
                   onClose(tab.path)
                 }
               }}
-              className={`${TAB_BASE} border-r border-hairline ${isActive ? TAB_ACTIVE : TAB_IDLE}`}
+              className={`${TAB_BASE} shrink-0 border-r border-hairline ${isActive ? TAB_ACTIVE : TAB_IDLE}`}
             >
               <span className="truncate max-w-[150px]" title={hoverTitle}>{fileName}</span>
               {isBrowser && (
