@@ -190,7 +190,7 @@ describe('Remote servers: the rows', () => {
     expect(connectionDetail(row({}))).toBeNull()
     expect(connectionDetail(row({ address: 'a', fingerprint: 'F', pairingOpen: true, action: 'connect' }))).toBe('a · F')
     expect(connectionDetail(row({ address: 'a', fingerprint: 'F', pairingOpen: true, action: 'pair' }))).toBe('a · F · Pairing open')
-    expect(connectionDetail(row({ address: 'a', fingerprint: 'F', version: '0.8.0' }))).toBe('a · F · ADF 0.8.0')
+    expect(connectionDetail(row({ address: 'a', fingerprint: 'F', version: '0.8.0' }))).toBe('a · F · v0.8.0')
   })
 
   it('the More menu is a portal into document.body at a fixed position: no card clips it', async () => {
