@@ -190,6 +190,16 @@ under Access Control. To keep the keychain out of it, set
 `ADF_KEYCHAIN=0` (the identity then lives in a passphrase file; see
 [Identity and security](identity-and-security.md#where-the-phrase-is-kept)).
 
+## The daemon exits with "Owner secret store"
+
+`adf daemon start` reports "The daemon exited during startup (code 1)", and
+the log has a line starting `[ADF Daemon] Owner secret store:`. The daemon was
+started with `ADF_SECRET_STORE=keychain` and no usable keychain, with
+`ADF_KEYCHAIN=0` as well, or with an unknown `ADF_SECRET_STORE` value. The
+line names the cause. Fix the keychain, unset the conflicting variable, or set
+`ADF_SECRET_STORE=file`; see
+[Requiring the keychain](../daemon/owner-secret-storage.md#requiring-the-keychain).
+
 ## Shift+Enter sends the message
 
 The terminal sends Shift+Enter as a plain Enter. Use `Alt+Enter` or `Ctrl+J`,

@@ -1269,18 +1269,51 @@ function blockingSleep(ms: number): void {
 }
 
 /**
- * ADF_SECRET_STORE=file|keychain forces a backend; ADF_KEYCHAIN=0 rules the
- * keychain out; default: keychain when usable, else the file. A keychain
- * that exists but does not answer (Windows Credential Manager or the macOS
- * Keychain busy at logon) is probed again with backoff before the daemon
- * falls back; the fallback is then reported (`keychainError`), never silent.
- * Linux without a Secret Service is "no keychain", not a failure.
+ * The secret store settings cannot be honoured: the daemon refuses to start
+ * (index.ts exits with code 1). The message names variables and the probe's
+ * error, never a secret value.
+ */
+export class SecretStoreSelectionError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'SecretStoreSelectionError'
+  }
+}
+
+const STRICT_KEYCHAIN_REMEDY =
+  `The daemon does not start, and it does not open the passphrase file ${SECRET_FILE_NAME}. ` +
+  'Make the OS keychain usable and start the daemon again, or set ADF_SECRET_STORE=file (or unset it) to use the passphrase file.'
+
+/**
+ * ADF_SECRET_STORE unset (or empty): keychain when usable, else the file.
+ * ADF_SECRET_STORE=file: the file. ADF_KEYCHAIN=0 rules the keychain out.
+ * ADF_SECRET_STORE=keychain is strict: the keychain or no start
+ * (SecretStoreSelectionError), never the file; so is any other value.
+ * A keychain that exists but does not answer (Windows Credential Manager or
+ * the macOS Keychain busy at logon) is probed again with backoff before the
+ * daemon falls back (or, strict, refuses); the fallback is then reported
+ * (`keychainError`), never silent. Linux without a Secret Service is
+ * "no keychain", not a failure.
  */
 function selectBackend(settingsPath: string, deps: KeychainProbeDeps = {}): { backend: SecretBackend; keychainError: string | null } {
-  const forced = process.env.ADF_SECRET_STORE
+  const forced = process.env.ADF_SECRET_STORE || undefined
+  if (forced !== undefined && forced !== 'file' && forced !== 'keychain') {
+    // The value is not echoed: a misplaced secret must not reach the log.
+    throw new SecretStoreSelectionError('ADF_SECRET_STORE has an unsupported value. Set it to "keychain" or "file", or unset it to let the daemon choose.')
+  }
+  const strict = forced === 'keychain'
   const file = () => new FileSecretBackend(join(dirname(settingsPath), SECRET_FILE_NAME))
   if (forced === 'file') return { backend: file(), keychainError: null }
-  if (process.env.ADF_KEYCHAIN === '0' || process.env.ADF_KEYCHAIN === 'off') return { backend: file(), keychainError: null }
+  const keychainOff = process.env.ADF_KEYCHAIN
+  if (keychainOff === '0' || keychainOff === 'off') {
+    if (strict) {
+      throw new SecretStoreSelectionError(
+        `ADF_SECRET_STORE=keychain conflicts with ADF_KEYCHAIN=${keychainOff}, which turns the OS keychain off. ` +
+          'Unset ADF_KEYCHAIN to use the keychain, or set ADF_SECRET_STORE=file (or unset it) to use the passphrase file.',
+      )
+    }
+    return { backend: file(), keychainError: null }
+  }
   const fakePath = process.env[TEST_KEYCHAIN_FILE_ENV]
   if (fakePath) {
     if (testSeamsAllowed()) {
@@ -1288,6 +1321,7 @@ function selectBackend(settingsPath: string, deps: KeychainProbeDeps = {}): { ba
       return { backend: new TestKeychainFileBackend(fakePath), keychainError: null }
     }
     // Fail closed: never fall through to the real keychain when a test asked not to use it.
+    if (strict) throw new SecretStoreSelectionError(`ADF_SECRET_STORE=keychain, but ${TEST_KEYCHAIN_FILE_ENV} is set without the test seams (ADF_TEST_SEAMS=1 and an unpackaged build). ${STRICT_KEYCHAIN_REMEDY}`)
     console.error(`[ADF Daemon] Ignoring ${TEST_KEYCHAIN_FILE_ENV}: test seams need ADF_TEST_SEAMS=1 and an unpackaged build. Using the passphrase file, not the OS keychain.`)
     return { backend: file(), keychainError: null }
   }
@@ -1295,20 +1329,27 @@ function selectBackend(settingsPath: string, deps: KeychainProbeDeps = {}): { ba
   const sleep = deps.sleep ?? blockingSleep
   const platform = deps.platform ?? process.platform
   let result = probe()
+  let tries = 1
   // Windows and macOS always have a keychain: a failed read is transient (logon, a busy service). Retry.
   const expected = result.present && (platform === 'win32' || platform === 'darwin')
   for (let i = 0; !result.backend && expected && i < KEYCHAIN_PROBE_DELAYS_MS.length; i++) {
     console.warn(`[ADF Daemon] The OS keychain did not answer (${result.error ?? 'unknown error'}); trying again in ${KEYCHAIN_PROBE_DELAYS_MS[i] / 1000}s`)
     sleep(KEYCHAIN_PROBE_DELAYS_MS[i])
     result = probe()
+    tries++
   }
   if (result.backend) return { backend: result.backend, keychainError: null }
+  if (strict) {
+    const why = result.present
+      ? `the OS keychain could not be read${tries > 1 ? ` after ${tries} tries` : ''} (${result.error ?? 'unknown error'})`
+      : 'no OS keychain binding (@napi-rs/keyring) loads in this build'
+    throw new SecretStoreSelectionError(`ADF_SECRET_STORE=keychain, but ${why}. ${STRICT_KEYCHAIN_REMEDY}`)
+  }
   if (expected) {
     const error = result.error ?? 'unknown error'
     console.error(`[ADF Daemon] The OS keychain could not be read after ${KEYCHAIN_PROBE_DELAYS_MS.length + 1} tries (${error}): using the passphrase file ${SECRET_FILE_NAME}. Owner create, restore and trust-daemon are refused until the daemon restarts with the keychain (adf daemon restart).`)
     return { backend: file(), keychainError: error }
   }
-  if (forced === 'keychain') console.error('[ADF Daemon] ADF_SECRET_STORE=keychain but no OS keychain is usable — using the passphrase file instead')
   return { backend: file(), keychainError: null }
 }
 

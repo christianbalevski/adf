@@ -31,7 +31,7 @@ import { createMeshControls, createMeshServerBinder } from './mesh-controls'
 import { ensureDaemonEncKey, type DaemonEncKey } from './daemon-enc-key'
 import { ensureDaemonToken } from './daemon-token'
 import { BEHIND_PROXY_ENV, behindProxyFromEnv, mintLocalProof, noteLocalProofProblem } from './local-access'
-import { DaemonIdentity, readBootPassphrase } from './daemon-identity'
+import { DaemonIdentity, readBootPassphrase, SecretStoreSelectionError } from './daemon-identity'
 import { DaemonAgentFactory } from './daemon-agent-factory'
 import { setWorkspaceIdentityHooks } from '../runtime/identity-provisioner'
 import { setChildTrustRegistrar } from '../runtime/child-trust'
@@ -179,12 +179,23 @@ if (behindProxy) {
   }
 }
 
-const ownerIdentity = new DaemonIdentity({
-  settings,
-  settingsPath,
-  encKey: daemonEncKey,
-  bootPassphrase: readBootPassphrase((path) => readFileSync(path, 'utf-8')),
-})
+// Secret store settings it cannot honour (ADF_SECRET_STORE=keychain with no
+// usable keychain, a conflict, an unknown value) stop the daemon here, exit
+// code 1: a throw at this level would only reach the log-only
+// uncaughtException handler above.
+let ownerIdentity: DaemonIdentity
+try {
+  ownerIdentity = new DaemonIdentity({
+    settings,
+    settingsPath,
+    encKey: daemonEncKey,
+    bootPassphrase: readBootPassphrase((path) => readFileSync(path, 'utf-8')),
+  })
+} catch (err) {
+  if (!(err instanceof SecretStoreSelectionError)) throw err
+  console.error(`[ADF Daemon] Owner secret store: ${err.message}`)
+  process.exit(1)
+}
 // Provider API keys added through the daemon live in the same secret store.
 settings.setProviderKeyVault(ownerIdentity.providerKeys)
 {

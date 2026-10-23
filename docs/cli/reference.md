@@ -169,8 +169,8 @@ ADF_DAEMON_ALLOWED_HOSTS, ADF_DAEMON_BEHIND_PROXY
 | `ADF_DAEMON_BEHIND_PROXY` | daemon | `1`: a reverse proxy on this host forwards to the daemon. Owner identity secrets and `daemon stop` then also need `<data dir>/daemon-local-proof`, which only `adf` on this host sends: run them on the host against its loopback port |
 | `ADF_OWNER_PASSPHRASE` | daemon | Unlocks a passphrase-file owner identity at daemon start (machines without an OS keychain) |
 | `ADF_OWNER_PASSPHRASE_FILE` | daemon | Same, read from the first line of this file |
-| `ADF_SECRET_STORE` | daemon | `file` or `keychain`: where the owner phrase and provider keys are kept (default: the OS keychain when usable, else the passphrase file) |
-| `ADF_KEYCHAIN` | daemon | `0` or `off`: never use the OS keychain |
+| `ADF_SECRET_STORE` | daemon | `file` or `keychain`: where the owner phrase and provider keys are kept (default: the OS keychain when usable, else the passphrase file). Unset or empty: that default. With `keychain` and no usable keychain, or any other nonempty value, the daemon does not start |
+| `ADF_KEYCHAIN` | daemon | `0` or `off`: never use the OS keychain (conflicts with `ADF_SECRET_STORE=keychain`) |
 | `ADF_TUI_THEME` | terminal app | Same as `--theme` |
 | `ADF_TUI_ASCII` | terminal app | `1`: same as `--ascii` |
 | `ADF_TUI_MOUSE` | terminal app | `0`: the terminal's own mouse, `1`: mouse mode; wins over the saved `/mouse` choice |
