@@ -15,6 +15,7 @@
 import type { FastifyInstance } from 'fastify'
 import { approvalHub } from '../../runtime/approval-hub'
 import { deriveHandle } from '../../utils/handle'
+import { summarizeAsk } from '../../../shared/utils/ask-form'
 import type { FleetPendingInteraction } from '../../../shared/types/ipc.types'
 import type { DaemonRouteContext } from './index'
 import { badRequest, stringParam } from './route-helpers'
@@ -59,7 +60,9 @@ export function registerApprovalsRoutes(server: FastifyInstance, ctx: DaemonRout
       const handle = handles.get(filePath) ?? deriveHandle(filePath)
       const mine = pending.filter((entry) => entry.filePath === filePath)
       for (const ask of mine.filter((entry) => entry.kind === 'ask')) {
-        out.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question })
+        // `question` is the one-line summary, as the executor's getPendingAsks (the hub row carries every question's text).
+        const questions = ask.questions ?? []
+        out.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: questions.length > 0 ? summarizeAsk(questions) : ask.question, questions })
       }
       for (const approval of mine.filter((entry) => entry.kind === 'approval')) {
         out.push({

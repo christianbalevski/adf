@@ -9,6 +9,7 @@ import { createContext, useContext, useRef, useSyncExternalStore, type ReactNode
 import { randomUUID } from 'node:crypto'
 import * as commandRulesNs from '../../../shared/utils/agent-commands'
 import { cjs } from '../interop'
+import type { AskAnswer } from '../../../shared/utils/ask-form'
 const { parseAuthorizeToken } = cjs(commandRulesNs)
 
 /**
@@ -138,7 +139,8 @@ export interface TuiActions {
   alwaysApproveTask(agentId: string, taskId: string): Promise<boolean>
   /** Approve every pending gated call (never protection overrides) of the agent, or of one loop. */
   approveAllTasks(agentId: string, loop?: string): Promise<void>
-  answerAsk(agentId: string, requestId: string, answer: string, loop?: string): Promise<void>
+  /** Send an ask's answers, one per question (`null` = skipped). */
+  answerAsk(agentId: string, requestId: string, answers: AskAnswer[], loop?: string): Promise<void>
   respondSuspend(agentId: string, resume: boolean): Promise<void>
 
   /** Re-read `GET /runtime/auth` (ChatGPT / Grok / Claude sign-in) into `state.auth`. Quiet on failure. */
@@ -821,9 +823,10 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       await actions.refreshHil(agentId)
     },
 
-    async answerAsk(agentId, requestId, answer, loop) {
-      const result = await run('Answer', c => c.answerAsk(agentId, requestId, answer, loop))
-      if (result) toast(result.answered ? 'Answer sent' : 'Ask was no longer pending', result.answered ? 'success' : 'warn')
+    async answerAsk(agentId, requestId, answers, loop) {
+      const result = await run('Answer', c => c.answerAsk(agentId, requestId, answers, loop))
+      const sent = answers.every(a => a === null) ? 'Skipped' : answers.length > 1 ? 'Answers sent' : 'Answer sent'
+      if (result) toast(result.answered ? sent : 'Ask was no longer pending', result.answered ? 'success' : 'warn')
       await actions.refreshHil(agentId)
     },
 

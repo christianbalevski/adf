@@ -148,9 +148,9 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
     daemon.routes.set(`GET /agents/${AGENT}/status`, () => status(AGENT, file1, { runtimeState: 'awaiting_approval', sessionId: 'session-7', loopStates: { reflector: 'active', critic: 'idle' } }))
     daemon.routes.set(`GET /agents/${AGENT}/triggers`, () => ({ agentId: AGENT, displayState: 'active', configured: [] }))
     daemon.routes.set('GET /approvals/interactions', () => ([
-      { filePath: file1, handle: 'agent-1', type: 'ask', requestId: 'ask_1', question: 'Why?' },
+      { filePath: file1, handle: 'agent-1', type: 'ask', requestId: 'ask_1', question: 'Why?', questions: [{ question: 'Why?' }] },
       { filePath: file1, handle: 'agent-1', type: 'approval', requestId: 'task_1', toolName: 'fs_write', input: { path: 'a' }, reason: 'restricted', canAlwaysApprove: true },
-      { filePath: file2, handle: 'agent-2', type: 'ask', requestId: 'ask_9', question: 'other' },
+      { filePath: file2, handle: 'agent-2', type: 'ask', requestId: 'ask_9', question: 'other', questions: [{ question: 'other' }] },
     ]))
     await call(IPC.FILE_OPEN, { filePath: file1 })
     expect(await call(IPC.AGENT_START, {})).toEqual({
@@ -160,7 +160,7 @@ describe('open file: prompt before start (design §6.1 row 27)', () => {
       // Side loops keep running across a switch: the re-attach answers their states (embedded: sideLoopStates()).
       loopStates: { reflector: 'active', critic: 'idle' },
       pendingApprovals: [{ requestId: 'task_1', name: 'fs_write', input: { path: 'a' }, reason: 'restricted', canAlwaysApprove: true }],
-      pendingAsks: [{ requestId: 'ask_1', question: 'Why?' }],
+      pendingAsks: [{ requestId: 'ask_1', question: 'Why?', questions: [{ question: 'Why?' }] }],
     })
   })
   // The Kill race: FILE_OPEN saw the agent running, a Kill stopped it before
@@ -297,8 +297,11 @@ describe('the open file\'s agent', () => {
     daemon.routes.set(`POST /agents/${AGENT}/tasks/task_3/resolve`, () => ({ status: 404, body: { error: 'Task "task_3" not found', code: 'task_not_found' } }))
     expect(await call(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId: 'task_3', approved: true })).toEqual({ success: false, error: 'This approval is no longer pending' })
     daemon.routes.set(`POST /agents/${AGENT}/asks/ask_1/respond`, () => ({ status: 404, body: { error: 'Ask request "ask_1" not found', code: 'ask_not_found' } }))
-    expect(await call(IPC.AGENT_ASK_RESPOND, { requestId: 'ask_1', answer: 'x' })).toEqual({ success: true })
-    expect(last('POST', `/agents/${AGENT}/asks/ask_1/respond`)?.body).toEqual({ answer: 'x', loop: 'main' })
+    expect(await call(IPC.AGENT_ASK_RESPOND, { requestId: 'ask_1', answers: ['x'] })).toEqual({ success: true })
+    expect(last('POST', `/agents/${AGENT}/asks/ask_1/respond`)?.body).toEqual({ answers: ['x'], loop: 'main' })
+    // Answers that do not fit the form: the ask stays pending and the form shows the daemon's sentence.
+    daemon.routes.set(`POST /agents/${AGENT}/asks/ask_2/respond`, () => ({ status: 400, body: { error: 'Invalid answers: answers has 1 entries but the ask has 2 questions.', code: 'invalid_answers' } }))
+    expect(await call(IPC.AGENT_ASK_RESPOND, { requestId: 'ask_2', answers: ['x'] })).toEqual({ success: false, error: 'Invalid answers: answers has 1 entries but the ask has 2 questions.' })
     daemon.routes.set(`POST /agents/${AGENT}/suspend/respond`, () => ({ status: 500, body: { error: 'No pending suspend request' } }))
     expect(await call(IPC.AGENT_SUSPEND_RESPOND, { resume: true })).toEqual({ success: true })
   })
@@ -345,7 +348,12 @@ describe('background agents and folders', () => {
 
   it('BACKGROUND_* by path: the open file is not a background agent; a running one resolves through the routes', async () => {
     await call(IPC.FILE_OPEN, { filePath: file1 })
-    expect(await call(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath: file1, requestId: 'ask_1', answer: 'x' })).toEqual({ success: false, error: 'Background agent not found' })
+    expect(await call(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath: file1, requestId: 'ask_1', answers: ['x'] })).toEqual({ success: false, error: 'Background agent not found' })
+    daemon.routes.set(`POST /agents/${OTHER}/asks/ask_2/respond`, () => ({ agentId: OTHER, requestId: 'ask_2', loop: 'main', answered: true }))
+    expect(await call(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath: file2, requestId: 'ask_2', answers: [['a', 'b'], null] })).toEqual({ success: true })
+    expect(last('POST', `/agents/${OTHER}/asks/ask_2/respond`)?.body).toEqual({ answers: [['a', 'b'], null], loop: 'main' })
+    daemon.routes.set(`POST /agents/${OTHER}/asks/ask_3/respond`, () => ({ status: 400, body: { error: 'Invalid answers: question 1 takes one pick, got 2.', code: 'invalid_answers' } }))
+    expect(await call(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath: file2, requestId: 'ask_3', answers: [['a', 'b']] })).toEqual({ success: false, error: 'Invalid answers: question 1 takes one pick, got 2.' })
     expect(await call(IPC.BACKGROUND_AGENT_STOP, { filePath: file1 })).toEqual({ success: false })
     daemon.routes.set(`POST /agents/${OTHER}/tasks/t9/resolve`, () => ({ agentId: OTHER }))
     expect(await call(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath: file2, requestId: 't9', approved: true })).toEqual({ success: true })

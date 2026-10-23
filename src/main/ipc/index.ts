@@ -49,6 +49,18 @@ function deleteAdfFile(filePath: string): void {
     unlinkSync(walPath)
   }
 }
+
+/** Answer an ask form; answers that do not fit it come back as an inline error and the ask stays pending. */
+function resolveAskOn(executor: AgentExecutor, requestId: string, answers: unknown): { success: boolean; error?: string } {
+  try {
+    executor.resolveAsk(requestId, answers)
+    return { success: true }
+  } catch (err) {
+    if (err instanceof AskAnswerError) return { success: false, error: `Invalid answers: ${err.message}.` }
+    throw err
+  }
+}
+
 /**
  * Provider connection checks (services/provider-checks.ts): a per-session
  * result cache plus the `providerChecksEnabled` opt-out for checks Studio
@@ -90,6 +102,7 @@ import { generateAgentName } from '../../shared/utils/agent-names'
 import { cloneAdfFile } from '../adf/clone-fixup'
 import { AgentTemplatesService, templateFilePath } from '../adf/agent-templates'
 import { AgentExecutor } from '../runtime/agent-executor'
+import { AskAnswerError } from '../../shared/utils/ask-form'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { withSource } from '../runtime/execution-context'
@@ -5236,16 +5249,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   )
 
-  ipcMain.handle(IPC.AGENT_ASK_RESPOND, async (_event, args: { requestId: string; answer: string }) => {
+  ipcMain.handle(IPC.AGENT_ASK_RESPOND, async (_event, args: { requestId: string; answers: unknown }) => {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    agentExecutor.resolveAsk(args.requestId, args.answer)
-    return { success: true }
+    return resolveAskOn(agentExecutor, args.requestId, args.answers)
   })
 
   // Background agent ask/approval responses
-  ipcMain.handle(IPC.BACKGROUND_AGENT_ASK_RESPOND, async (_event, args: { filePath: string; requestId: string; answer: string }) => {
+  ipcMain.handle(IPC.BACKGROUND_AGENT_ASK_RESPOND, async (_event, args: { filePath: string; requestId: string; answers: unknown }) => {
     if (!backgroundAgentManager) {
       return { success: false, error: 'Background agent manager not initialized' }
     }
@@ -5253,8 +5265,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    executor.resolveAsk(args.requestId, args.answer)
-    return { success: true }
+    return resolveAskOn(executor, args.requestId, args.answers)
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean; feedback?: string }) => {
@@ -5976,7 +5987,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     const collect = (filePath: string, handle: string, executor: AgentExecutor) => {
       for (const ask of executor.getPendingAsks()) {
-        pending.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question })
+        pending.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question, questions: ask.questions })
       }
       for (const approval of executor.getPendingApprovals()) {
         pending.push({

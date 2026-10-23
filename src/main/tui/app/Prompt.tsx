@@ -177,7 +177,13 @@ export function Prompt({ width, focused }: { width: number; focused: boolean }) 
 
   const submit = (text: string) => {
     const trimmed = text.trim()
-    if (!trimmed) return false
+    if (!trimmed) {
+      // A view may take an empty Enter (chat: skip the question being answered).
+      const scope = createScope(store, exit)
+      if (!config?.onSubmit || !config.submitsEmpty?.(scope)) return false
+      void config.onSubmit('', { ...scope, args: [], rest: '' })
+      return true
+    }
     setHistory(prev => [...prev.filter(h => h !== trimmed), trimmed].slice(-HISTORY_LIMIT))
     setMenuIndex(0)
     void (async () => {

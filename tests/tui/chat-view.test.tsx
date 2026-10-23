@@ -259,6 +259,48 @@ describe('chat view', () => {
     expect(mock.agents.get(AGENT_1_ID)!.history.main.some(r => r.content_json[0].text === 'opaque base64')).toBe(false)
   })
 
+  it('steps through a form one question at a time and sends every answer at the end', async () => {
+    const { tui, mock } = await mountChat({ before: m => { m.agents.get(AGENT_1_ID)!.tasks = [] } })
+    addAsk(mock, AGENT_1_ID, 'ask_2', [
+      { question: 'Which region?', options: [{ label: 'us-east' }, { label: 'eu-west', description: 'closer to the team' }] },
+      { question: 'Which checks should run?', options: [{ label: 'lint' }, { label: 'unit' }, { label: 'e2e' }], multiple: true },
+      { question: 'Anything else?' },
+    ])
+    let frame = await tui.waitFor('Which region?')
+    expect(frame).toContain('1/3')
+    expect(frame).toContain('2. eu-west  closer to the team')
+    expect(frame).toContain('Other: type your own answer')
+    await typeInPrompt(tui, '2')
+    await tui.press(KEY.enter)
+    frame = await tui.waitFor('Which checks should run?')
+    expect(frame).toContain('2/3')
+    // A number out of range keeps the question.
+    await typeInPrompt(tui, '7')
+    await tui.press(KEY.enter)
+    await tui.waitFor('There is no option 7')
+    await typeInPrompt(tui, '1,3')
+    await tui.press(KEY.enter)
+    await tui.waitFor('Anything else?')
+    // Enter on an empty prompt skips the last question and sends the form.
+    await tui.press(KEY.enter)
+    await tui.waitFor('Answers sent')
+    expect(mock.agents.get(AGENT_1_ID)!.askAnswers?.ask_2).toEqual(['eu-west', ['lint', 'e2e'], null])
+  })
+
+  it('x on the question card skips the questions not answered yet', async () => {
+    const { tui, mock } = await mountChat({ before: m => { m.agents.get(AGENT_1_ID)!.tasks = [] } })
+    addAsk(mock, AGENT_1_ID, 'ask_3', [{ question: 'First thing?' }, { question: 'Second thing?' }])
+    await tui.waitFor('First thing?')
+    await typeInPrompt(tui, 'done already')
+    await tui.press(KEY.enter)
+    const frame = await tui.waitFor('Second thing?')
+    expect(frame).toContain('skip the rest')
+    await tui.press(KEY.shiftTab)
+    await tui.press('x')
+    await tui.waitFor('Answers sent')
+    expect(mock.agents.get(AGENT_1_ID)!.askAnswers?.ask_3).toEqual(['done already', null])
+  })
+
   it('collapses thinking by default and expands it with t', async () => {
     const { tui, mock } = await mountChat()
     mock.emit({ event_type: 'turn.delta', agent_id: AGENT_1_ID, payload: { kind: 'thinking', text: 'The user wants the cursor to be opaque.' } })

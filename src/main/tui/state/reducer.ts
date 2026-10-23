@@ -19,8 +19,10 @@ import {
   type UmbilicalEvent,
 } from '../api/types'
 import { buildTracked, pruneLoaded, reconcileSelection } from './tracked'
+import type { AskAnswer } from '../../../shared/utils/ask-form'
 import {
   applyEventToItems,
+  askQuestions,
   emptyTranscript,
   finalizeStreaming,
   historyToItems,
@@ -36,6 +38,7 @@ import {
   type ContextItem,
   type FocusZone,
   type Overlay,
+  type PendingAsk,
   type Toast,
   type Transcript,
   type TranscriptItem,
@@ -59,6 +62,8 @@ export type TuiAction =
   | { type: 'loops/loaded'; agentId: string; loops: LoopInfo[] }
   | { type: 'loops/error'; agentId: string; error: string }
   | { type: 'hil/loaded'; agentId: string; tasks: TaskEntry[]; asks: AskEntry[] }
+  /** Answers given so far to a pending ask's form (the dock steps through its questions). */
+  | { type: 'ask/progress'; agentId: string; requestId: string; loop?: string; answers: AskAnswer[] }
   | { type: 'select/agent'; agentId: string | null }
   | { type: 'select/loop'; agentId: string; loop: string }
   | { type: 'view/set'; view: string }
@@ -260,7 +265,13 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       return patchAgent(state, action.agentId, agent => ({
         ...agent,
         pendingTasks: action.tasks.filter(task => task.status === 'pending_approval'),
-        pendingAsks: action.asks,
+        // A refetch keeps the answers already stepped through.
+        pendingAsks: action.asks.map(ask => toPendingAsk(ask, agent.pendingAsks.find(a => sameAsk(a, ask.loop ?? MAIN_LOOP, ask.requestId))?.answers)),
+      }))
+    case 'ask/progress':
+      return patchAgent(state, action.agentId, agent => ({
+        ...agent,
+        pendingAsks: agent.pendingAsks.map(ask => sameAsk(ask, action.loop ?? MAIN_LOOP, action.requestId) ? { ...ask, answers: action.answers } : ask),
       }))
     case 'select/agent':
       return state.selectedAgentId === action.agentId ? state : { ...state, selectedAgentId: action.agentId }
@@ -486,7 +497,7 @@ function applyEvent(state: TuiState, event: UmbilicalEvent, log = true): TuiStat
       if (requestId) {
         next = patchAgent(next, agentId, agent => agent.pendingAsks.some(a => sameAsk(a, loop, requestId)) ? agent : {
           ...agent,
-          pendingAsks: [...agent.pendingAsks, { requestId, question: typeof p.question === 'string' ? p.question : '', loop }],
+          pendingAsks: [...agent.pendingAsks, toPendingAsk({ requestId, question: typeof p.question === 'string' ? p.question : '', loop, questions: p.questions })],
         })
       }
       break
@@ -521,6 +532,13 @@ function turnOver(value: unknown): boolean {
 function endLive(t: Transcript): Transcript {
   const items = finalizeStreaming(t.items)
   return !t.live && items === t.items ? t : { ...t, live: false, items }
+}
+
+/** An ask entry with its form: `questions` when the daemon sends them, else the one-line question (older daemons). */
+function toPendingAsk(ask: Omit<AskEntry, 'questions'> & { questions?: unknown }, answers?: AskAnswer[]): PendingAsk {
+  const read = askQuestions({ questions: ask.questions })
+  const questions = read.length > 0 ? read : [{ question: ask.question }]
+  return { ...ask, questions, answers: answers && answers.length < questions.length ? answers : [] }
 }
 
 function sameAsk(ask: AskEntry, loop: string, requestId: unknown): boolean {

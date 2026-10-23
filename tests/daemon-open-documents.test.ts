@@ -220,7 +220,7 @@ const ROUTES: RouteCase[] = [
   { method: 'POST', path: `${A}/tasks/{taskId}/always-approve`, url: c => `/agents/${c.id}/tasks/${c.taskId}/always-approve`, expect: 'notRunning' },
   { method: 'POST', path: `${A}/tasks/approve-all`, url: c => `/agents/${c.id}/tasks/approve-all`, expect: 'notRunning' },
   { method: 'GET', path: `${A}/asks`, url: c => `/agents/${c.id}/asks`, expect: { ok: 200 }, after: r => expect(r.json().asks).toEqual([]) },
-  { method: 'POST', path: `${A}/asks/{requestId}/respond`, url: c => `/agents/${c.id}/asks/ask-1/respond`, body: { answer: 'yes' }, expect: 'notRunning' },
+  { method: 'POST', path: `${A}/asks/{requestId}/respond`, url: c => `/agents/${c.id}/asks/ask-1/respond`, body: { answers: ['yes'] }, expect: 'notRunning' },
   { method: 'POST', path: `${A}/suspend/respond`, url: c => `/agents/${c.id}/suspend/respond`, body: { resume: true }, expect: 'notRunning' },
   { method: 'GET', path: `${A}/context`, url: c => `/agents/${c.id}/context`, expect: { ok: 200 }, after: r => expect(r.json().available).toBe(false) },
   { method: 'GET', path: `${A}/identities`, url: c => `/agents/${c.id}/identities`, expect: { ok: 200 } },

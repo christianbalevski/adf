@@ -215,7 +215,7 @@ export const CHANNEL_MAP = {
   [IPC.APPROVALS_REVEAL]: aggregate(local('push', 'Studio native notifier and menu bar click. In daemon mode the notifier is fed from the approvals frames.')),
   [IPC.APPROVALS_GET_PENDING_REVEAL]: local('invoke', 'Reveal queued in Studio main for a loading renderer.'),
 
-  [IPC.AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond']),
+  [IPC.AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond'], { note: 'Forwards `answers` (one per question); 400 invalid_answers answers { success: false, error } and the ask stays pending.' }),
   [IPC.AGENT_SUSPEND_RESPOND]: proxied('invoke', ['POST /agents/:id/suspend/respond']),
 
   // --- Models and settings ---------------------------------------------------
@@ -283,7 +283,7 @@ export const CHANNEL_MAP = {
   }),
   [IPC.BACKGROUND_AGENT_STATUS]: proxied('invoke', ['GET /agents', 'GET /agents/:id/status'], { note: 'The `starting` list is the agents the bridge saw announced (agent_starting host frames) that GET /agents does not list yet.' }),
   [IPC.BACKGROUND_AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
-  [IPC.BACKGROUND_AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond']),
+  [IPC.BACKGROUND_AGENT_ASK_RESPOND]: proxied('invoke', ['POST /agents/:id/asks/:requestId/respond'], { note: 'Forwards `answers` (one per question); 400 invalid_answers answers { success: false, error } and the ask stays pending.' }),
   [IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND]: proxied('invoke', ['POST /agents/:id/tasks/:taskId/resolve']),
   [IPC.BACKGROUND_AGENT_ALWAYS_APPROVE]: proxied('invoke', ['POST /agents/:id/tasks/:taskId/always-approve']),
 

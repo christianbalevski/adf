@@ -6,14 +6,14 @@ import { Box, Text, type DOMElement } from 'ink'
 import { useTheme } from '../../app/theme'
 import { elementRect, keyLabel, useClick } from '../../app/keys'
 import { displayWidth, oneLine, previewJson, truncate, wrappedHeight } from '../../ui/text'
-import type { AskEntry, TaskEntry, TaskListEntry } from '../../api/types'
-import type { TranscriptItem } from '../../state/types'
-import { parseArgs } from './model'
+import type { TaskEntry, TaskListEntry } from '../../api/types'
+import type { PendingAsk, TranscriptItem } from '../../state/types'
+import { askHint, askStep, parseArgs } from './model'
 import { alwaysBlocked } from './approvals'
 
 export interface DockModel {
   tasks: TaskListEntry[]
-  asks: AskEntry[]
+  asks: PendingAsk[]
   suspended: boolean
   queued: TranscriptItem[]
 }
@@ -28,6 +28,16 @@ export function topCard(model: DockModel): DockCard {
 }
 
 const ASK_LINES = 3
+/** Options listed in the dock; the rest are still picked by number. */
+const ASK_OPTIONS = 6
+
+/** Rows of the ask card's body: the question, its options + "Other", the hint, the buttons. */
+function askRows(ask: PendingAsk, inner: number): number {
+  const { question } = askStep(ask)
+  const options = question.options?.length ?? 0
+  const optionRows = options > 0 ? Math.min(options, ASK_OPTIONS) + (options > ASK_OPTIONS ? 1 : 0) + 1 : 0
+  return 1 + Math.min(ASK_LINES, wrappedHeight(question.question || ' ', inner)) + optionRows + 1 + 1
+}
 
 export function taskReason(task: TaskEntry): string | undefined {
   const meta = task.approval_meta as { reason?: string; protection?: { description?: string } } | undefined
@@ -40,13 +50,13 @@ export function dockHeight(model: DockModel, width: number): number {
   const queued = model.queued.length > 0 ? 1 : 0
   switch (topCard(model)) {
     case 'hil': return queued + 2 + 3 + (taskReason(model.tasks[0]) ? 1 : 0)
-    case 'ask': return queued + 2 + 2 + Math.min(ASK_LINES, wrappedHeight(model.asks[0].question || ' ', Math.max(8, width - 4)))
+    case 'ask': return queued + 2 + askRows(model.asks[0], Math.max(8, width - 4))
     case 'suspend': return queued + 2 + 2
     default: return queued
   }
 }
 
-export type DockAction = 'approve' | 'always' | 'reject' | 'feedback' | 'details' | 'resume' | 'shutdown'
+export type DockAction = 'approve' | 'always' | 'reject' | 'feedback' | 'details' | 'resume' | 'shutdown' | 'answer' | 'skip'
 
 interface DockButton { keys: string; label: string; action: DockAction; off?: string }
 
@@ -138,15 +148,40 @@ export function Dock({ model, width, focused, agentLabel, onAction }: { model: D
           </>
         ))
       })() : null}
-      {card === 'ask' ? border(theme.color.warn, (
-        <>
-          <Text wrap="truncate-end" bold color={theme.color.warn}>? {agentLabel} asks you{model.asks.length > 1 ? `  (+${model.asks.length - 1} more)` : ''}</Text>
-          <Box height={Math.min(ASK_LINES, wrappedHeight(model.asks[0].question || ' ', inner))} overflow="hidden">
-            <Text wrap="wrap" color={theme.color.text}>{model.asks[0].question}</Text>
-          </Box>
-          <Text color={theme.color.dim} wrap="truncate-end">Type the answer in the prompt {g.sep} Enter sends it to the agent {focused ? `${g.sep} a to focus the prompt` : ''}</Text>
-        </>
-      )) : null}
+      {card === 'ask' ? (() => {
+        // One question at a time; the prompt answers the one shown.
+        const ask = model.asks[0]
+        const { index, question } = askStep(ask)
+        const options = question.options ?? []
+        const total = ask.questions.length
+        const number = (n: number) => `${n}.`.padStart(String(options.length).length + 1)
+        return border(theme.color.warn, (
+          <>
+            <Text wrap="truncate-end">
+              <Text bold color={theme.color.warn}>? {agentLabel} asks you</Text>
+              {total > 1 ? <Text color={theme.color.muted}>  {index + 1}/{total}</Text> : null}
+              {model.asks.length > 1 ? <Text color={theme.color.muted}>  (+{model.asks.length - 1} more)</Text> : null}
+            </Text>
+            <Box height={Math.min(ASK_LINES, wrappedHeight(question.question || ' ', inner))} overflow="hidden">
+              <Text wrap="wrap" color={theme.color.text}>{question.question}</Text>
+            </Box>
+            {options.slice(0, ASK_OPTIONS).map((option, i) => (
+              <Text key={i} wrap="truncate-end">
+                <Text color={theme.color.accent}>{number(i + 1)}</Text>
+                <Text color={theme.color.text}> {option.label}</Text>
+                {option.description ? <Text color={theme.color.dim}>  {option.description}</Text> : null}
+              </Text>
+            ))}
+            {options.length > ASK_OPTIONS ? <Text wrap="truncate-end" color={theme.color.dim}>{g.ellipsis} {options.length - ASK_OPTIONS} more, {ASK_OPTIONS + 1}–{options.length} by number</Text> : null}
+            {options.length > 0 ? <Text wrap="truncate-end" color={theme.color.dim}>{' '.repeat(number(1).length)} Other: type your own answer</Text> : null}
+            <Text wrap="truncate-end" color={theme.color.dim}>{askHint(question, g.sep)}</Text>
+            {act([
+              { keys: 'a', label: 'answer', action: 'answer' },
+              { keys: 'x', label: index > 0 ? 'skip the rest' : total > 1 ? 'skip all' : 'skip', action: 'skip' },
+            ])}
+          </>
+        ))
+      })() : null}
       {card === 'suspend' ? border(theme.color.warn, (
         <>
           <Text bold color={theme.color.warn}>{g.warn} {agentLabel} is suspended and waiting for you</Text>

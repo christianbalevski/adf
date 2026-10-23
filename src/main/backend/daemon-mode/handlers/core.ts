@@ -303,7 +303,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
           ...(i.canAlwaysApprove !== undefined ? { canAlwaysApprove: i.canAlwaysApprove } : {}),
           ...(i.alwaysApproveBlockedReason !== undefined ? { alwaysApproveBlockedReason: i.alwaysApproveBlockedReason } : {}),
         })),
-        pendingAsks: mine.filter((i) => i.type === 'ask').map((i) => ({ requestId: i.requestId, question: i.question })),
+        pendingAsks: mine.filter((i) => i.type === 'ask').map((i) => ({ requestId: i.requestId, question: i.question, questions: i.questions ?? [] })),
       }
     }
     // Prompt before start (design §6.1 row 27): FILE_OPEN already asked for

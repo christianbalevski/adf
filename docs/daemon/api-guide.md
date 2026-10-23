@@ -557,10 +557,21 @@ that is no longer pending is `409`; tasks left pending by a crash are cancelled
 at the next load.
 
 **Questions.** The agent's `ask` tool emits `ask.requested {request_id,
-question}` and the loop waits in `awaiting_ask`. List with `GET
-/agents/:id/asks` (each with its `loop`); answer with `POST
-/agents/:id/asks/:requestId/respond {answer, loop}`. Request ids are numbered
-per loop, so pass `loop` when two loops ask at once.
+question, questions}` and the loop waits in `awaiting_ask`. List with `GET
+/agents/:id/asks` (each with its `questions` and `loop`); answer with `POST
+/agents/:id/asks/:requestId/respond {answers, loop}`, one entry per question
+in order: a string (free text or one pick), an array of strings (several
+picks), or `null` to skip. A value that is not one of the option labels is
+the human's "Other" answer. For a form asking "Which database?" (options
+Postgres, SQLite) then "Anything I should avoid?":
+
+```json
+{ "answers": ["SQLite", null], "loop": "main" }
+```
+
+A payload that does not fit the form (wrong count, several picks on a
+one-pick question) is `400` and the ask stays pending. Request ids are
+numbered per loop, so pass `loop` when two loops ask at once.
 
 **Suspends.** An agent that hits `limits.max_active_turns` emits
 `suspend.requested`; answer with `POST /agents/:id/suspend/respond {resume:

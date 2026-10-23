@@ -250,7 +250,7 @@ When an agent blocks on a tool approval or a question, the map makes sure you ca
 
 At close and medium zoom, the tile carries a compact **pending card**:
 
-- **Questions** (`ask`): the question plus a text field — type and send right on the map.
+- **Questions** (`ask`): the agent's questions — answer (or skip) and send right on the map.
 - **Approvals**: the tool name, the agent's stated reason (its `_reason`, clamped to two lines), and Approve / Always approve / Reject-with-feedback controls, plus a "view full context" link.
 
 Clicking the card's dead space (anything that isn't a button or input) opens the full-context modal. At far zoom the card isn't rendered — there, a single click on an amber tile opens the modal after a beat (a double-click still wins and opens the agent instead).

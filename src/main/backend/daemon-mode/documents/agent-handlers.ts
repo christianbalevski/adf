@@ -63,6 +63,11 @@ function staleRequest(err: unknown): boolean {
   return (status === 404 || status === 409) && daemonCode(err) !== 'agent_not_running'
 }
 
+/** Answers that do not fit the ask form: the ask stays pending and the form shows the error, as embedded. */
+function invalidAnswers(err: unknown): boolean {
+  return daemonStatus(err) === 400 && daemonCode(err) === 'invalid_answers'
+}
+
 /** The running background agent at `filePath`: null when nothing runs there or it is the open file's agent. */
 async function backgroundAgentAt(ctx: DaemonModeContext, filePath: string): Promise<string | null> {
   if (samePath(filePath, ctx.session.filePath, ctx.mode === 'remote')) return null
@@ -202,11 +207,12 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     return { success: true, approved, skippedProtection }
   }),
 
-  [IPC.AGENT_ASK_RESPOND]: async (ctx, _event, args: { requestId: string; answer: string }) =>
+  [IPC.AGENT_ASK_RESPOND]: async (ctx, _event, args: { requestId: string; answers: unknown }) =>
     onRunningOpenAgent(ctx, async (client, agentId) => {
       try {
-        await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answer: args.answer, loop: 'main' } })
+        await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answers: args.answers, loop: 'main' } })
       } catch (err) {
+        if (invalidAnswers(err)) return { success: false, error: errorMessage(err) }
         if (!staleRequest(err)) throw err
         ctx.log.warn(`[Backend] AGENT_ASK_RESPOND: ${args.requestId} is not pending any more (${errorMessage(err)})`)
       }
@@ -303,14 +309,15 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     }
   },
 
-  [IPC.BACKGROUND_AGENT_ASK_RESPOND]: async (ctx, _event, args: { filePath: string; requestId: string; answer: string }) => {
+  [IPC.BACKGROUND_AGENT_ASK_RESPOND]: async (ctx, _event, args: { filePath: string; requestId: string; answers: unknown }) => {
     const agentId = await backgroundAgentAt(ctx, args?.filePath)
     if (!agentId) return BACKGROUND_NOT_FOUND
     const client = await ctx.ready()
     try {
-      await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answer: args.answer, loop: 'main' } })
+      await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answers: args.answers, loop: 'main' } })
     } catch (err) {
       if (isAgentGone(err, agentId) || daemonCode(err) === 'agent_not_running') return BACKGROUND_NOT_FOUND
+      if (invalidAnswers(err)) return { success: false, error: errorMessage(err) }
       if (!staleRequest(err)) throw err
       ctx.log.warn(`[Backend] BACKGROUND_AGENT_ASK_RESPOND: ${args.requestId} is not pending any more (${errorMessage(err)})`)
     }

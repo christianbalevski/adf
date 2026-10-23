@@ -40,6 +40,7 @@ function toPendingInteractions(notifications: PendingNotification[]): Record<str
       type: n.kind,
       requestId: n.requestId,
       question: n.question,
+      questions: n.questions,
       toolName: n.toolName,
       input: n.input,
       reason: n.reason,

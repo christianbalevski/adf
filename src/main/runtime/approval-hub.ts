@@ -28,7 +28,7 @@
  * exact method the in-chat approval card's IPC handler calls. Resolving from
  * the hub therefore emits the same `tool_approval_resolved` event and clears
  * the in-chat card too. Asks are registered but NOT resolvable here: an answer
- * is prose, so the UI jumps to the agent's chat rather than faking a composer.
+ * is a form, so the UI jumps to the agent's chat rather than faking a composer.
  *
  * Everything that LEAVES the pending list lands in a small, session-scoped
  * history (newest first, capped at HISTORY_MAX) carrying how it ended. The menu

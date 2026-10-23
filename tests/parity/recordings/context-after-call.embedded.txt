@@ -443,7 +443,7 @@
         path: "soul.md"
         tokens: 283
     messages_tokens: 0
-    overhead_tokens: 10642
+    overhead_tokens: 10893
     system_prompt_parts:
       base_and_sections: 3812
       instructions: 0
@@ -452,7 +452,7 @@
     tool_groups:
       -
         source: "built-in"
-        tokens: 6555
+        tokens: 6806
         tools:
           -
             name: "fs_read"
@@ -510,7 +510,7 @@
             tokens: 125
           -
             name: "ask"
-            tokens: 133
+            tokens: 384
           -
             name: "sys_set_state"
             tokens: 168
@@ -526,7 +526,7 @@
           -
             name: "sys_fetch"
             tokens: 379
-    tools_total_tokens: 6555
+    tools_total_tokens: 6806
 7. invoke adf:agent:invoke  [pushes 0→9]
   args:
     -
@@ -542,8 +542,8 @@
       filePath: "<ROOT>/agents/agent-1.adf"
   result:
     calibration:
-      last_call_tokens: 13835
-      ratio: 1.2990610328638497
+      last_call_tokens: 14161
+      ratio: 1.2990551325566462
       reply_tokens: 12
       since_last_call_tokens: 12
     computed_at: "<t>"
@@ -559,7 +559,7 @@
         path: "soul.md"
         tokens: 368
     messages_tokens: 23
-    overhead_tokens: 13824
+    overhead_tokens: 14150
     system_prompt_parts:
       base_and_sections: 4952
       instructions: 0
@@ -568,7 +568,7 @@
     tool_groups:
       -
         source: "built-in"
-        tokens: 8515
+        tokens: 8841
         tools:
           -
             name: "fs_read"
@@ -626,7 +626,7 @@
             tokens: 162
           -
             name: "ask"
-            tokens: 173
+            tokens: 499
           -
             name: "sys_set_state"
             tokens: 218
@@ -642,7 +642,7 @@
           -
             name: "sys_fetch"
             tokens: 492
-    tools_total_tokens: 8515
+    tools_total_tokens: 8841
 11. invoke adf:agent:stop  [pushes 9→9]
   args: []
   result:
@@ -929,7 +929,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 10650
+      input: 10901
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -956,7 +956,7 @@
     model: "parity-model"
     usage:
       cache_read: 0
-      input: 13835
+      input: 14161
       output: 12
       reasoning: 0
   timestamp: "<t>"
@@ -1853,7 +1853,7 @@ token-usage.json:
     parity-llm:
       parity-model:
         cache_read: 0
-        input: 13835
+        input: 14161
         output: 12
         reasoning: 0
 
@@ -2010,7 +2010,7 @@ hosts/<pid:this-process>.json:
   ord: null
   role: "assistant"
   seq: 3
-  tokens: "{\"input\":13835,\"output\":12,\"cache_read\":0,\"reasoning\":0}"
+  tokens: "{\"input\":14161,\"output\":12,\"cache_read\":0,\"reasoning\":0}"
 
 ## state: agents/agent-1.adf adf_meta (16 rows; key, value, protection)
 #1:
@@ -2068,7 +2068,7 @@ hosts/<pid:this-process>.json:
 #14:
   key: "context_baseline_tokens"
   protection: "readonly"
-  value: "{\"tokens\":13847,\"estimated\":false,\"updated_at\":<t>}"
+  value: "{\"tokens\":14173,\"estimated\":false,\"updated_at\":<t>}"
 #15:
   key: "runtime_umbilical_next_seq"
   protection: "none"

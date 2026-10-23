@@ -9,6 +9,7 @@ import {
   mentionAt,
   offsetOf,
   pendingTasksFor,
+  readAskReply,
   posAt,
   queuedItems,
   revealOffset,
@@ -146,5 +147,26 @@ describe('chat helpers', () => {
     const thinking: TranscriptItem = { id: 'th', at: 0, kind: 'thinking', text: 'a\nb\nc', streaming: false }
     expect(itemHeight(thinking, 60, { expanded: false, showThinking: false })).toBe(2)
     expect(itemHeight(thinking, 60, { expanded: false, showThinking: true })).toBe(5)
+  })
+})
+
+describe('readAskReply', () => {
+  const pick = { question: 'Which region?', options: [{ label: 'us-east' }, { label: 'eu-west' }, { label: 'ap-south' }] }
+  const several = { ...pick, multiple: true }
+
+  it('picks options by number or label; other text is the Other answer; empty skips', () => {
+    expect(readAskReply(pick, '2')).toEqual({ answer: 'eu-west' })
+    expect(readAskReply(pick, 'EU-West')).toEqual({ answer: 'eu-west' })
+    expect(readAskReply(pick, 'wherever is cheapest')).toEqual({ answer: 'wherever is cheapest' })
+    expect(readAskReply(pick, '  ')).toEqual({ answer: null })
+    expect(readAskReply({ question: 'Anything else?' }, ' 42 ')).toEqual({ answer: '42' })
+  })
+
+  it('takes several numbers only when the question allows several', () => {
+    expect(readAskReply(several, '1, 3')).toEqual({ answer: ['us-east', 'ap-south'] })
+    expect(readAskReply(several, '3 1 3')).toEqual({ answer: ['ap-south', 'us-east'] })
+    expect(readAskReply(several, 'all of them')).toEqual({ answer: ['all of them'] })
+    expect(readAskReply(pick, '1,2')).toEqual({ error: 'This question takes one pick' })
+    expect(readAskReply(pick, '4')).toEqual({ error: 'There is no option 4: pick 1–3, or type your own answer' })
   })
 })

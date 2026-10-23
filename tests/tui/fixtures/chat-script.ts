@@ -3,6 +3,7 @@
 // wrapper for endpoints the mock does not implement (POST /trigger).
 
 import type { MockDaemon } from './mock-daemon'
+import { summarizeAsk, type AskQuestion } from '../../../src/shared/utils/ask-form'
 
 let seq = 100_000
 
@@ -22,9 +23,12 @@ export function addPendingTask(mock: MockDaemon, agentId: string, task: { id: st
   mock.emit({ event_type: 'hil.requested', agent_id: agentId, loop: task.loop, payload: { request_id: task.id, task_id: task.id, tool: task.tool, reason: 'restricted', input: task.args } })
 }
 
-export function addAsk(mock: MockDaemon, agentId: string, requestId: string, question: string, loop?: string): void {
-  mock.agents.get(agentId)!.asks.push({ requestId, question, ...(loop ? { loop } : {}) })
-  mock.emit({ event_type: 'ask.requested', agent_id: agentId, loop, payload: { request_id: requestId, question } })
+/** A pending ask: one free-text question, or a form. */
+export function addAsk(mock: MockDaemon, agentId: string, requestId: string, form: string | AskQuestion[], loop?: string): void {
+  const questions = typeof form === 'string' ? [{ question: form }] : form
+  const question = summarizeAsk(questions)
+  mock.agents.get(agentId)!.asks.push({ requestId, question, questions, ...(loop ? { loop } : {}) })
+  mock.emit({ event_type: 'ask.requested', agent_id: agentId, loop, payload: { request_id: requestId, question, questions } })
 }
 
 export interface CapturedCall {

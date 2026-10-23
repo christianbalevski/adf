@@ -10,6 +10,7 @@ import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, Tool
 import { classifyInjectedText, detectTriggerType, parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
+import { askQuestions, type AskQuestion } from '../../shared/utils/ask-form'
 import { findApprovalTargetEntry } from './approval-target'
 import { interruptedBlockIndexes, pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
 import { deliverQueuedMessages } from '../utils/queued-delivery'
@@ -570,12 +571,14 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       }
 
       case 'ask_request': {
-        const payload = event.payload as { requestId: string; question: string }
+        const payload = event.payload as { requestId: string; question: string; questions?: AskQuestion[] }
+        // `questions` is the form; an older runtime sends only the question.
+        const questions = payload.questions ? askQuestions({ questions: payload.questions }) : askQuestions({ question: payload.question })
         const lastAskEntry = [...slice.log].reverse().find((entry) =>
           entry.type === 'tool_call' && entry.metadata?.name === 'ask'
         )
         if (lastAskEntry) {
-          agentStore.addPendingAsk(lastAskEntry.id, payload.requestId, payload.question, loop)
+          agentStore.addPendingAsk(lastAskEntry.id, payload.requestId, questions, loop)
         } else {
           const askEntryId = nanoid()
           agentStore.addLogEntry({
@@ -583,25 +586,26 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
             type: 'system',
             content: payload.question,
             timestamp: event.timestamp,
-            metadata: { askRequestId: payload.requestId, isAsk: true }
+            metadata: { askRequestId: payload.requestId, isAsk: true, questions }
           }, loop)
-          agentStore.addPendingAsk(askEntryId, payload.requestId, payload.question, loop)
+          agentStore.addPendingAsk(askEntryId, payload.requestId, questions, loop)
         }
         break
       }
 
       case 'ask_response': {
-        // Ask was resolved — remove from pending (the log entry remains)
-        const askPayload = event.payload as { question: string; answer: string }
-        // Find and remove the pending ask by scanning
-        const asks = slice.pendingAsks
-        for (const [logEntryId] of asks.entries()) {
+        // Ask was resolved — remove from pending (the log entry remains).
+        // `result` is the Q:/A: text the agent got.
+        const askPayload = event.payload as { requestId: string; result: string }
+        const answerText = askPayload.result
+        for (const [logEntryId, ask] of slice.pendingAsks.entries()) {
+          if (ask.requestId !== askPayload.requestId) continue
           const idx = slice.log.findIndex((entry) => entry.id === logEntryId)
           if (idx >= 0) {
             agentStore.updateEntryAt(idx, (entry) => {
               entry.metadata = {
                 ...entry.metadata,
-                askAnswer: askPayload.answer
+                askAnswer: answerText
               }
             }, loop)
           }

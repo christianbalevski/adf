@@ -9,6 +9,8 @@ import * as loopParserNs from '../../../shared/utils/loop-parser'
 import * as fileRefNs from '../../../shared/utils/file-ref'
 import type { DisplayAttachment } from '../../../shared/utils/file-ref'
 import type { OwnerCommandHeader } from '../../../shared/utils/owner-command-row'
+import * as askFormNs from '../../../shared/utils/ask-form'
+import type { AskQuestion } from '../../../shared/utils/ask-form'
 import type { LoopEntry, UmbilicalEvent } from '../api/types'
 import { cjs } from '../interop'
 import type { AssistantItem, ThinkingItem, ToolItem, Transcript, TranscriptItem, UserItem } from './types'
@@ -18,6 +20,8 @@ export const MAX_TRANSCRIPT_ITEMS = 2000
 
 const { parseLoopToDisplay } = cjs(loopParserNs)
 const { attachmentText } = cjs(fileRefNs)
+/** The `ask` form helpers (shared with Studio and the daemon), for the rest of the TUI. */
+export const { askQuestions, parseAskResult, summarizeAsk } = cjs(askFormNs)
 
 /** `text` followed by one line per attachment (`[image: path]`, `[deleted: name]`). */
 function withAttachments(text: string, attachments: unknown): string {
@@ -72,10 +76,9 @@ export function unresolvedTasks(items: TranscriptItem[]): Array<{ toolUseId: str
   return out
 }
 
-/** The question of an `ask` call's input. */
-export function askQuestion(input: unknown): string {
-  const q = input && typeof input === 'object' ? (input as { question?: unknown }).question : undefined
-  return typeof q === 'string' ? q : ''
+/** What matches an ask card to its `ask` call: the form's question texts. */
+export function askKey(questions: AskQuestion[]): string {
+  return questions.map(q => q.question.trim()).join('\n')
 }
 
 /** Persisted loop rows → transcript items, via the same parser Studio renders with. */
@@ -183,8 +186,8 @@ export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptIte
   for (const item of history) {
     if (item.kind === 'tool' && item.toolUseId) historyTools.add(item.toolUseId)
     if (item.kind === 'user' || item.kind === 'assistant' || item.kind === 'thinking') countText(`${item.kind}:${item.text.trim()}`)
-    // An `ask` call in history shows its question; the live ask card for it goes.
-    if (item.kind === 'tool' && item.name === 'ask') countText(`ask:${askQuestion(item.input).trim()}`)
+    // An `ask` call in history shows its questions; the live ask card for it goes.
+    if (item.kind === 'tool' && item.name === 'ask') countText(`ask:${askKey(askQuestions(item.input))}`)
   }
   const consume = (key: string): boolean => {
     const n = historyTexts.get(key) ?? 0
@@ -204,7 +207,7 @@ export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptIte
       case 'context':
         return !!item.ownerCommand && !historyCommands.has(item.ownerCommand.id)
       case 'ask':
-        return !consume(`ask:${item.question.trim()}`)
+        return !consume(`ask:${askKey(item.questions)}`)
       default:
         return true
     }
@@ -355,11 +358,11 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
       if (tool.name === 'ask') {
         // The runtime emits an ask's tool.* pair once it is answered; the ask
         // card (ask.requested) becomes that call in place, as history shows it.
-        const question = askQuestion(p.input).trim()
+        const key = askKey(askQuestions(p.input))
         let card = -1
         for (let i = items.length - 1; i >= 0; i--) {
           const item = items[i]
-          if (item.kind === 'ask' && item.question.trim() === question) { card = i; break }
+          if (item.kind === 'ask' && askKey(item.questions) === key) { card = i; break }
         }
         if (card >= 0) {
           const next = items.slice()
@@ -421,7 +424,9 @@ export function applyEventToItems(items: TranscriptItem[], event: UmbilicalEvent
     case 'ask.requested': {
       const requestId = str(p.request_id)
       if (!requestId || items.some(item => item.kind === 'ask' && item.requestId === requestId)) return items
-      return cap([...finalizeStreaming(items), { id: localId(), at, local: true, kind: 'ask', requestId, question: str(p.question) ?? '', status: 'pending' }])
+      const form = askQuestions({ questions: p.questions })
+      const questions = form.length > 0 ? form : [{ question: str(p.question) ?? '' }]
+      return cap([...finalizeStreaming(items), { id: localId(), at, local: true, kind: 'ask', requestId, questions, status: 'pending' }])
     }
     case 'ask.resolved': {
       const requestId = str(p.request_id)

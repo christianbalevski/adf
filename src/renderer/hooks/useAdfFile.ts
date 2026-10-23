@@ -5,6 +5,7 @@ import { useAppStore } from '../stores/app.store'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/editor-tabs.store'
 import { nanoid } from 'nanoid'
+import { askQuestions, type AskQuestion } from '../../shared/utils/ask-form'
 import { toDisplayState } from './useAgent'
 import { deliverSettledQueues } from '../utils/queued-delivery'
 import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
@@ -167,18 +168,19 @@ function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.reat
       }
     }
 
-    // Restore pending ask requests so the reply box reappears after navigation
-    const pendingAsks = (startResult as { pendingAsks?: Array<{ requestId: string; question: string }> }).pendingAsks
+    // Restore pending ask requests so the form reappears after navigation
+    const pendingAsks = (startResult as { pendingAsks?: Array<{ requestId: string; question: string; questions?: AskQuestion[] }> }).pendingAsks
     if (pendingAsks && pendingAsks.length > 0) {
       const store = useAgentStore.getState()
       for (const ask of pendingAsks) {
+        const questions = ask.questions ? askQuestions({ questions: ask.questions }) : askQuestions({ question: ask.question })
         // Find the matching ask tool_call log entry (search from end)
         const log = store.log
         let matched = false
         for (let i = log.length - 1; i >= 0; i--) {
           const entry = log[i]
           if (entry.type === 'tool_call' && entry.metadata?.name === 'ask') {
-            store.addPendingAsk(entry.id, ask.requestId, ask.question)
+            store.addPendingAsk(entry.id, ask.requestId, questions)
             matched = true
             break
           }
@@ -191,9 +193,9 @@ function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.reat
             type: 'tool_call',
             content: `Calling ask`,
             timestamp: Date.now(),
-            metadata: { name: 'ask', input: { question: ask.question } }
+            metadata: { name: 'ask', input: { questions } }
           })
-          store.addPendingAsk(entryId, ask.requestId, ask.question)
+          store.addPendingAsk(entryId, ask.requestId, questions)
         }
       }
     }

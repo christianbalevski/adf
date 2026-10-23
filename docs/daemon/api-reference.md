@@ -8933,6 +8933,21 @@ Example 200 (`application/json`):
     {
       "requestId": "string",
       "question": "string",
+      "questions": [
+        {
+          "question": "Which regions?",
+          "options": [
+            {
+              "label": "eu-west"
+            },
+            {
+              "label": "us-east",
+              "description": "Closest to most users"
+            }
+          ],
+          "multiple": true
+        }
+      ],
       "loop": "string"
     }
   ]
@@ -8945,7 +8960,7 @@ Example 200 (`application/json`):
 
 **Answer an ask request**
 
-Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
+Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, several picks for a single-pick question, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
 
 Operation `answerAgentAsk` · bearer token
 
@@ -8960,12 +8975,19 @@ Operation `answerAgentAsk` · bearer token
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `answer` | string | yes |  |
+| `answers` | string \| string[] \| null[] | yes | One per question, in order: a string, an array of strings (picks), or null (skipped) |
 | `loop` | string |  | The loop that asked (GET …/asks lists it); absent = the first loop holding the id |
 
 ```json
 {
-  "answer": "Yes, go ahead."
+  "answers": [
+    "Yes, go ahead.",
+    [
+      "eu-west",
+      "us-east"
+    ],
+    null
+  ]
 }
 ```
 
@@ -8974,7 +8996,7 @@ Operation `answerAgentAsk` · bearer token
 | Status | Body | Description |
 |---|---|---|
 | 200 | [AskRespondResponse](#schema-askrespondresponse) | `answered` is false when no loop held the request |
-| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 400 | [ErrorResponse](#schema-errorresponse) | `answers` missing or not an array (`bad_request`), or answers that do not fit the form (`invalid_answers`) |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (`not_found`), or no loop holds this ask (`ask_not_found`) |
@@ -18824,13 +18846,27 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `approved` | integer | yes |  |
 | `skippedProtection` | integer | yes |  |
 
+<a id="schema-askquestion"></a>
+
+### AskQuestion
+
+One question of an ask form. No `options` = free text; with `options` = one pick (several with `multiple`). Free ("Other") text and skipping are always allowed.
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `question` | string | yes |  |
+| `options` | object[] |  |  |
+| `options[].label` | string | yes |  |
+| `options[].description` | string |  |  |
+| `multiple` | boolean |  | Several options may be picked |
+
 <a id="schema-askrespondbody"></a>
 
 ### AskRespondBody
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `answer` | string | yes |  |
+| `answers` | string \| string[] \| null[] | yes | One per question, in order: a string, an array of strings (picks), or null (skipped) |
 | `loop` | string |  | The loop that asked (GET …/asks lists it); absent = the first loop holding the id |
 
 <a id="schema-askrespondresponse"></a>
@@ -18853,7 +18889,8 @@ A provider carried in the agent's own config. Its API key is a credential (PUT �
 | `agentId` | string | yes | Agent id |
 | `asks` | object[] | yes |  |
 | `asks[].requestId` | string | yes |  |
-| `asks[].question` | string | yes |  |
+| `asks[].question` | string | yes | One-line summary: the first question, plus how many more |
+| `asks[].questions` | [AskQuestion](#schema-askquestion)[] | yes | The form; answer with one entry per question |
 | `asks[].loop` | string | yes | The loop waiting on the answer |
 
 <a id="schema-authdiagnostics"></a>

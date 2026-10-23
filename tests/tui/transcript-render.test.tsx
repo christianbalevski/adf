@@ -78,6 +78,22 @@ describe('tool calls in history', () => {
     expect(frame).toContain('› yes, after lunch')
   })
 
+  it('renders an answered form as question → answer lines, skipped dimmed', async () => {
+    const { tui } = await mount(m => {
+      seedToolHistory(m, AGENT_1_ID)
+      pushToolCall(m, AGENT_1_ID, 'main', { id: 'tu_form', name: 'ask', input: { questions: [{ question: 'Which region?', options: [{ label: 'us-east' }, { label: 'eu-west' }] }, { question: 'Which checks?', options: [{ label: 'lint' }, { label: 'e2e' }], multiple: true }, { question: 'Anything else?' }] }, result: 'Q: Which region?\nA: Other: wherever is cheapest\n\nQ: Which checks?\nA: lint, e2e\n\nQ: Anything else?\nA: (skipped)' })
+    }, 'Anything else?')
+    const frame = tui.lastFrame()
+    const lines = frame.split('\n')
+    const after = (text: string) => lines[lines.findIndex(line => line.includes(text)) + 1]
+    expect(after('Which region?')).toContain('› Other: wherever is cheapest')
+    expect(after('Which checks?')).toContain('› lint, e2e')
+    expect(after('Anything else?')).toContain('› skipped')
+    // The pre-form { question } call still renders with its answer.
+    expect(frame).toContain('Ship the release today?')
+    expect(frame).toContain('› yes, after lunch')
+  })
+
   it('expands a reason row to the full input, _reason and _async included', async () => {
     const { tui } = await mount(m => seedToolHistory(m, AGENT_1_ID), 'Ship the release today?')
     await tui.press('\u001b[Z') // Shift+Tab: the transcript
@@ -204,7 +220,7 @@ describe('transcript model (pure)', () => {
     expect(isExpandable(failedSay)).toBe(true)
     expect(isExpandable(meta)).toBe(true)
     expect(itemText(say)).toBe('hi **there**')
-    expect(itemText(ask)).toBe('Q?\n\nA')
+    expect(itemText(ask)).toBe('Q?\nA')
     expect(lastReply([say])).toBe('hi **there**')
   })
 
@@ -254,6 +270,12 @@ function renderedRows(item: TranscriptItem, width: number, expanded: boolean, as
   return frame.split('\n').findIndex(line => line.includes('@@END@@'))
 }
 
+const FORM = [
+  { question: `Which region should the ${'staging '.repeat(8)}deploy use?`, options: [{ label: 'us-east' }, { label: 'eu-west' }] },
+  { question: 'Anything else?' },
+]
+const FORM_RESULT = `Q: ${FORM[0].question}\nA: eu-west\n\nQ: Anything else?\nA: (skipped)`
+
 const HEIGHT_CASES: Array<[string, ToolItem]> = [
   ['reason row', toolItem({ name: 'msg_read', input: { _reason: 'Reconcile delivery state', status: 'unread' }, result: 'line one\nline two' })],
   ['plain row, running', toolItem({ name: 'fs_list', input: { prefix: 'notes/' }, status: 'running' })],
@@ -263,6 +285,9 @@ const HEIGHT_CASES: Array<[string, ToolItem]> = [
   ['say failed', toolItem({ name: 'say', input: { message: 'short' }, status: 'error', result: 'no channel' })],
   ['ask answered', toolItem({ name: 'ask', input: { question: `Q${'y'.repeat(130)}` }, result: 'Human answered: yes' })],
   ['ask pending', toolItem({ name: 'ask', input: { question: 'Which region?' }, status: 'running' })],
+  ['ask form answered', toolItem({ name: 'ask', input: { questions: FORM }, result: FORM_RESULT })],
+  ['ask form skipped', toolItem({ name: 'ask', input: { questions: FORM }, result: 'The human skipped all questions.' })],
+  ['ask form failed', toolItem({ name: 'ask', input: { questions: FORM }, status: 'error', result: 'Ask timed out' })],
   ['status line', toolItem({ name: 'sys_set_meta', input: { key: 'status', value: 'Reconciling inbox' }, result: 'ok' })],
   ['state line', toolItem({ name: 'sys_set_state', input: { state: 'idle', _reason: 'done' }, result: 'ok' })],
 ]
@@ -286,7 +311,10 @@ describe('itemHeight matches the rendered rows', () => {
   })
 
   it('an ask card (ask.requested) at its real text width', () => {
-    const ask: TranscriptItem = { id: 'k', at: 1, kind: 'ask', requestId: 'r', question: 'z'.repeat(70), status: 'answered', answer: 'ok' }
-    for (const width of [48, 100]) expect(renderedRows(ask, width, false)).toBe(itemHeight(ask, width, { expanded: false, showThinking: false }))
+    const ask: TranscriptItem = { id: 'k', at: 1, kind: 'ask', requestId: 'r', questions: [{ question: 'z'.repeat(70) }], status: 'answered', answer: `Q: ${'z'.repeat(70)}\nA: ok` }
+    const form: TranscriptItem = { id: 'f', at: 1, kind: 'ask', requestId: 'r', questions: FORM, status: 'pending' }
+    for (const item of [ask, form]) {
+      for (const width of [48, 100]) expect(renderedRows(item, width, false)).toBe(itemHeight(item, width, { expanded: false, showThinking: false }))
+    }
   })
 })

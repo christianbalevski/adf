@@ -16,7 +16,7 @@ import { useSelectedTracked, useAuthNeed, useFocus, useLoop, useSelectedAgent, u
 import { authNeedText } from '../../auth/model'
 import { shortUrl, siteOf, type Site } from '../../web/model'
 import { openSite } from '../../web/ops'
-import { transcriptKey, type AgentEntry, type LoopState, type TranscriptItem, type TuiState } from '../../state/types'
+import { transcriptKey, type AgentEntry, type LoopState, type TranscriptItem } from '../../state/types'
 import { displayWidth, oneLine, truncate } from '../../ui/text'
 import { MAIN_LOOP, type Timer } from '../../api/types'
 import type { CommandScope } from '../../commands/types'
@@ -28,6 +28,7 @@ import { Footer } from './Footer'
 import { loopContextPercent } from '../../context/model'
 import { ApprovalDetailsOverlay, DENY_OVERLAY, DETAILS_OVERLAY, DenyOverlay } from './overlays'
 import { alwaysApprove, rejectWithFeedback } from './approvals'
+import { pendingAskFor, replyToAsk, skipAsk } from './asks'
 import type { TaskListEntry } from '../../api/types'
 import { chatCommands, readChatState } from './commands'
 import { isPromptEmpty, isPromptMenuOpen } from '../../app/Prompt'
@@ -294,6 +295,12 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
   const dockAction = (action: DockAction) => {
     if (!agentId) return
     if (action === 'resume') { void actions.respondSuspend(agentId, true); return }
+    if (action === 'answer') { actions.setFocus('input'); return }
+    if (action === 'skip') {
+      const ask = asks[0]
+      if (ask) void skipAsk(store, agentId, ask, loopName)
+      return
+    }
     if (action === 'shutdown') {
       void actions.confirm({ title: 'Shut down', message: `Shut ${agentLabel(agent)} down instead of resuming?`, danger: true })
         .then(ok => { if (ok) void actions.respondSuspend(agentId, false) })
@@ -385,7 +392,7 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
       return true
     }
     if (card === 'suspend' && (input === 'y' || input === 'n')) { dockAction(input === 'y' ? 'resume' : 'shutdown'); return true }
-    if (input === 'a' && card === 'ask') { actions.setFocus('input'); return true }
+    if (card === 'ask' && (input === 'a' || input === 'x')) { dockAction(input === 'a' ? 'answer' : 'skip'); return true }
     return false
   }, { layer: 'main', active: focused })
 
@@ -572,11 +579,6 @@ function infoStyle(key: string, theme: ReturnType<typeof useTheme>): { color?: s
 
 // --- prompt integration ---------------------------------------------------------
 
-function pendingAskFor(state: TuiState, agentId: string | null, loop: string) {
-  if (!agentId) return undefined
-  return pendingAsksFor(state.agents[agentId], loop, state.transcripts)[0]
-}
-
 function placeholder(scope: CommandScope): string {
   const state = scope.state()
   const agent = scope.agentId ? state.agents[scope.agentId] : undefined
@@ -585,7 +587,11 @@ function placeholder(scope: CommandScope): string {
   if (!agent || !scope.agentId) return 'Select an agent (Tab → sidebar) or type /help'
   const label = agentLabel(agent)
   const target = scope.loop === MAIN_LOOP ? label : `${label} › ${scope.loop}`
-  if (pendingAskFor(state, scope.agentId, scope.loop)) return `Answer ${label}'s question · Enter sends the answer`
+  const ask = pendingAskFor(state, scope.agentId, scope.loop)
+  if (ask) {
+    const step = ask.questions.length > 1 ? ` ${ask.answers.length + 1}/${ask.questions.length}` : ''
+    return `Answer ${label}'s question${step} · Enter on empty skips it`
+  }
   const loopState = agent.loops?.find(l => l.info.name === scope.loop)
   if (loopState && !loopState.info.enabled) return `${scope.loop} is disabled · /loop on ${scope.loop} to enable it`
   if (loopRunning(agent, loopState)) return `Message ${target} · queued until the turn ends · Esc interrupts`
@@ -623,9 +629,11 @@ const chat: ViewDefinition = {
     onSubmit: async (text, ctx) => {
       const ask = pendingAskFor(ctx.state(), ctx.agentId, ctx.loop)
       if (!ask || !ctx.agentId) return false
-      await ctx.actions.answerAsk(ctx.agentId, ask.requestId, text, ask.loop ?? ctx.loop)
+      await replyToAsk(ctx.store, ctx.agentId, ask, text, ctx.loop)
       return true
     },
+    // Enter on an empty prompt skips the question shown.
+    submitsEmpty: scope => !!pendingAskFor(scope.state(), scope.agentId, scope.loop),
     historyKey: scope => (scope.agentId ? transcriptKey(scope.agentId, scope.loop) : 'none'),
     draftKey: scope => (scope.agentId ? `chat:${transcriptKey(scope.agentId, scope.loop)}` : 'chat'),
     complete: completeFiles,
@@ -681,7 +689,8 @@ const chat: ViewDefinition = {
       title: 'Approvals and questions (the card under the transcript)',
       keys: [
         { keys: 'y', label: 'Approve: press twice, or once on a selected approval · resume a suspended agent. Mouse mode: click the card’s buttons' },
-        { keys: 'a', label: 'Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it' },
+        { keys: 'a', label: 'Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it in the prompt (a number picks an option, other text is your own answer, Enter on empty skips the question)' },
+        { keys: 'x', label: 'On a question card: skip the questions not answered yet and send the answers' },
         { keys: 'n', label: 'Reject · shut a suspended agent down (asks)' },
         { keys: 'f', label: 'Reject with feedback: the agent sees your text' },
         { keys: 'v', label: 'Full details of the tool call' },

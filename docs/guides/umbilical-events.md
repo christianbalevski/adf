@@ -390,16 +390,19 @@ out. No human decided, so `approved` is always `false`.
 
 ## `ask.*` — stable
 
-The `ask` tool: the agent asking its human a question and blocking on the answer.
+The `ask` tool: the agent asking its human a form of questions and blocking on the answers.
 
 | Event | Payload |
 |---|---|
-| `ask.requested` | `{ request_id, question }` |
-| `ask.resolved` | `{ request_id, has_response, response_length, preview? }` |
+| `ask.requested` | `{ request_id, question, questions }` — `question` is a one-line summary (`Which database? (+1 more)`), `questions` the form |
+| `ask.resolved` | `{ request_id, has_response, answered, skipped, response_length, preview? }` |
 
-The human's answer is **not** put on the wire in full. Taps get its shape —
-`has_response`, `response_length`, and a `preview` truncated to 200 characters
-(absent on an empty answer). A tap that legitimately needs the whole answer
+The human's answers are **not** put on the wire in full. Taps get their shape —
+how many questions were `answered` and `skipped`, `has_response` (any answered),
+`response_length` of the Q:/A: text the agent receives, and a `preview` of it
+truncated to 200 characters (absent when every question was skipped). A two-question
+form answered once resolves as `{ answered: 1, skipped: 1, has_response: true,
+preview: "Q: Which database?\nA: SQLite\n\nQ: Anything I should avoid?\nA: (skipped)" }`. A tap that legitimately needs the whole answer
 reads it from the loop.
 
 ## `suspend.*` — stable

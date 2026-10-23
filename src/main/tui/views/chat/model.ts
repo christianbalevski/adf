@@ -1,10 +1,11 @@
 // Pure helpers for the chat view: per-loop view state, row heights, trigger
 // labels, loop-scoped HIL filters, @path mentions and the clipboard.
 
-import { MAIN_LOOP, type AskEntry, type TaskEntry, type TaskListEntry, type Timer, type UmbilicalEvent } from '../../api/types'
+import { MAIN_LOOP, type TaskEntry, type TaskListEntry, type Timer, type UmbilicalEvent } from '../../api/types'
 import { isBusyState } from '../../state/reducer'
-import { askQuestion, isAsyncInput } from '../../state/transcript'
-import { transcriptKey, type AgentEntry, type LoopState, type ToolItem, type TranscriptItem } from '../../state/types'
+import { askQuestions, isAsyncInput, parseAskResult } from '../../state/transcript'
+import { transcriptKey, type AgentEntry, type AskItem, type LoopState, type PendingAsk, type ToolItem, type TranscriptItem } from '../../state/types'
+import type { AskAnswer, AskQuestion } from '../../../../shared/utils/ask-form'
 import { parseBlocks } from '../../ui/Markdown'
 import { displayWidth, formatEveryMs, oneLine, truncate, wrappedHeight } from '../../ui/text'
 
@@ -115,7 +116,7 @@ export function pendingTasksFor(agent: AgentEntry | undefined, loop: string): Ta
  * An ask belongs to the loop the daemon reports (`ask.loop`). Older daemons
  * omit it: then the loop whose transcript shows it, else main.
  */
-export function pendingAsksFor(agent: AgentEntry | undefined, loop: string, transcripts: Record<string, { items: TranscriptItem[] }>): AskEntry[] {
+export function pendingAsksFor(agent: AgentEntry | undefined, loop: string, transcripts: Record<string, { items: TranscriptItem[] }>): PendingAsk[] {
   if (!agent) return []
   const owner = new Map<string, string>()
   for (const name of agent.loops?.map(l => l.info.name) ?? [MAIN_LOOP]) {
@@ -386,10 +387,63 @@ export function sayText(item: ToolItem): string {
   return typeof message === 'string' ? message : prettyJson(item.input)
 }
 
-/** The owner's answer inside an `ask` call's result. */
-export function askAnswer(item: ToolItem): string | undefined {
-  if (item.result === undefined) return undefined
-  return item.result.startsWith('Human answered: ') ? item.result.slice('Human answered: '.length) : item.result
+/** Per-question answers of an answered `ask` call (null = skipped); undefined while it waits or when it failed. */
+export function askAnswers(item: ToolItem): Array<string | null> | undefined {
+  if (item.result === undefined || item.status === 'error') return undefined
+  return parseAskResult(askQuestions(item.input), item.result)
+}
+
+/** A live ask card's answers: only a one-question form's (the preview is cut at 200 chars). */
+export function askCardAnswers(item: AskItem): Array<string | null> | undefined {
+  if (!item.answer || item.questions.length !== 1) return undefined
+  const [answer] = parseAskResult(item.questions, item.answer)
+  return [answer ?? (item.answer.startsWith('Q: ') ? null : item.answer)]
+}
+
+/** Rows of a form's questions and their answers (one line each) at `w`. */
+function askFormHeight(questions: AskQuestion[], answers: Array<string | null> | undefined, w: number): number {
+  return questions.reduce((n, q) => n + wrappedHeight(q.question || ' ', w) + (answers ? 1 : 0), 0)
+}
+
+/** A form as copied text: each question, then its answer. */
+function askFormText(questions: AskQuestion[], answers: Array<string | null> | undefined): string {
+  return questions.map((q, i) => answers ? `${q.question}\n${answers[i] ?? '(skipped)'}` : q.question).join('\n\n')
+}
+
+// --- answering an ask in the dock -------------------------------------------------
+
+/** The question the dock is on: the first one not yet answered. */
+export function askStep(ask: PendingAsk): { index: number; question: AskQuestion } {
+  const index = Math.min(ask.answers.length, ask.questions.length - 1)
+  return { index, question: ask.questions[index] }
+}
+
+/** What to type for a question (the dock's hint line). */
+export function askHint(q: AskQuestion, sep = '·'): string {
+  if (!q.options) return `Type your answer ${sep} Enter on empty skips it`
+  return `Type ${q.multiple ? 'numbers (1,3)' : 'a number'} or your own answer ${sep} Enter on empty skips it`
+}
+
+/**
+ * A reply typed for one question → its answer. Empty skips it. On a choice
+ * question numbers pick options (several, comma-separated, when it takes
+ * several) and an option's label picks it; any other text is the "Other" answer.
+ */
+export function readAskReply(q: AskQuestion, text: string): { answer: AskAnswer } | { error: string } {
+  const reply = text.trim()
+  if (!reply) return { answer: null }
+  const options = q.options
+  if (!options) return { answer: reply }
+  if (/^\d+(\s*[,\s]\s*\d+)*$/.test(reply)) {
+    const picks = [...new Set(reply.split(/[\s,]+/).map(Number))]
+    const missing = picks.find(n => n < 1 || n > options.length)
+    if (missing !== undefined) return { error: `There is no option ${missing}: pick 1–${options.length}, or type your own answer` }
+    if (!q.multiple && picks.length > 1) return { error: 'This question takes one pick' }
+    const labels = picks.map(n => options[n - 1].label)
+    return { answer: q.multiple ? labels : labels[0] }
+  }
+  const label = options.find(o => o.label.toLowerCase() === reply.toLowerCase())?.label ?? reply
+  return { answer: q.multiple ? [label] : label }
 }
 
 /** `status · <value>` for sys_set_meta key=status, `state → <state>` for sys_set_state; '' otherwise. */
@@ -433,7 +487,11 @@ export function itemHeight(item: TranscriptItem, width: number, flags: RenderFla
       }
       switch (view) {
         case 'say': return markdownHeight(sayText(item) || ' ', w) + (item.status === 'error' ? 1 : 0) + 1
-        case 'ask': return 1 + wrappedHeight(askQuestion(item.input) || ' ', w) + (item.result !== undefined ? 1 : 0) + 1
+        case 'ask': {
+          // Left border + 1 padding inside the body: the text gets `w` columns.
+          const answers = askAnswers(item)
+          return 1 + askFormHeight(askQuestions(item.input), answers, w) + (item.result !== undefined && !answers ? 1 : 0) + 1
+        }
         case 'status': return 1 + 1
         case 'row': return 1 + (item.result !== undefined ? 1 : 0) + 1
       }
@@ -442,8 +500,7 @@ export function itemHeight(item: TranscriptItem, width: number, flags: RenderFla
     case 'hil':
       return 2 + (item.reason ? 1 : 0) + (item.feedback ? 1 : 0) + (flags.expanded ? wrappedHeight(prettyJson(item.input), w - 4) : 0) + 1
     case 'ask':
-      // Left border + 1 padding inside the body: the text gets `w` columns.
-      return 1 + wrappedHeight(item.question || ' ', w) + (item.answer ? 1 : 0) + 1
+      return 1 + askFormHeight(item.questions, askCardAnswers(item), w) + 1
     case 'notice':
       return 1
     case 'context':
@@ -476,14 +533,11 @@ export function itemText(item: TranscriptItem): string {
     case 'tool':
       switch (toolView(item)) {
         case 'say': return sayText(item)
-        case 'ask': {
-          const answer = askAnswer(item)
-          return answer ? `${askQuestion(item.input)}\n\n${answer}` : askQuestion(item.input)
-        }
+        case 'ask': return askFormText(askQuestions(item.input), askAnswers(item))
         default: return [`${item.name} ${prettyJson(item.input)}`, item.result ?? ''].filter(Boolean).join('\n\n')
       }
     case 'hil': return `${item.tool} ${prettyJson(item.input)}`
-    case 'ask': return item.answer ? `${item.question}\n\n${item.answer}` : item.question
+    case 'ask': return askFormText(item.questions, askCardAnswers(item))
     case 'context': return item.ownerCommand ? `${item.ownerCommand.command} [${item.ownerCommand.status}${item.ownerCommand.authorized ? ', authorized' : ''}]\n${item.text}` : item.text
     default: return item.text
   }

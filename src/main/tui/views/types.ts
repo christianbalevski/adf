@@ -86,6 +86,8 @@ export interface PromptConfig {
    * here — the shell runs it through the command registry.
    */
   onSubmit?: (text: string, ctx: CommandContext) => boolean | Promise<boolean>
+  /** Enter on an empty prompt goes to `onSubmit` (with '') while this says so; otherwise it does nothing. */
+  submitsEmpty?: (scope: CommandScope) => boolean
   /** Keep ↑ history per key (e.g. per agent + loop). Default: one shared history. */
   historyKey?: (scope: CommandScope) => string
   /** Keep the unsent text per key and restore it when the key comes back. Default: 'shell'. */

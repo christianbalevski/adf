@@ -1212,6 +1212,7 @@ export class AgentExecutor extends EventEmitter {
       loop: this.approvalLoopName(),
       preview: summarizeQuestion(summarizeAsk(questions)),
       question: questions.map((q) => q.question).join('\n'),
+      questions,
       requestedAt: Date.now(),
     })
   }
@@ -1798,7 +1799,7 @@ export class AgentExecutor extends EventEmitter {
    * Request human input for an ask tool call. Emits an `ask_request`
    * event and pauses the executor until the user responds via `resolveAsk`.
    */
-  private requestAsk(questions: AskQuestion[]): Promise<AskAnswer[]> {
+  private requestAsk(questions: AskQuestion[]): { requestId: string; answers: Promise<AskAnswer[]> } {
     const requestId = `ask_${++this.askCounter}`
     const question = summarizeAsk(questions)
     this.setState('awaiting_ask')
@@ -1808,9 +1809,10 @@ export class AgentExecutor extends EventEmitter {
       timestamp: Date.now()
     })
     this.emitRuntimeEvent('ask.requested', { request_id: requestId, question, questions })
-    return new Promise<AskAnswer[]>((resolve) => {
+    const answers = new Promise<AskAnswer[]>((resolve) => {
       this.trackPendingAsk(requestId, questions, resolve)
     })
+    return { requestId, answers }
   }
 
   /**
@@ -2896,7 +2898,8 @@ export class AgentExecutor extends EventEmitter {
                 continue
               }
               const questions = askQuestions(parsed.data)
-              const answers = await this.requestAsk(questions)
+              const ask = this.requestAsk(questions)
+              const answers = await ask.answers
               // The owner ended the turn while it asked: no answer came.
               if (this._interruptRestart || this._ownerStateTransitionRequested) break
               // Restore state after human responds
@@ -2911,7 +2914,7 @@ export class AgentExecutor extends EventEmitter {
               })
               this.emitEvent({
                 type: 'ask_response',
-                payload: { questions, answers, result: content },
+                payload: { requestId: ask.requestId, questions, answers, result: content },
                 timestamp: Date.now()
               })
               this.emitEvent({

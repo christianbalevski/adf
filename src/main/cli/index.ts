@@ -428,6 +428,24 @@ function takeLoop(args: string[]): { loop: string | undefined; rest: string[] } 
   return { loop: loop && loop !== 'main' ? loop : undefined, rest }
 }
 
+/** Pull `--answers <json>` / `--answers=<json>` out of a command's arguments. */
+function takeAnswersFlag(args: string[]): { answers: string | undefined; rest: string[] } {
+  const rest: string[] = []
+  let answers: string | undefined
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i]
+    if (arg === '--answers') {
+      answers = args[++i]
+      if (answers === undefined) throw new Error('--answers requires a JSON array')
+    } else if (arg.startsWith('--answers=')) {
+      answers = arg.slice('--answers='.length)
+    } else {
+      rest.push(arg)
+    }
+  }
+  return { answers, rest }
+}
+
 /** Pull every `--attach <file>` / `--attach=<file>` out of a command's arguments. */
 function takeAttachments(args: string[]): { files: string[]; rest: string[] } {
   const rest: string[] = []
@@ -539,15 +557,43 @@ async function resolveTask(
   return 0
 }
 
-async function answerAsk(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+const ANSWER_USAGE = "Usage: adf answer <agent> <requestId> [--loop <name>] <answer>, or --answers '<json array>' for a form"
+
+/**
+ * A bare answer fits a one-question ask; a form takes `--answers`, one entry
+ * per question (a string, an array of picks, or null to skip).
+ */
+async function answerAsk(io: CliIo, options: CliOptions, argv: string[]): Promise<number> {
+  const { loop, rest: afterLoop } = takeLoop(argv)
+  const { answers: answersJson, rest: args } = takeAnswersFlag(afterLoop)
   const agent = args[0]
   const requestId = args[1]
-  const answer = args.slice(2).join(' ')
-  if (!agent || !requestId || !answer) throw new Error('Usage: adf answer <agent> <requestId> <answer>')
+  const text = args.slice(2).join(' ')
+  if (!agent || !requestId || (answersJson === undefined) === !text) throw new Error(ANSWER_USAGE)
+  let answers: unknown
+  if (answersJson !== undefined) {
+    try {
+      answers = JSON.parse(answersJson)
+    } catch {
+      throw new Error(`--answers is not valid JSON. ${ANSWER_USAGE}`)
+    }
+    if (!Array.isArray(answers)) throw new Error("--answers must be a JSON array with one entry per question, e.g. '[\"yes\", [\"a\", \"b\"], null]'")
+  } else {
+    // A bare answer only fits a one-question ask: read the form first.
+    const listed = await requestJson(io, options, `/agents/${enc(agent)}/asks`)
+    const asks = isRecord(listed) && Array.isArray(listed.asks) ? listed.asks.filter(isRecord) : []
+    const pending = asks.find(ask => ask.requestId === requestId && (loop === undefined || ask.loop === loop))
+    if (!pending) throw new Error(`No pending ask "${requestId}" on ${agent}${loop ? ` in loop "${loop}"` : ''} (already answered, or never asked).`)
+    const count = Array.isArray(pending.questions) ? pending.questions.length : 1
+    if (count !== 1) {
+      throw new Error(`${requestId} is a form with ${count} questions: answer with --answers '<json array>', one entry per question (a string, an array of picks, or null to skip).`)
+    }
+    answers = [text]
+  }
   const data = await requestJson(io, options, `/agents/${enc(agent)}/asks/${enc(requestId)}/respond`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ answer }),
+    body: JSON.stringify({ answers, ...(loop ? { loop } : {}) }),
   })
   io.stdout(options.json ? `${JSON.stringify(data, null, 2)}\n` : `Answered ${requestId}\n`)
   return 0
@@ -1573,8 +1619,13 @@ Commands:
   approve <agent> <taskId>       Approve a pending task
   deny <agent> <taskId> [reason] Deny a pending task
   asks <agent>                   List pending ask requests
-  answer <agent> <requestId> <answer>
-                                  Answer a pending ask request
+  answer <agent> <requestId> [--loop <name>] <answer>
+                                  Answer a pending one-question ask
+  answer <agent> <requestId> [--loop <name>] --answers '<json>'
+                                  Answer an ask form: a JSON array with one
+                                  entry per question, in order: text or an
+                                  option label, an array of labels for a
+                                  multi-pick question, or null to skip
   identities <agent>             List identity metadata without secret values
   mcp [agent]                    Show daemon MCP registrations or agent MCP state
   adapters [agent]               Show daemon adapter registrations or agent adapter state

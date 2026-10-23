@@ -340,18 +340,60 @@ describe('daemon CLI', () => {
     expect(io.output()).toContain('Approved task_1')
   })
 
-  it('answers ask requests through the daemon API', async () => {
+  it('answers a one-question ask with the bare text', async () => {
+    const calls: string[] = []
     const io = fakeIo(async (url, init) => {
-      expect(url).toBe('http://127.0.0.1:7385/agents/agent-1/asks/ask_1/respond')
-      expect(init?.method).toBe('POST')
-      expect(JSON.parse(String(init?.body))).toEqual({ answer: 'yes please' })
-      return jsonResponse({ agentId: '00000000-0000-0000-0000-000000000001', requestId: 'ask_1', answered: true })
+      calls.push(`${init?.method ?? 'GET'} ${url}`)
+      if (url.endsWith('/asks')) {
+        return jsonResponse({ agentId: 'a1', asks: [{ requestId: 'ask_1', question: 'Proceed?', questions: [{ question: 'Proceed?' }], loop: 'main' }] })
+      }
+      expect(JSON.parse(String(init?.body))).toEqual({ answers: ['yes please'] })
+      return jsonResponse({ agentId: '00000000-0000-0000-0000-000000000001', requestId: 'ask_1', loop: 'main', answered: true })
     })
 
     const code = await runCli(['answer', 'agent-1', 'ask_1', 'yes', 'please'], io)
 
     expect(code).toBe(0)
+    expect(calls).toEqual([
+      'GET http://127.0.0.1:7385/agents/agent-1/asks',
+      'POST http://127.0.0.1:7385/agents/agent-1/asks/ask_1/respond',
+    ])
     expect(io.output()).toBe('Answered ask_1\n')
+  })
+
+  it('refuses a bare answer to a form, naming --answers', async () => {
+    const io = fakeIo(async (url) => {
+      expect(url).toBe('http://127.0.0.1:7385/agents/agent-1/asks')
+      return jsonResponse({ agentId: 'a1', asks: [{ requestId: 'ask_1', question: 'A? (+1 more)', questions: [{ question: 'A?' }, { question: 'B?' }], loop: 'main' }] })
+    })
+
+    const code = await runCli(['answer', 'agent-1', 'ask_1', 'yes'], io)
+
+    expect(code).not.toBe(0)
+    expect(io.errorOutput()).toContain('ask_1 is a form with 2 questions')
+    expect(io.errorOutput()).toContain('--answers')
+  })
+
+  it('answers a form with --answers, passing --loop through', async () => {
+    const io = fakeIo(async (url, init) => {
+      expect(url).toBe('http://127.0.0.1:7385/agents/agent-1/asks/ask_1/respond')
+      expect(init?.method).toBe('POST')
+      expect(JSON.parse(String(init?.body))).toEqual({ answers: ['eu-west', ['a', 'b'], null], loop: 'scout' })
+      return jsonResponse({ agentId: 'a1', requestId: 'ask_1', loop: 'scout', answered: true })
+    })
+
+    const code = await runCli(['answer', 'agent-1', 'ask_1', '--loop', 'scout', '--answers', '["eu-west", ["a", "b"], null]'], io)
+
+    expect(code).toBe(0)
+    expect(io.output()).toBe('Answered ask_1\n')
+  })
+
+  it('refuses --answers that is not a JSON array', async () => {
+    const io = fakeIo(async () => { throw new Error('no request expected') })
+    expect(await runCli(['answer', 'agent-1', 'ask_1', '--answers', '{"a":1}'], io)).not.toBe(0)
+    expect(io.errorOutput()).toContain('--answers must be a JSON array')
+    expect(await runCli(['answer', 'agent-1', 'ask_1', '--answers', 'yes'], io)).not.toBe(0)
+    expect(io.errorOutput()).toContain('--answers is not valid JSON')
   })
 
   it('lists pending asks through the daemon API', async () => {

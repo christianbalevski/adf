@@ -6,6 +6,7 @@
 // (Electron, SQLite) into its own process. Value imports MUST stay inside this
 // folder (tests/daemon-client/portable.test.ts).
 
+import type { AskQuestion } from '../utils/ask-form'
 import type {
   RuntimeAgentLoopInfo,
   RuntimeAgentLoopPage,
@@ -323,7 +324,10 @@ export type {
 
 export interface AskEntry {
   requestId: string
+  /** One-line summary: the first question, plus how many more. */
   question: string
+  /** The form; answer with one entry per question. */
+  questions: AskQuestion[]
   /** The loop waiting on the answer (daemons before loop-aware asks omit it = main). */
   loop?: string
 }

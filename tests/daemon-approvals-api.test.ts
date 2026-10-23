@@ -37,8 +37,10 @@ function ask(filePath: string, requestId: string): PendingNotification {
     filePath,
     agentName: 'agent-2',
     loop: 'main',
-    preview: 'Which folder?',
-    question: 'Which folder?',
+    preview: 'Which folder? (+1 more)',
+    // The hub row carries every question's text; the pull view summarizes it.
+    question: 'Which folder?\nOverwrite?',
+    questions: [{ question: 'Which folder?', options: [{ label: 'src' }, { label: 'docs' }] }, { question: 'Overwrite?' }],
     requestedAt: Date.now(),
   }
 }
@@ -121,7 +123,14 @@ describe('approvals hub routes', () => {
 
     const res = await server.inject({ method: 'GET', url: '/approvals/interactions' })
     expect(res.json()).toEqual([
-      { filePath: FILE_1, handle: 'agent-1', type: 'ask', requestId: 'ask_1', question: 'Which folder?' },
+      {
+        filePath: FILE_1,
+        handle: 'agent-1',
+        type: 'ask',
+        requestId: 'ask_1',
+        question: 'Which folder? (+1 more)',
+        questions: [{ question: 'Which folder?', options: [{ label: 'src' }, { label: 'docs' }] }, { question: 'Overwrite?' }],
+      },
       {
         filePath: FILE_1,
         handle: 'agent-1',

@@ -1778,7 +1778,7 @@ Tool names are part of the file contract: they appear in `config.tools`, in tran
 | Tool | Parameters | Description |
 |------|------------|-------------|
 | `say` | `message` | Show progress to the owner without ending the turn. Not callable from code. |
-| `ask` | `question` | Wait for the owner's answer. Not callable from code. |
+| `ask` | `questions` | Ask the owner a form and wait for the answers. Each question is `{ question, options?, multiple? }`, each option `{ label, description? }`; without options it takes free text; the owner may pick an unlisted "Other" answer or skip any question. The result is Q:/A: pairs, `(skipped)` for a skipped question. Not callable from code. |
 
 A reply with text and no tool call is the turn's response; §6.3 defines when it ends the turn.
 
