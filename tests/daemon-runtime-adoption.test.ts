@@ -486,16 +486,18 @@ describe('entry scope and delegation shape', () => {
     expect(status.runtime.message).toContain(canonicalSettingsPath(settingsPath))
   })
 
-  it('only the attestation fields of the delegation are kept', () => {
+  it('a v2 delegation is kept whole, and a field added to it is refused (v2 signs every field)', () => {
     const keychain = fakeKeychain()
     const s = makeStudio(keychain)
     const delegation = s.studio.get('runtimeDelegation') as Record<string, unknown>
-    writeStudioRuntimeEntry(keychain.backend, settingsPath, s.studio, { runtimeDelegation: { ...delegation, injected: 'x' } as never })
+    expect(delegation.v).toBe(2)
+    writeStudioRuntimeEntry(keychain.backend, settingsPath, s.studio)
     const adopted = makeDaemon(keychain.backend).identity
     expect(adopted.status().runtime.state).toBe('adopted')
     expect(adopted.presentedRuntime().delegation).toEqual(delegation)
-    expect(adopted.presentedRuntime().delegation).not.toHaveProperty('injected')
 
+    writeStudioRuntimeEntry(keychain.backend, settingsPath, s.studio, { runtimeDelegation: { ...delegation, injected: 'x' } as never })
+    expect(makeDaemon(keychain.backend).identity.status().runtime.state).toBe('rejected')
   })
 })
 

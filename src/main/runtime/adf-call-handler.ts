@@ -1144,7 +1144,7 @@ export class AdfCallHandler {
    * Restricted to authorized code by default (restricted_methods).
    */
   private handleAttestationIssue(args: unknown): AdfCallResult {
-    const input = args as { subject?: string; role?: string; scope?: string; expires_at?: string }
+    const input = args as { subject?: string; role?: string; scope?: string; expires_at?: string; claims?: unknown }
     if (!input?.subject || typeof input.subject !== 'string') {
       return { error: 'attestation_issue requires a "subject" DID parameter', errorCode: 'INVALID_INPUT' }
     }
@@ -1160,7 +1160,8 @@ export class AdfCallHandler {
         subject: input.subject,
         role: input.role,
         scope: input.scope,
-        expires_at: input.expires_at
+        expires_at: input.expires_at,
+        ...(input.claims !== undefined ? { claims: input.claims } : {})
       }, signingKey)
       if (!result.ok) {
         this.logCall('warn', 'attestation_issue', input.role, `Rejected: ${result.error}`)
@@ -1502,14 +1503,16 @@ export class AdfCallHandler {
           properties: {
             attestation: {
               type: 'object',
-              description: 'The complete signed attestation object, exactly as returned by the issuer\'s attestation_issue',
+              description: 'The complete signed attestation object, exactly as returned by the issuer\'s attestation_issue (v2 signs every field, so pass it unchanged)',
               properties: {
+                v: { type: 'number', description: 'Format version: 2 for certs issued now (every field signed); absent on older v1 certs' },
                 issuer: { type: 'string', description: 'DID of the signer' },
                 subject: { type: 'string', description: 'This agent\'s DID' },
                 role: { type: 'string', description: 'What the issuer asserts (e.g. "member", "reviewer") — reserved roles rejected' },
                 issued_at: { type: 'string', description: 'ISO 8601 timestamp' },
                 expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' },
                 scope: { type: 'string', description: 'Optional qualifier (e.g. group or project identifier)' },
+                claims: { type: 'object', description: 'Optional JSON the issuer signed with the cert' },
                 signature: { type: 'string', description: 'Issuer\'s Ed25519 signature over the canonical payload' }
               },
               required: ['issuer', 'subject', 'role', 'issued_at', 'signature']
@@ -1527,7 +1530,8 @@ export class AdfCallHandler {
             subject: { type: 'string', description: 'DID of the agent being attested (did:key:..., not this agent)' },
             role: { type: 'string', description: 'What is being asserted (e.g. "member", "reviewer") — reserved roles rejected' },
             scope: { type: 'string', description: 'Optional qualifier (e.g. group or project identifier)' },
-            expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' }
+            expires_at: { type: 'string', description: 'Optional ISO 8601 expiry' },
+            claims: { type: 'object', description: 'Optional JSON object signed with the cert (at most 4096 bytes as canonical JSON, 8 levels deep, plain JSON values only). The runtime does not interpret it; namespace the keys, e.g. {"org.example/membership": {"tier": "editor"}}' }
           },
           required: ['subject', 'role']
         }

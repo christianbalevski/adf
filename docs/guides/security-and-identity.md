@@ -157,6 +157,10 @@ Agents can negotiate their own certificates: group membership, roles, capabiliti
 - `attestation_add` — store a cert someone issued about you. Validated at the boundary: verifying signature, subject must be your own DID, reserved roles rejected, duplicates idempotent.
 - `attestation_issue` — sign a cert about **another** DID with your agent key. Returned, not stored — attestations live with their subject. In the default `restricted_methods` list, so it requires [authorized code](authorized-code.md): signing certificates is a deliberate trust act.
 
+A cert can carry `claims`: any JSON object the issuer signs (up to 4 KB, 8 levels deep), such as a grant, a membership tier or the issuer's name. The runtime only checks the signature and the limits; it does not interpret claims, and a claim proves only that the issuer's key signed it.
+
+Certs are version 2: the signature covers every field but `signature`, so a field added or changed after signing breaks it. Version 1 certs (which signed only issuer, subject, role, issued_at, expires_at and scope) still verify. When a runtime opens an agent file, it re-signs as v2 every v1 cert that its own owner or runtime key issued; certs from other issuers stay as they are.
+
 Negotiation is plain messaging — request, issue, send back, add. There is deliberately no verification *policy* built in yet: whether a `member` cert from some DID means anything is the verifying agent's decision (e.g. an inbox middleware lambda checking certs before accepting group messages).
 
 ## The Identity Store (adf_identity)

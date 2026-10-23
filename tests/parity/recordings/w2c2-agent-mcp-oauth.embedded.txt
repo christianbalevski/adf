@@ -1793,6 +1793,7 @@ adf-settings.json:
     role: "runtime"
     signature: "<sig:runtime-delegation>"
     subject: "<did:runtime>"
+    v: 2
   runtimeDid: "<did:runtime>"
   runtimeEncPrivateKey: "safe:cGFyaXR5LXNhZmU6TUM0Q0FRQXdCUVlESzJWdUJDSUVJRGZhUEdwdnpLYWloZFdNUDJqZ1V3Mzd5cGhqdGFuemFxeVJQZHRaMHB5Ug=="
   runtimeEncPublicKey: "I7HIiMg3IaoEIGfFw4qokard/Y/Q17JJ2KGhBDUem1E="
@@ -1954,7 +1955,7 @@ hosts/<pid:this-process>.json:
   id: 1
   issued_at: "<t>"
   issuer: "<did:owner>"
-  raw_json: "{\"issuer\":\"<did:owner>\",\"subject\":\"<did#1>\",\"role\":\"owner\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#1>\"}"
+  raw_json: "{\"v\":2,\"issuer\":\"<did:owner>\",\"subject\":\"<did#1>\",\"role\":\"owner\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#1>\"}"
   role: "owner"
   scope: null
   signature: "<sig:valid#1>"
@@ -1964,7 +1965,7 @@ hosts/<pid:this-process>.json:
   id: 2
   issued_at: "<t>"
   issuer: "<did:runtime>"
-  raw_json: "{\"issuer\":\"<did:runtime>\",\"subject\":\"<did#1>\",\"role\":\"operator\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#2>\"}"
+  raw_json: "{\"v\":2,\"issuer\":\"<did:runtime>\",\"subject\":\"<did#1>\",\"role\":\"operator\",\"issued_at\":\"<t>\",\"signature\":\"<sig:valid#2>\"}"
   role: "operator"
   scope: null
   signature: "<sig:valid#2>"

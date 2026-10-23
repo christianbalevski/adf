@@ -202,6 +202,7 @@
       role: "runtime"
       signature: "<sig:runtime-delegation>"
       subject: "<did:runtime>"
+      v: 2
     runtimeDid: "<did:runtime>"
     runtimeEncPublicKey: "I7HIiMg3IaoEIGfFw4qokard/Y/Q17JJ2KGhBDUem1E="
     runtimeId: "parity-runtime-000001"
@@ -545,6 +546,7 @@
       role: "runtime"
       signature: "<sig:runtime-delegation>"
       subject: "<did:runtime>"
+      v: 2
     runtimeDid: "<did:runtime>"
     runtimeEncPublicKey: "I7HIiMg3IaoEIGfFw4qokard/Y/Q17JJ2KGhBDUem1E="
     runtimeId: "parity-runtime-000001"
@@ -908,6 +910,7 @@
       role: "runtime"
       signature: "<sig:runtime-delegation>"
       subject: "<did:runtime>"
+      v: 2
     runtimeDid: "<did:runtime>"
     runtimeEncPublicKey: "I7HIiMg3IaoEIGfFw4qokard/Y/Q17JJ2KGhBDUem1E="
     runtimeId: "parity-runtime-000001"
@@ -1374,6 +1377,7 @@ adf-settings.json:
     role: "runtime"
     signature: "<sig:runtime-delegation>"
     subject: "<did:runtime>"
+    v: 2
   runtimeDid: "<did:runtime>"
   runtimeEncPrivateKey: "safe:cGFyaXR5LXNhZmU6TUM0Q0FRQXdCUVlESzJWdUJDSUVJRGZhUEdwdnpLYWloZFdNUDJqZ1V3Mzd5cGhqdGFuemFxeVJQZHRaMHB5Ug=="
   runtimeEncPublicKey: "I7HIiMg3IaoEIGfFw4qokard/Y/Q17JJ2KGhBDUem1E="

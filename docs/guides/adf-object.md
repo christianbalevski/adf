@@ -693,7 +693,7 @@ Store an attestation another agent issued about this agent — the receiving hal
 |-----------|------|----------|-------------|
 | `attestation` | object | Yes | The signed attestation exactly as received |
 
-The runtime validates at the boundary: the signature must verify against the issuer DID, the `subject` must be **this agent's DID**, reserved roles (`owner`, `operator`, `runtime`, `clone`, `rotation`) are rejected, and adding the same certificate twice is a harmless no-op.
+The runtime validates at the boundary: the signature must verify against the issuer DID, the `subject` must be **this agent's DID**, reserved roles (`owner`, `operator`, `runtime`, `clone`, `rotation`) are rejected, and adding the same certificate twice is a harmless no-op. An agent keeps at most 64 peer certificates, 64 KB in all; past that, `attestation_add` refuses.
 
 ### attestation_issue
 
@@ -705,6 +705,9 @@ Sign an attestation about **another** DID with this agent's key — the granting
 | `role` | string | Yes | e.g. `member`, `reviewer` — reserved roles are rejected |
 | `scope` | string | No | What the role covers (e.g. `group:research`) |
 | `expires_at` | string | No | ISO 8601 expiry |
+| `claims` | object | No | Any JSON you sign with it, up to 4 KB (canonical JSON) and 8 levels deep. Namespace the keys (`acme.grant`, `org.example/membership`) |
+
+Certificates are issued as version 2 (`v: 2`): the signature covers every field except `signature`, `claims` included, so nothing can be added to or changed in a certificate without breaking it. The runtime checks the signature and the limits and passes `claims` on; what they mean is up to whoever reads them.
 
 The signed certificate is **returned, not stored** — attestations live with their subject. Send it to the subject, who stores it with `attestation_add`.
 
@@ -715,6 +718,13 @@ await adf.msg_send({ to: requesterDid, content: JSON.stringify({ type: 'membersh
 
 // Requester (on receipt): store it
 await adf.attestation_add({ attestation: cert })
+
+// Claims: any JSON the issuer signs, read and judged by whoever receives it
+const grant = await adf.attestation_issue({
+  subject: requesterDid,
+  role: 'member',
+  claims: { 'org.example/membership': { tier: 'editor', projects: ['atlas'] } },
+})
 ```
 
 ### set_meta_protection

@@ -214,6 +214,19 @@ with their subject. Verification/policy (who trusts which issuer for what)
 is deliberately out of scope until a real consumer exists (mesh middleware,
 fleet map trust edges, group ADFs).
 
+**D18 — Attestation v2: every field signed, arbitrary `claims` (2026-10-23).**
+A v2 cert carries `v: 2`; its signature covers the canonical JSON (sorted
+keys) of every field except `signature`. It may carry `claims`, a JSON object
+(canonical form at most 4096 bytes, nesting at most 8, finite numbers, plain
+objects); a whole v2 cert over 8192 bytes is refused unread. The runtime
+verifies and passes claims on; their meaning belongs to whoever reads them
+(namespaced keys), the same split as D17's policy. Everything is issued as v2.
+v1 certs (no `v`, six fields signed) still verify, because peer certs can only
+be re-signed by their issuer; a runtime re-signs as v2, on open, the v1 certs
+its own owner or runtime key issued (same fields and `issued_at`; only certs
+that verify), and the settings' runtime delegation at boot. An unknown `v`
+fails verification; a v1 verifier fails a v2 cert (it rebuilds the six fields).
+
 ## 4. Meta & settings key additions
 
 | Key | Where | Protection | Content |
