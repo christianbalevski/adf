@@ -10,6 +10,8 @@ import { useAgentStore } from '../../../stores/agent.store'
 import { useDocumentStore } from '../../../stores/document.store'
 import { useEditorTabsStore } from '../../../stores/editor-tabs.store'
 import { Tooltip } from '../../common/Tooltip'
+import { useRuntime } from '../../../stores/runtimes.store'
+import { meshWebsiteUrl } from '../../../../shared/utils/agent-website-url'
 import { openApi } from '../../../utils/runtime-api'
 
 /** Every card-face chip (Public, Verified owner, Website, Computer) is this box, so they share one height. */
@@ -26,6 +28,9 @@ export interface AgentSurfaces {
 
 export function useAgentSurfaces(): AgentSurfaces {
   const filePath = useDocumentStore((s) => s.filePath)
+  const runtimeId = useDocumentStore((s) => s.runtimeId)
+  const runtime = useRuntime(runtimeId)
+  const remoteUrl = runtime?.kind === 'remote' ? runtime.url : null
   const config = useAgentStore((s) => s.config)
   const agentState = useAgentStore((s) => s.state)
   const agentOn = agentState !== 'off'
@@ -37,9 +42,12 @@ export function useAgentSurfaces(): AgentSurfaces {
   )
   const [mesh, setMesh] = useState<{ running: boolean; port: number; host: string } | null>(null)
   useEffect(() => {
+    setMesh(null)
     if (!isServing) return
-    openApi()?.getMeshServerStatus().then((s) => setMesh(s ?? null)).catch(() => setMesh(null))
-  }, [isServing, agentState])
+    let cancelled = false
+    openApi()?.getMeshServerStatus().then((s) => { if (!cancelled) setMesh(s ?? null) }).catch(() => { if (!cancelled) setMesh(null) })
+    return () => { cancelled = true }
+  }, [isServing, agentState, runtimeId])
 
   const servingUrl = useMemo(() => {
     if (!isServing || !mesh?.running) return null
@@ -51,9 +59,8 @@ export function useAgentSurfaces(): AgentSurfaces {
           .replace(/[^a-z0-9]+/g, '-')
           .replace(/^-+|-+$/g, '')
       : 'agent')
-    const host = mesh.host === '0.0.0.0' ? '127.0.0.1' : mesh.host
-    return `http://${host}:${mesh.port}/agents/${handle}/`
-  }, [isServing, mesh, config?.handle, filePath])
+    return meshWebsiteUrl(mesh, `/agents/${encodeURIComponent(handle)}/`, remoteUrl)
+  }, [isServing, mesh, config?.handle, filePath, remoteUrl])
 
   const hasComputer = !!config?.compute?.enabled && config.compute.browser !== false
   const [opening, setOpening] = useState(false)

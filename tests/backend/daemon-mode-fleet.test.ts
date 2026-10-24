@@ -16,7 +16,7 @@ import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { PollCoalescer } from '../../src/main/backend/daemon-mode/handlers/poll'
-import { REMOTE_FIREWALL_SENTENCE } from '../../src/main/backend/daemon-mode/handlers/mesh'
+import { MESH_HANDLERS, REMOTE_FIREWALL_SENTENCE } from '../../src/main/backend/daemon-mode/handlers/mesh'
 import { remoteBrowserSentence } from '../../src/main/backend/daemon-mode/handlers/compute'
 
 const BASE = 'http://127.0.0.1:47386'
@@ -379,5 +379,36 @@ describe('remote mode', () => {
     expect(await remoteHandlers.get(IPC.COMPUTE_BROWSER_INFO)!({}, { agentName: 'agent-1', agentId: AGENT })).toEqual({
       containerName: 'adf-agent-1', hostPort: null, phase: 'ready', detail: remoteBrowserSentence(new URL(BASE).host),
     })
+  })
+})
+
+
+describe('remote website links in fleet responses', () => {
+  it.each([IPC.MESH_STATUS, IPC.MESH_FLEET_STATUS, IPC.MESH_MAP_POLL])('%s rebases canonical links only, without mutating daemon data', async (channel) => {
+    const canonical = 'http://127.0.0.1:7295/agents/agent-1/'
+    const custom = 'https://agent.example/site/'
+    const agents = [
+      { filePath: '/srv/a.adf', servedUrl: canonical },
+      { filePath: '/srv/b.adf', servedUrl: custom },
+    ]
+    const rows = { agents }
+    const answer = channel === IPC.MESH_MAP_POLL ? { debug: rows, fleet: rows, peers: [{ url: canonical }] } : rows
+    const client = { request: vi.fn(async () => answer) }
+    const ctx = {
+      mode: 'remote', connection: { baseUrl: 'https://runtime.example:7386/control', onState: () => () => {} },
+      ready: async () => client,
+      session: { filePath: null, isFocused: () => false },
+      bridge: { runningAgents: () => [] },
+      clientSettings: { get: () => undefined },
+    } as unknown as import('../../src/main/backend/daemon-mode/context').DaemonModeContext
+    const result = await MESH_HANDLERS[channel]!(ctx, {} as never) as typeof answer
+    const lists = 'fleet' in result ? [result.debug.agents, result.fleet.agents] : [result.agents]
+    for (const list of lists) {
+      expect(list.map((a) => a.servedUrl)).toEqual(['http://runtime.example:7295/agents/agent-1/', custom])
+    }
+    expect(agents[0].servedUrl).toBe(canonical)
+    if ('peers' in result) expect(result.peers).toEqual([{ url: canonical }])
+    ctx.mode = 'local'
+    expect(await MESH_HANDLERS[channel]!(ctx, {} as never)).toEqual(answer)
   })
 })

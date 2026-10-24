@@ -242,6 +242,8 @@ import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapte
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
 import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
+import { useRuntime } from '../../stores/runtimes.store'
+import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
 import { openApi, openSliceRuntime, useOpenRuntime } from '../../utils/runtime-api'
 
 // The config caches, one set per runtime (utils/config-caches.ts). Re-exported: SettingsPage busts them.
@@ -683,6 +685,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const filePath = template ? null : docFilePath
   // The open agent's runtime: its pushes come from there (multi-runtime.md §4.1).
   const openRuntime = useOpenRuntime()
+  const runtime = useRuntime(openRuntime)
   const setFilePath = useDocumentStore((s) => s.setFilePath)
   const templateRef = useRef(template)
   templateRef.current = template
@@ -857,9 +860,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   // Fetch mesh server status for Serving section URL preview
   useEffect(() => {
-    if (template) return
-    openApi()?.getMeshServerStatus().then(setMeshServerStatus)
-  }, [])
+    setMeshServerStatus({ running: false, port: 7295, host: '127.0.0.1' })
+    if (templateRef.current) return
+    let live = true
+    openApi()?.getMeshServerStatus().then((status) => {
+      if (live) setMeshServerStatus(status)
+    }).catch(() => { /* No URL preview while the runtime is unavailable. */ })
+    return () => { live = false }
+  }, [openRuntime])
 
   // Fetch adf_meta entries
   const refreshMeta = useCallback(() => {
@@ -5128,8 +5136,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           {/* URL preview */}
           {meshServerStatus.running && (() => {
             const derivedHandle = local.handle || (filePath ? filePath.replace(/.*[\\/]/, '').replace(/\.adf$/, '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') : 'agent')
-            const displayHost = meshServerStatus.host === '0.0.0.0' ? '127.0.0.1' : meshServerStatus.host
-            const url = `http://${displayHost}:${meshServerStatus.port}/agents/${derivedHandle}`
+            const url = meshWebsiteUrl(meshServerStatus, `/agents/${encodeURIComponent(derivedHandle)}`, runtime?.kind === 'remote' ? runtime.url : null)
             return (
               <div className="mt-1">
                 <label className="block text-xs text-neutral-500 dark:text-neutral-400 mb-0.5">Endpoint URL</label>

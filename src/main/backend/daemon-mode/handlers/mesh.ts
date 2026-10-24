@@ -1,4 +1,5 @@
 import { dialog } from 'electron'
+import { agentWebsiteUrl } from '../../../../shared/utils/agent-website-url'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
 import type { AgentActivity, AgentVitals } from '../../../../shared/types/agent-vitals.types'
@@ -82,6 +83,7 @@ type Row = Record<string, unknown>
  */
 interface ClientOverlay {
   remote: boolean
+  remoteUrl: string | null
   focusedPath: string | null
   background: Map<string, { state: AgentState; activeLoops: number }>
 }
@@ -92,14 +94,16 @@ function clientOverlay(ctx: DaemonModeContext): ClientOverlay {
     if (ctx.session.isFocused(agent.agentId, agent.filePath)) continue
     background.set(pathKey(agent.filePath, ctx.mode === 'remote'), { state: agent.mapping.state, activeLoops: countActiveLoops(agent.mapping.loopStates) })
   }
-  return { remote: ctx.mode === 'remote', focusedPath: ctx.session.filePath, background }
+  return { remote: ctx.mode === 'remote', remoteUrl: ctx.mode === 'remote' ? ctx.connection.baseUrl : null, focusedPath: ctx.session.filePath, background }
 }
 
 /** Live rows (mesh statuses) and ghost rows (tracked files) of a fleet or mesh answer. */
 function overlayRows(rows: unknown, overlay: ClientOverlay): void {
   if (!Array.isArray(rows)) return
   for (const row of rows as Row[]) {
-    if (!row || typeof row.filePath !== 'string') continue
+    if (!row) continue
+    if (typeof row.servedUrl === 'string') row.servedUrl = agentWebsiteUrl(row.servedUrl, overlay.remoteUrl)
+    if (typeof row.filePath !== 'string') continue
     const live = overlay.background.get(pathKey(row.filePath, overlay.remote))
     if (!live) continue
     row.state = live.state

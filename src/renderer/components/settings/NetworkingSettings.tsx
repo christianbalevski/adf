@@ -38,7 +38,9 @@ import { selectMeshSlice, useMeshStore } from '../../stores/mesh.store'
 import { useConnectionStore } from '../../stores/connection.store'
 import { useMesh } from '../../hooks/useMesh'
 import { agentWindowsAvailable, openAgentWindow } from '../../utils/window-kind'
-import { useSettingsApi } from './settings-runtime'
+import { useRuntime } from '../../stores/runtimes.store'
+import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
+import { useSettingsApi, useSettingsRuntimeId } from './settings-runtime'
 import { useSettingsSave } from './settings-save'
 import { checkPeerAddress, checkWholeNumber } from './settings-inputs'
 import { changeOn, meshServerHosts } from './RemoteAccessSettings'
@@ -394,6 +396,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
   pickedMesh: RuntimeId | undefined
 }) {
   const api = useSettingsApi()
+  const runtime = useRuntime(useSettingsRuntimeId())
   const { commit, offerUndo } = useSettingsSave()
   const [meshAutoStart, setMeshAutoStart] = useState(true)
   const [meshLan, setMeshLan] = useState(false)
@@ -790,7 +793,7 @@ export function NetworkingSettings({ remote, runtimeName, pickedMesh }: {
             {meshEnabled && !remote && meshAgents.length > 0 && (
               <ul className="space-y-1">
                 {meshAgents.map((agent) => {
-                  const url = meshServerStatus.running ? `http://127.0.0.1:${meshServerStatus.port}/agents/${agent.handle ?? ''}` : null
+                  const url = meshServerStatus.running ? meshWebsiteUrl(meshServerStatus, `/agents/${encodeURIComponent(agent.handle ?? '')}`, runtime?.kind === 'remote' ? runtime.url : null) : null
                   return (
                     <li key={agent.filePath} className="flex items-center justify-between gap-2">
                       <div className="min-w-0">

@@ -1,3 +1,4 @@
+import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
 import { listsToWrite, rebaseSettingsLists, settingsListsOf, type SettingsLists } from '../../utils/settings-lists'
 import { sameContent } from '../../utils/list-rebase'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
@@ -17,12 +18,12 @@ import { AboutTab, UpdatesGroup } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
 import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
-import { SettingsRuntimeBanner, SettingsRuntimeProvider, useSettingsApi } from './settings-runtime'
+import { SettingsRuntimeBanner, SettingsRuntimeProvider, useSettingsApi, useSettingsRuntimeId } from './settings-runtime'
 import { RUNTIME_NAV_ITEMS, STUDIO_NAV_ITEMS, settingsNavGroups, settingsTabFor, type SettingsTab } from './settings-nav'
 import { changeOn } from './RemoteAccessSettings'
 import { NetworkingSettings } from './NetworkingSettings'
 import { runtimeDown, useCurrentConnection } from '../../stores/connection.store'
-import { runtimeHeader, useRuntimes } from '../../stores/runtimes.store'
+import { runtimeHeader, useRuntime, useRuntimes } from '../../stores/runtimes.store'
 import { RemoteMark } from '../common/RemoteMark'
 import { initialSettingsRuntime, useSettingsRuntimeStore } from '../../stores/settings-runtime.store'
 import { apiFor } from '../../utils/runtime-api'
@@ -229,6 +230,7 @@ function StateBadge({ tone, children }: { tone: 'ok' | 'warn' | 'bad'; children:
  */
 function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: string }) {
   const api = useSettingsApi()
+  const runtime = useRuntime(useSettingsRuntimeId())
   const [status, setStatus] = useState<OwnerIdentityStatusView | null>(null)
   const [meshServer, setMeshServer] = useState<{ running: boolean; port: number; host: string } | null>(null)
   const [copied, setCopied] = useState<string | null>(null)
@@ -323,9 +325,8 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
     }
   }
 
-  // 0.0.0.0 binds all interfaces but is not itself reachable — show loopback.
   const directoryUrl = meshServer?.running
-    ? `http://${meshServer.host === '0.0.0.0' ? '127.0.0.1' : meshServer.host}:${meshServer.port}/agents`
+    ? meshWebsiteUrl(meshServer, '/agents', runtime?.kind === 'remote' ? runtime.url : null)
     : undefined
 
   return (
