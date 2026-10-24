@@ -5,6 +5,7 @@ import type { AdapterRegistration, AdapterState, AdapterInstallProgress, Adapter
 import type { ProviderType } from '../constants/adf-defaults'
 import type { ComputeAppSettings } from './compute.types'
 import type { ProtectionDenial } from './tool.types'
+import type { AskQuestion } from '../utils/ask-form'
 
 export interface AgentExecutionEvent {
   type:
@@ -660,8 +661,10 @@ export interface PendingNotification {
   toolName?: string
   /** One line: the tool's args summary, or the question. Truncated, redacted. */
   preview: string
-  /** Asks only — the full question text. */
+  /** Asks only — every question's text, one per line. */
   question?: string
+  /** Asks only — the form. */
+  questions?: AskQuestion[]
   /** Approvals only — raw tool input, for the fleet map's full-context modal. */
   input?: unknown
   /** Approvals only: 'restricted' tool gate vs 'protection' override. */
@@ -733,7 +736,10 @@ export interface FleetPendingInteraction extends Partial<ApprovalMeta> {
   handle: string
   type: 'ask' | 'approval'
   requestId: string
+  /** Asks only: one-line summary (first question, plus how many more). */
   question?: string
+  /** Asks only: the form, to restore it after navigation. */
+  questions?: AskQuestion[]
   toolName?: string
   input?: unknown
 }

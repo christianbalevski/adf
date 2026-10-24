@@ -102,11 +102,11 @@ describe('reducer: loop-aware event ingestion', () => {
     let state = reduce(
       loaded(),
       { type: 'event', frame: frame('hil.requested', { request_id: 't9', task_id: 't9', tool: 'msg_send', input: { to: 'agent-2' }, reason: 'restricted' }) },
-      { type: 'event', frame: frame('ask.requested', { request_id: 'q1', question: 'Proceed?' }, 'consolidator') },
+      { type: 'event', frame: frame('ask.requested', { request_id: 'q1', question: 'Proceed?', questions: [{ question: 'Proceed?' }] }, 'consolidator') },
     )
     expect(state.agents[AGENT].pendingTasks.map(t => t.id)).toEqual(['t9'])
     expect(state.agents[AGENT].pendingAsks.map(a => a.requestId)).toEqual(['q1'])
-    expect(state.transcripts[transcriptKey(AGENT, 'consolidator')].items[0]).toEqual(expect.objectContaining({ kind: 'ask', question: 'Proceed?' }))
+    expect(state.transcripts[transcriptKey(AGENT, 'consolidator')].items[0]).toEqual(expect.objectContaining({ kind: 'ask', questions: [{ question: 'Proceed?' }] }))
     state = reduce(state, { type: 'event', frame: frame('hil.resolved', { request_id: 't9', task_id: 't9', approved: true }) })
     expect(state.agents[AGENT].pendingTasks).toEqual([])
     expect(state.transcripts[transcriptKey(AGENT, 'main')].items[0]).toEqual(expect.objectContaining({ kind: 'hil', status: 'approved' }))
@@ -130,19 +130,43 @@ describe('reducer: loop-aware event ingestion', () => {
   })
 })
 
+describe('ask forms', () => {
+  const questions = [
+    { question: 'Which region?', options: [{ label: 'us-east' }, { label: 'eu-west', description: 'closer to the team' }] },
+    { question: 'Anything else?' },
+  ]
+
+  it('keeps the form from ask.requested', () => {
+    const state = reduce(loaded(), { type: 'event', frame: frame('ask.requested', { request_id: 'ask_2', question: 'Which region? (+1 more)', questions }) })
+    expect(state.agents[AGENT].pendingAsks[0]).toEqual({ requestId: 'ask_2', question: 'Which region? (+1 more)', questions, loop: 'main' })
+    expect(state.transcripts[transcriptKey(AGENT, 'main')].items[0]).toEqual(expect.objectContaining({ kind: 'ask', questions }))
+  })
+
+  it('turns the live card into the answered call, for forms and the old { question } shape', () => {
+    for (const input of [{ questions }, { question: 'Proceed?' }]) {
+      const form = 'questions' in input ? input.questions : [{ question: input.question }]
+      let items = applyEventToItems([], { seq: 1, event_type: 'ask.requested', timestamp: 1, agent_id: AGENT, payload: { request_id: 'ask_1', question: '', questions: form } } as UmbilicalEvent)
+      items = applyEventToItems(items, { seq: 2, event_type: 'tool.started', timestamp: 2, agent_id: AGENT, payload: { id: 'tu_ask', name: 'ask', input } } as UmbilicalEvent)
+      expect(items).toHaveLength(1)
+      expect(items[0]).toEqual(expect.objectContaining({ kind: 'tool', name: 'ask', toolUseId: 'tu_ask' }))
+    }
+  })
+})
+
 describe('loop-aware robustness', () => {
   it('keeps asks with the same id apart per loop', () => {
     let state = loaded()
     state = reduce(state,
-      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'main question?' }) },
-      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'researcher question?' }, 'consolidator') },
+      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'main question?', questions: [{ question: 'main question?' }] }) },
+      { type: 'event', frame: frame('ask.requested', { request_id: 'ask_1', question: 'researcher question?', questions: [{ question: 'researcher question?' }] }, 'consolidator') },
     )
+    const researcher = { requestId: 'ask_1', question: 'researcher question?', questions: [{ question: 'researcher question?' }], loop: 'consolidator' }
     expect(state.agents[AGENT].pendingAsks).toEqual([
-      { requestId: 'ask_1', question: 'main question?', loop: 'main' },
-      { requestId: 'ask_1', question: 'researcher question?', loop: 'consolidator' },
+      { requestId: 'ask_1', question: 'main question?', questions: [{ question: 'main question?' }], loop: 'main' },
+      researcher,
     ])
     state = reduce(state, { type: 'event', frame: frame('ask.resolved', { request_id: 'ask_1' }) })
-    expect(state.agents[AGENT].pendingAsks).toEqual([{ requestId: 'ask_1', question: 'researcher question?', loop: 'consolidator' }])
+    expect(state.agents[AGENT].pendingAsks).toEqual([researcher])
   })
 
   it('clears a stale running flag when the loop goes idle or stops without turn.completed', () => {

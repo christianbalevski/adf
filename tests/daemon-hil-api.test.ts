@@ -30,6 +30,7 @@ import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { MockLLMProvider } from '../src/main/runtime/headless'
 import type { AgentExecutor } from '../src/main/runtime/agent-executor'
 import type { AgentConfig } from '../src/shared/types/adf-v02.types'
+import type { AskAnswer, AskQuestion } from '../src/shared/utils/ask-form'
 
 const servers: Array<{ close: () => Promise<unknown> }> = []
 
@@ -229,5 +230,61 @@ describe('daemon HIL approval API (Studio parity)', () => {
     await expect(gated.promise).resolves.toEqual(expect.objectContaining({ approved: true }))
     // The HOST declaration is what changes.
     expect(managed().config.tools.find(t => t.name === 'fs_write')).toEqual(expect.objectContaining({ enabled: true, restricted: false }))
+  })
+})
+
+/** Park an ask form on `executor` (`requestAsk` is private: only the ask tool path reaches it). */
+function parkAsk(executor: AgentExecutor, questions: AskQuestion[]) {
+  const promise = (executor as unknown as { requestAsk(q: AskQuestion[]): { answers: Promise<AskAnswer[]> } }).requestAsk(questions).answers
+  const pending = executor.getPendingAsks()
+  return { requestId: pending[pending.length - 1].requestId, promise }
+}
+
+describe('daemon ask API', () => {
+  const form: AskQuestion[] = [
+    { question: 'Which regions?', options: [{ label: 'eu-west' }, { label: 'us-east' }], multiple: true },
+    { question: 'Anything else?' },
+  ]
+
+  it('lists the pending form and answers it with one entry per question', async () => {
+    const { ref, server, managed } = setup()
+    const { requestId, promise } = parkAsk(managed().agent.executor, form)
+
+    const list = await server.inject({ method: 'GET', url: `/agents/${ref.id}/asks` })
+    expect(list.json().asks).toEqual([{ requestId, question: 'Which regions? (+1 more)', questions: form, loop: 'main' }])
+
+    const res = await server.inject({
+      method: 'POST',
+      url: `/agents/${ref.id}/asks/${requestId}/respond`,
+      payload: { answers: [['eu-west', ' ap-south '], null] },
+    })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ agentId: ref.id, requestId, loop: 'main', answered: true })
+    await expect(promise).resolves.toEqual([['eu-west', 'ap-south'], null])
+  })
+
+  it('answers that do not fit the form are 400 invalid_answers and the ask stays pending', async () => {
+    const { ref, server, managed } = setup()
+    const executor = managed().agent.executor
+    const { requestId, promise } = parkAsk(executor, form)
+    const respond = (payload: Record<string, unknown>) => server.inject({ method: 'POST', url: `/agents/${ref.id}/asks/${requestId}/respond`, payload })
+
+    const short = await respond({ answers: ['eu-west'] })
+    expect(short.statusCode).toBe(400)
+    expect(short.json()).toEqual({ error: 'Invalid answers: answers has 1 entries but the ask has 2 questions.', code: 'invalid_answers' })
+
+    const wrongType = await respond({ answers: ['eu-west', 42] })
+    expect(wrongType.statusCode).toBe(400)
+    expect(wrongType.json().code).toBe('invalid_answers')
+    expect(wrongType.json().error).toMatch(/answer 2 must be a string/)
+
+    // The pre-form wire shape is gone.
+    const legacy = await respond({ answer: 'yes' })
+    expect(legacy.statusCode).toBe(400)
+    expect(legacy.json()).toEqual({ error: 'Invalid answers: answers must be an array with one entry per question.', code: 'invalid_answers' })
+
+    expect(executor.getPendingAsks().map(a => a.requestId)).toEqual([requestId])
+    expect((await respond({ answers: [null, 'no'] })).statusCode).toBe(200)
+    await expect(promise).resolves.toEqual([null, 'no'])
   })
 })

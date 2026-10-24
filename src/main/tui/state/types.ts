@@ -17,6 +17,7 @@ import type {
 } from '../api/types'
 import type { TrackedState } from './tracked'
 import type { OwnerCommandHeader } from '../../../shared/utils/owner-command-row'
+import type { AskQuestion } from '../../../shared/utils/ask-form'
 
 /** `${agentId}\u0000${loop}` — one transcript per (agent, loop). */
 export type TranscriptKey = string
@@ -120,10 +121,8 @@ export interface HilItem extends ItemBase {
 export interface AskItem extends ItemBase {
   kind: 'ask'
   requestId: string
-  question: string
+  questions: AskQuestion[]
   status: 'pending' | 'answered'
-  /** Answer preview (the wire carries at most 200 chars). */
-  answer?: string
 }
 
 export interface ErrorItem extends ItemBase {

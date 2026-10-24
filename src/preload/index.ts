@@ -8,6 +8,7 @@ import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnap
 import type { AgentConfig } from '../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../shared/types/resource-revision.types'
 import type { AdfApi } from './api'
+import type { AskAnswer } from '../shared/utils/ask-form'
 import type { ConnectionAddRequest, ConnectionsView, RuntimesMoved } from '../shared/types/connection.types'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { BackendSettingsPatch, RemotePickAnswer, RemotePickRequest } from '../shared/types/backend.types'
@@ -109,8 +110,8 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     ipcRenderer.invoke(IPC.AGENT_TOOL_ALWAYS_APPROVE, { requestId, toolName }),
   approveAllGatedTools: () =>
     ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVE_ALL_GATED),
-  respondAsk: (requestId: string, answer: string) =>
-    ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answer }),
+  respondAsk: (requestId: string, answers: AskAnswer[]) =>
+    ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answers }),
 
   // Global approvals menu (all agents + loops, foreground and background)
   listPendingNotifications: () => ipcRenderer.invoke(IPC.APPROVALS_LIST),
@@ -254,8 +255,8 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     ipcRenderer.on(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler)
     return () => { ipcRenderer.removeListener(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler) }
   },
-  respondBackgroundAgentAsk: (filePath: string, requestId: string, answer: string) =>
-    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answer }),
+  respondBackgroundAgentAsk: (filePath: string, requestId: string, answers: AskAnswer[]) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answers }),
   respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved, feedback }),
   alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) =>

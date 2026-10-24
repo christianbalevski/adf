@@ -52,7 +52,8 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf approve <agent> <taskId>` | Approve a pending task |
 | `adf deny <agent> <taskId> [reason]` | Deny a pending task |
 | `adf asks <agent>` | List pending ask requests |
-| `adf answer <agent> <requestId> <answer>` | Answer a pending ask request |
+| `adf answer <agent> <requestId> [--loop <name>] <answer>` | Answer a pending one-question ask |
+| `adf answer <agent> <requestId> [--loop <name>] --answers '<json>'` | Answer an ask form: a JSON array with one entry per question, in order: text or an option label, an array of labels for a multi-pick question, or null to skip |
 | `adf identities <agent>` | List identity metadata without secret values |
 | `adf mcp [agent]` | Show daemon MCP registrations or agent MCP state |
 | `adf adapters [agent]` | Show daemon adapter registrations or agent adapter state |
@@ -550,7 +551,8 @@ Approvals and questions (the card under the transcript):
 | Keys | Action |
 |---|---|
 | `y` | Approve: press twice, or once on a selected approval · resume a suspended agent. Mouse mode: click the card’s buttons |
-| `a` | Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it |
+| `a` | Always approve this tool for the agent (twice, then confirm; it won’t ask again). Not offered for protection overrides: those are one-time only · on a question card: answer it in the prompt |
+| `x` | On a question card: skip the questions not answered yet and send the answers |
 | `n` | Reject · shut a suspended agent down (asks) |
 | `f` | Reject with feedback: the agent sees your text |
 | `v` | Full details of the tool call |

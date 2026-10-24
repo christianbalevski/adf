@@ -6,6 +6,8 @@ import { useOpenAgentKey } from '../../utils/runtime-api'
 import { mapTarget } from './runtime-fleet'
 import { useFleetStore } from '../../stores/fleet.store'
 import { ApprovalControls } from '../agent/ApprovalControls'
+import { useJumpToAgent } from '../../hooks/useJumpToAgent'
+import { summarizeAsk } from '../../../shared/utils/ask-form'
 import type { AgentState } from '../../../shared/types/ipc.types'
 
 export interface MeshNodeData {
@@ -362,22 +364,37 @@ export const ACTIVITY_TYPE_MARKS: Record<string, { mark: string; markColor: stri
 
 function PendingInteractionUI({ filePath, pending }: { filePath: string; pending: PendingInteraction }) {
   const [input, setInput] = useState('')
+  const [askError, setAskError] = useState<string | null>(null)
   // The open agent's map id: the foreground calls apply only to it, on its runtime.
   const foregroundFilePath = useOpenAgentKey()
   const isForeground = filePath === foregroundFilePath
   const setPendingInteraction = useMeshGraphStore((s) => s.setPendingInteraction)
+  const jumpToAgent = useJumpToAgent()
 
-  const handleSubmit = useCallback(() => {
-    if (pending.type === 'ask') {
-      if (isForeground) {
-        mapTarget(filePath).api.respondAsk(pending.requestId, input)
-      } else {
-        { const t = mapTarget(filePath); t.api.respondBackgroundAgentAsk(t.filePath, pending.requestId, input) }
-      }
-      setPendingInteraction(filePath, null)
+  // A tile has room for one line of text: only a single free-text question
+  // is answered here; any other form opens in the agent's chat.
+  const askForm = pending.type === 'ask' ? pending.questions : []
+  const inlineAsk = askForm.length === 1 && !askForm[0].options
+
+  const handleSubmit = useCallback(async () => {
+    if (pending.type !== 'ask' || !input.trim()) return
+    const t = mapTarget(filePath)
+    const result = isForeground
+      ? await t.api.respondAsk(pending.requestId, [input.trim()])
+      : await t.api.respondBackgroundAgentAsk(t.filePath, pending.requestId, [input.trim()])
+    if (result && result.success === false) {
+      setAskError(result.error ?? 'The answer was not accepted.')
+      return
     }
+    setAskError(null)
+    setPendingInteraction(filePath, null)
     setInput('')
   }, [pending, input, filePath, isForeground, setPendingInteraction])
+
+  const openAgent = useCallback(() => {
+    const t = mapTarget(filePath)
+    jumpToAgent(t.filePath, t.runtimeId)
+  }, [filePath, jumpToAgent])
 
   const handleApproval = useCallback((approved: boolean, feedback?: string) => {
     if (pending.type === 'approval') {
@@ -409,25 +426,39 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
   if (pending.type === 'ask') {
     return (
       <div className="px-3 py-2 space-y-1.5">
-        <p className="text-[10px] text-neutral-600 dark:text-neutral-300 leading-tight">
-          {pending.question ?? 'Agent is asking...'}
+        <p className="line-clamp-3 text-[10px] text-neutral-600 dark:text-neutral-300 leading-tight">
+          {summarizeAsk(askForm) || 'Agent is asking...'}
         </p>
-        <div className="flex gap-1">
-          <input
-            type="text"
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && handleSubmit()}
-            placeholder="Type response..."
-            className="flex-1 px-2 py-1 text-[11px] bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-600 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
-          />
+        {inlineAsk ? (
+          <div className="flex gap-1">
+            <input
+              type="text"
+              value={input}
+              onChange={(e) => { setInput(e.target.value); setAskError(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') void handleSubmit() }}
+              placeholder="Type response..."
+              aria-label="Answer"
+              className="flex-1 px-2 py-1 text-[11px] bg-white dark:bg-neutral-800 border border-neutral-200 dark:border-neutral-600 rounded focus:outline-none focus:ring-1 focus:ring-amber-400"
+            />
+            <button
+              onClick={() => void handleSubmit()}
+              disabled={!input.trim()}
+              className="px-2 py-1 text-[10px] bg-blue-500 text-white rounded hover:bg-blue-600 disabled:opacity-50"
+            >
+              Send
+            </button>
+          </div>
+        ) : (
           <button
-            onClick={handleSubmit}
-            className="px-2 py-1 text-[10px] bg-blue-500 text-white rounded hover:bg-blue-600"
+            onClick={(e) => { e.stopPropagation(); openAgent() }}
+            className="block w-full text-center text-[10px] text-blue-500 dark:text-blue-400 hover:underline"
           >
-            Send
+            Answer in agent
           </button>
-        </div>
+        )}
+        {askError && (
+          <p role="alert" className="text-[10px] text-red-500 leading-tight">{askError}</p>
+        )}
       </div>
     )
   }

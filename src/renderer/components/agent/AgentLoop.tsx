@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo } from '../../stores/agent.store'
+import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
@@ -45,6 +45,8 @@ import { useKeyboardContextMenu } from '../../hooks/useKeyboardContextMenu'
 import { escStopsTurn } from '../../utils/keyboard'
 import { interruptOpenTurn } from '../../utils/turn-interrupt'
 import { ApprovalControls, OverrideBadge } from './ApprovalControls'
+import { AskCard, type AskDraft } from './AskForm'
+import { askQuestions, type AskAnswer, type AskQuestion } from '../../../shared/utils/ask-form'
 import { ApprovalReviewDialog, type ReviewCall } from './ApprovalReviewDialog'
 import { submitOwnerCommand } from '../../utils/owner-command-submit'
 import { parseAuthorizeToken } from '../../../shared/utils/agent-commands'
@@ -122,12 +124,6 @@ function CopyErrorButton({ text }: { text: string }) {
       {copied ? 'Copied' : 'Copy'}
     </button>
   )
-}
-
-function extractAskAnswer(content?: string | null): string | null {
-  if (!content) return null
-  const prefix = 'Human answered: '
-  return content.startsWith(prefix) ? content.slice(prefix.length) : content
 }
 
 function sanitizeUploadName(name: string): string {
@@ -503,6 +499,8 @@ const LogEntryRow = memo(({
   onAlwaysApprove,
   approvalStatus,
   pendingAsk,
+  onAskRespond,
+  onAskDraftsChange,
   isSuspendEntry,
   onSuspendRespond,
   toolResultIsError,
@@ -528,13 +526,18 @@ const LogEntryRow = memo(({
   onAlwaysApprove?: (requestId: string, toolName: string) => void
   /** The pending card's decision in flight, or why it did not land. */
   approvalStatus?: ApprovalStatus
-  pendingAsk?: { requestId: string; question: string }
+  pendingAsk?: PendingAsk
+  /** Answer a pending ask; resolves with an error message when it did not land. */
+  onAskRespond?: (requestId: string, answers: AskAnswer[]) => Promise<string | null>
+  /** Keep a pending ask's entered answers in the store (the row can unmount on scroll). */
+  onAskDraftsChange?: (logEntryId: string, drafts: AskDraft[]) => void
   isSuspendEntry?: boolean
   onSuspendRespond?: (resume: boolean) => void
   toolResultIsError?: boolean | null
   toolResultImageUrl?: string | null
   /** References the tool result carries (a deleted one shows `[deleted: name]`). */
   toolResultAttachments?: DisplayAttachment[] | null
+  /** An answered ask's tool result (Q:/A: text). */
   askAnswer?: string | null
   compact?: boolean
   /** The agent is still working from this step, even if its tool has returned. */
@@ -545,6 +548,22 @@ const LogEntryRow = memo(({
 }) => {
   const toolName = (entry.metadata?.name as string | undefined) ?? 'tool'
   const toolInput = entry.metadata?.input
+  // An ask's questions: the tool call's input (old `{ question }` calls too),
+  // or, for an ask with no tool row, what its request carried.
+  const askCardQuestions = useMemo<AskQuestion[]>(() => {
+    if (entry.type === 'tool_call' && toolName === 'ask') return askQuestions(toolInput)
+    if (entry.type === 'system' && entry.metadata?.isAsk) return entry.metadata.questions as AskQuestion[]
+    return []
+  }, [entry.type, entry.metadata?.isAsk, entry.metadata?.questions, toolName, toolInput])
+  const askCard = askCardQuestions.length > 0 && (
+    <AskCard
+      questions={askCardQuestions}
+      result={askAnswer}
+      drafts={pendingAsk?.drafts}
+      onDraftsChange={onAskDraftsChange && ((drafts) => onAskDraftsChange(entry.id, drafts))}
+      onSubmit={pendingAsk && onAskRespond ? (answers) => onAskRespond(pendingAsk.requestId, answers) : undefined}
+    />
+  )
   const toolInputRecord = getToolInputRecord(entry)
   const toolReason = getToolReason(entry)
   const shellCommand = toolName === 'adf_shell'
@@ -793,33 +812,7 @@ const LogEntryRow = memo(({
               </div>
             )}
           </div>
-          {entry.metadata?.name === 'ask' && (entry.metadata?.input as { question?: string })?.question && (
-            <div className={`mt-1 overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
-              <div className="p-2.5">
-                <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
-                  Agent asked
-                </div>
-                <div className="text-sm text-[var(--ink)] whitespace-pre-wrap">
-                  {(entry.metadata.input as { question: string }).question}
-                </div>
-              </div>
-              {askAnswer && (
-                <div className="border-t border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
-                  <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
-                    User response
-                  </div>
-                  <div className="text-sm text-[var(--ink)] whitespace-pre-wrap break-words">
-                    {askAnswer}
-                  </div>
-                </div>
-              )}
-              {pendingAsk && !askAnswer && (
-                <div className="border-t border-[var(--rule)] bg-[var(--tint-soft)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
-                  Awaiting response
-                </div>
-              )}
-            </div>
-          )}
+          {entry.metadata?.name === 'ask' && askCard && <div className="mt-1">{askCard}</div>}
           {entry.metadata?.name !== 'ask' && toolResultImageUrl && (
             <div className="mt-1">
               <AttachedImage
@@ -978,33 +971,7 @@ const LogEntryRow = memo(({
           <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
         </div>
       )}
-      {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && (
-        <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${pendingAsk && !askAnswer ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
-          <div className="p-2.5">
-            <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
-              Agent asked
-            </div>
-            <div className="text-sm text-[var(--ink)] whitespace-pre-wrap">
-              {entry.content}
-            </div>
-          </div>
-          {askAnswer && (
-            <div className="border-t border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
-              <div className="mb-1 text-[12px] font-medium text-[var(--ink-muted)]">
-                User response
-              </div>
-              <div className="text-sm text-[var(--ink)] whitespace-pre-wrap break-words">
-                {askAnswer}
-              </div>
-            </div>
-          )}
-          {pendingAsk && !askAnswer && (
-            <div className="border-t border-[var(--rule)] bg-[var(--tint-soft)] px-2.5 py-1.5 text-xs text-[var(--ink-muted)]">
-              Awaiting response
-            </div>
-          )}
-        </div>
-      )}
+      {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && askCard}
       {entry.type === 'system' && !isSuspendEntry && !entry.metadata?.isAsk && (
         <div className="text-center text-xs text-[var(--ink-faint)]">
           {entry.content}
@@ -1070,8 +1037,7 @@ function LoopStream({ loop }: { loop: string }) {
   const removePendingApproval = useAgentStore((s) => s.removePendingApproval)
   const markApprovalOutcome = useAgentStore((s) => s.markApprovalOutcome)
   const pendingAsks = useAgentStore((s) => selectLoopSlice(s, loop).pendingAsks)
-  const removePendingAsk = useAgentStore((s) => s.removePendingAsk)
-  const updateEntryAt = useAgentStore((s) => s.updateEntryAt)
+  const setAskDrafts = useAgentStore((s) => s.setAskDrafts)
   const pendingSuspend = useAgentStore((s) => selectLoopSlice(s, loop).pendingSuspend)
   const setPendingSuspend = useAgentStore((s) => s.setPendingSuspend)
   // Keyed by agent file, not held in the view: a queue outlives an agent switch.
@@ -1189,19 +1155,17 @@ function LoopStream({ loop }: { loop: string }) {
     return true
   }, [setApprovalStatus, settleApprovalCard, loop])
 
-  const handleAskRespond = useCallback((logEntryId: string, requestId: string, answer: string) => {
-    openApi()?.respondAsk(requestId, answer)
-    const idx = log.findIndex((entry) => entry.id === logEntryId)
-    if (idx >= 0) {
-      updateEntryAt(idx, (entry) => {
-        entry.metadata = {
-          ...entry.metadata,
-          askAnswer: answer
-        }
-      }, loop)
-    }
-    removePendingAsk(logEntryId, loop)
-  }, [log, removePendingAsk, updateEntryAt, loop])
+  // The ask_response event marks the card answered; only a refusal shows here.
+  const handleAskRespond = useCallback(async (requestId: string, answers: AskAnswer[]): Promise<string | null> => {
+    const api = openApi()
+    if (!api) return 'This agent is not connected.'
+    const result = await api.respondAsk(requestId, answers)
+    return result && result.success === false ? result.error ?? 'The answer was not accepted.' : null
+  }, [])
+
+  const handleAskDraftsChange = useCallback((logEntryId: string, drafts: AskDraft[]) => {
+    setAskDrafts(logEntryId, drafts, loop)
+  }, [setAskDrafts, loop])
 
   const handleSuspendRespond = useCallback((resume: boolean) => {
     openApi()?.respondSuspend(resume)
@@ -1583,7 +1547,7 @@ function LoopStream({ loop }: { loop: string }) {
   const [slashActive, setSlashActive] = useState(0)
   const [slashDismissed, setSlashDismissed] = useState(false)
 
-  // Answering the agent's `ask` is prose, never a command.
+  // A pending `ask` is answered in its card; the composer is locked meanwhile.
   const askPending = pendingAsks.size > 0
 
   const slashOpen = !askPending && !slashDismissed && isSlashInput(input)
@@ -1963,7 +1927,7 @@ function LoopStream({ loop }: { loop: string }) {
     // Enter sends, Shift+Enter inserts a newline
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault()
-      // Submit through the form so handleInputSubmit routes correctly (ask vs normal)
+      // Submit through the form so handleInputSubmit applies the composer's gates
       e.currentTarget.form?.requestSubmit()
     }
   }
@@ -2105,8 +2069,9 @@ function LoopStream({ loop }: { loop: string }) {
         || ((pairedResult.metadata?.isError as boolean | undefined) ?? null)
       : null
     const askAnswer = entry.metadata?.askAnswer as string | undefined
-    const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask'
-      ? extractAskAnswer(toolPair?.result?.content ?? (entry.metadata?.result as string | undefined))
+    // An ask's stored tool result; an error result (bad input) is no answer.
+    const pairedAskAnswer = entry.type === 'tool_call' && entry.metadata?.name === 'ask' && toolResultIsError !== true
+      ? (toolPair?.result?.content ?? (entry.metadata?.result as string | undefined)) || null
       : null
 
     return (
@@ -2125,6 +2090,8 @@ function LoopStream({ loop }: { loop: string }) {
         onAlwaysApprove={handleAlwaysApprove}
         approvalStatus={statusFor(pendingApprovals.get(entry.id)?.requestId)}
         pendingAsk={pendingAsks.get(entry.id)}
+        onAskRespond={handleAskRespond}
+        onAskDraftsChange={handleAskDraftsChange}
         isSuspendEntry={pendingSuspend === entry.id}
         onSuspendRespond={handleSuspendRespond}
         toolResultIsError={toolResultIsError}
@@ -2380,33 +2347,17 @@ function LoopStream({ loop }: { loop: string }) {
           </div>
         </div>
       ) : (() => {
-        // Get the active pending ask (if any) to transform the input bar
-        let activeAsk: { logEntryId: string; requestId: string; question: string } | null = null
-        for (const [logEntryId, ask] of pendingAsks.entries()) {
-          activeAsk = { logEntryId, ...ask }
-          break
-        }
-
+        // A pending ask is answered in its card above; the composer waits.
         const handleInputSubmit = (e: React.FormEvent) => {
-          if (activeAsk) {
+          if (askPending) {
             e.preventDefault()
-            if (!input.trim()) return
-            handleAskRespond(activeAsk.logEntryId, activeAsk.requestId, input.trim())
-            setInput('')
-          } else {
-            handleSubmit(e)
+            return
           }
+          handleSubmit(e)
         }
 
-        const handleSkipAsk = () => {
-          if (activeAsk) {
-            handleAskRespond(activeAsk.logEntryId, activeAsk.requestId, '[skipped]')
-          }
-        }
-
-        const canSubmit = activeAsk
-          ? input.trim().length > 0
-          : (input.trim().length > 0 || attachments.length > 0) && !starting && !uploadingFiles
+        const canSubmit = !askPending
+          && (input.trim().length > 0 || attachments.length > 0) && !starting && !uploadingFiles
 
         return (
           // No divider above the composer: it reads as a floating card
@@ -2414,24 +2365,11 @@ function LoopStream({ loop }: { loop: string }) {
           <div className="pt-1">
           <form
             onSubmit={handleInputSubmit}
-            onDrop={activeAsk ? undefined : handleInputDrop}
-            onDragOver={activeAsk ? undefined : handleInputDragOver}
-            onDragLeave={activeAsk ? undefined : handleInputDragLeave}
+            onDrop={askPending ? undefined : handleInputDrop}
+            onDragOver={askPending ? undefined : handleInputDragOver}
+            onDragLeave={askPending ? undefined : handleInputDragLeave}
             className={`px-3 pb-3 ${messageQueue.length > 0 ? 'pt-1' : 'pt-2'} ${columnClass}`}
           >
-            {activeAsk && (
-              <div className="mb-1.5 px-1 space-y-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-semibold text-[var(--ink)]">Agent asks</span>
-                  <Button type="button" size="compact" variant="ghost" onClick={handleSkipAsk} className="h-6 px-1.5 text-[10px]">
-                    Skip
-                  </Button>
-                </div>
-                <div className="whitespace-pre-wrap text-xs text-[var(--ink-muted)]">
-                  {activeAsk.question}
-                </div>
-              </div>
-            )}
             {messageQueue.length > 0 && (
               <div className="mb-1 px-1 space-y-0.5">
                 <span className="text-[10px] font-medium text-[var(--ink-muted)]">
@@ -2498,9 +2436,7 @@ function LoopStream({ loop }: { loop: string }) {
             <div className={`relative overflow-hidden rounded-[var(--radius-sm)] border bg-[var(--paper)] focus-within:outline focus-within:outline-2 focus-within:outline-offset-2 focus-within:outline-[var(--focus)] ${
               draggingOverInput
                 ? 'border-[var(--blue)] outline outline-2 outline-offset-2 outline-[var(--focus)]'
-                : activeAsk
-                  ? 'border-[var(--blue)]'
-                  : 'border-[var(--rule-strong)]'
+                : 'border-[var(--rule-strong)]'
             }`}>
               {draggingOverInput && (
                 <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center bg-[color-mix(in_srgb,var(--tint)_92%,transparent)] text-sm font-medium text-[var(--ink)]">
@@ -2567,7 +2503,7 @@ function LoopStream({ loop }: { loop: string }) {
                 <button
                   type="button"
                   onClick={handlePickFiles}
-                  disabled={!!activeAsk || uploadingFiles}
+                  disabled={askPending || uploadingFiles}
                   className="mb-1 flex h-8 w-8 shrink-0 items-center justify-center rounded-[var(--radius-sm)] text-[var(--ink-muted)] transition-colors duration-[var(--dur-fast)] ease-[var(--ease)] hover:bg-[var(--paper-sunken)] hover:text-[var(--ink)] disabled:cursor-not-allowed disabled:opacity-40"
                   title="Attach files"
                 >
@@ -2584,14 +2520,16 @@ function LoopStream({ loop }: { loop: string }) {
                   aria-expanded={slashOpen}
                   aria-controls={slashOpen ? 'loop-slash-palette' : undefined}
                   aria-activedescendant={slashOpen && slashRows.length > 0 ? `loop-slash-palette-${slashIndex}` : undefined}
+                  disabled={askPending}
+                  title={askPending ? 'Answer the questions above' : undefined}
                   placeholder={
-                    activeAsk ? 'Your answer'
+                    askPending ? 'Answer the questions above'
                     : state === 'active' ? `Queue a message for ${agentName}`
                     : state === 'off' ? `What should ${agentName} do?`
                     : `What should ${agentName} do?`
                   }
                   rows={1}
-                  className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-[var(--ink)] placeholder:text-[var(--ink-faint)]"
+                  className="loop-composer-input block min-h-[2.5rem] min-w-0 flex-1 resize-none overflow-y-auto border-0 bg-transparent px-1.5 py-2.5 text-sm leading-5 text-[var(--ink)] placeholder:text-[var(--ink-faint)] disabled:cursor-not-allowed"
                 />
                 {turnRunning && (
                   <Tooltip tip="Stop" shortcut="Esc" className="mb-1 flex shrink-0">
@@ -2614,13 +2552,13 @@ function LoopStream({ loop }: { loop: string }) {
                   type="submit"
                   disabled={!canSubmit}
                   size="default"
-                  variant={state === 'active' && !activeAsk ? 'secondary' : 'primary'}
+                  variant={state === 'active' ? 'secondary' : 'primary'}
                   className="mb-1 w-[var(--adf-ui-control-height)] shrink-0 px-0 [&_svg]:shrink-0"
-                  title={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
-                  aria-label={activeAsk ? 'Reply' : state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
+                  title={state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
+                  aria-label={state === 'active' ? 'Queue message' : agentState === 'off' ? 'Start agent' : 'Send'}
                 >
                   <svg width="19" height="19" viewBox="0 0 20 20" fill="none" aria-hidden="true">
-                    {state === 'active' && !activeAsk ? (
+                    {state === 'active' ? (
                       <path d="M4 5.25h12M4 10h12M4 14.75h7.5" stroke="currentColor" strokeWidth="1.85" strokeLinecap="round" />
                     ) : (
                       <path d="M10 16V4m0 0L5.25 8.75M10 4l4.75 4.75" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" />

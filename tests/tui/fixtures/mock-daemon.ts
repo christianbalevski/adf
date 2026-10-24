@@ -7,6 +7,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { mockContext } from './context-mock'
+import { formatAskAnswers, normalizeAskAnswers, type AskAnswer, type AskQuestion } from '../../../src/shared/utils/ask-form'
 
 export const AGENT_1_ID = '6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f'
 export const AGENT_2_ID = '0a1b2c3d-4e5f-4a6b-8c7d-8e9f0a1b2c3d'
@@ -39,7 +40,9 @@ interface MockAgent {
   tasks: Array<Record<string, unknown>>
   /** config.tools; absent until something (always-approve) writes it. */
   tools?: MockToolDecl[]
-  asks: Array<{ requestId: string; question: string; loop?: string }>
+  asks: Array<{ requestId: string; question: string; questions: AskQuestion[]; loop?: string }>
+  /** What POST /asks/:id/respond received, by request id (normalized like the daemon does). */
+  askAnswers?: Record<string, AskAnswer[]>
   provider: string
   /** What the agent serves through the daemon's web server (config.serving). */
   serving?: MockServing
@@ -705,9 +708,16 @@ export async function startMockDaemon(options: MockDaemonOptions = {}): Promise<
       case 'GET asks': return send(200, { agentId: agent.id, asks: agent.asks })
       case 'POST asks': {
         const index = agent.asks.findIndex(a => a.requestId === parts[3] && (typeof body?.loop !== 'string' || (a.loop ?? 'main') === body.loop))
-        if (index >= 0) agent.asks.splice(index, 1)
-        emit({ event_type: 'ask.resolved', agent_id: agent.id, payload: { request_id: parts[3], has_response: true, response_length: String(body?.answer ?? '').length, preview: String(body?.answer ?? '').slice(0, 200) } })
-        return send(200, { agentId: agent.id, requestId: parts[3], answered: index >= 0 })
+        if (index < 0) return send(200, { agentId: agent.id, requestId: parts[3], answered: false })
+        const ask = agent.asks[index]
+        let answers: AskAnswer[]
+        try { answers = normalizeAskAnswers(ask.questions, body?.answers) } catch (err) { return send(400, { error: (err as Error).message }) }
+        agent.asks.splice(index, 1)
+        ;(agent.askAnswers ??= {})[ask.requestId] = answers
+        const answered = answers.filter(a => a !== null).length
+        const text = answered > 0 ? formatAskAnswers(ask.questions, answers) : ''
+        emit({ event_type: 'ask.resolved', agent_id: agent.id, loop: ask.loop, payload: { request_id: parts[3], has_response: answered > 0, answered, skipped: answers.length - answered, response_length: text.length, ...(text ? { preview: text.slice(0, 200) } : {}) } })
+        return send(200, { agentId: agent.id, requestId: parts[3], answered: true })
       }
       case 'GET usage': return send(200, { agentId: agent.id, source: 'adf_loop', note: '', loopRows: 0, usageRows: 0, totals: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 }, byModel: [] })
       case 'GET document': return send(200, { agentId: agent.id, content: agent.files.find(f => f.path === 'document.md')?.content ?? '' })

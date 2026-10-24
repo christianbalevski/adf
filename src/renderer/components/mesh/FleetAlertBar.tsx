@@ -10,6 +10,7 @@ import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import { formatTokenCount as formatBurn } from '../../utils/token-estimate'
 import { saveFleetKeys, selectMapAgents } from './runtime-fleet'
 import { useRuntimesStore } from '../../stores/runtimes.store'
+import { summarizeAsk } from '../../../shared/utils/ask-form'
 
 /**
  * Fleet alert layer — the "needs me" queue plus the resource bar
@@ -359,7 +360,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                       if (pending.type === 'approval') useFleetStore.getState().setHilModal(filePath)
                     }}
                     className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded-full bg-amber-50 dark:bg-amber-900/30 border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 hover:bg-amber-100 dark:hover:bg-amber-900/50 whitespace-nowrap shrink-0"
-                    title={pending.type === 'ask' ? pending.question : `Approve ${pending.toolName}?`}
+                    title={pending.type === 'ask' ? summarizeAsk(pending.questions) : `Approve ${pending.toolName}?`}
                   >
                     <span className="font-medium">{handle}</span>
                     <span className="text-amber-500 dark:text-amber-400">
@@ -393,7 +394,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
                           setOpenMenu(null)
                         }}
                         className="w-full flex items-center gap-1.5 pl-3 pr-2 py-1.5 text-left text-[11px] hover:bg-amber-50 dark:hover:bg-amber-900/30 whitespace-nowrap"
-                        title={pending.type === 'ask' ? pending.question : `Approve ${pending.toolName}?`}
+                        title={pending.type === 'ask' ? summarizeAsk(pending.questions) : `Approve ${pending.toolName}?`}
                       >
                         <span className="font-medium text-amber-700 dark:text-amber-300">{handle}</span>
                         <span className="text-amber-500 dark:text-amber-400">

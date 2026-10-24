@@ -12,9 +12,18 @@ export interface ConfigConflictState {
   owner: string | null
 }
 import type { ApprovalEndedBy, ApprovalMeta } from '../../shared/types/ipc.types'
+import type { AskQuestion } from '../../shared/utils/ask-form'
+import type { AskDraft } from '../components/agent/AskForm'
 
 /** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
 export type PendingApprovalInfo = { requestId: string } & Partial<ApprovalMeta>
+
+/** An `ask` awaiting the human, with what they have entered so far (it dies with the ask). */
+export interface PendingAsk {
+  requestId: string
+  questions: AskQuestion[]
+  drafts?: AskDraft[]
+}
 
 /**
  * Display states shown in the UI. Executor states are mapped to these in useAgent.ts.
@@ -75,8 +84,8 @@ export interface LoopSlice {
   earlierCount: number
   /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, PendingApprovalInfo>
-  /** Maps logEntryId -> { requestId, question } for ask tool calls */
-  pendingAsks: Map<string, { requestId: string; question: string }>
+  /** Maps logEntryId -> pending ask, for the row that shows its form */
+  pendingAsks: Map<string, PendingAsk>
   /** Pending suspend request (logEntryId if shown in loop) */
   pendingSuspend: string | null
   /**
@@ -205,8 +214,13 @@ interface AgentStoreState extends LoopSlice {
   markApprovalOutcome: (logEntryId: string, approved: boolean | 'completed', loop?: string) => void
   /** Record on any approval card that its wait ended with no decision (a chat message, a state change, a stop). */
   markApprovalEnded: (logEntryId: string, endedBy: ApprovalEndedBy, loop?: string) => void
-  addPendingAsk: (logEntryId: string, requestId: string, question: string, loop?: string) => void
+  /** Show the ask's form on this row; the row is stamped with `askRequestId`. */
+  addPendingAsk: (logEntryId: string, requestId: string, questions: AskQuestion[], loop?: string) => void
   removePendingAsk: (logEntryId: string, loop?: string) => void
+  /** Keep a pending ask's entered answers (its row can unmount on scroll). */
+  setAskDrafts: (logEntryId: string, drafts: AskDraft[], loop?: string) => void
+  /** Drop every pending ask of the loop: the executor stopped waiting (stop, interrupt). */
+  clearPendingAsks: (loop?: string) => void
   setPendingSuspend: (logEntryId: string | null, loop?: string) => void
   reset: () => void
 }
@@ -383,16 +397,30 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       s.log[index] = { ...entry, metadata: { ...entry.metadata, approvalEndedBy: endedBy } }
       return { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
-    addPendingAsk: (logEntryId, requestId, question, loop) => patchSlice(loop, (s) => {
+    addPendingAsk: (logEntryId, requestId, questions, loop) => patchSlice(loop, (s) => {
       const next = new Map(s.pendingAsks)
-      next.set(logEntryId, { requestId, question })
-      return { pendingAsks: next }
+      next.set(logEntryId, { requestId, questions })
+      // The row keeps the request id: its ask_response finds it by that, also
+      // after the pending ask is gone (the state change ahead of it clears it).
+      const index = s.log.findIndex((e) => e.id === logEntryId)
+      const entry = s.log[index]
+      if (!entry || entry.metadata?.askRequestId === requestId) return { pendingAsks: next }
+      s.log[index] = { ...entry, metadata: { ...entry.metadata, askRequestId: requestId } }
+      return { pendingAsks: next, logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     removePendingAsk: (logEntryId, loop) => patchSlice(loop, (s) => {
       const next = new Map(s.pendingAsks)
       next.delete(logEntryId)
       return { pendingAsks: next }
     }),
+    setAskDrafts: (logEntryId, drafts, loop) => patchSlice(loop, (s) => {
+      const ask = s.pendingAsks.get(logEntryId)
+      if (!ask) return {}
+      const next = new Map(s.pendingAsks)
+      next.set(logEntryId, { ...ask, drafts })
+      return { pendingAsks: next }
+    }),
+    clearPendingAsks: (loop) => patchSlice(loop, (s) => (s.pendingAsks.size > 0 ? { pendingAsks: new Map() } : {})),
     setPendingSuspend: (logEntryId, loop) => patchSlice(loop, () => ({ pendingSuspend: logEntryId })),
     reset: () =>
       set({

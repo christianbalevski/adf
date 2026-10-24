@@ -323,7 +323,8 @@ interface TaskApproveAllBody {
 }
 
 interface AskRespondBody {
-  answer?: string
+  /** One per question, in order: a string, an array of picks, or null (skipped). */
+  answers?: unknown
   /** The loop that asked (GET /asks lists it); absent = the first loop holding the id. */
   loop?: string
 }
@@ -2086,12 +2087,11 @@ export function createDaemonHttpApi(
 
   server.post<{ Params: AskIdParams; Body: AskRespondBody }>('/agents/:id/asks/:requestId/respond', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    const answer = request.body?.answer
-    if (typeof answer !== 'string') return badRequest(reply, 'answer is required')
+    const answers = request.body?.answers
     const loop = request.body?.loop
     if (loop !== undefined && (typeof loop !== 'string' || !loop)) return badRequest(reply, 'loop must be a non-empty string')
     try {
-      return runtime.answerAgentAsk(request.params.id, request.params.requestId, answer, loop)
+      return runtime.answerAgentAsk(request.params.id, request.params.requestId, answers, loop)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

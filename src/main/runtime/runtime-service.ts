@@ -93,6 +93,7 @@ import {
 import type { ContentBlock } from '../../shared/types/provider.types'
 import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 import { summarizeLoopUsage, type RuntimeAgentUsageByModel, type RuntimeUsageTotals } from './loop-usage'
+import { AskAnswerError, type AskQuestion } from '../../shared/utils/ask-form'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -545,7 +546,10 @@ export type RuntimeLoopPatch = Partial<Omit<LoopConfig, 'name' | 'model' | 'comp
 
 export interface RuntimeAgentAsk {
   requestId: string
+  /** One-line summary: the first question, plus how many more. */
   question: string
+  /** The form: one answer per question is expected. */
+  questions: AskQuestion[]
   /** The loop whose turn is waiting on the answer. */
   loop: string
 }
@@ -3130,13 +3134,21 @@ export class RuntimeService extends EventEmitter {
     return { agentId: managed.id, asks }
   }
 
-  /** Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id. */
-  answerAgentAsk(agentId: string, requestId: string, answer: string, loop?: string): { agentId: string; requestId: string; loop: string; answered: boolean } {
+  /**
+   * `answers`: one per question (`null` = skipped); a payload that does not fit the form is a 400 and the ask stays pending.
+   * Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id.
+   */
+  answerAgentAsk(agentId: string, requestId: string, answers: unknown, loop?: string): { agentId: string; requestId: string; loop: string; answered: boolean } {
     const managed = this.requireAgent(agentId)
     const holder = this.askExecutors(managed).find(entry =>
       (loop === undefined || entry.loop === loop) && entry.executor.getPendingAsks().some(ask => ask.requestId === requestId))
     if (!holder) throw new RuntimeLoopError(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''} (already answered, or never asked).`, 404, 'ask_not_found')
-    holder.executor.resolveAsk(requestId, answer)
+    try {
+      holder.executor.resolveAsk(requestId, answers)
+    } catch (err) {
+      if (err instanceof AskAnswerError) throw new RuntimeLoopError(`Invalid answers: ${err.message}.`, 400, 'invalid_answers')
+      throw err
+    }
     return { agentId: managed.id, requestId, loop: holder.loop, answered: true }
   }
 

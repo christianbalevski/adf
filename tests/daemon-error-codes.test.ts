@@ -92,7 +92,7 @@ describe('daemon error codes', () => {
 
   it('answering an unknown ask is 404 ask_not_found', async () => {
     const { ref, server, auth } = setup()
-    const res = await server.inject({ method: 'POST', url: `/agents/${ref.id}/asks/nope/respond`, headers: auth, payload: { answer: 'x' } })
+    const res = await server.inject({ method: 'POST', url: `/agents/${ref.id}/asks/nope/respond`, headers: auth, payload: { answers: ['x'] } })
     expect(res.statusCode).toBe(404)
     expect(res.json().code).toBe('ask_not_found')
   })

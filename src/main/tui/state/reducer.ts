@@ -21,6 +21,7 @@ import {
 import { buildTracked, pruneLoaded, reconcileSelection } from './tracked'
 import {
   applyEventToItems,
+  askQuestions,
   emptyTranscript,
   finalizeStreaming,
   historyToItems,
@@ -486,7 +487,7 @@ function applyEvent(state: TuiState, event: UmbilicalEvent, log = true): TuiStat
       if (requestId) {
         next = patchAgent(next, agentId, agent => agent.pendingAsks.some(a => sameAsk(a, loop, requestId)) ? agent : {
           ...agent,
-          pendingAsks: [...agent.pendingAsks, { requestId, question: typeof p.question === 'string' ? p.question : '', loop }],
+          pendingAsks: [...agent.pendingAsks, { requestId, question: String(p.question), questions: askQuestions({ questions: p.questions }), loop }],
         })
       }
       break

@@ -59,7 +59,7 @@ export function registerApprovalsRoutes(server: FastifyInstance, ctx: DaemonRout
       const handle = handles.get(filePath) ?? deriveHandle(filePath)
       const mine = pending.filter((entry) => entry.filePath === filePath)
       for (const ask of mine.filter((entry) => entry.kind === 'ask')) {
-        out.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question })
+        out.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question, questions: ask.questions })
       }
       for (const approval of mine.filter((entry) => entry.kind === 'approval')) {
         out.push({

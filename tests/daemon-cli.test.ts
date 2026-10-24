@@ -340,18 +340,37 @@ describe('daemon CLI', () => {
     expect(io.output()).toContain('Approved task_1')
   })
 
-  it('answers ask requests through the daemon API', async () => {
+  it('answers with the bare text as a one-entry form', async () => {
     const io = fakeIo(async (url, init) => {
       expect(url).toBe('http://127.0.0.1:7385/agents/agent-1/asks/ask_1/respond')
-      expect(init?.method).toBe('POST')
-      expect(JSON.parse(String(init?.body))).toEqual({ answer: 'yes please' })
-      return jsonResponse({ agentId: '00000000-0000-0000-0000-000000000001', requestId: 'ask_1', answered: true })
+      expect(JSON.parse(String(init?.body))).toEqual({ answers: ['yes please'] })
+      return jsonResponse({ agentId: '00000000-0000-0000-0000-000000000001', requestId: 'ask_1', loop: 'main', answered: true })
     })
 
     const code = await runCli(['answer', 'agent-1', 'ask_1', 'yes', 'please'], io)
 
     expect(code).toBe(0)
     expect(io.output()).toBe('Answered ask_1\n')
+  })
+
+  it('answers a form with --answers, passing --loop through', async () => {
+    const io = fakeIo(async (url, init) => {
+      expect(url).toBe('http://127.0.0.1:7385/agents/agent-1/asks/ask_1/respond')
+      expect(init?.method).toBe('POST')
+      expect(JSON.parse(String(init?.body))).toEqual({ answers: ['eu-west', ['a', 'b'], null], loop: 'scout' })
+      return jsonResponse({ agentId: 'a1', requestId: 'ask_1', loop: 'scout', answered: true })
+    })
+
+    const code = await runCli(['answer', 'agent-1', 'ask_1', '--loop', 'scout', '--answers', '["eu-west", ["a", "b"], null]'], io)
+
+    expect(code).toBe(0)
+    expect(io.output()).toBe('Answered ask_1\n')
+  })
+
+  it('refuses --answers that is not JSON', async () => {
+    const io = fakeIo(async () => { throw new Error('no request expected') })
+    expect(await runCli(['answer', 'agent-1', 'ask_1', '--answers', 'yes'], io)).not.toBe(0)
+    expect(io.errorOutput()).toContain('--answers is not valid JSON')
   })
 
   it('lists pending asks through the daemon API', async () => {

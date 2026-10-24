@@ -7,11 +7,12 @@ import { useTheme, type Theme } from '../../app/theme'
 import { Markdown } from '../../ui/Markdown'
 import { Spinner } from '../../ui/Spinner'
 import { oneLine, previewJson, truncate } from '../../ui/text'
-import { askQuestion } from '../../state/transcript'
+import { askQuestions } from '../../state/transcript'
 import type { ToolItem, TranscriptItem } from '../../state/types'
+import type { AskQuestion } from '../../../../shared/utils/ask-form'
 import {
   EXPANDED_TOOL_LINES,
-  askAnswer,
+  askAnswers,
   capLines,
   isAsyncTool,
   isExpandable,
@@ -37,6 +38,27 @@ export interface ItemViewProps {
 
 function lineCount(text: string): number {
   return text ? text.split('\n').length : 0
+}
+
+/** An ask's questions, each followed by its answer once answered (skipped dimmed). Heights: `askFormHeight`. */
+function AskForm({ questions, answers }: { questions: AskQuestion[]; answers?: Array<string | null> }) {
+  const theme = useTheme()
+  const g = theme.glyph
+  return (
+    <>
+      {questions.map((q, i) => {
+        const answer = answers?.[i]
+        return (
+          <Box key={i} flexDirection="column">
+            <Text wrap="wrap" color={theme.color.text}>{q.question || ' '}</Text>
+            {!answers ? null : answer != null
+              ? <Text wrap="truncate-end" color={theme.color.user}>{g.pointer} {oneLine(answer) || '(empty)'}</Text>
+              : <Text wrap="truncate-end" color={theme.color.dim}>{g.pointer} skipped</Text>}
+          </Box>
+        )
+      })}
+    </>
+  )
 }
 
 /**
@@ -109,7 +131,7 @@ function ToolBody({ item, w, expanded }: { item: ToolItem; w: number; expanded: 
       )
     case 'ask': {
       const pending = item.status === 'running'
-      const answer = askAnswer(item)
+      const answers = askAnswers(item)
       const reason = toolReason(item)
       return (
         <Box flexDirection="column" width={w} borderStyle={theme.ascii ? 'classic' : 'single'} borderLeft borderRight={false} borderTop={false} borderBottom={false} borderColor={pending ? theme.color.warn : theme.color.dim} paddingLeft={1}>
@@ -117,9 +139,9 @@ function ToolBody({ item, w, expanded }: { item: ToolItem; w: number; expanded: 
             <Text bold color={pending ? theme.color.warn : theme.color.muted}>? {pending ? 'the agent asks you' : 'the agent asked'}</Text>
             {reason ? <Text color={theme.color.dim}> {g.sep} {reason}</Text> : null}
           </Text>
-          <Text wrap="wrap" color={theme.color.text}>{askQuestion(item.input) || ' '}</Text>
-          {answer !== undefined ? (
-            <Text wrap="truncate-end" color={failed ? theme.color.error : theme.color.user}>{failed ? g.cross : g.pointer} {oneLine(answer) || '(empty)'}</Text>
+          <AskForm questions={askQuestions(item.input)} answers={answers} />
+          {item.result !== undefined && !answers ? (
+            <Text wrap="truncate-end" color={theme.color.error}>{g.cross} {oneLine(item.result) || '(no detail)'}</Text>
           ) : null}
         </Box>
       )
@@ -256,8 +278,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
       return (
         <Box flexDirection="column" width={w} borderStyle={theme.ascii ? 'classic' : 'single'} borderLeft borderRight={false} borderTop={false} borderBottom={false} borderColor={item.status === 'pending' ? theme.color.warn : theme.color.dim} paddingLeft={1}>
           <Text bold color={item.status === 'pending' ? theme.color.warn : theme.color.muted}>? {item.status === 'pending' ? 'the agent asks you' : 'answered'}</Text>
-          <Text wrap="wrap" color={theme.color.text}>{item.question}</Text>
-          {item.answer ? <Text wrap="truncate-end" color={theme.color.user}>{g.pointer} {item.answer}</Text> : null}
+          <AskForm questions={item.questions} />
         </Box>
       )
     case 'notice':

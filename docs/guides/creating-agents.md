@@ -151,7 +151,7 @@ When `autostart` is enabled (`true`), the agent is automatically started as a ba
 Controls how the LLM loop behaves when the agent is active:
 
 - **Interactive** (default) — The `respond` tool ends the turn. The `ask` tool pauses for human input. Best for conversational agents.
-- **Autonomous** — The `respond` tool logs output but doesn't end the turn. The `ask` tool is unavailable. Best for agents that work independently.
+- **Autonomous** — The `respond` tool logs output but doesn't end the turn. The `ask` tool still pauses for the human, so the agent saves it for when it is blocked. Best for agents that work independently.
 
 ## Tools
 

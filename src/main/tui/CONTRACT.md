@@ -87,6 +87,7 @@ interface SidebarProps { width: number; height: number; focused: boolean }
 interface PromptConfig {
   placeholder?: string | ((scope: CommandScope) => string)
   onSubmit?: (text: string, ctx: CommandContext) => boolean | Promise<boolean> // true = handled
+  submitsEmpty?: (scope) => boolean  // Enter on an empty prompt reaches onSubmit('') (chat: skip a question)
   historyKey?: (scope) => string   // ↑ history per key (chat: per agent + loop)
   draftKey?: (scope) => string     // unsent text parked per key, restored on return
   complete?: (value, cursor, scope) => PromptCompletion[] | Promise<…>  // e.g. @path; Tab or Enter accepts
@@ -213,7 +214,8 @@ sendChat(text, {agentId?, loop?}) · clearLoopHistory · compactLoop ·
 createLoop · updateLoop · setLoopEnabled · deleteLoop · scheduleLoop ·
 resolveTask(agentId, taskId, action, reason?) (a deny reason reaches the agent as
 feedback) · alwaysApproveTask · approveAllTasks(agentId, loop?) ·
-answerAsk(agentId, requestId, answer, loop?) · respondSuspend ·
+answerAsk(agentId, requestId, answers: AskAnswer[], loop?) (one per question,
+null = skipped) · respondSuspend ·
 notice(agentId, loop, text, level?) · setDaemonUrl(url, token?) · refreshWeb ·
 setWebServer(on) ·
 run(label, client => …)`. `store.client` is a getter: `setDaemonUrl` swaps it. Every daemon-calling
@@ -273,8 +275,11 @@ identity (GET /identity status, null on daemons without it), auth (GET
 /runtime/auth), web (mesh web server + what agents serve, null until read), agents: Record<id, AgentEntry>, agentOrder, selectedAgentId, selectedLoop,
 transcripts: Record<TranscriptKey, Transcript>, activeView, focus, overlays,
 toasts, activity, lastEvents, viewState, tracked }`. `AgentEntry { summary, status?,
-executorState?, loops?: LoopState[], config?, pendingTasks, pendingAsks,
-tokens, lastModel?, unreadInbox, error? }`. `LoopState { info: LoopInfo,
+executorState?, loops?: LoopState[], config?, pendingTasks, pendingAsks:
+AskEntry[], tokens, lastModel?, unreadInbox, error? }`. `AskEntry` is the
+daemon's `{requestId, question (one-line summary), questions, loop?}`; the
+answers stepped through in the dock so far live in view state
+(`views/chat/asks.ts`), keyed by agent + loop + requestId. `LoopState { info: LoopInfo,
 executorState? }`.
 
 Transcript items (`TranscriptItem`, discriminated by `kind`): `user {text,
@@ -282,7 +287,9 @@ origin: owner|loop|runtime, from?, pending?}` · `assistant {text, streaming,
 model?}` · `thinking {text, streaming}` · `tool {toolUseId?, name, input,
 status: running|ok|error, result?}` · `notice {text, level, event?}` · `hil
 {taskId, tool, input, reason?, status: pending|approved|denied}` · `ask
-{requestId, question, status, answer?}` · `error {text}` · `context {category,
+{requestId, questions, status}` (the live card: questions only, the tool call that replaces it shows the answers; an `ask` tool call
+reads its form with `askQuestions(input)`, which also reads the old
+`{question}` input) · `error {text}` · `context {category,
 text}` (system prompt, loop_inject, compaction summaries — render collapsed,
 never drop). History comes from `GET /agents/:id/loop?loop=` (parsed by the
 same `parseLoopToDisplay` Studio uses); live events add streaming text, tools,

@@ -9,11 +9,12 @@
  * timeout and double-resolve all get their own case here.
  *
  * Both blocking kinds are registered: tool approvals (answerable from the hub)
- * and `ask` questions (surfaced only — an answer is prose).
+ * and `ask` forms (surfaced only — an answer is a filled-in form).
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { AgentExecutor } from '../../../src/main/runtime/agent-executor'
+import { AskAnswerError, type AskAnswer, type AskQuestion } from '../../../src/shared/utils/ask-form'
 import {
   approvalHub,
   notificationKey,
@@ -58,8 +59,8 @@ function makeExecutor(options: { filePath?: string; name?: string; loop?: string
 }
 
 /** `requestAsk` is private — it is only reachable through the ask tool path. */
-function raiseAsk(executor: AgentExecutor, question: string): Promise<string> {
-  return (executor as unknown as { requestAsk(q: string): Promise<string> }).requestAsk(question)
+function raiseAsk(executor: AgentExecutor, ...questions: string[]): Promise<AskAnswer[]> {
+  return (executor as unknown as { requestAsk(q: AskQuestion[]): { answers: Promise<AskAnswer[]> } }).requestAsk(questions.map((question) => ({ question }))).answers
 }
 
 beforeEach(() => {
@@ -107,6 +108,7 @@ describe('ApprovalHub registration', () => {
     expect(entry.kind).toBe('ask')
     expect(entry.question).toBe('Which branch should I push to?')
     expect(entry.preview).toBe('Which branch should I push to?')
+    expect(entry.questions).toEqual([{ question: 'Which branch should I push to?' }])
     expect(entry.toolName).toBeUndefined()
 
     // An ask needs prose — the hub refuses to turn it into a yes/no.
@@ -115,8 +117,25 @@ describe('ApprovalHub registration', () => {
     expect(refused.error).toMatch(/typed answer/i)
     expect(approvalHub.snapshot()).toHaveLength(1)
 
-    executor.resolveAsk(entry.requestId, 'main')
-    expect(await promise).toBe('main')
+    executor.resolveAsk(entry.requestId, ['main'])
+    expect(await promise).toEqual(['main'])
+    expect(approvalHub.snapshot()).toHaveLength(0)
+  })
+
+  it('a form previews its first question and carries every question; a bad answer keeps the row', async () => {
+    const { executor } = makeExecutor()
+    const promise = raiseAsk(executor, 'Which branch?', 'Squash first?')
+
+    const entry = approvalHub.snapshot()[0]
+    expect(entry.preview).toBe('Which branch? (+1 more)')
+    expect(entry.question).toBe('Which branch? (+1 more)')
+    expect(entry.questions).toHaveLength(2)
+
+    expect(() => executor.resolveAsk(entry.requestId, ['main'])).toThrow(AskAnswerError)
+    expect(approvalHub.snapshot()).toHaveLength(1)
+
+    executor.resolveAsk(entry.requestId, ['main', null])
+    expect(await promise).toEqual(['main', null])
     expect(approvalHub.snapshot()).toHaveLength(0)
   })
 
@@ -280,7 +299,7 @@ describe('ApprovalHub cleanup', () => {
     // can never resolve is the bug this asserts against.
     expect(await first).toMatchObject({ approved: false })
     expect(await second).toMatchObject({ approved: false })
-    expect(await question).toBe('')
+    expect(await question).toEqual([null])
     expect(approvalHub.snapshot()).toHaveLength(0)
   })
 
@@ -360,8 +379,8 @@ describe('ApprovalHub history', () => {
     const { executor } = makeExecutor()
     const question = raiseAsk(executor, 'Which branch?')
     const ask = approvalHub.snapshot()[0]
-    executor.resolveAsk(ask.requestId, 'main')
-    expect(await question).toBe('main')
+    executor.resolveAsk(ask.requestId, ['main'])
+    expect(await question).toEqual(['main'])
 
     const approval = executor.requestHilApproval('fs_write', { path: 'a' })
     const entry = approvalHub.snapshot()[0]

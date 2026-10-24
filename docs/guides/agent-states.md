@@ -153,7 +153,7 @@ Designed for agents that work independently without human interaction.
 |----------|--------|
 | `respond` tool | Logs output, turn **continues** |
 | `say` tool | Turn continues |
-| `ask` tool | **Not available** |
+| `ask` tool | **Pauses the loop** — use only when blocked |
 | `sys_set_state` | Ends loop and changes state |
 | Hit `max_active_turns` | Agent is suspended |
 
@@ -223,9 +223,9 @@ Emit text to the conversation. In interactive mode, this ends the turn. In auton
 
 Emit text to the conversation without ending the turn. Use for status updates, intermediate observations, or progress reports.
 
-### ask(question)
+### ask(questions)
 
-Pose a question and block until the human responds. Only available in interactive mode. The loop pauses, the question appears in the chat, and when the human replies the loop resumes with their answer.
+Ask the human one or more questions as a form and block until they submit it. The loop sits in `awaiting_ask`; when they answer, it resumes with Q:/A: pairs. For example, `ask({ questions: [{ question: "Which database?", options: [{ label: "Postgres" }, { label: "SQLite" }] }, { question: "Anything I should avoid?" }] })` comes back as `Q: Which database?\nA: SQLite\n\nQ: Anything I should avoid?\nA: (skipped)`. See [tools](tools.md#ask).
 
 ### Raw Text (No Tool Call)
 

@@ -25,7 +25,7 @@ Items marked *(planned)* are designed but not shipped yet.
 
 - **Chat in Studio** — a conversation view with the model's reasoning, tool calls, file diffs, and images shown inline. Nothing the agent does is off-screen.
 - **Interrupt at any time** — send a message while the agent is working and it stops what it was doing and starts on your message.
-- **Ask and answer** — an agent can pause to ask you a question and wait for the reply instead of guessing.
+- **Ask and answer** — an agent can pause to ask you a few questions as a form (pick from its options or write your own, skip any) and wait for the reply instead of guessing.
 - **Slash commands** — `/compact`, `/clear`, `/idle`, `/hibernate`, `/stop`, plus one command per installed skill.
 - **Telegram** — connect a bot; the agent receives texts, photos, and documents, replies with formatting, and can send real polls and button-based forms.
 - **Discord** — DMs and server channels, slash command, threaded replies, attachments.

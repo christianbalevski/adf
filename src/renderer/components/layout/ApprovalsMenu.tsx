@@ -175,8 +175,8 @@ export function ApprovalRow({
 
       <div className="mt-1.5 flex items-center gap-1.5">
         {isAsk ? (
-          // An answer is prose — there is nothing sane to type into a 14px
-          // dropdown row, so this hands off to the agent's own composer.
+          // An ask is a form — there is no room for it in a 14px dropdown
+          // row, so this hands off to the agent's chat, where the form shows.
           <button
             onClick={() => onJump(approval.filePath, approval.runtimeId)}
             className="h-6 px-2 rounded text-[11px] font-medium border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)]"

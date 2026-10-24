@@ -42,11 +42,31 @@ Emit text to the conversation without ending the turn. Use for status updates, i
 
 ### ask
 
-**Parameters:** `question`
+**Parameters:** `questions` — a list of `{ question, options?, multiple? }`, each option `{ label, description? }`
 
-Pose a question and block until the human responds. **Interactive mode only** — disabled in autonomous mode.
+Ask the human one or more questions as a form and wait for their answers. The loop pauses until they submit. A question without `options` takes free text; with `options` the human picks one (several with `multiple: true`) or writes their own "Other" answer. Any question can be skipped. In autonomous mode, save it for when you are blocked.
 
-The loop pauses, the question appears in chat, and when the human replies the loop resumes with their answer.
+```json
+{ "questions": [
+  { "question": "Which database?", "options": [
+    { "label": "Postgres", "description": "Needs a server" },
+    { "label": "SQLite", "description": "Single file" }
+  ] },
+  { "question": "Anything I should avoid?" }
+] }
+```
+
+The human picks SQLite and skips the second question. The tool result:
+
+```
+Q: Which database?
+A: SQLite
+
+Q: Anything I should avoid?
+A: (skipped)
+```
+
+Their own text reads `A: Other: <text>`, several picks are comma-separated, and a form skipped entirely returns `The human skipped all questions.`
 
 ## Filesystem Tools
 

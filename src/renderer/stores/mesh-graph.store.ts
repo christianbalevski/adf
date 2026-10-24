@@ -3,6 +3,7 @@ import { useMeshStore } from './mesh.store'
 import type { ApprovalReason } from '../../shared/types/ipc.types'
 import type { ProtectionDenial } from '../../shared/types/tool.types'
 import { selectMapAgents } from '../components/mesh/runtime-fleet'
+import type { AskQuestion } from '../../shared/utils/ask-form'
 
 export interface NodeActivity {
   id: string
@@ -25,10 +26,13 @@ export interface NodeActivity {
   detail?: string
 }
 
-export interface PendingInteraction {
-  type: 'ask' | 'approval'
+export type PendingInteraction =
+  | { type: 'ask'; requestId: string; questions: AskQuestion[] }
+  | PendingApprovalInteraction
+
+interface PendingApprovalInteraction {
+  type: 'approval'
   requestId: string
-  question?: string
   toolName?: string
   input?: unknown
   /** Why the approval is pending ('restricted' tool vs 'protection' override). */

@@ -81,7 +81,7 @@ Grouped by area, then category.
 - **Suspend-timeout auto-off** — hitting `max_active_turns` suspends the agent; unanswered HIL after `suspend_timeout_ms` (default 20min) auto-transitions to `off`.
 - **Wake-and-return semantics** — a trigger from idle/hibernate always returns to the prior idle state unless the turn itself calls `sys_set_state`.
 - **Hibernate trigger-backlog drop** — entering hibernate/off discards queued agent-scope dispatches and emits a `trigger.dropped` event instead of replaying stale wakes.
-- **Two loop modes** — interactive (`respond` ends turn, `ask` pauses for human) vs. autonomous (`respond` logs and continues, no `ask`).
+- **Two loop modes** — interactive (`respond` ends turn) vs. autonomous (`respond` logs and continues); `ask` pauses for the human in both.
 - **User-interrupt restart** — a new human message while active aborts the in-flight turn and restarts with the new input.
 - **Crash-recovery notice** — a one-time injected notice on reload after an interrupted turn, carrying absolute start/progress/now timestamps and elapsed offline time.
 
@@ -266,7 +266,7 @@ Grouped by area, then category.
 - **Compaction abort guard** — `loopRevision` (per-loop counter) detects a concurrent whole-table mutation racing an in-flight compaction and aborts the commit.
 - **Narration-loop circuit breaker** — An autonomous agent answering 4 consecutive continuation nudges with text only is forced to `idle`; a user interrupt resets the counter.
 - **max_active_turns limit** — Caps consecutive LLM turns before the agent is suspended pending owner approval.
-- **Turn-tool state machine** — `respond` ends turn in interactive mode / logs-and-continues in autonomous; `say` never ends the turn; `ask` blocks for human input (interactive only).
+- **Turn-tool state machine** — `respond` ends turn in interactive mode / logs-and-continues in autonomous; `say` never ends the turn; `ask` blocks for human input.
 - **Context baseline seeding** — Token estimate for the compaction threshold check reads the persisted post-compaction/clear baseline, not the newest loop row's usage.
 - **Context breakdown measurement** — Per-file, per-tool-schema, and per-source token accounting (`assembleContextBreakdown`) computed only when the underlying cache rebuilds, never per turn.
 
@@ -390,7 +390,7 @@ Grouped by area, then category.
 
 ### Loop Mode & Turn Tools
 - **Interactive loop mode** — `respond` ends the turn; `ask` pauses for human input; default mode for conversational agents.
-- **Autonomous loop mode** — `respond` logs and continues; `ask` is unavailable; the runtime appends an autonomous-mode system-prompt addendum.
+- **Autonomous loop mode** — `respond` logs and continues; `ask` is for when the agent is blocked; the runtime appends an autonomous-mode system-prompt addendum.
 - **say tool** — Emits status-update text without ending the turn, available in both loop modes.
 - **Raw-text-as-respond fallback** — Text emitted with no tool call is treated as an implicit `respond()`, following the same mode-dependent end-turn rules.
 
@@ -403,7 +403,7 @@ Grouped by area, then category.
 
 ### Turn Tools
 - **say** — Emit text to the conversation without ending the turn; status/progress updates.
-- **ask** — Pose a question and block until the human responds; interactive mode only.
+- **ask** — A form of one or more questions (free text, or options to pick one or several, "Other" always allowed, each skippable); blocks until the human submits and returns Q:/A: pairs.
 
 ### Filesystem Tools
 - **fs_read** — Read a VFS file (`path`, `start_line?`, `end_line?`); full JSON record incl. mime/protection.
@@ -1254,7 +1254,7 @@ Grouped by area, then category.
 - **Always-approve** — permanently lifts the HIL gate for that tool on that agent (config write).
 - **Cross-surface resolution sync** — resolving in one surface (chat card, bell, map) clears it everywhere.
 - **Native OS toast escalation** — unfocused-window approvals surface as system notifications.
-- **Ask/question flow** — agent `ask()` calls render a text-reply affordance instead of approve/reject.
+- **Ask/question flow** — agent `ask()` calls render as a form (text fields and option pickers, skip per question) instead of approve/reject.
 
 ### Settings — Providers
 

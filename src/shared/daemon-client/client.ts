@@ -12,6 +12,7 @@
 
 import { EventStream, clientFrameDedupeKey, isClientFrame, isRedirect, redirectMessage, type EventStreamOptions, type StreamFrame } from './sse'
 import { normalizeRuntime } from './normalize'
+import type { AskAnswer } from '../utils/ask-form'
 import {
   DaemonError,
   MAIN_LOOP,
@@ -926,9 +927,9 @@ export class DaemonClient {
     return this.get(`/agents/${enc(agentId)}/asks`)
   }
 
-  /** `loop` picks the asking loop when request ids repeat across loops. */
-  answerAsk(agentId: string, requestId: string, answer: string, loop?: string): Promise<AskAnswerResult> {
-    return this.post(`/agents/${enc(agentId)}/asks/${enc(requestId)}/respond`, { answer, ...(loop ? { loop } : {}) })
+  /** One answer per question (`null` = skipped). `loop` picks the asking loop when request ids repeat across loops. */
+  answerAsk(agentId: string, requestId: string, answers: AskAnswer[], loop?: string): Promise<AskAnswerResult> {
+    return this.post(`/agents/${enc(agentId)}/asks/${enc(requestId)}/respond`, { answers, ...(loop ? { loop } : {}) })
   }
 
   respondSuspend(agentId: string, resume: boolean): Promise<SuspendResult> {
