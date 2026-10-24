@@ -3,6 +3,7 @@ import { EventEmitter } from 'events'
 import { resolve as resolvePath } from 'path'
 import { SANDBOX_WORKER_SCRIPT } from './sandbox-worker-source'
 import { SANDBOX_PRELUDE } from './sandbox-prelude'
+import { brotliRuntimeVerdict, refusalMessage } from '../utils/brotli-runtime-guard'
 
 /**
  * Sandbox host process.
@@ -167,6 +168,13 @@ export class SandboxHost {
     const unsupported = permissionModelUnsupported(process.versions)
     if (unsupported) {
       this.fail(unsupported)
+      return
+    }
+    // Sandbox code may call zlib itself. The host is this same binary
+    // (process.execPath), so this process's verdict is the host's.
+    const brotli = brotliRuntimeVerdict()
+    if (!brotli.safe) {
+      this.fail(refusalMessage(brotli))
       return
     }
     const args = [

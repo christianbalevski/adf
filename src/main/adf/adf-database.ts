@@ -14,6 +14,7 @@ const nanoid = () => _nanoid(10)
 import { existsSync, unlinkSync, renameSync, copyFileSync, readdirSync, readFileSync, openSync, closeSync, lstatSync, fstatSync, fsyncSync, statSync, promises as fsp } from 'fs'
 import { createHash } from 'crypto'
 import { brotliDecompressSync } from 'zlib'
+import { assertSafeBrotliRuntime } from '../utils/brotli-runtime-guard'
 import { basename, dirname, join, resolve, sep } from 'path'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import { fileRefRegistry, type FileRefRegistry } from './file-ref-registry'
@@ -2141,6 +2142,10 @@ export class AdfDatabase {
             const backfillRows = db.prepare('SELECT id, source, data FROM adf_audit').all() as Array<{ id: number; source: string; data: Buffer }>
             const setSeqRange = db.prepare('UPDATE adf_audit SET start_seq = ?, end_seq = ? WHERE id = ?')
             const setRef = db.prepare('UPDATE adf_audit SET ref = ? WHERE id = ?')
+            // Outside the per-row try/catch: the blobs may come from an
+            // imported file, and a vulnerable decoder must fail the migration
+            // rather than be fed them.
+            if (backfillRows.length > 0) assertSafeBrotliRuntime()
             for (const row of backfillRows) {
               try {
                 const buf = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)

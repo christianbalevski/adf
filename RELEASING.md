@@ -85,7 +85,8 @@ The same tag also releases the terminal-only package (daemon + CLI + TUI,
 `npm i -g @agentdocumentformat/cli` → `adf`). The `npm-build` → `npm-smoke` →
 `npm-publish` jobs in `release.yml` bundle it (`npm run build:npm`, output in
 `dist/npm`, version = root `package.json`), install the tarball on Linux,
-macOS and Windows (Node 22 and 24), boot a daemon, and publish with
+macOS and Windows (Node ^22.23.4 and ^24.22.1, the floors
+`adf` enforces), boot a daemon, and publish with
 `npm publish --access public` through npm **trusted publishing**: the job
 authenticates with GitHub's OIDC token, so there is no npm token secret, and
 npm attaches provenance automatically. They run independently of the Studio

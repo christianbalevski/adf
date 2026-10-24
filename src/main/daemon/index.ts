@@ -1,3 +1,6 @@
+// First: refuses a runtime with the CVE-2026-111497 Brotli decoder before any
+// other module loads (see the module). Also covers `npm run daemon` from source.
+import '../utils/brotli-runtime-check'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { RuntimeService, type RuntimeAgentLoadedEvent } from '../runtime/runtime-service'

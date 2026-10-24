@@ -40,6 +40,7 @@ import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { pipeline, Readable, type Transform } from 'node:stream'
 import { constants as zlibConstants, createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
+import { assertSafeBrotliRuntime } from './brotli-runtime-guard'
 import { checkConnectTarget, checkFetchTarget, envProxyFor, type FetchGuardOptions } from './ssrf-guard'
 
 /** The process's own fetch, as loaded; a stub that replaced it (tests) is used without the pinned connection. */
@@ -151,6 +152,9 @@ function abortReason(signal: AbortSignal): unknown {
 
 /** One request over node:http(s) to an address `guardedLookup` checked; no redirect is followed. */
 function pinnedRequest(url: URL, method: string, headers: Headers, body: Buffer | null, signal: AbortSignal, guard: FetchGuardOptions): Promise<Response> {
+  // decodedBody decodes `br` whatever was advertised, so a vulnerable decoder
+  // must stop the request, not just drop br from accept-encoding.
+  assertSafeBrotliRuntime()
   const sent: Record<string, string> = {}
   headers.forEach((value, name) => { sent[name] = value })
   // The defaults Node's fetch sends.

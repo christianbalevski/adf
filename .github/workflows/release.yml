@@ -49,7 +49,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: '^22.23.4'
           cache: npm
 
       # `npm ci` runs the postinstall hook, which electron-rebuilds
@@ -151,7 +151,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: '^22.23.4'
           cache: npm
 
       # --ignore-scripts: the bundle needs no Electron binary and no
@@ -186,7 +186,9 @@ jobs:
       matrix:
         # windows-2022 pinned like the Studio build (see above).
         os: [ubuntu-latest, macos-14, windows-2022]
-        node: [22, 24]
+        # Patched floors (CVE-2026-111497): a bare major can resolve to an older
+        # Node already cached on the runner, which adf refuses to run on.
+        node: ['^22.23.4', '^24.22.1']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -222,7 +224,7 @@ jobs:
     steps:
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: '^22.23.4'
           registry-url: https://registry.npmjs.org
       # Trusted publishing needs npm >= 11.5.1; Node 22 ships npm 10.
       - name: Update npm
