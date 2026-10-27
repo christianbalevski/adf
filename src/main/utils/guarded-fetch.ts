@@ -40,6 +40,7 @@ import { Agent as HttpsAgent, request as httpsRequest } from 'node:https'
 import type { LookupFunction } from 'node:net'
 import { pipeline, Readable, type Transform } from 'node:stream'
 import { constants as zlibConstants, createBrotliDecompress, createGunzip, createInflate } from 'node:zlib'
+import { assertSafeBrotliRuntime, brotliRuntimeVerdict, refusalMessage } from './brotli-runtime-guard'
 import { checkConnectTarget, checkFetchTarget, envProxyFor, type FetchGuardOptions } from './ssrf-guard'
 
 /** The process's own fetch, as loaded; a stub that replaced it (tests) is used without the pinned connection. */
@@ -224,6 +225,10 @@ function pinnedRequest(url: URL, method: string, headers: Headers, body: Buffer 
  */
 export function pinnedFetch(guard: FetchGuardOptions | (() => FetchGuardOptions), opts: PinnedFetchOptions = {}): typeof fetch {
   return (async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
+    // Every path decodes `br` whatever was advertised (decodedBody, or Node's
+    // fetch behind a proxy), so a vulnerable decoder stops the request before
+    // it is sent, not just drops br from accept-encoding.
+    assertSafeBrotliRuntime()
     const policy = typeof guard === 'function' ? guard() : guard
     const request = new Request(input, init?.body != null ? { ...init, duplex: 'half' } as RequestInit : init)
     const signal = request.signal
@@ -395,6 +400,9 @@ export async function guardedFetch(
 ): Promise<GuardedFetchResult> {
   const { maxBytes, timeoutMs } = options
   const maxRedirects = options.maxRedirects ?? MAX_FETCH_REDIRECTS
+  // As pinnedFetch: the response may be `br` on either path.
+  const runtime = brotliRuntimeVerdict()
+  if (!runtime.safe) return { error: refusalMessage(runtime) }
   const daemonPort = daemonGuardPort()
 
   let current: string

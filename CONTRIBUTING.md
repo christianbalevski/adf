@@ -4,7 +4,11 @@ Thanks for your interest in contributing.
 
 ## Development setup
 
-Requires Node.js 20 or higher.
+Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (`^22.23.4 || ^24.22.1 || ^26.12.1`).
+Earlier releases, and all of 23.x and 25.x, have a Brotli decoder memory
+corruption bug (CVE-2026-111497); the CLI, the daemon and the tests refuse to
+run on them. `npm run dev` runs the Studio on the Electron in `node_modules`
+(43 or newer), whatever Node.js you have.
 
 ```bash
 git clone https://github.com/christianbalevski/adf.git

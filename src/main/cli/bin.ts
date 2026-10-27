@@ -9,9 +9,12 @@
 // Dev: `npm run adf -- ...` (tsx src/main/cli/bin.ts). The bundle
 // (scripts/build-npm.mjs) defines __ADF_VERSION__.
 
-declare const __ADF_VERSION__: string | undefined
+// The only static import, and it runs first: on a runtime with the
+// CVE-2026-111497 Brotli decoder (Node.js below 22.23.4 / 24.22.1 / 26.12.1,
+// 23.x, 25.x) adf exits here, before any command, daemon or TUI code loads.
+import '../utils/brotli-runtime-check'
 
-const MIN_NODE_MAJOR = 22
+declare const __ADF_VERSION__: string | undefined
 
 function version(): string {
   if (typeof __ADF_VERSION__ === 'string') return __ADF_VERSION__
@@ -177,11 +180,6 @@ async function daemonSubcommand(sub: string, args: string[]): Promise<number> {
 }
 
 async function main(argv: string[]): Promise<number> {
-  const major = Number(process.versions.node.split('.')[0])
-  if (major < MIN_NODE_MAJOR) {
-    process.stderr.write(`adf needs Node.js ${MIN_NODE_MAJOR} or newer (this is ${process.version}).\n`)
-    return 1
-  }
   // --no-daemon: never start a daemon on our own (also ADF_NO_AUTOSTART=1).
   const noDaemon = argv.includes('--no-daemon')
   if (noDaemon) argv = argv.filter(a => a !== '--no-daemon')

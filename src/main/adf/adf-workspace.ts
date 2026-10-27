@@ -6,6 +6,7 @@
  */
 
 import { brotliCompress, brotliCompressSync, brotliDecompressSync, constants as zlibConstants } from 'zlib'
+import { assertSafeBrotliRuntime } from '../utils/brotli-runtime-guard'
 import { promisify } from 'util'
 import { createPrivateKey, createPublicKey } from 'crypto'
 import type { ContentBlock } from '@shared/types/provider.types'
@@ -1701,6 +1702,8 @@ export class AdfWorkspace {
     const row = this.db.getAuditById(id)
     if (!row) return null
     const buf = Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)
+    // Audit blobs come with the file, so an imported .adf's are untrusted.
+    assertSafeBrotliRuntime()
     const decompressed = brotliDecompressSync(buf)
     return JSON.parse(decompressed.toString('utf-8'))
   }

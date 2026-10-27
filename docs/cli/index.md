@@ -14,9 +14,10 @@ Quitting the app, or closing the terminal, leaves every agent running.
 
 ## Install
 
-Needs Node.js 22 or newer. Native modules (SQLite, the OS keychain) come as
-prebuilt binaries for Windows, macOS (arm64, x64) and Linux (x64, arm64,
-glibc), so no compiler is needed.
+Needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (see [Node.js versions](#nodejs-versions)).
+Native modules (SQLite, the OS keychain) come as prebuilt binaries for
+Windows, macOS (arm64, x64) and Linux (x64, arm64, glibc), so no compiler is
+needed.
 
 ```bash
 npm i -g @agentdocumentformat/cli
@@ -53,6 +54,29 @@ adf daemon restart
 The daemon keeps running across upgrades, so it keeps running the old code
 until you restart it. `adf --version` prints the installed version,
 `adf daemon status` the one the running daemon reports.
+
+## Node.js versions
+
+`adf` and the daemon run on the Node.js on your system, and need
+**22.23.4+, 24.22.1+ or 26.12.1+** (`^22.23.4 || ^24.22.1 || ^26.12.1`).
+Earlier releases, and every 23.x and 25.x, ship a Brotli decoder with an
+out-of-bounds write ([CVE-2026-111497](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)),
+and the daemon decodes Brotli it did not produce: web responses agents fetch
+(`Content-Encoding: br`) and audit history inside `.adf` files you import.
+On such a release every `adf` command stops at once with
+`ADF refuses to run on Node.js …` and changes nothing. There is no override.
+Node.js 27 and later are refused the same way until ADF is tested on them.
+
+The check is the version number plus the fixed decoder's new error code, so a
+distribution package that backports the fix under an older version number is
+refused too; use a build from [nodejs.org](https://nodejs.org) or your
+vendor's current release. After upgrading Node.js, restart a daemon that was
+already running (`adf daemon restart`): it keeps the runtime it started with.
+
+ADF Studio (the desktop app) does not use the Node.js on your system. It
+runs on its own bundled Electron runtime (Electron 43, Chromium 150), whose
+Brotli decoder is Chromium's and has the fix, and starts its daemon on that
+same runtime.
 
 ## Studio and the CLI
 

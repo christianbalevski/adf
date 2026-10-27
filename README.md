@@ -49,7 +49,7 @@ The [Quick start](#quick-start) below is for developers running ADF from source;
 
 ## Install the ADF CLI from npm
 
-For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. It needs Node.js 22 or newer; native modules install from prebuilt binaries, so no compiler is needed.
+For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. It needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (earlier releases are refused: CVE-2026-111497, see [Node.js versions](docs/cli/index.md#nodejs-versions)); native modules install from prebuilt binaries, so no compiler is needed. The desktop app brings its own runtime and does not use the Node.js on your system.
 
 ```bash
 npm i -g @agentdocumentformat/cli
@@ -102,7 +102,7 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 
 ## Quick start
 
-**Prerequisites:** Node.js 22 LTS (20+ minimum), npm, and an API key for a supported model provider. Optional: Podman for container-backed compute.
+**Prerequisites:** Node.js 22.23.4+, 24.22.1+ or 26.12.1+, npm, and an API key for a supported model provider. Optional: Podman for container-backed compute.
 
 ```bash
 git clone https://github.com/christianbalevski/adf.git

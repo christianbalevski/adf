@@ -1,3 +1,6 @@
+// First when run from source: refuses a runtime with the CVE-2026-111497 Brotli
+// decoder (see the module). The bundle starts at ./entry.ts, which checks before loading this.
+import './utils/brotli-runtime-check'
 import { app, BrowserWindow, crashReporter, dialog, nativeTheme, powerMonitor, protocol, screen, session, shell } from 'electron'
 // Studio-scope channels refuse a runtime tag (docs/design/multi-runtime.md §4.2).
 import { ipcMain } from './backend/studio-ipc'

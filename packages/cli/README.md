@@ -14,7 +14,8 @@ the [releases](https://github.com/christianbalevski/adf/releases).
 
 ## Install
 
-Requires Node.js 22 or newer. Native modules (SQLite, OS keychain) come
+Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+; `adf` refuses older releases
+and 23.x/25.x, whose Brotli decoder has CVE-2026-111497. Native modules (SQLite, OS keychain) come
 prebuilt for Windows, macOS (arm64, x64) and Linux (x64, arm64, glibc).
 
 ```bash

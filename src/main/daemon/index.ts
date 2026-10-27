@@ -1,3 +1,7 @@
+// First: refuses a runtime with the CVE-2026-111497 Brotli decoder (see the
+// module). It runs first when this file runs from source (tsx keeps import
+// order); the bundle starts at ./entry.ts, which checks before loading this.
+import '../utils/brotli-runtime-check'
 import { readdirSync, readFileSync } from 'node:fs'
 import { join, dirname, resolve } from 'node:path'
 import { RuntimeService, type RuntimeAgentLoadedEvent } from '../runtime/runtime-service'

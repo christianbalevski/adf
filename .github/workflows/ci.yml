@@ -23,7 +23,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: '^22.23.4'
           cache: npm
 
       - name: Install dependencies for Node tests
@@ -112,7 +112,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: '^22.23.4'
           cache: npm
 
       - name: Install dependencies for Node tests
@@ -195,7 +195,7 @@ jobs:
 
       - uses: actions/setup-node@v5
         with:
-          node-version: 22
+          node-version: '^22.23.4'
           cache: npm
 
       # @electron/get's download cache (about 100 MB per OS), keyed on the lockfile.

@@ -418,7 +418,8 @@ so `ADF_OWNER_PASSPHRASE_FILE=%d/<name>` is all it needs.
 Prerequisites, as root:
 
 ```bash
-# Node.js 22 or newer from your distribution or vendor, installed system-wide.
+# Node.js 22.23.4+, 24.22.1+ or 26.12.1+, installed system-wide (a distribution
+# package with an older version number is refused even if it backports the fix).
 node --version
 npm i -g @agentdocumentformat/cli
 # The service account. The unit's StateDirectory= creates /var/lib/adf for it.
@@ -592,8 +593,8 @@ References:
 Mount the passphrase as a file, and point `ADF_OWNER_PASSPHRASE_FILE` at it.
 Put the settings folder (`adf-settings.json`, `owner-secrets.json`,
 `runtime-enc-key`, `daemon-token`) on a persistent volume. ADF publishes no
-container image. These fragments assume an image you build with Node.js 22+
-and `@agentdocumentformat/cli`, running as a non-root user (uid 10001 here)
+container image. These fragments assume an image you build with Node.js 22.23.4+,
+24.22.1+ or 26.12.1+ (for example `node:24-slim` pulled after 2026-10-21) and `@agentdocumentformat/cli`, running as a non-root user (uid 10001 here)
 that owns `/data`.
 
 Docker, with the passphrase file created as in [systemd](#systemd) and

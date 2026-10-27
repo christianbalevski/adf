@@ -2,7 +2,7 @@ import { describe, it, expect, afterAll } from 'vitest'
 import { mkdtempSync, rmSync, writeFileSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
-import { SandboxHost, permissionModelUnsupported } from '../../../src/main/runtime/sandbox-host'
+import { SandboxHost } from '../../../src/main/runtime/sandbox-host'
 
 /**
  * What code that escaped the vm realm would still face: the sandbox host is a
@@ -59,11 +59,4 @@ describe('sandbox host process permissions', () => {
     expect(out.addon).toMatch(/^denied:(ERR_DLOPEN_DISABLED|ERR_ACCESS_DENIED)/)
     expect(out.envKeys).toEqual([])
   }, 30_000)
-
-  it('refuses to start on a Node without the permission model', () => {
-    expect(permissionModelUnsupported({ node: '20.18.0' })).toMatch(/Node\.js 22\.13 or newer/)
-    expect(permissionModelUnsupported({ node: '22.12.0' })).toMatch(/22\.13/)
-    expect(permissionModelUnsupported({ node: '22.13.0' })).toBeNull()
-    expect(permissionModelUnsupported({ node: '24.1.0', electron: '40.0.0' })).toBeNull()
-  })
 })

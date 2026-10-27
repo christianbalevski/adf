@@ -164,11 +164,6 @@ export class SandboxHost {
   }
 
   private start(): void {
-    const unsupported = permissionModelUnsupported(process.versions)
-    if (unsupported) {
-      this.fail(unsupported)
-      return
-    }
     const args = [
       '--permission',
       '--allow-worker',
@@ -264,16 +259,6 @@ export class SandboxHost {
     }
     onHostDead(this)
   }
-}
-
-/** Node's permission model needs 22.13+ without a flag (and --disable-warning
- *  21.3+). Electron always bundles a new enough Node; the daemon runs on
- *  whatever `node` is installed. Returns an error message, or null. */
-export function permissionModelUnsupported(versions: { node: string; electron?: string }): string | null {
-  const [major, minor] = versions.node.split('.').map(Number)
-  if (major > 22 || (major === 22 && minor >= 13)) return null
-  return `Code execution needs Node.js 22.13 or newer for the sandbox's permission model ` +
-    `(this process runs Node ${versions.node}). Upgrade Node, or run the agent in ADF Studio.`
 }
 
 /** Only what the runtime needs to start. Notably NOT the parent's env: API
