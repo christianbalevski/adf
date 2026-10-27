@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "alf": {
-      "command": "npx",
-      "args": ["tsx", "tools/alf-mcp/index.ts"]
+      "command": "node",
+      "args": ["tools/alf-mcp/run.mjs"]
     }
   }
 }

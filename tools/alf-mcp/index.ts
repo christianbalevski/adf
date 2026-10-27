@@ -3,7 +3,7 @@
  * signing keys), a persistent inbox/outbox, and tools to message ADF Studio
  * agents over the mesh (signed + encrypted, byte-compatible with the runtime).
  *
- * Run: npx tsx tools/alf-mcp/index.ts   (registered via .mcp.json)
+ * Run: node tools/alf-mcp/run.mjs   (registered via .mcp.json; see run.mjs)
  * Data: ~/.alf-mcp (override with ALF_MCP_DATA_DIR)
  */
 

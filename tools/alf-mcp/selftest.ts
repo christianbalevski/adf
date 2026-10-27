@@ -86,7 +86,7 @@ async function main(): Promise<void> {
   // --- B) Studio egress → live alf-mcp inbox over HTTP ---
   const repoRoot = resolve(__dirname, '..', '..')
   const dataDir = join(tmpdir(), `alf-mcp-selftest-${Date.now()}`)
-  const child = spawn('npx', ['tsx', 'tools/alf-mcp/index.ts'], {
+  const child = spawn('node', ['tools/alf-mcp/run.mjs'], {
     cwd: repoRoot,
     shell: true,
     stdio: ['pipe', 'pipe', 'pipe'],
