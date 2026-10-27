@@ -1,11 +1,14 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import type { IdentityDraft } from '../../../shared/types/ipc.types'
+import type { AdfApi } from '../../../preload/api'
+import type { RuntimeId } from '../../../shared/runtime-tag'
+import { apiFor } from '../../utils/runtime-api'
 import { LiveOrbital, type LiveOrbitalHandle } from '../orbital'
 import { usePrefersReducedMotion } from '../orbital/orbital-env'
 import { OrbitalCreature } from '../orbital/orbital-creature'
 
-function discard(d: IdentityDraft | null): void {
-  if (d) window.adfApi.discardIdentityDraft(d.draftId).catch(() => {})
+function discard(api: AdfApi, d: IdentityDraft | null): void {
+  if (d) api.discardIdentityDraft(d.draftId).catch(() => {})
 }
 
 /**
@@ -16,6 +19,8 @@ function discard(d: IdentityDraft | null): void {
  * that land while one is pending coalesce, and the stale result is discarded
  * on arrival and replaced by one fresh mint, so rapid rerolls never leak
  * drafts and the latest renew always wins. The draft is dropped on unmount.
+ * It is minted on `runtimeId`, the runtime the agent will be created on,
+ * fixed for the hook's life (HomeScreen remounts its body per runtime).
  */
 export interface IdentityDraftHandle {
   draft: IdentityDraft | null
@@ -23,7 +28,8 @@ export interface IdentityDraftHandle {
   current: () => IdentityDraft | null
 }
 
-export function useIdentityDraft(): IdentityDraftHandle {
+export function useIdentityDraft(runtimeId: RuntimeId): IdentityDraftHandle {
+  const [api] = useState(() => apiFor(runtimeId))
   const [draft, setDraft] = useState<IdentityDraft | null>(null)
   const held = useRef<IdentityDraft | null>(null)
   const seq = useRef(0)
@@ -40,9 +46,9 @@ export function useIdentityDraft(): IdentityDraftHandle {
       if (mine !== seq.current) { mint(); return false }
       return true
     }
-    window.adfApi.mintIdentityDraft().then(
+    api.mintIdentityDraft().then(
       (next) => {
-        if (!settle()) { discard(next); return }
+        if (!settle()) { discard(api, next); return }
         held.current = next
         setDraft(next)
       },
@@ -52,14 +58,14 @@ export function useIdentityDraft(): IdentityDraftHandle {
         setDraft(null)
       }
     )
-  }, [])
+  }, [api])
 
   const renew = useCallback(() => {
     seq.current++
-    discard(held.current)
+    discard(api, held.current)
     held.current = null
     if (!inflight.current) mint()
-  }, [mint])
+  }, [api, mint])
 
   useEffect(() => {
     alive.current = true
@@ -67,7 +73,7 @@ export function useIdentityDraft(): IdentityDraftHandle {
     return () => {
       alive.current = false
       seq.current++
-      discard(held.current)
+      discard(api, held.current)
       held.current = null
     }
   }, [renew])

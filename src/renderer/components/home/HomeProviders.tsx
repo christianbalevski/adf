@@ -4,6 +4,9 @@ import type { ProviderConfig } from '../../../shared/types/ipc.types'
 import { useProviderManager } from '../providers/useProviderManager'
 import { useOwnedProviderList } from '../providers/useOwnedProviderList'
 import { providerReady } from '../providers/provider-ready'
+import { useSettingsRuntimeId } from '../settings/settings-runtime'
+import { requestSettingsRuntime } from '../../stores/settings-runtime.store'
+import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
 
 type Manager = ReturnType<typeof useProviderManager>
 
@@ -95,13 +98,21 @@ export function HomeProvidersProvider({ children }: { children: React.ReactNode 
     setConnectedId(null)
     pickProvider(connectedId)
   }, [connectedId, pickProvider, providers])
+  // Home's runtime when it is not This computer (HomeScreen sets the context).
+  const runtimeId = useSettingsRuntimeId()
   const openPicker = useCallback(async (): Promise<string | null> => {
+    // The provider sheet sets up This computer's providers; another runtime's are set up in its Settings.
+    if (runtimeId && runtimeId !== LOCAL_RUNTIME) {
+      requestSettingsRuntime(runtimeId)
+      useAppStore.getState().openSettingsAt('providers')
+      return null
+    }
     const id = await connectProvider('no_provider', null)
     // The sheet saved its own copy of the list; read it back.
     await load().catch(() => {})
     if (id) setConnectedId(id)
     return id
-  }, [connectProvider, load])
+  }, [connectProvider, load, runtimeId])
 
   const anyReady = providers.some((p) => providerReady(p, status[p.id]))
   const selectedReady = !!selected && providerReady(selected, status[selected.id])

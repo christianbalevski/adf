@@ -11,7 +11,7 @@ import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { agentAvatarEmoji } from '../orbital/agent-avatar'
 import type { AgentConfigSummary, ReviewIdentitySummary } from '../../../shared/types/ipc.types'
 import { Button, Select, TextInput } from '../ui'
-import { openApi, openSliceRuntime, windowAgentKey } from '../../utils/runtime-api'
+import { apiFor, openApi, openSliceRuntime, windowAgentKey } from '../../utils/runtime-api'
 
 const TIER_STYLES = {
   shared: {
@@ -700,7 +700,7 @@ export function AgentReviewDialog() {
     setLoading(true)
     setAcceptError(null)
     try {
-      const result = await openApi().acceptTemplateReview({ id: review.id, password: pw || undefined })
+      const result = await (review.runtimeId ? apiFor(review.runtimeId) : openApi()).acceptTemplateReview({ id: review.id, password: pw || undefined })
       if (!result.success) {
         setAcceptError(result.error || 'Claim failed.')
         return

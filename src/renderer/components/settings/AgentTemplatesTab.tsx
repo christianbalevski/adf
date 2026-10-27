@@ -415,7 +415,7 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
     try {
       const review = await api.checkTemplateReview(t.id)
       if (review.needsReview && review.configSummary) {
-        useAppStore.getState().openTemplateReview(t.id, review.configSummary, () => { void refreshList() })
+        useAppStore.getState().openTemplateReview(t.id, review.configSummary, () => { void refreshList() }, runtimeId)
       } else {
         await refreshList()
       }

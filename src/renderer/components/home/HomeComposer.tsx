@@ -1,12 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { useAppStore } from '../../stores/app.store'
-import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
+import { selectTrackedSlice, useTrackedDirsStore } from '../../stores/tracked-dirs.store'
+import { runtimeName } from '../../stores/runtimes.store'
+import { apiFor } from '../../utils/runtime-api'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { SuggestionRows } from './SuggestionRows'
 import { insertSuggestion } from './suggestions'
 import { FolderPickerChip, ProviderPickerChip, TemplatePickerChip } from './HomePickers'
 import { useHomeProviders } from './HomeProviders'
-import { useTemplatesStore } from '../../hooks/useTemplates'
+import { selectTemplates, useTemplatesStore } from '../../hooks/useTemplates'
 import { NameChip } from './NameChip'
 import type { IdentityDraftHandle } from './NextAgentIdentity'
 import { generateAgentName } from '../../../shared/utils/agent-names'
@@ -35,9 +39,13 @@ function saveSuggestionsOn(on: boolean): void {
  * credential or no model, Send opens the provider sheet first and keeps the
  * draft; the agent is made only once a provider is connected, on it.
  */
-export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
+export function HomeComposer({ runtime, identity, nameSlot, onReroll, onCreated, onSending }: {
+  /** The runtime the agent is created on: its folders, templates and providers. */
+  runtime: RuntimeId
   /** The next agent's identity draft, owned by HomeScreen (its orbital shows there). */
   identity: IdentityDraftHandle
+  /** Where the name chip renders: the greeting above the composer. */
+  nameSlot: HTMLElement | null
   /** A name reroll: HomeScreen renews the identity with it and counts it. */
   onReroll: () => void
   /** After a successful create, before the next agent's name and identity land. */
@@ -60,7 +68,7 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
   const setHomeTemplateId = useAppStore((s) => s.setHomeTemplateId)
   const homeModelId = useAppStore((s) => s.homeModelId)
   const openTemplateReview = useAppStore((s) => s.openTemplateReview)
-  const defaultTemplateId = useTemplatesStore((s) => s.defaultId)
+  const defaultTemplateId = useTemplatesStore((s) => selectTemplates(s, runtime).defaultId)
   const homeFolder = useAppStore((s) => s.homeFolder)
   const homeName = useAppStore((s) => s.homeName)
   const setHomeName = useAppStore((s) => s.setHomeName)
@@ -89,13 +97,13 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
   }, [])
   // The folder the file will land in, for the taken-name check on commit.
   // Only tracked folders can be checked here; main checks again on send.
-  const filesByDir = useTrackedDirsStore((s) => s.filesByDir)
+  const filesByDir = useTrackedDirsStore((s) => selectTrackedSlice(s, runtime).filesByDir)
   const [defaultFolder, setDefaultFolder] = useState<string | null>(null)
   useEffect(() => {
     let cancelled = false
-    window.adfApi.getDefaultAgentsFolder().then((r) => { if (!cancelled) setDefaultFolder(r.path) }).catch(() => {})
+    apiFor(runtime).getDefaultAgentsFolder().then((r) => { if (!cancelled) setDefaultFolder(r.path) }).catch(() => {})
     return () => { cancelled = true }
-  }, [])
+  }, [runtime])
   const targetFolder = homeFolder ?? defaultFolder
   const nameTaken = useCallback((candidate: string): boolean => {
     if (!targetFolder) return false
@@ -158,6 +166,11 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
     // Nothing to run on yet: connect a provider first (the sheet is modal).
     // The draft stays in the box; cancelling the sheet makes no agent.
     let startOn = { providerId: providerId ?? undefined, modelId: homeModelId ?? undefined }
+    if (providersLoaded && !selectedReady && runtime !== LOCAL_RUNTIME) {
+      // The provider sheet sets up This computer's providers; another runtime's are set up in its Settings.
+      setError(`Not sent: no provider is set up on ${runtimeName(runtime)}. Set one up in Settings → Providers for that server.`)
+      return
+    }
     if (providersLoaded && !selectedReady) {
       const connected = await connectProvider()
       if (!connected) { setError('Not sent: no provider connected.'); return }
@@ -172,7 +185,8 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
         folder: homeFolder ?? undefined,
         name: homeName ?? undefined,
         identityDraftId: currentIdentity()?.draftId,
-        files: files.length > 0 ? files : undefined
+        files: files.length > 0 ? files : undefined,
+        runtimeId: runtime
       })
       if (!result.success) {
         if (result.code === 'name_taken') refuseName(result.error ?? 'That name is taken.')
@@ -182,12 +196,12 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
           const templateId = homeTemplateId ?? defaultTemplateId
           const fallback = result.error ?? 'That template has not been reviewed yet.'
           try {
-            const check = await window.adfApi.checkTemplateReview(templateId)
+            const check = await apiFor(runtime).checkTemplateReview(templateId)
             if (check.needsReview && check.configSummary) {
               openTemplateReview(templateId, check.configSummary, (accepted) => {
                 if (accepted) void sendRef.current()
                 else setError('That template has not been reviewed, so no agent was created.')
-              })
+              }, runtime)
             } else setError(fallback)
           } catch {
             setError(fallback)
@@ -220,7 +234,7 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
     } finally {
       setBusy(false)
     }
-  }, [busy, connectProvider, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, onCreated, openTemplateReview, providerId, providersLoaded, refuseName, renewIdentity, selectedReady, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
+  }, [busy, runtime, connectProvider, createQuickAgent, defaultTemplateId, files, homeFolder, homeModelId, homeName, homeTemplateId, currentIdentity, onCreated, openTemplateReview, providerId, providersLoaded, refuseName, renewIdentity, selectedReady, setCenterChatTabActive, setChatPlacement, setFiles, setHomeName, setHomeTemplateId, setShowMeshGraph, setText, text])
   sendRef.current = send
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLTextAreaElement>) => {
@@ -308,10 +322,10 @@ export function HomeComposer({ identity, onReroll, onCreated, onSending }: {
             </button>
             {/* Bad characters: the chip shakes on its own and keeps the old
                 name; only the reason goes red below. Taken names go red too. */}
-            {name && <NameChip name={name} onChange={onNameChange} onSpin={reroll} onInvalid={setError} refused={refused} />}
-            <TemplatePickerChip />
-            <ProviderPickerChip />
-            <FolderPickerChip />
+            {name && nameSlot && createPortal(<NameChip name={name} onChange={onNameChange} onSpin={reroll} onInvalid={setError} refused={refused} />, nameSlot)}
+            <TemplatePickerChip runtime={runtime} />
+            <ProviderPickerChip runtime={runtime} />
+            <FolderPickerChip runtime={runtime} />
           </div>
           <button
             type="button"

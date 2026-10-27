@@ -1,6 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
-import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
+import { selectTrackedSlice, useTrackedDirsStore } from '../../stores/tracked-dirs.store'
+import { requestSettingsRuntime } from '../../stores/settings-runtime.store'
+import { runtimeName } from '../../stores/runtimes.store'
+import { apiFor } from '../../utils/runtime-api'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { resolveTemplate, useTemplates } from '../../hooks/useTemplates'
 import type { AgentTemplateSummary } from '../../../shared/types/ipc.types'
 import { catalogEntryForProvider } from '../../../shared/constants/provider-catalog'
@@ -102,12 +106,12 @@ function templateRank(t: AgentTemplateSummary): number {
  * show is what the agent starts on. Templates are files in the templates
  * folder; "Manage templates…" opens Settings → Agent templates.
  */
-export function TemplatePickerChip() {
+export function TemplatePickerChip({ runtime }: { runtime: RuntimeId }) {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
   const homeTemplateId = useAppStore((s) => s.homeTemplateId)
   const setHomeTemplateId = useAppStore((s) => s.setHomeTemplateId)
   const setHomeModelId = useAppStore((s) => s.setHomeModelId)
-  const { templates, defaultId, loaded } = useTemplates()
+  const { templates, defaultId, loaded } = useTemplates(runtime)
   const { providers, setHomeProviderId } = useHomeProviders()
   const [menuOpen, setMenuOpen] = useState(false)
   const closeMenu = useCallback(() => setMenuOpen(false), [])
@@ -169,7 +173,7 @@ export function TemplatePickerChip() {
           </MenuItem>
         ))}
         <MenuRule />
-        <MenuItem muted onClick={() => { closeMenu(); openSettingsAt('template') }}>
+        <MenuItem muted onClick={() => { closeMenu(); requestSettingsRuntime(runtime); openSettingsAt('template') }}>
           <TemplateIcon />
           Manage templates…
         </MenuItem>
@@ -196,7 +200,7 @@ export function TemplatePickerChip() {
  * nothing configured the chip reads "Connect a provider" and opens the sheet
  * straight away.
  */
-export function ProviderPickerChip() {
+export function ProviderPickerChip({ runtime }: { runtime: RuntimeId }) {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
   const homeModelId = useAppStore((s) => s.homeModelId)
   const setHomeModelId = useAppStore((s) => s.setHomeModelId)
@@ -330,7 +334,7 @@ export function ProviderPickerChip() {
           <Tooltip tip="Provider settings">
             <button
               type="button"
-              onClick={() => { closeMenu(); openSettingsAt('providers') }}
+              onClick={() => { closeMenu(); requestSettingsRuntime(runtime); openSettingsAt('providers') }}
               aria-label="Provider settings"
               className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--adf-ui-text-subtle)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
             >
@@ -438,20 +442,22 @@ function folderName(p: string): string {
  * Where the next new agent's file goes: the agents folder by default, any
  * tracked folder from the menu, or one chosen with the native dialog. The
  * choice lasts for the session; the default itself is set in Settings.
+ * The folders are `runtime`'s. The native dialog browses this computer only,
+ * so another runtime offers its tracked folders and says where to add one.
  */
-export function FolderPickerChip() {
+export function FolderPickerChip({ runtime }: { runtime: RuntimeId }) {
   const homeFolder = useAppStore((s) => s.homeFolder)
   const setHomeFolder = useAppStore((s) => s.setHomeFolder)
-  const directories = useTrackedDirsStore((s) => s.directories)
+  const directories = useTrackedDirsStore((s) => selectTrackedSlice(s, runtime).directories)
   const [defaultFolder, setDefaultFolder] = useState<string | null>(null)
   const [menuOpen, setMenuOpen] = useState(false)
   const closeMenu = useCallback(() => setMenuOpen(false), [])
 
   useEffect(() => {
     let cancelled = false
-    window.adfApi.getDefaultAgentsFolder().then((r) => { if (!cancelled) setDefaultFolder(r.path) }).catch(() => {})
+    apiFor(runtime).getDefaultAgentsFolder().then((r) => { if (!cancelled) setDefaultFolder(r.path) }).catch(() => {})
     return () => { cancelled = true }
-  }, [])
+  }, [runtime])
 
   const current = homeFolder ?? defaultFolder
   const options = Array.from(new Set([defaultFolder, ...directories].filter((d): d is string => !!d)))
@@ -495,10 +501,16 @@ export function FolderPickerChip() {
           </MenuItem>
         )}
         <MenuRule />
-        <MenuItem muted onClick={() => { void chooseOther() }}>
-          <FolderIcon />
-          Choose folder…
-        </MenuItem>
+        {runtime === LOCAL_RUNTIME ? (
+          <MenuItem muted onClick={() => { void chooseOther() }}>
+            <FolderIcon />
+            Choose folder…
+          </MenuItem>
+        ) : (
+          <p className="max-w-[16rem] px-2.5 py-1.5 text-[11px] leading-snug text-[var(--adf-ui-text-subtle)]">
+            To add a folder on {runtimeName(runtime)}, right-click its group in the sidebar and choose Track folder…
+          </p>
+        )}
       </Popover>
     </div>
   )

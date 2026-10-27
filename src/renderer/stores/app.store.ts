@@ -2,6 +2,7 @@ import { isAgentWindow, openMainSettings } from '../utils/window-kind'
 import { create } from 'zustand'
 import { AGENT_AVATAR_MODE_DEFAULT, type AgentAvatarMode } from '../components/orbital/agent-avatar'
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
+import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
 import { LOGS_PANEL_HEIGHT_KEY, SIDEBAR_WIDTH_KEY, loadStoredSize } from '../utils/stored-size'
 
 export type RightPanel = 'overview' | 'loop' | 'inbox' | 'files' | 'agent'
@@ -275,6 +276,8 @@ export interface AppState {
   homeProviderId: string | null
   /** Folder chip picked on the home composer for the next new agent; null = the agents folder. Session only. */
   homeFolder: string | null
+  /** Runtime the next new agent is created on (home's runtime select). Session only. */
+  homeRuntime: RuntimeId
   /** Unsent text in the home composer, kept across navigation. Session only. */
   homeDraft: string
   /** Files attached in the home composer, waiting for the agent that will receive them. Session only. */
@@ -290,7 +293,7 @@ export interface AppState {
    * templates folder). AgentReviewDialog renders it in template mode; `onDone` gets
    * true when the owner accepted, false on cancel.
    */
-  templateReview: { id: string; summary: AgentConfigSummary; onDone?: (accepted: boolean) => void } | null
+  templateReview: { id: string; summary: AgentConfigSummary; onDone?: (accepted: boolean) => void; runtimeId?: RuntimeId | null } | null
   showLogsPanel: boolean
   logsAutoRefresh: boolean
   logsPanelHeight: number
@@ -364,12 +367,14 @@ export interface AppState {
   takePendingFirstMessage: (filePath: string) => { filePath: string; text: string; files?: File[] } | null
   setHomeProviderId: (id: string | null) => void
   setHomeFolder: (folder: string | null) => void
+  setHomeRuntime: (runtimeId: RuntimeId) => void
   setHomeDraft: (text: string) => void
   setHomeFiles: (files: File[]) => void
   setHomeName: (name: string | null) => void
   setHomeTemplateId: (id: string | null) => void
   setHomeModelId: (id: string | null) => void
-  openTemplateReview: (id: string, summary: AgentConfigSummary, onDone?: (accepted: boolean) => void) => void
+  /** `runtimeId`: the runtime the template lives on; omitted, the open agent's. */
+  openTemplateReview: (id: string, summary: AgentConfigSummary, onDone?: (accepted: boolean) => void, runtimeId?: RuntimeId | null) => void
   closeTemplateReview: (accepted: boolean) => void
   closeShareDialog: () => void
   toggleLogsPanel: () => void
@@ -460,6 +465,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   pendingFirstMessage: null,
   homeProviderId: null,
   homeFolder: null,
+  homeRuntime: LOCAL_RUNTIME,
   homeDraft: '',
   homeFiles: [],
   homeName: null,
@@ -620,12 +626,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   setPendingFirstMessage: (pending) => set({ pendingFirstMessage: pending }),
   setHomeProviderId: (id) => set({ homeProviderId: id }),
   setHomeFolder: (folder) => set({ homeFolder: folder }),
+  // The folder, template, provider and model are that runtime's: a new runtime starts from its defaults.
+  setHomeRuntime: (runtimeId) => set((s) => (s.homeRuntime === runtimeId ? s : { homeRuntime: runtimeId, homeFolder: null, homeTemplateId: null, homeProviderId: null, homeModelId: null })),
   setHomeDraft: (text) => set({ homeDraft: text }),
   setHomeFiles: (files) => set({ homeFiles: files }),
   setHomeName: (name) => set({ homeName: name }),
   setHomeTemplateId: (id) => set({ homeTemplateId: id }),
   setHomeModelId: (id) => set({ homeModelId: id }),
-  openTemplateReview: (id, summary, onDone) => set({ templateReview: { id, summary, onDone } }),
+  openTemplateReview: (id, summary, onDone, runtimeId) => set({ templateReview: { id, summary, onDone, runtimeId } }),
   closeTemplateReview: (accepted) => {
     const current = get().templateReview
     set({ templateReview: null })

@@ -90,11 +90,19 @@ function QuipBubble({ quip }: { quip: Quip | null }) {
 
 /**
  * One faint beat in the empty middle of home: the next agent's orbital, from
- * the identity it will be created with, and a hello in its name. The orbital
- * is alive (NextAgentOrbital), turns as the name is typed and says something
- * after a few rerolls.
+ * the identity it will be created with, and a hello in its name. The name is
+ * the composer's name chip (roll or type), rendered into `nameSlot`; below it
+ * `children` (where the agent will be created). The orbital is alive
+ * (NextAgentOrbital), turns as the name is typed and says something after a
+ * few rerolls.
  */
-export function HomeExplainer({ did, quip, creature }: { did: string | null; quip: Quip | null; creature: OrbitalCreature }) {
+export function HomeExplainer({ did, quip, creature, nameSlot, children }: {
+  did: string | null
+  quip: Quip | null
+  creature: OrbitalCreature
+  nameSlot: (el: HTMLElement | null) => void
+  children?: React.ReactNode
+}) {
   const name = useAppStore((s) => s.homeName)?.trim() ?? ''
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-col items-center px-2 text-center text-[var(--adf-ui-text-subtle)]">
@@ -103,11 +111,10 @@ export function HomeExplainer({ did, quip, creature }: { did: string | null; qui
           <QuipBubble quip={quip} />
         </NextAgentOrbital>
       </div>
-      <p className="max-w-full break-words text-[13px] font-medium text-[var(--adf-ui-text-muted)]">
-        {name
-          ? <>Hi, I&apos;m <span className="font-semibold text-[var(--adf-ui-text)]">{name}</span>.</>
-          : 'Hi. Give me a name below.'}
+      <p className="flex max-w-full flex-wrap items-center justify-center gap-1.5 text-[13px] font-medium text-[var(--adf-ui-text-muted)]">
+        Hi, I&apos;m <span ref={nameSlot} className="inline-flex" />
       </p>
+      {children}
     </div>
   )
 }

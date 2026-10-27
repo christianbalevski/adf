@@ -640,23 +640,27 @@ export function useAdfFile() {
    * The home composer's create: a generated name in the agents folder, no
    * dialog. `firstMessage` is parked in the app store before the file
    * becomes the open one, so the loop panel finds it on mount and sends it.
+   * `runtimeId` (home's runtime select) is where it is created; omitted, this
+   * window's runtime.
    */
-  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; identityDraftId?: string; files?: File[] }) => {
+  const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; identityDraftId?: string; files?: File[]; runtimeId?: RuntimeId }) => {
     if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
+    const { files, runtimeId, ...createOptions } = options ?? {}
+    // An agent window creates on its own runtime only.
+    const target = isAgentWindow ? windowRuntime : runtimeId ?? windowRuntime
     // An open still on its way is overtaken by the new agent.
     openGeneration++
-    latestOpenRuntime = windowRuntime
+    latestOpenRuntime = target
     beginAgentSwitch()
     try {
-      const { files, ...createOptions } = options ?? {}
-      const leftOther = await leaveOtherRuntime(windowRuntime)
-      const result = await window.adfApi.createQuickAgent(createOptions)
+      const leftOther = await leaveOtherRuntime(target)
+      const result = await apiFor(target).createQuickAgent(createOptions)
       if (result.success && result.filePath) {
         setShowSettings(false)
         useAppStore.getState().setShowHome(false)
         resetAgent()
         if (firstMessage) useAppStore.getState().setPendingFirstMessage({ filePath: result.filePath, text: firstMessage, files })
-        setFilePath(result.filePath, windowRuntime)
+        setFilePath(result.filePath, target)
         useAppStore.getState().resetAgentReview()
         await loadFileContents()
       } else if (fileOperationDetachedForeground(result)) {

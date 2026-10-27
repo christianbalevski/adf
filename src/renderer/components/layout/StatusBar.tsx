@@ -5,6 +5,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import { useBackgroundAgentsStore } from '../../stores/background-agents.store'
 import { useAppStore } from '../../stores/app.store'
+import { useHomeRuntime } from '../home/home-runtime'
 import { Tooltip } from '../common/Tooltip'
 import { ContextMenu } from '../common/ContextMenu'
 import { IconButton } from '../ui/IconButton'
@@ -159,6 +160,8 @@ export function StatusBar() {
     window.adfApi?.getAppVersion().then(setAppVersion).catch(() => {})
   }, [])
   const isDirty = useDocumentStore((s) => s.isDirty)
+  // Home keeps the open agent open, but it is not on screen there.
+  const onHome = useAppStore((s) => s.showHome) && !isAgentWindow
   const agentState = useAgentStore((s) => s.state)
   const meshEnabled = useMeshStore((s) => s.enabled)
   const meshAgents = useMeshStore((s) => s.agents)
@@ -214,7 +217,7 @@ export function StatusBar() {
       {/* Everything left of the version describes the open agent's session; its
           name and state live in the titlebar. Home has no agent, so the group
           is absent there rather than a row of blank labels. */}
-      {filePath && (
+      {filePath && !onHome && (
         <>
       <button
         onClick={handleSave}
@@ -344,14 +347,23 @@ export function StatusBar() {
 /**
  * More than one runtime (multi-runtime.md §6.2): ONE group, the runtime of
  * the agent this window shows (the main window's open agent, else This
- * computer; an agent window's own): `( [name] [Mesh] [Kill] )`. In the main
+ * computer; on home, the runtime picked for the next agent; an agent
+ * window's own): `( [name] [Mesh] [Kill] )`. In the main
  * window an up arrow beside it (tooltip "Servers") opens a popover of every
  * runtime in the set's order, each with its state, Mesh and Kill, and Kill
  * all above them. An agent window reaches its own runtime only: its group,
  * no arrow.
  */
 export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
-  const focusedId = useDocumentStore((s) => (isAgentWindow ? windowRuntime : s.filePath ? s.runtimeId || LOCAL_RUNTIME : LOCAL_RUNTIME))
+  // On home: the runtime the next agent is created on (home's runtime select).
+  // Home is on screen: picked, or no agent open (AppShell), and not under Settings.
+  const showHome = useAppStore((s) => s.showHome)
+  const showSettings = useAppStore((s) => s.showSettings)
+  const hasFile = useDocumentStore((s) => !!s.filePath)
+  const onHome = !isAgentWindow && !showSettings && (showHome || !hasFile)
+  const homeRuntime = useHomeRuntime()
+  const openId = useDocumentStore((s) => (isAgentWindow ? windowRuntime : s.filePath ? s.runtimeId || LOCAL_RUNTIME : LOCAL_RUNTIME))
+  const focusedId = onHome ? homeRuntime : openId
   const focused = runtimes.find((r) => r.id === focusedId) ?? (isAgentWindow ? null : runtimes[0] ?? null)
   const arrowRef = useRef<HTMLButtonElement>(null)
   const [open, setOpen] = useState<{ x: number; y: number } | null>(null)
