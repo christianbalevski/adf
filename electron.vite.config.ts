@@ -1,7 +1,7 @@
 import { dirname, resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
 import { build, defineConfig, externalizeDepsPlugin, type UserConfig } from 'electron-vite'
-import type { Plugin } from 'vite'
+import { normalizePath, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')) as { version: string }
@@ -67,7 +67,9 @@ function daemonEntryPlugin(): Plugin {
 // The app's chunk is written next to the entry, not under chunks/: its code
 // resolves the preload, renderer, resources and daemon.js from __dirname.
 function appChunkNames(app: string, name: string, others: string): (chunk: { moduleIds: string[] }) => string {
-  return (chunk) => (chunk.moduleIds.includes(app) ? name : others)
+  // Rollup module ids use forward slashes; resolve() gives backslashes on Windows.
+  const id = normalizePath(app)
+  return (chunk) => (chunk.moduleIds.includes(id) ? name : others)
 }
 
 export default defineConfig(({ mode }): UserConfig => {
