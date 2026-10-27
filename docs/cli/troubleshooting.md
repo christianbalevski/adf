@@ -27,8 +27,8 @@ npm i -g @agentdocumentformat/cli
 
 | Message | Fix |
 |---|---|
-| `ADF refuses to run on Node.js …: it is vulnerable to CVE-2026-111497 …` | Install Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (`node --version`); see [Node.js versions](index.md#nodejs-versions) |
-| `ADF refuses to run on Electron … (Chromium …)` | The daemon was started by an ADF Studio built on Electron 41 or older: update ADF Studio |
+| `ADF refuses to run on Node.js …` | Install Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (`node --version`); see [Node.js versions](index.md#nodejs-versions) |
+| `ADF refuses to run on Electron … (Chromium …)` | A source checkout whose `node_modules` has an older Electron: run `npm ci` |
 | `ADF Studio (pid N) is running agents from the same settings file (…).` / `ADF Studio is running.` / `Another ADF runtime on the same settings is already running` | See [Studio at the same time](#studio-at-the-same-time) |
 | `The daemon exited during startup (code N).` | Read the log lines shown (or `adf daemon logs`). Run `adf daemon` in the foreground to watch it start |
 | `The daemon did not answer …/health within 90s.` | Same; a first start that installs or migrates can be slow. `adf daemon status` shows whether it came up |

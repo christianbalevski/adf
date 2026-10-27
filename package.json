@@ -8,7 +8,7 @@
   },
   "main": "./out/main/index.js",
   "engines": {
-    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
+    "node": "^22.23.4 || ^24.22.1 || ^26.12.1"
   },
   "scripts": {
     "dev": "electron-vite dev",
@@ -29,7 +29,7 @@
     "test:watch": "node scripts/rebuild-for-node.mjs && vitest",
     "bench": "RUN_BENCH=1 NODE_ENV=production node scripts/rebuild-for-node.mjs && RUN_BENCH=1 NODE_ENV=production vitest run tests/perf/stress-harness.test.ts --reporter=verbose",
     "bench:review": "node scripts/rebuild-for-node.mjs && RUN_BENCH=1 vitest run tests/perf/review-bench.test.ts tests/perf/markdown-stream.test.ts --reporter=verbose",
-    "daemon": "node scripts/rebuild-for-node.mjs && tsx src/main/daemon/index.ts",
+    "daemon": "node scripts/rebuild-for-node.mjs && tsx src/main/daemon/entry.ts",
     "adf": "tsx --tsconfig tsconfig.node.json src/main/cli/bin.ts",
     "tui": "tsx --tsconfig tsconfig.node.json src/main/cli/bin.ts tui",
     "build:npm": "node scripts/build-npm.mjs",

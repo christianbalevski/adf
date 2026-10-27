@@ -17,7 +17,8 @@
  *  - Node.js: its vendored deps/brotli. Fixed in 22.23.4, 24.22.1 and 26.12.1;
  *    the same releases export zlib.constants.BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH,
  *    which is required as well. 23.x and 25.x are end-of-life and never got
- *    the fix. Later majors branch from a main that has it.
+ *    the fix. Later majors have it but are refused until they are tested
+ *    (better-sqlite3 and the release smoke tests stop at 26.x).
  *  - Electron: Node's zlib is linked against Chromium's //third_party/brotli
  *    (Electron's node GN patch), whatever Node version Electron reports.
  *    Chromium's copy has the fix from 148.0.7751.0 (brotli rolled to
@@ -36,27 +37,26 @@
  */
 
 import { constants as zlibConstants } from 'node:zlib'
+import { compareVersions } from './version-compare'
 
 /** The engines range in package.json / packages/cli/package.json. */
-export const SAFE_NODE_RANGE = '^22.23.4 || ^24.22.1 || >=26.12.1'
+export const SAFE_NODE_RANGE = '^22.23.4 || ^24.22.1 || ^26.12.1'
 
 /** First fixed release per Node.js line; lines not listed are refused. */
-const NODE_FLOORS: Readonly<Record<number, Version>> = {
-  22: [22, 23, 4],
-  24: [24, 22, 1],
-  26: [26, 12, 1],
+const NODE_FLOORS: Readonly<Record<number, string>> = {
+  22: '22.23.4',
+  24: '24.22.1',
+  26: '26.12.1',
 }
-/** Majors from here on branched after the fix landed on Node's main. */
-const FIRST_LATER_NODE_MAJOR = 27
+/** The newest line tested; later majors are refused until they are. */
+const LAST_TESTED_NODE_MAJOR = 26
 
-const ELECTRON_FLOOR: Version = [42, 0, 0]
+const ELECTRON_FLOOR = '42.0.0'
 /** First Chromium build with the fixed decoder (M148 branch builds before it lack it). */
-const CHROMIUM_FLOOR = [148, 0, 7751, 0] as const
+const CHROMIUM_FLOOR = '148.0.7751.0'
 
 /** BROTLI_DECODER_ERROR_FORMAT_BLOCK_SWITCH, new in the fixed decoder. */
 const BLOCK_SWITCH_ERRNO = -17
-
-type Version = [number, number, number]
 
 export interface BrotliRuntimeFacts {
   /** process.versions */
@@ -70,30 +70,23 @@ export type BrotliRuntimeVerdict =
   | { safe: false; runtime: string; reason: string; remedy: string }
 
 const NODE_REMEDY = `Install Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (${SAFE_NODE_RANGE}) from https://nodejs.org and run adf again.`
-const ELECTRON_REMEDY = 'Update ADF Studio to a release built on Electron 43 or newer; from source, run `npm ci` so node_modules has the locked Electron.'
+const ELECTRON_REMEDY = 'Update ADF Studio to the latest release; from source, run `npm ci` so node_modules has the locked Electron.'
 
-function parseVersion(text: string | undefined): { v: Version; pre: boolean } | null {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(text ?? '')
+/** "22.23.4" of "v22.23.4-rc.1+build", and whether it is a prerelease. */
+function parseVersion(text: string | undefined): { v: string; major: number; pre: boolean } | null {
+  const m = /^v?((\d+)\.\d+\.\d+)(-[0-9A-Za-z.-]+)?(\+[0-9A-Za-z.-]+)?$/.exec(text ?? '')
   if (!m) return null
-  return { v: [Number(m[1]), Number(m[2]), Number(m[3])], pre: m[4] !== undefined }
+  return { v: m[1], major: Number(m[2]), pre: m[3] !== undefined }
 }
 
-/** a >= b, where a prerelease of b itself counts as older than b. */
-function atLeast(a: { v: Version; pre: boolean }, b: Version): boolean {
-  for (let i = 0; i < 3; i++) {
-    if (a.v[i] !== b[i]) return a.v[i] > b[i]
-  }
-  return !a.pre
+/** a >= floor, where a prerelease of the floor itself counts as older than it. */
+function atLeast(a: { v: string; pre: boolean }, floor: string): boolean {
+  const d = compareVersions(a.v, floor)
+  return d > 0 || (d === 0 && !a.pre)
 }
 
 function chromiumAtLeastFloor(text: string | undefined): boolean {
-  const parts = (text ?? '').split('.')
-  if (parts.length !== 4 || !parts.every((p) => /^\d+$/.test(p))) return false
-  for (let i = 0; i < 4; i++) {
-    const n = Number(parts[i])
-    if (n !== CHROMIUM_FLOOR[i]) return n > CHROMIUM_FLOOR[i]
-  }
-  return true
+  return /^\d+\.\d+\.\d+\.\d+$/.test(text ?? '') && compareVersions(text!, CHROMIUM_FLOOR) >= 0
 }
 
 /** Pure decision, for tests and for the error text. */
@@ -103,7 +96,7 @@ export function evaluateBrotliRuntime(facts: BrotliRuntimeFacts): BrotliRuntimeV
     const runtime = `Electron ${versions.electron} (Chromium ${versions.chrome ?? 'unknown'})`
     const electron = parseVersion(versions.electron)
     if (!electron || electron.pre || !atLeast(electron, ELECTRON_FLOOR) || !chromiumAtLeastFloor(versions.chrome)) {
-      return { safe: false, runtime, reason: `its Chromium Brotli decoder is not one verified to have the CVE-2026-111497 fix (needs a stable Electron ${ELECTRON_FLOOR.join('.')}+ on Chromium ${CHROMIUM_FLOOR.join('.')}+)`, remedy: ELECTRON_REMEDY }
+      return { safe: false, runtime, reason: `its Chromium Brotli decoder is not one verified to have the CVE-2026-111497 fix (needs a stable Electron ${ELECTRON_FLOOR}+ on Chromium ${CHROMIUM_FLOOR}+)`, remedy: ELECTRON_REMEDY }
     }
     return { safe: true, runtime }
   }
@@ -115,12 +108,14 @@ export function evaluateBrotliRuntime(facts: BrotliRuntimeFacts): BrotliRuntimeV
   const node = parseVersion(versions.node)
   if (!node) return { safe: false, runtime, reason: 'its version could not be read', remedy: NODE_REMEDY }
   if (node.pre) return { safe: false, runtime, reason: 'it is a prerelease build, which is not verified against CVE-2026-111497', remedy: NODE_REMEDY }
-  const major = node.v[0]
+  const { major } = node
+  if (major > LAST_TESTED_NODE_MAJOR) {
+    return { safe: false, runtime, reason: `ADF is not tested on Node.js ${major}.x yet`, remedy: NODE_REMEDY }
+  }
   const floor = NODE_FLOORS[major]
-  const fixedLine = floor ? atLeast(node, floor) : major >= FIRST_LATER_NODE_MAJOR
-  if (!fixedLine) {
+  if (!floor || !atLeast(node, floor)) {
     const why = floor
-      ? `the Brotli decoder in Node.js ${major}.x is fixed from ${floor.join('.')} on`
+      ? `the Brotli decoder in Node.js ${major}.x is fixed from ${floor} on`
       : `Node.js ${major}.x never received the fix`
     return { safe: false, runtime, reason: `it is vulnerable to CVE-2026-111497 (Brotli decoder out-of-bounds write): ${why}`, remedy: NODE_REMEDY }
   }

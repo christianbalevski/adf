@@ -41,8 +41,7 @@ vi.mock('node:dns/promises', async (importOriginal) => {
 
 import { AdfWorkspace } from '../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../src/main/adf/adf-database'
-import { SandboxHost } from '../../src/main/runtime/sandbox-host'
-import { pinnedFetch } from '../../src/main/utils/guarded-fetch'
+import { guardedFetch, pinnedFetch } from '../../src/main/utils/guarded-fetch'
 
 const REFUSAL = /ADF refuses to run on Node\.js 24\.18\.0: it is vulnerable to CVE-2026-111497/
 
@@ -86,6 +85,27 @@ describe('guarded fetch (Content-Encoding: br)', () => {
     const url = await brServer()
     guard.safe = false
     await expect(pinnedFetch({ daemonPort: 1 })(url)).rejects.toThrow(REFUSAL)
+    expect(hits).toBe(0)
+  })
+
+  it('refuses on the replaced-fetch path too (as behind an env proxy, where Node\'s fetch decodes br)', async () => {
+    const url = await brServer()
+    guard.safe = false
+    const replaced = vi.fn(async () => new Response('never'))
+    vi.stubGlobal('fetch', replaced)
+    try {
+      await expect(pinnedFetch({ daemonPort: 1 }, { useReplacedFetch: true })(url)).rejects.toThrow(REFUSAL)
+    } finally {
+      vi.unstubAllGlobals()
+    }
+    expect(replaced).not.toHaveBeenCalled()
+    expect(hits).toBe(0)
+  })
+
+  it('guardedFetch returns the refusal as its error, sending nothing', async () => {
+    const url = await brServer()
+    guard.safe = false
+    expect(await guardedFetch(url, { maxBytes: 1024, timeoutMs: 5_000, allowHttp: true, allowLocal: true })).toEqual({ error: expect.stringMatching(REFUSAL) })
     expect(hits).toBe(0)
   })
 })
@@ -134,14 +154,5 @@ describe('adf_audit blobs', () => {
     } finally {
       db.close()
     }
-  })
-})
-
-describe('code sandbox host (sandbox code can call zlib)', () => {
-  it('does not start on a vulnerable runtime', () => {
-    guard.safe = false
-    const host = new SandboxHost([])
-    expect(() => host.spawnWorker()).toThrow(REFUSAL)
-    expect(host.alive).toBe(false)
   })
 })

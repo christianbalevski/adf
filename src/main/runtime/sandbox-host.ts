@@ -3,7 +3,6 @@ import { EventEmitter } from 'events'
 import { resolve as resolvePath } from 'path'
 import { SANDBOX_WORKER_SCRIPT } from './sandbox-worker-source'
 import { SANDBOX_PRELUDE } from './sandbox-prelude'
-import { brotliRuntimeVerdict, refusalMessage } from '../utils/brotli-runtime-guard'
 
 /**
  * Sandbox host process.
@@ -165,18 +164,6 @@ export class SandboxHost {
   }
 
   private start(): void {
-    const unsupported = permissionModelUnsupported(process.versions)
-    if (unsupported) {
-      this.fail(unsupported)
-      return
-    }
-    // Sandbox code may call zlib itself. The host is this same binary
-    // (process.execPath), so this process's verdict is the host's.
-    const brotli = brotliRuntimeVerdict()
-    if (!brotli.safe) {
-      this.fail(refusalMessage(brotli))
-      return
-    }
     const args = [
       '--permission',
       '--allow-worker',
@@ -272,16 +259,6 @@ export class SandboxHost {
     }
     onHostDead(this)
   }
-}
-
-/** Node's permission model needs 22.13+ without a flag (and --disable-warning
- *  21.3+). Electron always bundles a new enough Node; the daemon runs on
- *  whatever `node` is installed. Returns an error message, or null. */
-export function permissionModelUnsupported(versions: { node: string; electron?: string }): string | null {
-  const [major, minor] = versions.node.split('.').map(Number)
-  if (major > 22 || (major === 22 && minor >= 13)) return null
-  return `Code execution needs Node.js 22.13 or newer for the sandbox's permission model ` +
-    `(this process runs Node ${versions.node}). Upgrade Node, or run the agent in ADF Studio.`
 }
 
 /** Only what the runtime needs to start. Notably NOT the parent's env: API

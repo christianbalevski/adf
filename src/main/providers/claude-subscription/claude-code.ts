@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { access, readFile } from 'node:fs/promises'
 import { homedir } from 'node:os'
 import { delimiter, dirname, join } from 'node:path'
+import { compareVersions } from '../../utils/version-compare'
 
 /**
  * Locates the user's installed Claude Code executable.
@@ -100,16 +101,6 @@ function runVersion(path: string): Promise<string | null> {
       resolve(match ? match[1] : null)
     })
   })
-}
-
-export function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number)
-  const pb = b.split('.').map(Number)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const d = (pa[i] ?? 0) - (pb[i] ?? 0)
-    if (d !== 0) return d < 0 ? -1 : 1
-  }
-  return 0
 }
 
 let cached: { probe: ClaudeCodeProbe; at: number } | null = null

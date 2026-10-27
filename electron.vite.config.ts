@@ -1,6 +1,6 @@
 import { dirname, resolve } from 'node:path'
 import { readFileSync } from 'node:fs'
-import { build, defineConfig, externalizeDepsPlugin } from 'electron-vite'
+import { build, defineConfig, externalizeDepsPlugin, type UserConfig } from 'electron-vite'
 import type { Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
 
@@ -62,7 +62,15 @@ function daemonEntryPlugin(): Plugin {
   }
 }
 
-export default defineConfig(({ mode }) => {
+// Studio main and the daemon each start at a bootstrap entry (src/main/entry.ts,
+// src/main/daemon/entry.ts) that checks the runtime and then imports the app.
+// The app's chunk is written next to the entry, not under chunks/: its code
+// resolves the preload, renderer, resources and daemon.js from __dirname.
+function appChunkNames(app: string, name: string, others: string): (chunk: { moduleIds: string[] }) => string {
+  return (chunk) => (chunk.moduleIds.includes(app) ? name : others)
+}
+
+export default defineConfig(({ mode }): UserConfig => {
   if (mode === DAEMON_MODE) {
     return {
       main: {
@@ -72,8 +80,8 @@ export default defineConfig(({ mode }) => {
           // Studio's main build already wrote out/main.
           emptyOutDir: false,
           rollupOptions: {
-            input: { daemon: resolve(__dirname, 'src/main/daemon/index.ts') },
-            output: { chunkFileNames: 'daemon-chunks/[name]-[hash].js' }
+            input: { daemon: resolve(__dirname, 'src/main/daemon/entry.ts') },
+            output: { chunkFileNames: appChunkNames(resolve(__dirname, 'src/main/daemon/index.ts'), 'daemon-main.js', 'daemon-chunks/[name]-[hash].js') }
           }
         }
       }
@@ -81,7 +89,14 @@ export default defineConfig(({ mode }) => {
   }
   return {
     main: {
-      plugins: [externalizeDepsPlugin(), daemonEntryPlugin()]
+      plugins: [externalizeDepsPlugin(), daemonEntryPlugin()],
+      build: {
+        // A bootstrap entry: out/main/index.js checks the runtime before the app loads (src/main/entry.ts).
+        rollupOptions: {
+          input: { index: resolve(__dirname, 'src/main/entry.ts') },
+          output: { chunkFileNames: appChunkNames(resolve(__dirname, 'src/main/index.ts'), 'studio-main.js', 'chunks/[name]-[hash].js') }
+        }
+      }
     },
     preload: {
       plugins: [externalizeDepsPlugin()]

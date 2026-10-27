@@ -28,8 +28,8 @@ describe('Node.js floor', () => {
     ['22.13.0', false], ['24.0.0', false], ['26.0.0', false],
     // End-of-life and odd lines never got the fix.
     ['18.20.8', false], ['20.20.2', false], ['21.7.3', false], ['23.11.1', false], ['25.9.0', false],
-    // Later majors branch from a main that has it.
-    ['27.0.0', true], ['28.1.0', true],
+    // Later majors have the fix but are refused until ADF is tested on them.
+    ['27.0.0', false], ['28.1.0', false],
     // Prereleases and nightlies are refused (the engines range excludes them too).
     ['24.22.1-pre', false], ['26.12.1-rc.1', false], ['24.22.2-pre', false], ['27.0.0-nightly20261020abcdef', false],
     // Unreadable.
@@ -56,6 +56,10 @@ describe('Node.js floor', () => {
     expect(verdict.runtime).toBe('Node.js 24.18.0')
     expect(verdict.reason).toMatch(/CVE-2026-111497.*24\.22\.1/)
     expect(verdict.remedy).toMatch(/22\.23\.4\+, 24\.22\.1\+ or 26\.12\.1\+/)
+  })
+
+  it('refuses a major newer than the last tested one as untested, not vulnerable', () => {
+    expect(node('27.0.0')).toMatchObject({ safe: false, reason: 'ADF is not tested on Node.js 27.x yet' })
   })
 
   it('refuses Bun and Deno (unverified decoders) whatever node version they report', () => {
@@ -92,7 +96,12 @@ describe('Electron floor (judged by its Chromium decoder, not its Node)', () => 
   })
 
   it('refuses Electron 41 although its process.versions look like Node 24', () => {
-    expect(electron('41.10.7', '146.0.7680.216', '24.18.0')).toMatchObject({ safe: false, remedy: expect.stringMatching(/Electron 43/) })
+    expect(electron('41.10.7', '146.0.7680.216', '24.18.0')).toMatchObject({
+      safe: false,
+      // The floor the code enforces, not the Electron the lock happens to pin.
+      reason: expect.stringContaining('needs a stable Electron 42.0.0+ on Chromium 148.0.7751.0+'),
+      remedy: expect.stringMatching(/^Update ADF Studio to the latest release; from source, run `npm ci`/),
+    })
   })
 })
 
@@ -147,13 +156,30 @@ describe('where the floor is stated and enforced', () => {
     expect(semver.gte(version, '43.0.0')).toBe(true)
   })
 
+  const CHECK = /^import '\.\.?\/(utils|\.\.\/utils)\/brotli-runtime-check'$/
+  const staticImports = (file: string) => [...readFileSync(join(ROOT, file), 'utf-8').matchAll(/^import\s.*$/gm)].map((m) => m[0])
+
+  // A bundle requires every external module at the top of its file, before
+  // the check: an entry's only static import is the check, and the rest
+  // loads with a dynamic import after it.
+  it.each([
+    'src/main/entry.ts',
+    'src/main/daemon/entry.ts',
+    'src/main/cli/bin.ts',
+  ])('the bundle entry %s statically imports only the check', (file) => {
+    expect(staticImports(file)).toEqual([expect.stringMatching(CHECK)])
+  })
+
+  it('Studio main and the daemon are built from those entries', () => {
+    const config = readFileSync(join(ROOT, 'electron.vite.config.ts'), 'utf-8')
+    expect(config).toContain("resolve(__dirname, 'src/main/entry.ts')")
+    expect(config).toContain("resolve(__dirname, 'src/main/daemon/entry.ts')")
+  })
+
   it.each([
     'src/main/index.ts',
     'src/main/daemon/index.ts',
-    'src/main/cli/bin.ts',
-  ])('%s imports the check before anything else', (file) => {
-    const source = readFileSync(join(ROOT, file), 'utf-8')
-    const imports = [...source.matchAll(/^import\s.*$/gm)].map((m) => m[0])
-    expect(imports[0]).toMatch(/^import '\.\.?\/(utils|\.\.\/utils)\/brotli-runtime-check'$/)
+  ])('%s still imports the check first when run from source', (file) => {
+    expect(staticImports(file)[0]).toMatch(CHECK)
   })
 })

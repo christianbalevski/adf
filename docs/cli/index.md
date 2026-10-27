@@ -58,13 +58,14 @@ until you restart it. `adf --version` prints the installed version,
 ## Node.js versions
 
 `adf` and the daemon run on the Node.js on your system, and need
-**22.23.4+, 24.22.1+ or 26.12.1+** (`^22.23.4 || ^24.22.1 || >=26.12.1`).
+**22.23.4+, 24.22.1+ or 26.12.1+** (`^22.23.4 || ^24.22.1 || ^26.12.1`).
 Earlier releases, and every 23.x and 25.x, ship a Brotli decoder with an
 out-of-bounds write ([CVE-2026-111497](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)),
 and the daemon decodes Brotli it did not produce: web responses agents fetch
 (`Content-Encoding: br`) and audit history inside `.adf` files you import.
 On such a release every `adf` command stops at once with
 `ADF refuses to run on Node.js …` and changes nothing. There is no override.
+Node.js 27 and later are refused the same way until ADF is tested on them.
 
 The check is the version number plus the fixed decoder's new error code, so a
 distribution package that backports the fix under an older version number is

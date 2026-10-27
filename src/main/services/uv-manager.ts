@@ -8,6 +8,7 @@ import { get as httpsGet } from 'https'
 import { IncomingMessage } from 'http'
 import { homedir, tmpdir } from 'os'
 import { getUserDataPath } from '../utils/user-data-path'
+import { compareVersions } from '../utils/version-compare'
 
 const execFileAsync = promisify(execFile)
 
@@ -36,17 +37,6 @@ function getPlatformBinary(): PlatformBinary {
     return { archive: 'uv-x86_64-pc-windows-msvc.zip', binaryName: 'uv.exe', isZip: true }
   }
   throw new Error(`Unsupported platform: ${platform}/${arch}`)
-}
-
-function compareVersions(a: string, b: string): number {
-  const pa = a.split('.').map(Number)
-  const pb = b.split('.').map(Number)
-  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-    const na = pa[i] ?? 0
-    const nb = pb[i] ?? 0
-    if (na !== nb) return na - nb
-  }
-  return 0
 }
 
 function followRedirects(url: string, maxRedirects = 5): Promise<IncomingMessage> {

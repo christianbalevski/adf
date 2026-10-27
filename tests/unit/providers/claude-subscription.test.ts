@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest'
 import { buildTranscript, claudeToolAlias, fingerprint, fromClaudeToolName, toApiMessage, toClaudeToolName, toolAliasMap } from '../../../src/main/providers/claude-subscription/transcript'
 import { sessionConfig, splitForColdStart } from '../../../src/main/providers/claude-subscription/provider'
 import { extractLoginUrl, stripAnsi } from '../../../src/main/providers/claude-subscription/auth-manager'
-import { compareVersions } from '../../../src/main/providers/claude-subscription/claude-code'
+import { compareVersions } from '../../../src/main/utils/version-compare'
 import type { LLMMessage } from '../../../src/shared/types/provider.types'
 
 describe('claude-subscription transcript', () => {

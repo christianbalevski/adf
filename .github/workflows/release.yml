@@ -188,7 +188,8 @@ jobs:
         os: [ubuntu-latest, macos-14, windows-2022]
         # Patched floors (CVE-2026-111497): a bare major can resolve to an older
         # Node already cached on the runner, which adf refuses to run on.
-        node: ['^22.23.4', '^24.22.1']
+        # Every line the engines range admits is smoke-tested.
+        node: ['^22.23.4', '^24.22.1', '^26.12.1']
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
