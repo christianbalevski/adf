@@ -4603,7 +4603,7 @@ export class RuntimeService extends EventEmitter {
         const full = join(dir, entry.name)
         if (entry.isFile() && entry.name.endsWith('.adf')) {
           let resolved: string
-          try { resolved = realpathSync(full) } catch { resolved = full }
+          try { resolved = realpathSync.native(full) } catch { resolved = full }
           if (!seen.has(resolved)) {
             seen.add(resolved)
             results.push(resolved)
@@ -4664,7 +4664,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   private canonicalFilePath(filePath: string): string {
-    try { return realpathSync(filePath) } catch { return filePath }
+    try { return realpathSync.native(filePath) } catch { return filePath }
   }
 }
 

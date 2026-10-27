@@ -358,7 +358,7 @@ export class BackgroundAgentManager extends EventEmitter {
    * share a single map entry — the unresolved path is kept only for display.
    */
   private canonicalPath(filePath: string): string {
-    try { return realpathSync(filePath) } catch { return filePath }
+    try { return realpathSync.native(filePath) } catch { return filePath }
   }
 
   hasAgent(filePath: string): boolean {
@@ -907,7 +907,7 @@ export class BackgroundAgentManager extends EventEmitter {
     for (const dir of trackedDirs) {
       for (const file of collectAdfFiles(dir, 0)) {
         let resolved: string
-        try { resolved = realpathSync(file) } catch { resolved = file }
+        try { resolved = realpathSync.native(file) } catch { resolved = file }
         if (!seen.has(resolved)) {
           seen.add(resolved)
           uniqueFiles.push(file)
