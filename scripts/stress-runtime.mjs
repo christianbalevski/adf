@@ -29,8 +29,6 @@ if (!(scenario in scenarioFilters)) {
   process.exit(2)
 }
 
-run('node', ['scripts/rebuild-for-node.mjs'], process.env)
-
 const vitestArgs = [
   'vitest',
   'run',

@@ -11,8 +11,6 @@ import type { ProviderConfig } from '../../src/shared/types/ipc.types'
  * The instantiate rule, in one sentence: "New agents get everything in a
  * template except its identity and history." These tests hold both halves —
  * what must survive the copy, and what must not.
- *
- * Needs the node-ABI build of better-sqlite3 (`npm test` rebuilds it).
  */
 
 const HOUR = 60 * 60 * 1000

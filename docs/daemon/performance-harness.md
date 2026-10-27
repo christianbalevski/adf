@@ -24,8 +24,6 @@ Run the benchmark test directly:
 RUN_BENCH=1 NODE_ENV=production npx vitest run tests/perf/stress-harness.test.ts --reporter=verbose
 ```
 
-The script runs `scripts/rebuild-for-node.mjs` first so native SQLite bindings match Node.
-
 ## Scenarios
 
 `scripts/stress-runtime.mjs` supports:

@@ -29,14 +29,10 @@ copied from the file.
 npm run registry:new -- <name> [icon]   # blank agent, or drop in a file you made in Studio
 npm run registry:index                  # rewrites index.json
 npm run registry:check                  # fails if index.json has drifted from the files
-npx electron-rebuild -f -o better-sqlite3   # back to the Electron ABI for `npm run dev`
 ```
 
 Then edit the entry's `blurb` and `tags` in `index.json` — the script keeps
 hand-written fields and refreshes derived ones (`sha256`, `size`, `version`).
-
-The registry scripts leave `better-sqlite3` built for the node ABI, the same
-as `npm test`. Run the `electron-rebuild` line above before `npm run dev`.
 
 CI runs `tests/unit/registry-index-integrity.test.ts`, a pure-Node test that
 fails when `index.json` does not match the files in this folder, so a commit

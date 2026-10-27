@@ -17,10 +17,11 @@ The daemon is `adf daemon` (npm package `@agentdocumentformat/cli`; `adf` and
 from a source checkout:
 
 ```bash
-node scripts/rebuild-for-node.mjs && tsx src/main/daemon/index.ts
+tsx src/main/daemon/entry.ts
 ```
 
-The rebuild step matters in a checkout because Studio runs under Electron while the daemon runs under Node. Native modules such as `better-sqlite3` must match the current runtime ABI. The npm package ships prebuilt Node binaries.
+Studio runs under Electron and the daemon under Node; both load the same
+`better-sqlite3` build, a prebuilt N-API binary that works on either.
 
 Startup flow (`src/main/daemon/index.ts`; the module boots on import):
 

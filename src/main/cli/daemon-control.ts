@@ -180,13 +180,13 @@ export const STUDIO_ADVICE = [
 ].join('\n')
 
 /** How to run `adf daemon` from here: the npm bundle, or the sources through tsx. */
-export function daemonLaunch(): { command: string; args: string[]; cwd: string; source: boolean; root?: string } {
+export function daemonLaunch(): { command: string; args: string[]; cwd: string; source: boolean } {
   const here = fileURLToPath(import.meta.url)
   const source = /\.tsx?$/.test(here)
   if (source) {
     const root = resolve(dirname(here), '..', '..', '..')
     // execArgv carries tsx's loader (--import/--require) into the child.
-    return { command: process.execPath, args: [...process.execArgv, join(root, 'src', 'main', 'cli', 'bin.ts'), 'daemon'], cwd: root, source, root }
+    return { command: process.execPath, args: [...process.execArgv, join(root, 'src', 'main', 'cli', 'bin.ts'), 'daemon'], cwd: root, source }
   }
   const entry = process.argv[1]
   return { command: process.execPath, args: [...process.execArgv, entry, 'daemon'], cwd: homedir(), source }
@@ -237,20 +237,6 @@ export async function startDaemon(target: DaemonTarget, options: StartOptions = 
   const tty = process.stderr.isTTY
   const started = Date.now()
   log(`Starting the ADF daemon on ${target.host}:${target.port}…${tty ? '' : '\n'}`)
-  if (launch.source && launch.root) {
-    // `npm run daemon` does this first: better-sqlite3 built for this Node.
-    const script = join(launch.root, 'scripts', 'rebuild-for-node.mjs')
-    if (existsSync(script)) {
-      const fd = openSync(paths.logFile, 'a')
-      try {
-        execFileSync(process.execPath, [script], { cwd: launch.root, stdio: ['ignore', fd, fd], windowsHide: true, timeout: 180_000 })
-      } catch {
-        closeSync(fd)
-        throw new DaemonStartError('Could not prepare better-sqlite3 for this Node.js.', `Run: node scripts/rebuild-for-node.mjs (details in ${paths.logFile})`)
-      }
-      closeSync(fd)
-    }
-  }
   const out = openSync(paths.logFile, 'a')
   const childEnv: NodeJS.ProcessEnv = { ...env }
   // NODE_ENV=production set only for the TUI's React (bin.ts) is not the daemon's.

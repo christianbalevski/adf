@@ -14,8 +14,6 @@ import { AdfDatabase } from '../../src/main/adf/adf-database'
  * without the WAL pages that complete it. This suite copies WHILE a real
  * second process writes in a loop and checks the result is a database, not
  * a photograph of one halfway through a transaction.
- *
- * Needs the node-ABI build of better-sqlite3 (`npm test` rebuilds it).
  */
 const sidecars = (path: string): { wal: boolean; shm: boolean } => ({
   wal: existsSync(`${path}-wal`),

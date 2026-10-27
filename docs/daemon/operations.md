@@ -192,16 +192,6 @@ then `POST /agents/review/accept`), then start the agent (`adf start <agent>`)
 or rescan (`POST /agents/autostart`). Agents an agent creates (`sys_create_adf`)
 and agents made with `adf new` are reviewed automatically.
 
-## Native SQLite ABI
-
-Only relevant from a source checkout: Studio runs under Electron and the
-daemon under Node, and `better-sqlite3` must be built for the runtime that
-loads it. `npm run daemon` (and `adf` from source) runs
-`node scripts/rebuild-for-node.mjs` first. If Studio then reports a
-`better-sqlite3` ABI error, rebuild for Electron with `npm run postinstall`
-before starting Studio. The npm package ships prebuilt binaries and is
-unaffected.
-
 ## Compute
 
 The daemon starts the shared compute container (Podman) in the background a
@@ -277,8 +267,6 @@ when it starts the agent.
 - On graceful shutdown each runtime stops only the compute containers it
   started or uses. A container another runtime still uses is left running and
   logged ("Leaving adf-mcp running (used by …)"); Settings → Compute lists it.
-- From a source checkout, switching between Studio and the daemon rebuilds
-  `better-sqlite3` ([Native SQLite ABI](#native-sqlite-abi)).
 
 The lease covers one OS user on one machine. An `.adf` on a network share
 opened from two machines is not protected.

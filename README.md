@@ -149,7 +149,6 @@ The CLI is a client for the running daemon; the daemon API defaults to `http://1
 
 Run `npm run adf` with no command for the terminal app: the whole fleet in one screen, chat with any agent or any of its loops (an agent's separate chat sessions, such as an inner loop that consolidates memory every night), approvals, files, schedules and live events. See the [terminal app guide](docs/cli/terminal-app.md); `npm run tui:mock` tries it without a daemon.
 
-> **Note:** Studio uses Electron while the daemon and CLI use Node, and they need different native SQLite builds. `npm run daemon` rebuilds for Node automatically; if Studio later reports a `better-sqlite3` ABI error, run `npm run postinstall` before restarting Studio.
 
 ### Build and test
 
