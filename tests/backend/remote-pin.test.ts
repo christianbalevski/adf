@@ -77,7 +77,7 @@ describe('DaemonConnection with a pinned connector', () => {
     connection.onListenerVerified(verified)
     connection.markDisconnected('the stream dropped')
     await until(() => pinCheck.mock.calls.length === 1)
-    await expect(client.request('GET', '/agents')).rejects.toThrow(/fingerprint/)
+    await expect(client.request('GET', '/agents')).rejects.toThrow(/is reconnecting/)
     expect(server.sent).toEqual([])
     release()
     await until(() => verified.mock.calls.length === 1)
@@ -141,7 +141,7 @@ describe('the remote connector of a saved connection gives the connection its pi
     fp = 'EVIL-2345'
     const mismatch = await connector.pinCheck!().catch((e) => e)
     expect(mismatch).toBeInstanceOf(PinMismatchError)
-    expect(mismatch.message).toBe(`${URL_} is not box-1 (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.`)
+    expect(mismatch.message).toBe(`A different computer is answering at ${URL_}, not box-1, so Studio stopped connecting and sent nothing. If box-1 was reinstalled or reset, remove it and pair it again. (Fingerprint EVIL-2345, paired as ABCD-EFGH.)`)
     fp = null
     const down = await connector.pinCheck!().catch((e) => e)
     expect(down).not.toBeInstanceOf(PinMismatchError)

@@ -534,7 +534,7 @@ describe('the remote connector on a saved connection', () => {
     const error = await remoteDaemonConnector(config('box-1'), codec, { env, fetch: daemon.fetch, retry: { maxAttempts: 1 } })(() => {}).catch((e) => e)
     expect(error).toBeInstanceOf(RemoteConnectError)
     expect(error).toMatchObject({ problem: 'fingerprint' })
-    expect(error.message).toBe(`${HUB} is not box-1 (fingerprint EVIL-2345, paired as ABCD-EFGH); the token was not sent.`)
+    expect(error.message).toBe(`A different computer is answering at ${HUB}, not box-1, so Studio stopped connecting and sent nothing. If box-1 was reinstalled or reset, remove it and pair it again. (Fingerprint EVIL-2345, paired as ABCD-EFGH.)`)
     expect(daemon.tokenSent()).toBe(false)
   })
 

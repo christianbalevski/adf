@@ -182,7 +182,7 @@ describe('one runtime\'s trouble stays its own', () => {
     // The stream drops: before the token goes out again, the fingerprint is checked.
     host1.sessions[0].listener!.onConnection({ state: 'reconnecting', error: 'the stream dropped' })
     await until(() => r1.connection.state.state === 'failed')
-    expect(r1.connection.state).toEqual({ state: 'failed', message: `${host1.url} is not host-1 (fingerprint EVIL-AAAB, paired as HOST-AAAB); the token was not sent.` })
+    expect(r1.connection.state).toEqual({ state: 'failed', message: `A different computer is answering at ${host1.url}, not host-1, so Studio stopped connecting and sent nothing. If host-1 was reinstalled or reset, remove it and pair it again. (Fingerprint EVIL-AAAB, paired as HOST-AAAB.)` })
     expect(host1.daemon.requests.slice(sentBefore).filter((r) => r.auth)).toEqual([])
     expect(r2.connection.state.state).toBe('connected')
     expect(t.handle.connection.state.state).toBe('connected')

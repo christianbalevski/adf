@@ -136,7 +136,7 @@ export class DaemonConnection {
     const gatedFetch = connector.pinCheck
       ? ((input: Parameters<typeof fetch>[0], init?: Parameters<typeof fetch>[1]) => {
         if (this.status.state === 'failed') return Promise.reject(new BackendNotConnectedError(`Studio is not connected to an ADF daemon: ${this.status.message}`))
-        if (!this.listenerVerified) return Promise.reject(new BackendNotConnectedError('Studio is checking the remote computer\'s fingerprint.'))
+        if (!this.listenerVerified) return Promise.reject(new BackendNotConnectedError('Studio lost its connection to this computer and is reconnecting. Check that it is awake, on the network, and running ADF.'))
         return send(input, init)
       }) as typeof fetch
       : fetchImpl

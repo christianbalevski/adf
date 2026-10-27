@@ -155,7 +155,7 @@ export async function savedConnectionTarget(config: Pick<StudioBackendConfig, 'i
 
 /** The sentence of a pinned address that answers as another computer: one sentence, the token not sent. */
 export function pinMismatchSentence(name: string, url: string, shown: string | null, pinned: string): string {
-  return `${url} is not ${name} (fingerprint ${shown ?? 'none'}, paired as ${pinned}); the token was not sent.`
+  return `A different computer is answering at ${url}, not ${name}, so Studio stopped connecting and sent nothing. If ${name} was reinstalled or reset, remove it and pair it again. (Fingerprint ${shown ?? 'none'}, paired as ${pinned}.)`
 }
 
 /**
