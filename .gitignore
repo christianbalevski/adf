@@ -26,3 +26,4 @@ CLAUDE.md
 
 # npm pack output
 *.tgz
+tools/alf-mcp/.build/
