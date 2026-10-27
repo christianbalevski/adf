@@ -19,10 +19,10 @@ files:
   # sandbox host (src/main/runtime/sandbox-host.ts) both depend on it.
   - out/**/*
   - resources/**/*
-  # better-sqlite3's self-test fixture — never loaded at runtime, and it
-  # breaks the mac universal merge (electron-rebuild leaves it host-arch, so
-  # it's an identical arm64 binary in both per-arch builds).
-  - "!node_modules/better-sqlite3/build/Release/test_extension.node"
+  # better-sqlite3 runs from its prebuilt N-API binaries (prebuilds/); its
+  # SQLite and C++ sources are only for building one, which never happens here.
+  - "!node_modules/better-sqlite3/{deps,src}/**"
+  - "!node_modules/better-sqlite3/binding.gyp"
   # The Agent SDK's per-platform optional deps each carry a ~250 MB Claude
   # Code binary. ADF runs the user's installed Claude Code instead.
   - "!node_modules/@anthropic-ai/claude-agent-sdk-*/**"
@@ -41,8 +41,7 @@ mac:
   # No `arch:` override on purpose: local builds stay host-arch. CI passes
   # --arm64 --universal (see .github/workflows/release.yml): the arm64 dmg
   # for Apple Silicon users, plus a universal dmg (covers Intel) built by
-  # packing the app once per arch — rebuilding better-sqlite3 for each —
-  # and lipo-merging the two. CI force-installs the Intel binary packages
+  # packing the app once per arch and lipo-merging the two. CI force-installs the Intel binary packages
   # first (scripts/install-mac-x64-deps.mjs) so both arch variants ship.
   # dmg is what people download; zip is what electron-updater/Squirrel.Mac
   # installs from (latest-mac.yml only lists zips as update sources).
@@ -60,7 +59,7 @@ mac:
   # builds must be universal" check during the merge. esbuild/bin/esbuild is
   # the host-arch binary its postinstall swaps in; the API resolves binaries
   # through @esbuild/* packages, so it's inert on the other arch.
-  x64ArchFiles: "**/node_modules/{@esbuild/darwin-*,@napi-rs/keyring-darwin-*,esbuild/bin,node-pty/prebuilds/darwin-*,sqlite-vec-darwin-*,tree-sitter-bash/prebuilds/darwin-*}/**"
+  x64ArchFiles: "**/node_modules/{@esbuild/darwin-*,@napi-rs/keyring-darwin-*,esbuild/bin,better-sqlite3/prebuilds,node-pty/prebuilds/darwin-*,sqlite-vec-darwin-*,tree-sitter-bash/prebuilds/darwin-*}/**"
   category: public.app-category.productivity
   icon: resources/icons/mac/icon.icns
   # macOS 26 light/dark app icon. Assets.car is compiled from AppIcon.icon by

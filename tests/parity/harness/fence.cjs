@@ -269,11 +269,13 @@ function installSqliteGuard(patch) {
     } finally { memory.close() }
 
   }
-  for (const [filename, cached] of Object.entries(require.cache)) if (/better_sqlite3\.node$/.test(filename)) guardAddon(cached.exports)
+  // The addon: prebuilds/<platform>-<arch>.node, or build/Release/better_sqlite3.node when compiled.
+  const isAddon = (path) => /better-sqlite3[\\/](prebuilds[\\/][\w-]+|build[\\/](Release|Debug)[\\/]better_sqlite3)\.node$/.test(String(path))
+  for (const [filename, cached] of Object.entries(require.cache)) if (isAddon(filename)) guardAddon(cached.exports)
   const originalLoad = Module._load
   patch(Module, '_load', function (request, ...rest) {
     const result = originalLoad.call(this, request, ...rest)
-    if (/better_sqlite3\.node$/.test(String(request))) guardAddon(result)
+    if (isAddon(request)) guardAddon(result)
     return result
   })
 }

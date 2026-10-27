@@ -178,9 +178,7 @@ npm run adf -- agents      # the CLI; `npm run adf` alone opens the terminal app
 `npm run adf -- <command>` works like `adf <command>` everywhere in these docs
 (including auto-starting the daemon). `npm run daemon` writes no pid file
 unless `ADF_DAEMON_PIDFILE` is set; `adf daemon status` still finds it through
-`/health`. Studio runs under Electron and the daemon under Node, so switching
-between them from one checkout rebuilds `better-sqlite3`; see
-[Operations](operations.md#native-sqlite-abi).
+`/health`.
 
 | Variable | Default | Purpose |
 |----------|---------|---------|

@@ -1384,7 +1384,6 @@ Grouped by area, then category.
 ### Headless Daemon Process
 
 - **Node-hosted runtime** — `npm run daemon` runs `src/main/daemon/index.ts` under plain Node, not Electron.
-- **Native ABI rebuild on boot** — `scripts/rebuild-for-node.mjs` rebuilds `better-sqlite3` for Node before launch since Studio uses Electron's ABI.
 - **RuntimeService lifecycle boundary** — in-memory agent-ID map + file-path index; loads/unloads agents, prevents double-loading one `.adf`.
 - **AgentRuntimeBuilder** — assembles daemon-specific tools/services (MCP, adapters, compute, system scope, stream bindings) without Electron IPC.
 - **Canonical `daemon` capability profile** — same assembler as Studio; exhaustive profile enables timers, code/system scope, compute, MCP, adapters, mesh/WebSocket.

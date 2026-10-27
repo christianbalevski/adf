@@ -1,10 +1,9 @@
 /**
  * Create a blank registry agent — a plain .adf with no identity, no owner,
  * no history — so it can be committed under registry/ and claimed by whoever
- * brings it home. Runs against the node ABI build of better-sqlite3:
+ * brings it home:
  *
- *   node scripts/rebuild-for-node.mjs && npx tsx scripts/registry-new-agent.ts <name> [icon] [readme.md]
- *   npx electron-rebuild -f -o better-sqlite3   # back to the Electron ABI for `npm run dev`
+ *   npx tsx scripts/registry-new-agent.ts <name> [icon] [readme.md]
  *
  * Then `node scripts/registry-index.mjs` to (re)write registry/index.json.
  * Editing the agent afterwards is the same as editing any agent: open it in

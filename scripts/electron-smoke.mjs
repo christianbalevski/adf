@@ -21,7 +21,6 @@
 //   npm run build
 //   npx electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false
 //   npm run test:electron-smoke  (or: node scripts/electron-smoke.mjs [path/to/ADF Studio.app])
-// Packaging rebuilds better-sqlite3 for Electron; `npm test` rebuilds it back.
 
 import { spawn } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from 'node:fs'

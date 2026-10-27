@@ -5,7 +5,7 @@ Every workstream agent reads this file, `docs/design/daemon-backend.md` and its 
 ## Environment
 
 - Work only in your own worktree, `<repo>\.claude\worktrees\db-<id>`, on branch `ws/<id>`. Never touch another worktree, the main checkout or `feat/daemon-backend`.
-- `node_modules` is a junction shared by all worktrees. NEVER run `npm install`, `npm ci`, `npm test`, `npm run test*`, `scripts/rebuild-for-node.mjs`, `electron-rebuild` or anything else that rebuilds native modules or edits `node_modules`. `electron-builder` packaging rebuilds native modules by default, so do not run it unless your workstream says so and you have confirmed `npmRebuild: false`.
+- `node_modules` is a junction shared by all worktrees. NEVER run `npm install`, `npm ci` or anything else that edits `node_modules`. `electron-builder` packaging rebuilds native modules by default, so do not run it unless your workstream says so and you have confirmed `npmRebuild: false`.
 - Tests: `ELECTRON_RUN_AS_NODE=1 node_modules/electron/dist/electron.exe node_modules/vitest/vitest.mjs run <paths>` (Git Bash). Run only the suites you touch plus the ones named in your acceptance criteria. Integration suites that bind ports MAY collide with parallel agents; retry once before treating it as a failure.
 - Type-check: `npx tsc --noEmit -p tsconfig.node.json`. The baseline is the count on your branch's base commit (159 on `feat/daemon-backend` as of W1-F; it only goes down). Your branch MUST NOT add errors. Report before/after counts. For renderer code also run `npx tsc --noEmit -p tsconfig.web.json` and compare against its baseline on your branch's base commit.
 - The owner's real ADF Studio and daemon may be running on this machine. Tests and manual runs MUST use isolated state (`ADF_USER_DATA_DIR`, a temp settings file, a non-default port, `ADF_SECRET_STORE=file` where supported). Never read or write the real keychain entries, the real `adf-settings.json` or port 7385. Stop every process you start; on Windows use `taskkill /T /F /PID <pid>` (plain kill leaves children).
@@ -13,7 +13,7 @@ Every workstream agent reads this file, `docs/design/daemon-backend.md` and its 
 
 - **Junction safety (incident 2026-10-14).** On Windows, Node's `rmSync`/`rm` with `recursive` follows junctions and deletes the target. Never delete a directory that contains or may contain a junction or symlink (for example a temp copy with a linked `node_modules`) without unlinking the link first (`fs.unlinkSync` on the junction itself) and checking the unlink succeeded. Never create links to the shared `node_modules` from tests.
 
-- **Source CLI/TUI (incident 2026-10-15).** `adf` / `adf tui` from a worktree auto-starts a source daemon that runs `rebuild-for-node` on the shared `node_modules`. Always pass `--no-daemon --url <your test daemon>`.
+- **Source CLI/TUI (incident 2026-10-15).** `adf` / `adf tui` from a worktree auto-starts a source daemon on the default port 7385. Always pass `--no-daemon --url <your test daemon>`.
 
 ## Code
 

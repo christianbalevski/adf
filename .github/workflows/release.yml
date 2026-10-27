@@ -52,8 +52,6 @@ jobs:
           node-version: '^22.23.4'
           cache: npm
 
-      # `npm ci` runs the postinstall hook, which electron-rebuilds
-      # better-sqlite3 against Electron's ABI for this runner's OS + arch.
       - name: Install dependencies
         run: npm ci
 

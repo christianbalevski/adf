@@ -22,10 +22,6 @@
  *
  * Idempotent: with nothing changed, the written document is byte-identical
  * to the committed one (including `updated_at`).
- *
- * Needs the node ABI build of better-sqlite3, which the npm scripts do for
- * you; run `npx electron-rebuild -f -o better-sqlite3` afterwards to get
- * back to the Electron ABI for `npm run dev`.
  */
 import { createHash } from 'crypto'
 import { existsSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'fs'
