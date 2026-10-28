@@ -6,7 +6,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { joinDir, type TerrainCell } from './fleet-layout'
 import { hueFromPath, isDarkMode } from './FleetTerrainNode'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
-import { selectMapAgents } from './runtime-fleet'
+import { remoteGroupDir, runtimeOfRegion, selectMapAgents } from './runtime-fleet'
 
 /**
  * Voices — the group-status layer, rendered above the whole canvas (like the
@@ -179,8 +179,9 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
       for (const district of t.districts) {
         const owned = occupied.filter((c) => c.district === district)
         if (owned.length === 0) continue
-        const dir = joinDir(t.dirPath, district)
         const paths = owned.map((c) => c.filePath!).filter(Boolean)
+        // Another runtime's district names its folder in that runtime's own paths
+        const dir = runtimeOfRegion(t.dirPath) !== null ? remoteGroupDir(paths[0]) : joinDir(t.dirPath, district)
         const dv = pickVoice(paths, stewards[dir], voice?.filePath)
         if (!dv.voice || (!dv.voice.status && !dv.voice.handle)) continue
         out.push({

@@ -62,6 +62,13 @@ export function pathDirname(p: string): string {
 export const isUnder = (p: string, root: string): boolean =>
   p.startsWith(root + '/') || p.startsWith(root + '\\')
 
+/**
+ * True if the agent at map key `p` belongs to the group of directory `dir`:
+ * under it, or, for another runtime's region root, of that runtime.
+ */
+export const isInGroup = (p: string, dir: string): boolean =>
+  isUnder(p, dir) || (runtimeOfRegion(dir) !== null && p.startsWith(dir))
+
 /** Join a directory and a relative child using the dir's native separator. */
 export const joinDir = (dir: string, child: string): string => dir + sepOf(dir) + child
 

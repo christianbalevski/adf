@@ -5,8 +5,9 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { hueFromPath, formatTokens } from './FleetTerrainNode'
-import { isUnder, pathSegments } from './fleet-layout'
-import { selectMapAgents } from './runtime-fleet'
+import { isInGroup, pathSegments } from './fleet-layout'
+import { runtimeOfRegion, selectMapAgents } from './runtime-fleet'
+import { isRemoteAgentKey, parseAgentKey } from '../../../shared/types/agent-ref'
 
 /**
  * Group readout — the full-screen answer to clicking a voice chip: the
@@ -70,7 +71,7 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
       return 2 // active/working states
     }
     const members = agents
-      .filter((a) => isUnder(a.filePath, dir))
+      .filter((a) => isInGroup(a.filePath, dir))
       .sort((a, b) => liveRank(a) - liveRank(b) || a.handle.localeCompare(b.handle))
     const stewardDid = stewards[dir]
     const steward = stewardDid ? members.find((a) => a.did === stewardDid) : undefined
@@ -112,7 +113,8 @@ export const FleetGroupReadout = memo(function FleetGroupReadout({
   }, [agents, dir, stewards, burn, pendingInteractions, nodeActivities])
 
   const hue = hueFromPath(dir)
-  const label = pathSegments(dir).slice(-2).join('/')
+  // Another runtime's folder: labelled from its own path (the runtime id may hold any separator)
+  const label = pathSegments(runtimeOfRegion(dir) === null && isRemoteAgentKey(dir) ? parseAgentKey(dir).filePath : dir).slice(-2).join('/')
 
   const stat = (value: string, name: string, accent?: string): ReactElement => (
     <div className="flex flex-col items-center px-4 py-2">
