@@ -34,18 +34,41 @@ const BASE_DESCRIPTION =
 
 export class ComputeExecTool implements Tool {
   readonly name = 'compute_exec'
-  readonly description: string
-  readonly inputSchema: z.ZodObject<any>
   readonly category = 'system' as const
   readonly requireApproval = true
+  private readonly readCapabilities: () => ComputeCapabilities
+  private presented: { key: string; description: string; inputSchema: z.ZodObject<any> } | null = null
 
+  /** `capabilities` may be a function: it is then read on every use, so config changes apply live. */
   constructor(
     private podmanService: PodmanService | null,
-    private capabilities: ComputeCapabilities,
+    capabilities: ComputeCapabilities | (() => ComputeCapabilities),
     private agentTimeoutMs?: number,
     private externalExecutionService = new ExternalExecutionService(),
   ) {
+    this.readCapabilities = typeof capabilities === 'function' ? capabilities : () => capabilities
+  }
+
+  private get capabilities(): ComputeCapabilities {
+    return this.readCapabilities()
+  }
+
+  get description(): string {
+    return this.present().description
+  }
+
+  get inputSchema(): z.ZodObject<any> {
+    return this.present().inputSchema
+  }
+
+  /** Description and schema for the current targets, rebuilt only when they change. */
+  private present(): { description: string; inputSchema: z.ZodObject<any> } {
+    const capabilities = this.capabilities
     const targets = availableTargets(capabilities)
+    const showDisplay = capabilities.hasIsolated && !!capabilities.browserDisplay
+    const key = JSON.stringify([targets, capabilities.defaultTarget, showDisplay, capabilities.hostInfo])
+    if (this.presented?.key === key) return this.presented
+
     const schemaTargets = (targets.length > 0 ? targets : ['shared']) as [string, ...string[]]
     const shape: Record<string, z.ZodTypeAny> = {
       command: z.string().min(1).describe('Shell command to execute. Supports pipes, chaining, and redirection.'),
@@ -54,17 +77,21 @@ export class ComputeExecTool implements Tool {
     if (targets.length > 1) {
       shape.target = z.enum(schemaTargets).optional().describe('Optional execution environment. Omit to use the default.')
     }
-    this.inputSchema = z.object(shape)
     const defaultNote = capabilities.defaultTarget ? ` Default target: ${capabilities.defaultTarget}.` : ''
     const targetNote = targets.length > 1
       ? ` Available targets: ${targets.join(', ')}.${defaultNote}`
       : targets.length === 1
         ? ` Commands run in ${targets[0]}.`
         : ''
-    const displayNote = capabilities.hasIsolated && capabilities.browserDisplay
+    const displayNote = showDisplay
       ? ' Your isolated container has a visible display at DISPLAY=:99 that the user can watch and interact with — launch browsers with headless:false (and --no-sandbox) to show them something. You set its size with `xrandr --fb 1440x900`; the user\'s view scales to fit.'
       : ''
-    this.description = `${BASE_DESCRIPTION}${targetNote}${displayNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`
+    this.presented = {
+      key,
+      description: `${BASE_DESCRIPTION}${targetNote}${displayNote}${capabilities.hostInfo ? ` ${capabilities.hostInfo}` : ''}`,
+      inputSchema: z.object(shape),
+    }
+    return this.presented
   }
 
   async execute(input: unknown, _workspace: AdfWorkspace, context?: ToolCallContext): Promise<ToolResult> {
@@ -74,9 +101,10 @@ export class ComputeExecTool implements Tool {
       timeout_ms?: number
     }
 
+    const capabilities = this.capabilities
     let effectiveTarget: ComputeTarget
     try {
-      effectiveTarget = resolveTarget(requestedTarget, this.capabilities)
+      effectiveTarget = resolveTarget(requestedTarget, capabilities)
     } catch (err) {
       return { content: err instanceof Error ? err.message : String(err), isError: true }
     }
@@ -92,11 +120,11 @@ export class ComputeExecTool implements Tool {
 
       switch (effectiveTarget) {
         case 'isolated': {
-          if (!this.podmanService || !this.capabilities.isolatedContainerName) {
+          if (!this.podmanService || !capabilities.isolatedContainerName) {
             return { content: 'Isolated container not available.', isError: true }
           }
-          const name = this.capabilities.isolatedContainerName
-          const notReady = await this.readyIsolated(name)
+          const name = capabilities.isolatedContainerName
+          const notReady = await this.readyIsolated(name, capabilities)
           if (notReady) return { content: notReady, isError: true }
           await this.podmanService.ensureWorkspace(name, '/workspace').catch(() => {})
           result = await this.podmanService.execInContainer(name, '/workspace', command, effectiveTimeout)
@@ -112,7 +140,7 @@ export class ComputeExecTool implements Tool {
           if (!this.podmanService) {
             return { content: 'Podman not available for shared container.', isError: true }
           }
-          const cwd = `/workspace/${this.capabilities.agentId}`
+          const cwd = `/workspace/${capabilities.agentId}`
           await this.podmanService.ensureWorkspace('adf-mcp', cwd).catch(() => {})
           result = await this.podmanService.execInContainer(
             'adf-mcp', cwd, command, effectiveTimeout
@@ -120,7 +148,7 @@ export class ComputeExecTool implements Tool {
           break
         }
         default: {
-          const externalTarget = this.capabilities.externalTargets?.[effectiveTarget]
+          const externalTarget = capabilities.externalTargets?.[effectiveTarget]
           if (!externalTarget) return { content: `Execution target '${effectiveTarget}' is not configured.`, isError: true }
           result = await this.externalExecutionService.execute(
             externalTarget,
@@ -130,9 +158,9 @@ export class ComputeExecTool implements Tool {
           break
         }
         case 'host': {
-          const cwd = ensureHostWorkspace(this.capabilities.agentId)
+          const cwd = ensureHostWorkspace(capabilities.agentId)
           // The interrupt kills the shell's process tree; Off kills every shell of this agent (owner).
-          result = await hostExec(cwd, command, effectiveTimeout, { owner: this.capabilities.agentId, signal: context?.signal })
+          result = await hostExec(cwd, command, effectiveTimeout, { owner: capabilities.agentId, signal: context?.signal })
           break
         }
       }
@@ -140,11 +168,11 @@ export class ComputeExecTool implements Tool {
       return {
         content: JSON.stringify({
           target: effectiveTarget,
-          ...(this.capabilities.externalTargets?.[effectiveTarget]
+          ...(capabilities.externalTargets?.[effectiveTarget]
             ? {
                 kind: 'external-container',
-                engine: this.capabilities.externalTargets[effectiveTarget].engine,
-                target_name: this.capabilities.externalTargets[effectiveTarget].name,
+                engine: capabilities.externalTargets[effectiveTarget].engine,
+                target_name: capabilities.externalTargets[effectiveTarget].name,
               }
             : {}),
           exit_code: result.code,
@@ -179,12 +207,12 @@ export class ComputeExecTool implements Tool {
    * (the same bring-up the agent start runs) so a container lost mid-session
    * heals on the next command instead of needing an agent restart.
    */
-  private async readyIsolated(name: string): Promise<string | null> {
+  private async readyIsolated(name: string, capabilities: ComputeCapabilities): Promise<string | null> {
     const podman = this.podmanService!
     const { phase, detail } = await podman.containerPhase(name)
     if (phase === 'ready') return null
     if (phase === 'absent' || phase === 'stopped') {
-      const { agentName, agentId, pipPackages, browserDisplay } = this.capabilities
+      const { agentName, agentId, pipPackages, browserDisplay } = capabilities
       if (!agentName) return describeNotReady(phase, detail)
       try {
         await podman.ensureIsolatedRunning(agentName, agentId, pipPackages ?? [], undefined, browserDisplay !== false)

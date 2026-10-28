@@ -133,7 +133,7 @@ import { ToolRegistry } from '../tools/tool-registry'
 import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
-import type { ComputeCapabilities } from '../tools/built-in/compute-target'
+import { buildComputeCapabilities, liveComputeCapabilities, type ComputeCapabilityInputs } from '../tools/built-in/compute-capabilities'
 import { AdfCallHandler } from '../runtime/adf-call-handler'
 import { createUmbilicalResources } from '../runtime/umbilical-lifecycle'
 import type { TapManager } from '../runtime/tap-manager'
@@ -173,7 +173,6 @@ import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
-import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
@@ -4380,19 +4379,13 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }))
 
     // Compute tools: always register (shared container is always available)
-    const computeSettings = settings.get('compute') as Record<string, unknown> | undefined
-    const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
-    const computeCaps: ComputeCapabilities = {
-      hasIsolated: !!(config.compute?.enabled && podmanService),
-      hasShared: !!podmanService,
-      hasHost: !!config.compute?.host_access && computeSettings?.hostAccessEnabled === true,
-      ...targetSelection,
-      isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
-      agentName: config.name,
-      pipPackages: config.compute?.packages?.pip,
-      browserDisplay: config.compute?.browser !== false,
-      agentId: config.id,
+    const computeInputs = (): ComputeCapabilityInputs => {
+      const computeSettings = settings.get('compute') as Record<string, unknown> | undefined
+      return { podmanService, computeSettings, runtimeHostAllowed: computeSettings?.hostAccessEnabled === true }
     }
+    const computeCaps = buildComputeCapabilities(config, computeInputs())
+    // Live: a compute change the agent makes mid-run applies on its next call.
+    const liveComputeCaps = liveComputeCapabilities(computeCaps, () => capturedWorkspace.getAgentConfig(), computeInputs, currentFilePath ?? undefined)
 
     // Pre-create isolated container when compute.enabled
     if (computeCaps.hasIsolated && podmanService) {
@@ -4403,8 +4396,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         })
     }
 
-    agentToolRegistry.register(new FsTransferTool(podmanService, computeCaps))
-    agentToolRegistry.register(new ComputeExecTool(podmanService, computeCaps, config.limits?.execution_timeout_ms))
+    agentToolRegistry.register(new FsTransferTool(podmanService, liveComputeCaps))
+    agentToolRegistry.register(new ComputeExecTool(podmanService, liveComputeCaps, config.limits?.execution_timeout_ms))
 
     // Backward compat: rename container_exec → compute_exec in declarations
     const legacyDecl = config.tools.find((t) => t.name === 'container_exec')

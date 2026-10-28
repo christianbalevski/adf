@@ -17,7 +17,7 @@ import { ToolRegistry } from '../tools/tool-registry'
 import { SysCodeTool, SysLambdaTool, NpmInstallTool, NpmUninstallTool, SysGetConfigTool, SysFetchTool, FsTransferTool, ComputeExecTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, McpInstallTool, McpRestartTool, McpUninstallTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from './stream-binding-manager'
-import type { ComputeCapabilities } from '../tools/built-in/compute-target'
+import { buildComputeCapabilities, liveComputeCapabilities, type ComputeCapabilityInputs } from '../tools/built-in/compute-capabilities'
 import { AdfCallHandler } from './adf-call-handler'
 import type { TapManager } from './tap-manager'
 import { createUmbilicalResources } from './umbilical-lifecycle'
@@ -45,7 +45,6 @@ import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
-import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { adapterCredentialsLocked, createLockedCredentialsAdapter, describeHostEnv, detectLockedEnvelopes } from './agent-runtime-builder'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -1209,25 +1208,20 @@ export class BackgroundAgentManager extends EventEmitter {
 
     // Compute tools: always register (shared container is always available)
     {
-      const { isolatedContainerName } = await import('../services/podman.service')
-      const computeSettings = this.settings.get('compute') as Record<string, unknown> | undefined
-      const runtimeHostAllowed = computeSettings?.hostAccessEnabled === true
-      const agentHostAllowed = !!config.compute?.host_access
-      const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
-      const bgComputeCaps: ComputeCapabilities = {
-        hasIsolated: !!(config.compute?.enabled && this.podmanService),
-        hasShared: !!this.podmanService,
-        hasHost: agentHostAllowed && runtimeHostAllowed,
-        ...targetSelection,
-        isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
-      agentName: config.name,
-      pipPackages: config.compute?.packages?.pip,
-        browserDisplay: config.compute?.browser !== false,
-        agentId: config.id,
-        // Parity with the daemon builder: host-target compute_exec prompts
-        // need OS/shell context or the model guesses the wrong syntax.
-        hostInfo: agentHostAllowed && runtimeHostAllowed ? describeHostEnv() : undefined,
+      const computeInputs = (): ComputeCapabilityInputs => {
+        const computeSettings = this.settings.get('compute') as Record<string, unknown> | undefined
+        return {
+          podmanService: this.podmanService,
+          computeSettings,
+          runtimeHostAllowed: computeSettings?.hostAccessEnabled === true,
+          // Parity with the daemon builder: host-target compute_exec prompts
+          // need OS/shell context or the model guesses the wrong syntax.
+          describeHost: describeHostEnv,
+        }
       }
+      const bgComputeCaps = buildComputeCapabilities(config, computeInputs())
+      // Live: a compute change the agent makes mid-run applies on its next call.
+      const liveComputeCaps = liveComputeCapabilities(bgComputeCaps, () => workspace.getAgentConfig(), computeInputs, filePath)
 
       if (bgComputeCaps.hasIsolated && this.podmanService) {
         this.podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip, filePath, config.compute?.browser !== false)
@@ -1237,8 +1231,8 @@ export class BackgroundAgentManager extends EventEmitter {
           })
       }
 
-      agentToolRegistry.register(new FsTransferTool(this.podmanService ?? null, bgComputeCaps))
-      agentToolRegistry.register(new ComputeExecTool(this.podmanService ?? null, bgComputeCaps, config.limits?.execution_timeout_ms))
+      agentToolRegistry.register(new FsTransferTool(this.podmanService ?? null, liveComputeCaps))
+      agentToolRegistry.register(new ComputeExecTool(this.podmanService ?? null, liveComputeCaps, config.limits?.execution_timeout_ms))
 
       const legacyDecl = config.tools.find((t) => t.name === 'container_exec')
       if (legacyDecl) legacyDecl.name = 'compute_exec'
