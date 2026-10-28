@@ -43,10 +43,19 @@ export class FsTransferTool implements Tool {
   readonly inputSchema = InputSchema
   readonly category = 'filesystem' as const
 
+  private readonly readCapabilities: () => ComputeCapabilities
+
+  /** `capabilities` may be a function: it is then read on every use, so config changes apply live. */
   constructor(
     private podmanService: PodmanService | null,
-    private capabilities: ComputeCapabilities,
-  ) {}
+    capabilities: ComputeCapabilities | (() => ComputeCapabilities),
+  ) {
+    this.readCapabilities = typeof capabilities === 'function' ? capabilities : () => capabilities
+  }
+
+  private get capabilities(): ComputeCapabilities {
+    return this.readCapabilities()
+  }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const { from, to, path, save_as } = input as z.infer<typeof InputSchema>

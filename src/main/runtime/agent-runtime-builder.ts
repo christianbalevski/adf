@@ -35,7 +35,7 @@ import type { LLMProvider } from '../providers/provider.interface'
 import type { AgentExecutor } from './agent-executor'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { AgentConfig, McpServerConfig, McpToolInfo, ModelConfig } from '../../shared/types/adf-v02.types'
-import type { ComputeCapabilities } from '../tools/built-in/compute-target'
+import { buildComputeCapabilities, liveComputeCapabilities, type ComputeCapabilityInputs } from '../tools/built-in/compute-capabilities'
 import type { RuntimeSettingsStore } from './runtime-service'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
@@ -47,7 +47,6 @@ import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
-import { resolveAgentComputeTargetSelection } from '../services/execution-target-settings'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
@@ -288,7 +287,7 @@ export class AgentRuntimeBuilder {
     })
 
     this.registerCodeTools(registry, config, agentId, adfCallHandler)
-    const computeStartup = this.registerComputeTools(registry, config, filePath)
+    const computeStartup = this.registerComputeTools(registry, workspace, config, filePath)
     // `assembled` is created further down; the MCP install/restart closures fan
     // a freshly-synced config out to the live executor once it exists (a no-op
     // during the initial connect, which runs before assembly).
@@ -569,25 +568,16 @@ export class AgentRuntimeBuilder {
     }
   }
 
-  private registerComputeTools(registry: ToolRegistry, config: AgentConfig, filePath: string | null): Promise<void>[] {
-    const agentHostAllowed = !!config.compute?.host_access
-    const computeSettings = this.settings?.get('compute')
-    const runtimeHostAllowed = this.getComputeRoutingSettings().hostAccessEnabled
-    const hostInfo = agentHostAllowed && runtimeHostAllowed ? describeHostEnv() : undefined
-    const targetSelection = resolveAgentComputeTargetSelection(computeSettings, config.compute)
-
-    const caps: ComputeCapabilities = {
-      hasIsolated: !!(config.compute?.enabled && this.podmanService),
-      hasShared: !!this.podmanService,
-      hasHost: agentHostAllowed && runtimeHostAllowed,
-      ...targetSelection,
-      isolatedContainerName: config.compute?.enabled ? isolatedContainerName(config.name, config.id) : undefined,
-      agentName: config.name,
-      pipPackages: config.compute?.packages?.pip,
-      browserDisplay: config.compute?.browser !== false,
-      agentId: config.id,
-      hostInfo,
-    }
+  private registerComputeTools(registry: ToolRegistry, workspace: AdfWorkspace, config: AgentConfig, filePath: string | null): Promise<void>[] {
+    const inputs = (): ComputeCapabilityInputs => ({
+      podmanService: this.podmanService,
+      computeSettings: this.settings?.get('compute'),
+      runtimeHostAllowed: this.getComputeRoutingSettings().hostAccessEnabled,
+      describeHost: describeHostEnv,
+    })
+    const caps = buildComputeCapabilities(config, inputs())
+    // Live: a compute change the agent makes mid-run applies on its next call.
+    const liveCaps = liveComputeCapabilities(caps, () => workspace.getAgentConfig(), inputs, filePath ?? undefined)
 
     const startup: Promise<void>[] = []
     if (caps.hasIsolated && this.podmanService) {
@@ -600,8 +590,8 @@ export class AgentRuntimeBuilder {
       startup.push(p)
     }
 
-    registry.register(new FsTransferTool(this.podmanService, caps))
-    registry.register(new ComputeExecTool(this.podmanService, caps, config.limits?.execution_timeout_ms))
+    registry.register(new FsTransferTool(this.podmanService, liveCaps))
+    registry.register(new ComputeExecTool(this.podmanService, liveCaps, config.limits?.execution_timeout_ms))
     return startup
   }
 
