@@ -596,6 +596,9 @@ export class AgentExecutor extends EventEmitter {
   private absorbedTurnIds: string[] = []
   /** turnId of the dispatch the current (outermost) turn is running. */
   private runningTurnId: string | null = null
+  /** Counts outermost agent turns, so a late approval can tell whether the
+   *  turn that raised it is the one running now. */
+  private agentTurnSerial = 0
 
   /** The turnId of the dispatch the current (outermost) turn runs; null between turns or for a dispatch without one. */
   getRunningTurnId(): string | null {
@@ -1163,15 +1166,29 @@ export class AgentExecutor extends EventEmitter {
     }
   }
 
+  /** The agent turn running now, or null between turns (see agentTurnSerial). */
+  private currentAgentTurn(): number | null {
+    return this.activeAgentTurnCount > 0 ? this.agentTurnSerial : null
+  }
+
   /**
-   * A beside-turn approval settled: the state it set (awaiting_approval) goes
-   * back to the one before it, unless an agent turn now owns the state or
-   * something else changed it meanwhile. setState keeps awaiting_approval
-   * while another such approval is open.
+   * An approval settled. If the turn that raised it is still running, that
+   * turn goes back to its tool. Otherwise the state the request set
+   * (awaiting_approval) goes back to the one before it, unless an agent turn
+   * now owns the state or something else changed it meanwhile. A turn state
+   * whose turn has ended comes back as idle: an approval that outlived its
+   * turn (a lambda's protection override auto-denied 20 minutes later) must
+   * not leave tool_use with no turn behind it — chats would queue forever and
+   * Stop would find nothing to end. setState keeps awaiting_approval while
+   * another beside-turn approval is open.
    */
-  private restoreAfterBesideTurnApproval(priorState: AgentState): void {
+  private restoreAfterApproval(priorState: AgentState, raisedInTurn: number | null): void {
+    if (raisedInTurn !== null && this.currentAgentTurn() === raisedInTurn) {
+      this.setState('tool_use')
+      return
+    }
     if (this.activeAgentTurnCount > 0 || this.state !== 'awaiting_approval') return
-    this.setState(priorState === 'awaiting_approval' ? 'idle' : priorState)
+    this.setState(priorState === 'error' ? 'error' : 'idle')
   }
 
   /**
@@ -1570,7 +1587,7 @@ export class AgentExecutor extends EventEmitter {
   ): Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
     const meta = this.buildApprovalMeta(name, protection)
     const priorState = this.state
-    const outsideTurn = this.activeAgentTurnCount === 0
+    const raisedInTurn = this.currentAgentTurn()
     const promise = this.requestHilApproval(name, input, meta)
 
     // requestHilApproval registers the pending entry synchronously — find ours
@@ -1598,11 +1615,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       workspace.updateTaskStatus(taskId, 'denied', undefined, feedback?.trim() || 'Rejected')
     }
-    if (this.getState() !== 'stopped') {
-      // Outside an agent turn there is no tool_use to go back to.
-      if (!outsideTurn) this.setState('tool_use')
-      else this.restoreAfterBesideTurnApproval(priorState)
-    }
+    if (this.getState() !== 'stopped') this.restoreAfterApproval(priorState, raisedInTurn)
     return { approved, modifiedArgs, feedback }
   }
 
@@ -1636,6 +1649,7 @@ export class AgentExecutor extends EventEmitter {
     const ownsState = !restoreState || !this.isTurnActive()
     // No agent turn to go back to tool_use in: treated as beside the turn.
     const besideTurn = restoreState || this.activeAgentTurnCount === 0
+    const raisedInTurn = besideTurn ? null : this.currentAgentTurn()
     const meta: ApprovalMeta | undefined = opts?.canAlwaysApprove === false
       ? { reason: 'restricted', canAlwaysApprove: false, alwaysApproveBlockedReason: 'One-time approval only for this request' }
       : undefined
@@ -1653,10 +1667,7 @@ export class AgentExecutor extends EventEmitter {
     // If the agent was stopped while awaiting approval, don't resurrect it —
     // abort()/teardown resolve pending HIL as denied, and flipping state back
     // to tool_use here would contradict the stopped-agent guarantee.
-    if (this.getState() !== 'stopped') {
-      if (!besideTurn) this.setState('tool_use')
-      else if (ownsState) this.restoreAfterBesideTurnApproval(priorState)
-    }
+    if (this.getState() !== 'stopped' && (!besideTurn || ownsState)) this.restoreAfterApproval(priorState, raisedInTurn)
     return approved
   }
 
@@ -2344,7 +2355,10 @@ export class AgentExecutor extends EventEmitter {
 
     const checkpointId = turnId ?? nanoid(10)
     this.beginTurnCheckpoint(checkpointId, dispatch, eventType, scope)
-    if (!opts?.nested) this.runningTurnId = dispatch.turnId ?? null
+    if (!opts?.nested) {
+      this.runningTurnId = dispatch.turnId ?? null
+      this.agentTurnSerial++
+    }
 
     this._isMessageTriggered = eventType === 'inbox'
     this.abortController = new AbortController()

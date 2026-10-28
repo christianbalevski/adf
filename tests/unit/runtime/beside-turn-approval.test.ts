@@ -106,6 +106,31 @@ describe('a chat while an approval waits with no turn running', () => {
     }
   })
 
+  it('a protection override raised during a turn and decided after it ended leaves the agent idle, not tool_use', async () => {
+    // A system-scope lambda (an on_file_change indexer) writes a locked file
+    // while the agent's turn runs; the turn ends; the override auto-denies 20
+    // minutes later. tool_use with no turn behind it queued every chat and
+    // left Stop with nothing to end.
+    const { executor, provider, dispose } = await build()
+    try {
+      let approval: ReturnType<typeof executor.requestProtectionApproval> | undefined
+      const respond = provider.createMessage.bind(provider)
+      provider.createMessage = async (opts) => {
+        approval ??= executor.requestProtectionApproval('fs_write', { path: 'x' }, { kind: 'file', path: 'x', description: 'd' } as never, { timeoutMs: null })
+        return respond(opts)
+      }
+      await executor.executeTurn(chat('hello'))
+      expect(executor.isTurnActive()).toBe(false)
+      executor.resolveApproval(executor.getPendingApprovals()[0].requestId, false)
+      expect((await approval!).approved).toBe(false)
+      expect(executor.getState()).toBe('idle')
+      await executor.executeTurn(chat('second'))
+      expect(provider.requests).toHaveLength(2)
+    } finally {
+      await dispose()
+    }
+  })
+
   it('the owner\'s hibernate with only a beside-turn approval open is kept, and the approval stays open', async () => {
     const { executor, dispose } = await build()
     const states: string[] = []

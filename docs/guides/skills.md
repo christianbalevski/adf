@@ -116,9 +116,12 @@ daemon's HTTP API. Any change to `skills/<name>/SKILL.md` or `skills-state.json`
 schedules a reindex (debounced ~250 ms), which rewrites:
 
 - **`skills-registry.json`** — the derived catalog. Runtime-owned and held at
-  protection `read_only`: it is generated output, not a file to edit. An
+  protection `read_only`: it is generated output, not a file to edit. Agent
+  writes, deletes, moves and `chmod`s of it are refused outright (no override
+  to approve), with an error pointing at `skills/` and `skills-state.json`. An
   agent-authored registry left over from the old `skill-loader` procedure is
-  adopted in place on first index.
+  adopted in place on first index; remove that procedure's lambda and its
+  `on_file_change` trigger, whose writes now fail.
 - **`skills-state.json`** — *not* written by the runtime. It is yours:
   `{ "schema": 1, "disabled": ["some-skill"] }`.
 

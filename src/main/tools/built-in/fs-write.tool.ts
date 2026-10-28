@@ -5,6 +5,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import { currentSourceOrUnknown } from '../../runtime/execution-context'
 import { withFileLock } from '../file-lock'
+import { skillsRegistryRefusal } from '../../adf/skill-indexer'
 
 const EditSchema = z.object({
   old_text: z.string().min(1).describe('Exact text to find.'),
@@ -63,6 +64,10 @@ export class FsWriteTool implements Tool {
     const { mode, path } = parsed
     const isAuthorized = inputObj?._authorized === true
     const isOverride = inputObj?._protection_override === true
+
+    // Runtime-owned: refused plainly, with no override to approve.
+    const refusal = skillsRegistryRefusal(path, 'write')
+    if (refusal) return { content: refusal, isError: true }
 
     // File protection check. Only read_only blocks writes (no_delete permits
     // edits). Authorized code bypasses — same privilege as UI.

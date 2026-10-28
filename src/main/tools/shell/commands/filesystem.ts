@@ -6,6 +6,7 @@ import type { CommandHandler, CommandContext, CommandResult } from './types'
 import { ok, err, EXIT } from './types'
 import type { FileProtectionLevel } from '@shared/types/adf-v02.types'
 import { currentSourceOrUnknown } from '../../../runtime/execution-context'
+import { skillsRegistryRefusal } from '../../../adf/skill-indexer'
 import { shellReadFile, shellReadFileRow, isMediaMime, isTextRow } from './fs-read-helper'
 
 /** Normalize a path for VFS: strip leading ./ and / since VFS paths are relative */
@@ -243,6 +244,8 @@ const mvHandler: CommandHandler = {
     if (ctx.args.length < 2) return err('mv: usage: mv <src> <dst>')
     const src = vfsPath(ctx.args[0])
     const dst = vfsPath(ctx.args[1])
+    const refusal = skillsRegistryRefusal(src, 'move') ?? skillsRegistryRefusal(dst, 'replace')
+    if (refusal) return err(`mv: ${refusal}`)
 
     // Protection check mirrors fs_delete (the destructive half of a rename).
     // Authorized scripts bypass, same privilege as the UI. (ctx.authorized is
@@ -476,6 +479,8 @@ const chmodHandler: CommandHandler = {
     }
 
     const path = vfsPath(pathArg)
+    const refusal = skillsRegistryRefusal(path, 'change the protection of')
+    if (refusal) return err(`chmod: ${refusal}`)
     const current = ctx.workspace.getFileProtection(path)
     if (current === null) return err(`chmod: ${pathArg}: No such file or directory`)
     if (current === target) return ok('')

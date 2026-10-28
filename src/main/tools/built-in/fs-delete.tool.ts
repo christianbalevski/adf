@@ -4,6 +4,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import { currentSourceOrUnknown } from '../../runtime/execution-context'
+import { skillsRegistryRefusal } from '../../adf/skill-indexer'
 
 const InputSchema = z.object({
   path: z.string().describe('Relative path of the file to delete. Cannot delete read-only or no-delete files.')
@@ -19,6 +20,10 @@ export class FsDeleteTool implements Tool {
     const { path } = input as z.infer<typeof InputSchema>
     const isAuthorized = (input as Record<string, unknown>)?._authorized === true
     const isOverride = (input as Record<string, unknown>)?._protection_override === true
+
+    // Runtime-owned: refused plainly, with no override to approve.
+    const refusal = skillsRegistryRefusal(path, 'delete')
+    if (refusal) return { content: refusal, isError: true }
 
     const protection = workspace.getFileProtection(path)
     const wasProtected = protection === 'read_only' || protection === 'no_delete'
