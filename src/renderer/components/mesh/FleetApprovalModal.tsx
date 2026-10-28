@@ -8,6 +8,23 @@ import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { mapTarget, selectMapAgents } from './runtime-fleet'
 import { useOpenAgentKey } from '../../utils/runtime-api'
 
+/** Where the on-demand fetch of an approval's raw input stands. */
+export type ApprovalInputFetch =
+  | { status: 'loading' }
+  | { status: 'loaded'; input: unknown }
+  | { status: 'unavailable'; reason?: string }
+
+/**
+ * The line the modal shows about the arguments: none once they are there,
+ * otherwise that they are loading or unavailable and why. Never an empty
+ * body with no word on it.
+ */
+export function approvalInputNotice(fetch: ApprovalInputFetch, snapshotInput: unknown): string | undefined {
+  if (fetch.status === 'loaded' || snapshotInput != null) return undefined
+  if (fetch.status === 'loading') return 'Loading arguments…'
+  return fetch.reason ? `Arguments unavailable: ${fetch.reason}` : 'Arguments unavailable'
+}
+
 /**
  * Full-context HIL approval modal — thin wrapper around the unified
  * ToolCallModal (same inspector as the loop chat) that supplies the map's
@@ -36,19 +53,33 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   // longer carries it (B8) — it can be large and value-sensitive — so fetch it
   // on demand for the full-context modal, falling back to whatever the snapshot
   // still provides (older main builds, or a redacted preview).
-  const [fetchedInput, setFetchedInput] = useState<unknown>(undefined)
-  const requestId = pending?.type === 'approval' ? pending.requestId : undefined
+  const [inputFetch, setInputFetch] = useState<ApprovalInputFetch>({ status: 'loading' })
+  // The hub keys entries by its own id, not the executor's request id.
+  const approvalId = pending?.type === 'approval' ? pending.approvalId : undefined
+  const isApproval = pending?.type === 'approval'
   useEffect(() => {
-    if (!requestId) return
+    if (!isApproval) return
+    if (!approvalId) {
+      setInputFetch({ status: 'unavailable', reason: 'the runtime did not send the request id' })
+      return
+    }
     const target = mapTarget(filePath)
     const api = target.api as { getApprovalInput?: (filePath: string, approvalId: string) => Promise<unknown> } | undefined
-    if (!api?.getApprovalInput) return
+    if (!api?.getApprovalInput) {
+      setInputFetch({ status: 'unavailable', reason: 'this runtime cannot send arguments' })
+      return
+    }
+    // A new request never shows the previous one's arguments.
+    setInputFetch({ status: 'loading' })
     let cancelled = false
-    void api.getApprovalInput(target.filePath, requestId).then((input) => {
-      if (!cancelled && input != null) setFetchedInput(input)
-    }).catch(() => { /* input unavailable — fall back to the snapshot's */ })
+    void api.getApprovalInput(target.filePath, approvalId).then((input) => {
+      if (cancelled) return
+      setInputFetch(input != null ? { status: 'loaded', input } : { status: 'unavailable', reason: 'the runtime no longer has this request' })
+    }).catch((err: unknown) => {
+      if (!cancelled) setInputFetch({ status: 'unavailable', reason: err instanceof Error ? err.message : String(err) })
+    })
     return () => { cancelled = true }
-  }, [filePath, requestId])
+  }, [filePath, approvalId, isApproval])
 
   // The approval resolved elsewhere (loop, tile, lambda) — nothing to decide
   useEffect(() => {
@@ -91,7 +122,8 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
     <ToolCallModal
       variant="absolute"
       toolName={pending.toolName ?? 'tool'}
-      input={fetchedInput ?? pending.input}
+      input={inputFetch.status === 'loaded' ? inputFetch.input : pending.input}
+      inputNotice={approvalInputNotice(inputFetch, pending.input)}
       awaitingApproval
       approvalTitle={pending.protection?.description}
       subtitle={filePath}

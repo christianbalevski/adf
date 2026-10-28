@@ -32,7 +32,10 @@ export type PendingInteraction =
 
 interface PendingApprovalInteraction {
   type: 'approval'
+  /** The executor's request id: what respond/always-approve take. */
   requestId: string
+  /** The ApprovalHub entry id: what getApprovalInput takes. */
+  approvalId?: string
   toolName?: string
   input?: unknown
   /** Why the approval is pending ('restricted' tool vs 'protection' override). */

@@ -14,6 +14,7 @@ import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
 import { ApprovalControls } from '../../../src/renderer/components/agent/ApprovalControls'
 import { ApprovalReviewDialog } from '../../../src/renderer/components/agent/ApprovalReviewDialog'
 import { ToolCallModal } from '../../../src/renderer/components/agent/ToolCallModal'
+import { approvalInputNotice } from '../../../src/renderer/components/mesh/FleetApprovalModal'
 import { ApprovalRow } from '../../../src/renderer/components/layout/ApprovalsMenu'
 import type { AgentExecutionEvent, PendingNotification } from '../../../src/shared/types/ipc.types'
 
@@ -74,6 +75,29 @@ describe('ToolCallModal', () => {
     expect(labelledBy).toBeTruthy()
     expect(html).toContain(`id="${labelledBy}"`)
     expect(html).toContain('tabindex="-1"')
+  })
+  it('says why an approval shows no arguments, and keeps Raw and the approval controls', () => {
+    expect(approvalInputNotice({ status: 'loading' }, undefined)).toBe('Loading arguments…')
+    expect(approvalInputNotice({ status: 'unavailable', reason: 'connection refused' }, undefined)).toBe('Arguments unavailable: connection refused')
+    expect(approvalInputNotice({ status: 'unavailable' }, undefined)).toBe('Arguments unavailable')
+    expect(approvalInputNotice({ status: 'loaded', input: { key: 'model' } }, undefined)).toBeUndefined()
+    // The snapshot's own input still shows while the fetch is out or failed.
+    expect(approvalInputNotice({ status: 'unavailable' }, { key: 'model' })).toBeUndefined()
+
+    const html = renderToStaticMarkup(
+      <ToolCallModal
+        toolName="sys_update_config"
+        input={undefined}
+        awaitingApproval
+        inputNotice="Arguments unavailable: connection refused"
+        approvalControls={<ApprovalControls toolName="sys_update_config" onApprove={() => {}} onAlwaysApprove={() => {}} onReject={() => {}} />}
+        onClose={() => {}}
+      />
+    )
+    expect(html).toContain('Arguments unavailable: connection refused')
+    expect(html).toContain('>Raw<')
+    expect(html).toContain('Approve')
+    expect(html).toContain('Reject')
   })
 })
 
