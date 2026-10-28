@@ -37,18 +37,21 @@ export const FleetApprovalModal = memo(function FleetApprovalModal({
   // on demand for the full-context modal, falling back to whatever the snapshot
   // still provides (older main builds, or a redacted preview).
   const [fetchedInput, setFetchedInput] = useState<unknown>(undefined)
-  const requestId = pending?.type === 'approval' ? pending.requestId : undefined
+  // The hub keys entries by its own id, not the executor's request id.
+  const approvalId = pending?.type === 'approval' ? pending.approvalId : undefined
   useEffect(() => {
-    if (!requestId) return
+    // A new request never shows the previous one's arguments.
+    setFetchedInput(undefined)
+    if (!approvalId) return
     const target = mapTarget(filePath)
     const api = target.api as { getApprovalInput?: (filePath: string, approvalId: string) => Promise<unknown> } | undefined
     if (!api?.getApprovalInput) return
     let cancelled = false
-    void api.getApprovalInput(target.filePath, requestId).then((input) => {
+    void api.getApprovalInput(target.filePath, approvalId).then((input) => {
       if (!cancelled && input != null) setFetchedInput(input)
     }).catch(() => { /* input unavailable — fall back to the snapshot's */ })
     return () => { cancelled = true }
-  }, [filePath, requestId])
+  }, [filePath, approvalId])
 
   // The approval resolved elsewhere (loop, tile, lambda) — nothing to decide
   useEffect(() => {

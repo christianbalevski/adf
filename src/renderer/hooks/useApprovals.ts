@@ -30,7 +30,7 @@ const TOAST_TTL_MS = 8_000
  * resolutions, so a background agent's badge stuck around until the next poll.
  * One source of truth removes the hole and the poll.
  */
-function toPendingInteractions(notifications: PendingNotification[]): Record<string, PendingInteraction> {
+export function toPendingInteractions(notifications: PendingNotification[]): Record<string, PendingInteraction> {
   const byAgent: Record<string, PendingInteraction> = {}
   for (const n of notifications) {
     // By agent key: the path on This computer, runtime and path on another runtime (multi-runtime.md §5.2).
@@ -40,6 +40,7 @@ function toPendingInteractions(notifications: PendingNotification[]): Record<str
     byAgent[key] = n.kind === 'ask' ? { type: 'ask', requestId: n.requestId, questions: n.questions ?? [] } : {
       type: 'approval',
       requestId: n.requestId,
+      approvalId: n.id,
       toolName: n.toolName,
       input: n.input,
       reason: n.reason,

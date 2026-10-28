@@ -189,6 +189,31 @@ describe('approvals across runtimes', () => {
     expect(arrivalsToAnnounce(snapshot, new Set(), AGENT_1).map((n) => n.runtimeId)).toEqual([HOST_1])
   })
 
+  it('a map badge carries the hub id, which fetches the input, apart from the executor request id', async () => {
+    vi.resetModules()
+    vi.stubGlobal('window', { location: { search: '' }, adfApi: { platform: 'linux' } })
+    vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} })
+    const { toPendingInteractions } = await import('../../../src/renderer/hooks/useApprovals')
+    const { agentKey } = await import('../../../src/shared/types/agent-ref')
+    const { approvalHub, notificationKey } = await import('../../../src/main/runtime/approval-hub')
+    const id = notificationKey(AGENT_1, 'main', 'task-1')
+    approvalHub.register({
+      id, kind: 'approval', requestId: 'task-1', filePath: AGENT_1, agentName: 'agent-1', loop: 'main',
+      toolName: 'sys_update_config', preview: '', input: { path: 'model', value: 'x' }, requestedAt: 1, resolve: () => {},
+    } as Parameters<typeof approvalHub.register>[0])
+    try {
+      // The snapshot a remote runtime pushes: no input, its runtimeId added by the aggregator.
+      const [row] = approvalHub.snapshot()
+      const badge = toPendingInteractions([{ ...row, runtimeId: HOST_1 }])[agentKey({ runtimeId: HOST_1, filePath: AGENT_1 })]
+      expect(badge).toMatchObject({ type: 'approval', requestId: 'task-1', approvalId: id })
+      expect(badge?.type === 'approval' ? badge.input : 'x').toBeUndefined()
+      expect(approvalHub.getApprovalInput(AGENT_1, badge?.type === 'approval' ? badge.approvalId ?? '' : '')).toEqual({ path: 'model', value: 'x' })
+      expect(approvalHub.getApprovalInput(AGENT_1, 'task-1')).toBeUndefined()
+    } finally {
+      approvalHub.unregister(id)
+    }
+  })
+
   it('a toast is keyed by runtime and id, and goes when its own request is answered', async () => {
     await load()
     const { useApprovalsStore } = await import('../../../src/renderer/stores/approvals.store')
