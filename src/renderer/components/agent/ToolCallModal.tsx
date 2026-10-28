@@ -296,6 +296,7 @@ export const ToolCallModal = memo(function ToolCallModal({
   seq,
   subtitle,
   approvalTitle,
+  inputNotice,
   headerLead,
   headerActions,
   approvalControls,
@@ -329,6 +330,8 @@ export const ToolCallModal = memo(function ToolCallModal({
    * sees the consequence, not raw JSON. Absent for gated-tool approvals.
    */
   approvalTitle?: string
+  /** One plain line about the input itself (fleet: still loading, or why it is unavailable). */
+  inputNotice?: string
   /** Rendered before the tool name (fleet: agent icon + "wants to call"). */
   headerLead?: ReactNode
   /** Extra header buttons, left of the close button. */
@@ -567,6 +570,11 @@ export const ToolCallModal = memo(function ToolCallModal({
             </div>
           ) : (
             <>
+              {inputNotice && (
+                <div role="status" className="text-[12px] text-[var(--adf-ui-text-subtle)]">
+                  {inputNotice}
+                </div>
+              )}
               {/* Input — YAML-like flowing text, no card */}
               {hasInput && (
                 <div>
