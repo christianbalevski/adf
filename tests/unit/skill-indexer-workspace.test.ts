@@ -4,6 +4,8 @@ import { join } from 'path'
 import { tmpdir } from 'os'
 import { AdfWorkspace } from '../../src/main/adf/adf-workspace'
 import { SKILLS_REGISTRY_PATH, SKILLS_STATE_PATH } from '../../src/main/adf/skill-indexer'
+import { FsWriteTool } from '../../src/main/tools/built-in/fs-write.tool'
+import { FsDeleteTool } from '../../src/main/tools/built-in/fs-delete.tool'
 
 const MANIFEST = '---\nname: alpha\ndescription: Does alpha things.\n---\n\n# Alpha\n'
 
@@ -114,5 +116,23 @@ describe('skill indexing at the workspace write choke point', () => {
     const registry = JSON.parse(reopened.readFile(SKILLS_REGISTRY_PATH)!)
     expect(registry.skills).toEqual({})
     expect(reopened.getFileProtection(SKILLS_REGISTRY_PATH)).toBe('read_only')
+  })
+
+  it('refuses tool writes and deletes of the registry plainly, with no override to approve', async () => {
+    // A leftover loader lambda on an on_file_change trigger writes the registry
+    // on every skill edit. A protection denial would turn each write into an
+    // approval; the runtime rewrites the file anyway, so there is nothing to approve.
+    const workspace = newWorkspace()
+    const before = workspace.readFile(SKILLS_REGISTRY_PATH)
+    for (const flags of [{}, { _protection_override: true }, { _authorized: true }]) {
+      const write = await new FsWriteTool().execute({ mode: 'write', path: SKILLS_REGISTRY_PATH, content: '{}', ...flags }, workspace)
+      expect(write.isError).toBe(true)
+      expect(write.protection).toBeUndefined()
+      expect(write.content).toContain('skills/')
+      const del = await new FsDeleteTool().execute({ path: `./${SKILLS_REGISTRY_PATH}`, ...flags }, workspace)
+      expect(del.isError).toBe(true)
+      expect(del.protection).toBeUndefined()
+    }
+    expect(workspace.readFile(SKILLS_REGISTRY_PATH)).toBe(before)
   })
 })
