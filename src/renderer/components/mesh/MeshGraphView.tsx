@@ -2928,7 +2928,8 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
           // window controls and reserves its own clearance, so the bar should
           // keep the close button flush right instead of leaving a phantom gap.
           reserveWindowControls={!docFilePath || rightPanelCollapsed}
-          agentCluster={docFilePath ? <AgentTitleCluster onActivate={() => focusAgent(docFilePath)} /> : undefined}
+          // The nav's OpenAgentNavButton is the agent's avatar here; a second one in the cluster doubled it.
+          agentCluster={docFilePath ? <AgentTitleCluster avatar={false} onActivate={() => focusAgent(docFilePath)} /> : undefined}
         >
           {/* Deselect — the only way OUT of an open agent used to be opening
               another one. Closes the file: dock + status bar revert to the

@@ -203,6 +203,21 @@ describe('title bar', () => {
     expect(html.indexOf('data-title-remote')).toBeGreaterThan(html.indexOf('agent-1'))
   })
 
+  it('the map bar shows one avatar for a remote agent: the nav button’s, not a second in the cluster', async () => {
+    await cluster(BOX_1.id)
+    const { useAppStore } = await import('../../../src/renderer/stores/app.store')
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    useAppStore.getState().setAgentAvatars('emoji')
+    useAgentStore.getState().setConfig({ id: ID_1, name: 'agent-1', icon: '🛰' } as never)
+    const { AgentTitleCluster, OpenAgentNavButton } = await import('../../../src/renderer/components/layout/TitleBar')
+    const bar = renderToStaticMarkup(<><OpenAgentNavButton active={false} onClick={() => {}} /><AgentTitleCluster avatar={false} /></>)
+    expect(bar.match(/🛰/g)).toHaveLength(1)
+    expect(bar).toContain('>agent-1<')
+    expect(bar).toContain('data-title-remote')
+    // The title bar has no nav button, so its cluster keeps the avatar.
+    expect(renderToStaticMarkup(<AgentTitleCluster />).match(/🛰/g)).toHaveLength(1)
+  })
+
   it('a local agent has no icon', async () => {
     const html = await cluster('local')
     expect(html).toContain('agent-1')
