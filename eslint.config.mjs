@@ -6,6 +6,8 @@ import tseslint from 'typescript-eslint'
 export default tseslint.config(
   // Vendored from adf-org/brand (scripts/check-brand-tokens.mjs); not ours to lint.
   { ignores: ['src/renderer/lib/brand/orbital.js'] },
+  // Bundled output of tools/alf-mcp (gitignored).
+  { ignores: ['tools/**/.build/**'] },
   {
     ignores: ['dist/**', 'out/**'],
     linterOptions: {
@@ -16,6 +18,11 @@ export default tseslint.config(
   },
   eslint.configs.recommended,
   ...tseslint.configs.recommended,
+  {
+    // Plain Node scripts under tools/ (e.g. the alf-mcp launcher).
+    files: ['tools/**/*.{js,mjs,cjs}'],
+    languageOptions: { globals: globals.node },
+  },
   {
     // tools/ shares the src/ baseline: it imports runtime modules directly
     // (tools/alf-mcp reuses the crypto and pipeline code) and follows its style.
