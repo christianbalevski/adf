@@ -101,8 +101,10 @@ function useMinHold(value: string | null, ms: number): string | null {
  * everywhere.
  * Renders null while no file/config is open. `onActivate` makes the whole
  * cluster a click target (the map uses it to fly to the agent's tile).
+ * `avatar={false}` drops the avatar where an OpenAgentNavButton already
+ * shows it beside the name (the map's top bar).
  */
-export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
+export function AgentTitleCluster({ onActivate, avatar = true }: { onActivate?: () => void; avatar?: boolean }) {
   const filePath = useDocumentStore((s) => s.filePath)
   const isDirty = useDocumentStore((s) => s.isDirty)
   const config = useAgentStore((s) => s.config)
@@ -139,7 +141,7 @@ export function AgentTitleCluster({ onActivate }: { onActivate?: () => void }) {
       style={{ WebkitAppRegion: 'no-drag' } as React.CSSProperties}
       onClick={onActivate}
     >
-      <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} title={config.description || undefined} />
+      {avatar && <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} title={config.description || undefined} />}
       <span
         className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
         title={config.description || config.name}
