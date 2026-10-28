@@ -3,7 +3,7 @@ import { useShallow } from 'zustand/react/shallow'
 import { useFleetStore } from '../../stores/fleet.store'
 import { useMeshStore } from '../../stores/mesh.store'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
-import { isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
+import { groupMembers, isUnder, pathBasename, pathDirname, pathSegments } from './fleet-layout'
 import { MOD_KEY } from '../../utils/platform'
 import { sendFleetOrders } from '../../utils/queued-delivery'
 import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
@@ -217,9 +217,8 @@ export const FleetCommandBar = memo(function FleetCommandBar({
     // immediately and an offline one finds its orders on next start.
     const label = pathBasename(isRemoteAgentKey(dir) ? parseAgentKey(dir).filePath : dir)
     // Event-handler read — no need to subscribe to the whole roster for this
-    const members = selectMapAgents(useMeshStore.getState())
-      .filter((a) => a.filePath !== single.filePath &&
-        (a.filePath === dir || isUnder(a.filePath, dir)))
+    const members = groupMembers(selectMapAgents(useMeshStore.getState()), dir)
+      .filter((a) => a.filePath !== single.filePath)
       .map((a) => a.handle)
       .filter(Boolean)
     const roster = members.length > 0 ? members.join(', ') : '(no other members yet)'

@@ -69,6 +69,11 @@ export const isUnder = (p: string, root: string): boolean =>
 export const isInGroup = (p: string, dir: string): boolean =>
   isUnder(p, dir) || (runtimeOfRegion(dir) !== null && p.startsWith(dir))
 
+/** The agents of the group of directory `dir` (map keys; any runtime). */
+export function groupMembers<A extends { filePath: string }>(agents: readonly A[], dir: string): A[] {
+  return agents.filter((a) => a.filePath === dir || isInGroup(a.filePath, dir))
+}
+
 /** Join a directory and a relative child using the dir's native separator. */
 export const joinDir = (dir: string, child: string): string => dir + sepOf(dir) + child
 

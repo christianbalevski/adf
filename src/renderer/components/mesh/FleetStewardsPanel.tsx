@@ -6,7 +6,8 @@ import { OrbitalAvatar } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import { isUnder, pathBasename, pathSegments } from './fleet-layout'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
-import { selectMapAgents } from './runtime-fleet'
+import { selectMapAgents, type MapAgent } from './runtime-fleet'
+import { isRemoteAgentKey, parseAgentKey } from '../../../shared/types/agent-ref'
 
 const STATE_DOT: Record<string, string> = {
   active: 'bg-yellow-400',
@@ -69,12 +70,15 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
     for (const [dir, did] of Object.entries(stewards)) {
       const agent = byDid.get(did)
       if (!agent) continue // steward's DID no longer on the map — reappoint
-      const root = agent.trackedDirRoot
+      // Another runtime's folder: labelled from its own path and tracked folder, as the command bar does
+      const remote = isRemoteAgentKey(dir) ? parseAgentKey(dir) : null
+      const path = remote ? remote.filePath : dir
+      const root = remote ? (agent as MapAgent).sourceRoot : agent.trackedDirRoot
       const rootName = root ? pathBasename(root) : ''
-      const inRoot = !!root && (dir === root || isUnder(dir, root))
+      const inRoot = !!root && (path === root || isUnder(path, root))
       const label = !inRoot
-        ? pathBasename(dir)
-        : dir === root ? rootName : `${rootName}/${pathSegments(dir.slice(root!.length + 1)).join('/')}`
+        ? pathBasename(path)
+        : path === root ? rootName : `${rootName}/${pathSegments(path.slice(root!.length + 1)).join('/')}`
       out.push({ dir, label, agent })
     }
     out.sort((a, b) => a.label.localeCompare(b.label))

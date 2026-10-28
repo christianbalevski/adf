@@ -7,7 +7,7 @@
  * runtimeFleet with its own paths.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { computeFleetLayout, isInGroup, type TerrainNodeData } from '../../../src/renderer/components/mesh/fleet-layout'
+import { computeFleetLayout, groupMembers, isInGroup, type TerrainNodeData } from '../../../src/renderer/components/mesh/fleet-layout'
 import {
   byRuntime,
   fleetSettingsPatch,
@@ -163,5 +163,12 @@ describe('another runtime\'s group: its members (the group readout)', () => {
 
   it('This computer\'s folders match as before', () => {
     expect(members(LOCAL_ROOT)).toEqual([AGENT_1.filePath])
+  })
+
+  it('a steward appointed to another runtime\'s folder is charged with that folder\'s agents (the command bar\'s member list)', () => {
+    // The command bar keys a steward's folder as agentKey(runtime, native folder)
+    expect(groupMembers(all, agentKey({ runtimeId: HOST_1, filePath: DIR }))).toEqual([R1])
+    expect(groupMembers(all, agentKey({ runtimeId: HOST_1, filePath: ROOT }))).toEqual([R1, R2])
+    expect(groupMembers(all, LOCAL_ROOT)).toEqual([AGENT_1])
   })
 })
