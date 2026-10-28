@@ -6,7 +6,7 @@ import { useFleetStore } from '../../stores/fleet.store'
 import { joinDir, type TerrainCell } from './fleet-layout'
 import { hueFromPath, isDarkMode } from './FleetTerrainNode'
 import type { FleetAgentStatus } from '../../../shared/types/ipc.types'
-import { selectMapAgents } from './runtime-fleet'
+import { remoteGroupDir, runtimeOfRegion, selectMapAgents } from './runtime-fleet'
 
 /**
  * Voices — the group-status layer, rendered above the whole canvas (like the
@@ -58,6 +58,9 @@ const SETTLE_MS = 220
 interface ChipSpec {
   key: string
   dir: string
+  /** Terrain highlight key — the map's own `<territory>/<district>` form,
+   *  which differs from `dir` for another runtime's districts */
+  hoverDir: string
   hue: number
   /** World-space anchor (plot centroid) */
   wx: number
@@ -167,6 +170,7 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
         out.push({
           key: `root:${t.dirPath}`,
           dir: t.dirPath,
+          hoverDir: t.dirPath,
           hue,
           ...anchorOf(capital.length > 0 ? capital : occupied),
           voice,
@@ -179,13 +183,15 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
       for (const district of t.districts) {
         const owned = occupied.filter((c) => c.district === district)
         if (owned.length === 0) continue
-        const dir = joinDir(t.dirPath, district)
         const paths = owned.map((c) => c.filePath!).filter(Boolean)
+        // Another runtime's district names its folder in that runtime's own paths
+        const dir = runtimeOfRegion(t.dirPath) !== null ? remoteGroupDir(paths[0]) : joinDir(t.dirPath, district)
         const dv = pickVoice(paths, stewards[dir], voice?.filePath)
         if (!dv.voice || (!dv.voice.status && !dv.voice.handle)) continue
         out.push({
           key: `district:${dir}`,
           dir,
+          hoverDir: joinDir(t.dirPath, district),
           hue,
           ...anchorOf(owned),
           voice: dv.voice,
@@ -350,7 +356,7 @@ export const FleetVoicesLayer = memo(function FleetVoicesLayer({
               boxShadow: dark ? '0 2px 10px rgba(0,0,0,0.35)' : '0 2px 10px rgba(0,0,0,0.08)'
             }}
             onClick={() => useFleetStore.getState().setReadoutDir(c.dir)}
-            onMouseEnter={() => useFleetStore.getState().setHoverDir(c.dir)}
+            onMouseEnter={() => useFleetStore.getState().setHoverDir(c.hoverDir)}
             onMouseLeave={() => useFleetStore.getState().setHoverDir(null)}
             onWheel={(e) => {
               // A long voice scrolls in place; only then keep the wheel from

@@ -61,6 +61,17 @@ export function districtOfRemote(filePath: string, root: string | undefined): st
   return folder
 }
 
+/**
+ * The folder a group of another runtime's region stands for: the folder its
+ * member sits in, in that runtime's own path form, under the map's keys (as
+ * stewards are keyed), so `isUnder` finds every agent of that folder.
+ */
+export function remoteGroupDir(memberKey: string): string {
+  const { runtimeId, filePath } = parseAgentKey(memberKey)
+  const at = filePath.lastIndexOf(sepOf(filePath))
+  return agentKey({ runtimeId, filePath: at > 0 ? filePath.slice(0, at) : filePath })
+}
+
 const mapped = new WeakMap<FleetAgentStatus, { runtimeId: RuntimeId; agent: MapAgent }>()
 
 /** A remote runtime's agent as the map shows it (cached per source object, so selectors stay identity-stable). */

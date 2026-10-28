@@ -7,13 +7,14 @@
  * runtimeFleet with its own paths.
  */
 import { beforeEach, describe, expect, it } from 'vitest'
-import { computeFleetLayout, type TerrainNodeData } from '../../../src/renderer/components/mesh/fleet-layout'
+import { computeFleetLayout, groupMembers, isInGroup, type TerrainNodeData } from '../../../src/renderer/components/mesh/fleet-layout'
 import {
   byRuntime,
   fleetSettingsPatch,
   mapAgentsOf,
   mergeGroups,
   mergePeers,
+  remoteGroupDir,
   runtimeOfRegion,
   runtimeRegionRoot,
   selectMapAgents,
@@ -21,6 +22,7 @@ import {
   storedRuntimeFleetOf,
   splitGroups,
   splitRecord,
+  toMapAgent,
 } from '../../../src/renderer/components/mesh/runtime-fleet'
 import { useMeshStore } from '../../../src/renderer/stores/mesh.store'
 import { agentKey } from '../../../src/shared/types/agent-ref'
@@ -139,5 +141,34 @@ describe('per-runtime client keys', () => {
     })
     // The copy here keeps the runtime not in the set, as main does.
     expect(storedRuntimeFleetOf()['remote:host-2']).toEqual({ fleetGroups: { kept: ['/srv/agent-1.adf'] } })
+  })
+})
+
+describe('another runtime\'s group: its members (the group readout)', () => {
+  const ROOT = 'C:\\Users\\user\\Documents'
+  const DIR = `${ROOT}\\team`
+  const R1 = toMapAgent(HOST_1, agent(`${DIR}\\agent-1.adf`, AGENT_1_ID, ROOT))
+  const R2 = toMapAgent(HOST_1, agent(`${ROOT}\\agent-2.adf`, AGENT_2_ID, ROOT))
+  const all = [AGENT_1, R1, R2]
+  const members = (dir: string) => all.filter((a) => isInGroup(a.filePath, dir)).map((a) => a.filePath)
+
+  it('a district names its folder in the runtime\'s own path, under the map\'s keys, and holds its agents', () => {
+    expect(remoteGroupDir(R1.filePath)).toBe(agentKey({ runtimeId: HOST_1, filePath: DIR }))
+    expect(members(remoteGroupDir(R1.filePath))).toEqual([R1.filePath])
+  })
+
+  it('the region root holds every agent of that runtime and none of This computer\'s', () => {
+    expect(members(runtimeRegionRoot(HOST_1))).toEqual([R1.filePath, R2.filePath])
+  })
+
+  it('This computer\'s folders match as before', () => {
+    expect(members(LOCAL_ROOT)).toEqual([AGENT_1.filePath])
+  })
+
+  it('a steward appointed to another runtime\'s folder is charged with that folder\'s agents (the command bar\'s member list)', () => {
+    // The command bar keys a steward's folder as agentKey(runtime, native folder)
+    expect(groupMembers(all, agentKey({ runtimeId: HOST_1, filePath: DIR }))).toEqual([R1])
+    expect(groupMembers(all, agentKey({ runtimeId: HOST_1, filePath: ROOT }))).toEqual([R1, R2])
+    expect(groupMembers(all, LOCAL_ROOT)).toEqual([AGENT_1])
   })
 })
