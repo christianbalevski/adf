@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 333 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 334 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -36,7 +36,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Credentials](#tag-credentials) (10)
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (14)
-- [Providers & sign-in](#tag-providers-sign-in) (21)
+- [Providers & sign-in](#tag-providers-sign-in) (22)
 - [Tasks & approvals](#tag-tasks-approvals) (12)
 - [Timers](#tag-timers) (4)
 - [Templates](#tag-templates) (14)
@@ -7634,6 +7634,7 @@ App-level LLM providers, model lists, agent provider configs and subscription si
 | POST | [`/auth/claude/code`](#op-submitclaudeauthcode) | Send the Claude sign-in code |
 | POST | [`/auth/claude/cancel`](#op-cancelclaudeauth) | Cancel a running Claude sign-in |
 | POST | [`/auth/claude/logout`](#op-logoutclaude) | Sign out of Claude |
+| POST | [`/auth/claude/install`](#op-installclaudecode) | Install Claude Code |
 | POST | [`/agents/{id}/providers`](#op-attachagentprovider) | Attach or update a provider in the agent config |
 | DELETE | [`/agents/{id}/providers/{providerId}`](#op-detachagentprovider) | Detach a provider and delete its credentials |
 | POST | [`/runtime/providers/{id}/test`](#op-testruntimeprovider) | Test an app provider’s connection |
@@ -8277,6 +8278,37 @@ Example 200 (`application/json`):
 ```json
 {
   "success": true
+}
+```
+
+<a id="op-installclaudecode"></a>
+
+### POST `/auth/claude/install`
+
+**Install Claude Code**
+
+Installs Claude Code on the daemon host with Anthropic's native installer (`curl -fsSL https://claude.ai/install.sh | bash`, or `install.ps1` on Windows), or runs `claude update` when the installed copy is older than ADF needs. Returns at once when it is already up to date. No body; an install can take a few minutes. Returns the fresh sign-in status.
+
+Operation `installClaudeCode` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ClaudeAuthStatus](#schema-claudeauthstatus) | Installed |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "authenticated": true,
+  "installed": true,
+  "version": "2.1.250",
+  "email": "me@example.com",
+  "plan": "max"
 }
 ```
 

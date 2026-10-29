@@ -707,6 +707,8 @@ export interface AdfApi {
   claudeAuthSubmitCode: (code: string) => Promise<{ success: boolean; error?: string }>
   claudeAuthCancel: () => Promise<{ success: boolean }>
   claudeAuthLogout: () => Promise<{ success: boolean; error?: string }>
+  /** Install Claude Code (or update one too old for ADF) where the runtime runs. */
+  claudeCodeInstall: () => Promise<{ success: boolean; status?: ClaudeAuthStatusView; error?: string }>
 
   // Open file request (main -> renderer)
   /** `runtimeId`: Open Recent of another runtime (multi-runtime.md §6.6); absent for This computer. */

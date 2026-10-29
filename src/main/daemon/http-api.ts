@@ -1514,6 +1514,16 @@ export function createDaemonHttpApi(
     return { success: true }
   })
 
+  // Runs Anthropic's installer (or `claude update`) on the daemon host. The
+  // command is fixed in claude-code.ts; the request carries no body.
+  server.post('/auth/claude/install', async (_request, reply) => {
+    try {
+      return await getClaudeAuthManager().install()
+    } catch (err) {
+      return badRequest(reply, err instanceof Error ? err.message : String(err))
+    }
+  })
+
   server.get('/agents', async () => runtime.listAgents())
 
   // The /agents/:id resource routes reach running agents and open documents

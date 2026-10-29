@@ -42,6 +42,11 @@ export interface SubscriptionAuthState {
   cancel?: () => void
   /** Look for the local tool again (after installing it). */
   recheck?: () => void
+  /** Install or update the local tool, then sign in. */
+  install?: () => void
+  installing?: boolean
+  /** Why the last install failed. */
+  installError?: string
 }
 
 export interface ModelListState {
@@ -424,7 +429,7 @@ function LocalToolVersion({ auth }: { auth: SubscriptionAuthState }) {
     <Field
       label="Claude Code"
       hint={outdated
-        ? <span className="text-[var(--adf-ui-danger)]">ADF needs version {auth.minVersion} or newer. Run <code>claude update</code>, then check again.</span>
+        ? <span className="text-[var(--adf-ui-danger)]">ADF needs version {auth.minVersion} or newer.</span>
         : auth.minVersion ? `ADF needs version ${auth.minVersion} or newer.` : undefined}
     >
       <div className="flex items-center justify-between gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
@@ -443,8 +448,14 @@ function LocalToolVersion({ auth }: { auth: SubscriptionAuthState }) {
 function SubscriptionAccount({ auth, label }: { auth: SubscriptionAuthState; label: string }) {
   if (auth.updateRequired) {
     return (
-      <Field label="Account">
-        <p className="text-[12px] text-[var(--adf-ui-text-subtle)]">Update Claude Code to sign in with {label}.</p>
+      <Field label="Account" hint={auth.installError && !auth.installing ? <span className="text-[var(--adf-ui-danger)]">{auth.installError}</span> : undefined}>
+        {auth.install
+          ? (
+            <Button variant="primary" className="w-full" onClick={auth.install} disabled={auth.installing} loading={auth.installing}>
+              {auth.installing ? 'Updating Claude Code…' : 'Update Claude Code and sign in'}
+            </Button>
+          )
+          : <p className="text-[12px] text-[var(--adf-ui-text-subtle)]">Update Claude Code to sign in with {label}.</p>}
       </Field>
     )
   }
@@ -460,16 +471,30 @@ function SubscriptionAccount({ auth, label }: { auth: SubscriptionAuthState; lab
     )
   }
   if (auth.installed === false) {
+    // If the one-click install fails, fall back to installing by hand.
+    const failed = !!auth.installError && !auth.installing
     return (
-      <Field label="Account">
+      <Field
+        label="Account"
+        hint={failed
+          ? <span className="text-[var(--adf-ui-danger)]">{auth.installError}</span>
+          : auth.installing ? 'This can take a minute.' : undefined}
+      >
         <div className="space-y-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-3 py-2.5">
-          <p className="text-[12px] leading-5 text-[var(--adf-ui-text)]">{label} uses your Claude Pro or Max plan through Claude Code, which isn't installed.</p>
-          <div className="flex gap-1.5">
-            {auth.installUrl && (
-              <Button variant="primary" className="flex-1" onClick={() => window.open(auth.installUrl, '_blank', 'noopener,noreferrer')}>Install Claude Code</Button>
-            )}
-            {auth.recheck && <Button variant="secondary" onClick={auth.recheck}>Check again</Button>}
-          </div>
+          <p className="text-[12px] leading-5 text-[var(--adf-ui-text)]">{label} uses your Claude Pro or Max plan via Claude Code.</p>
+          {auth.install && (
+            <Button variant="primary" className="w-full" onClick={auth.install} disabled={auth.installing} loading={auth.installing}>
+              {auth.installing ? 'Installing Claude Code…' : 'Install Claude Code and sign in'}
+            </Button>
+          )}
+          {(failed || !auth.install) && (
+            <div className="flex gap-1.5">
+              {auth.installUrl && (
+                <Button variant="secondary" className="flex-1" onClick={() => window.open(auth.installUrl, '_blank', 'noopener,noreferrer')}>Install it yourself</Button>
+              )}
+              {auth.recheck && <Button variant="secondary" onClick={auth.recheck}>Check again</Button>}
+            </div>
+          )}
         </div>
       </Field>
     )
