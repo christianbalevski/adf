@@ -141,11 +141,13 @@ describe('daemon owner identity API', () => {
     const again = await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
     expect(again.statusCode).toBe(409)
     expect(again.json().code).toBe('identity_exists')
-    const firstWord = body.words[0] as string
+    // A leading run of three words, not one: a single common word ("your ")
+    // starts strings in the settings' prompt texts by chance.
+    const phraseStart = (body.words as string[]).slice(0, 3).join(' ')
     for (const url of ['/identity', '/settings', '/settings/ownerMnemonic', '/runtime/settings']) {
       const res = await server.inject({ method: 'GET', url })
       expect(res.body).not.toContain(body.mnemonic)
-      expect(res.body.includes(`"${firstWord} `)).toBe(false)
+      expect(res.body).not.toContain(phraseStart)
     }
     expect(readFileSync(settingsPath, 'utf-8')).not.toContain(body.mnemonic)
 
