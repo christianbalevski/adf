@@ -239,6 +239,9 @@ describe('C5: two quick opens on different runtimes', () => {
     const Probe = (): null => { api = useAdfFile(); return null }
     renderToString(<Probe />)
     const first = api.openFile(PATH, HOST_1)
+    // Opens now drain pending editor writes before dispatching FILE_OPEN.
+    // Exercise an already-dispatched remote request being overtaken.
+    await vi.waitFor(() => expect(answerRemote).toBeTypeOf('function'))
     const second = api.openFile(PATH_2)
     await second
     expect(useDocumentStore.getState()).toMatchObject({ filePath: PATH_2, runtimeId: 'local' })

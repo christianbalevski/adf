@@ -15,6 +15,7 @@ import { findApprovalTargetEntry } from './approval-target'
 import { interruptedBlockIndexes, pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
 import { deliverQueuedMessages } from '../utils/queued-delivery'
 import { openAgentKey, openApi, useOpenRuntime } from '../utils/runtime-api'
+import { captureAgentView, isCurrentAgentView } from '../utils/agent-view'
 
 /**
  * Search backwards for the last entry of the given type, but only if it's
@@ -150,6 +151,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
     typeof payload.seq === 'number' ? { seq: payload.seq } : undefined
 
   return (event: AgentExecutionEvent) => {
+    const view = captureAgentView()
     const agentStore = useAgentStore.getState()
     // Uniform router (§6.2): every event belongs to exactly one loop, and an
     // emitter that predates loops (or a main-loop emitter) simply omits it.
@@ -324,20 +326,23 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // refreshes open editor tabs, not the document store.
         if (shouldRefreshDocument(payload)) {
           openApi().getDocument().then((r) => {
+            if (!isCurrentAgentView(view)) return
             applyDocument(r.content, r.revision)
-          })
+          }).catch((err) => console.warn('[Agent] Document refresh failed:', err))
         }
         // If agent changed its own config, refresh it
         if (payload.name === 'sys_update_config') {
           openApi().getAgentConfig().then((config) => {
+            if (!isCurrentAgentView(view)) return
             useAgentStore.getState().setConfig(config)
-          })
+          }).catch((err) => console.warn('[Agent] Config refresh failed:', err))
         }
         // If agent updated meta, refresh status text
         if (payload.name === 'sys_set_meta' || payload.name === 'sys_delete_meta') {
           openApi().getHeader().then((header) => {
+            if (!isCurrentAgentView(view)) return
             useAgentStore.getState().setStatusText(header.statusText ?? '')
-          })
+          }).catch((err) => console.warn('[Agent] Status refresh failed:', err))
         }
         break
       }
@@ -470,10 +475,11 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         // open document dirty on a turn that never touched it.
         if (loop === MAIN_LOOP) {
           openApi()?.getHeader().then((header) => {
+            if (!isCurrentAgentView(view)) return
             applyDocument(header.document)
             applyConfig(header.agentConfig)
             useAgentStore.getState().setStatusText(header.statusText ?? '')
-          })
+          }).catch((err) => console.warn('[Agent] Header refresh failed:', err))
         }
 
         // Loop history is persisted via adf_loop table by AgentSession.
@@ -691,9 +697,11 @@ export function useAgentEvents() {
     // Refresh agent config when an MCP server connects (tools may have been discovered)
     const unsubMcp = api.onMcpServerStatusChanged?.((event: { name: string; status: string }) => {
       if (event.status === 'connected') {
+        const view = captureAgentView()
         api.getAgentConfig().then((config) => {
+          if (!isCurrentAgentView(view)) return
           if (config) useAgentStore.getState().setConfig(config)
-        })
+        }).catch((err) => console.warn('[Agent] MCP config refresh failed:', err))
       }
     })
 

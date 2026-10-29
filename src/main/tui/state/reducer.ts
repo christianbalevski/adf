@@ -295,8 +295,15 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
           return { ...t, loading: false, loaded: true, total: action.total, oldestOffset: action.offset, items: prependHistory(t.items, page) }
         }
         // A refresh re-reads the newest page; keep older pages already scrolled into.
+        // Sequence numbers identify rows, not their order: a compacted
+        // summary has a newer seq but precedes the preserved tail. Keep a
+        // cached prefix only when the page overlaps it, or starts beyond all
+        // rows in our previous snapshot. Offset zero is authoritative.
         const firstSeq = action.entries[0]?.seq
-        const older = firstSeq === undefined ? [] : t.items.filter(item => !item.local && item.seq !== undefined && item.seq < firstSeq)
+        const anchor = firstSeq === undefined ? -1 : t.items.findIndex(item => !item.local && item.seq === firstSeq)
+        const incomingSeqs = new Set(action.entries.map(entry => entry.seq))
+        const prefix = action.offset === 0 ? [] : anchor >= 0 ? t.items.slice(0, anchor) : t.total <= action.offset ? t.items : []
+        const older = prefix.filter(item => !item.local && !incomingSeqs.has(item.seq!))
         const oldestOffset = older.length > 0 ? Math.min(t.oldestOffset, action.offset) : action.offset
         // `live` is re-derived from the next delta; a stale flag would pin the
         // loop to "running" after a turn ended without turn.completed.
@@ -503,6 +510,14 @@ function applyEvent(state: TuiState, event: UmbilicalEvent, log = true): TuiStat
   if (TRANSCRIPT_EVENTS.has(event.event_type)) {
     const key = transcriptKey(agentId, loop)
     next = patchTranscript(next, key, t => {
+      // A destructive history change invalidates both cached pages and live
+      // copies of the deleted rows. Subsequent deltas build on this boundary
+      // and survive the asynchronous history reload. Still-queued owner
+      // messages have not entered the old history and must remain visible.
+      if (event.event_type === 'loop.cleared' || event.event_type === 'loop.compacted') {
+        const queued = t.items.filter(item => item.kind === 'user' && item.pending && !item.taken)
+        return { ...emptyTranscript(), loaded: t.loaded, items: applyEventToItems(queued, event) }
+      }
       const items = applyEventToItems(t.items, event)
       if (event.event_type === 'agent.state.changed' && turnOver(p.state)) return endLive(items === t.items ? t : { ...t, items })
       const live = event.event_type === 'turn.completed' || event.event_type === 'agent.error'

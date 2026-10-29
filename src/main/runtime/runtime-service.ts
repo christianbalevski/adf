@@ -467,7 +467,7 @@ const KILL_STOPPED_AUTOSTART = 'A Kill stopped this autostart. Start the agent a
 
 export class RuntimeLoopError extends Error {
   /** `details`: extra fields for the HTTP error body (e.g. `candidates`). */
-  constructor(message: string, readonly statusCode: 400 | 403 | 404 | 409 | 502, readonly code?: string, readonly details?: Record<string, unknown>) {
+  constructor(message: string, readonly statusCode: 400 | 403 | 404 | 409 | 502 | 503, readonly code?: string, readonly details?: Record<string, unknown>) {
     super(message)
     this.name = 'RuntimeLoopError'
   }
@@ -861,6 +861,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   async loadAgent(filePath: string, opts: RuntimeLoadAgentOptions = {}): Promise<RuntimeAgentRef> {
+    this.assertNotTearingDown()
     // Nothing loads while a Kill is stopping agents: it would come up behind the Kill's back.
     if (RuntimeGate.killing) throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
     const canonicalPath = this.canonicalFilePath(filePath)
@@ -875,12 +876,27 @@ export class RuntimeService extends EventEmitter {
     // The body starts a microtask later, after the slot is claimed: an
     // 'agent-lifecycle' listener that loads the same file from inside
     // agent_starting joins this load instead of starting a second one.
-    const load = Promise.resolve().then(() => this.doLoadAgent(canonicalPath, opts))
+    // Capture only an open that predates this load. Looking it up inside the
+    // microtask could join a later open that is itself waiting for this load.
+    const opening = this.inFlightOpens.get(canonicalPath)
+    const load = Promise.resolve().then(async () => {
+      if (opening) await opening.catch(() => {})
+      this.assertNotTearingDown()
+      return this.doLoadAgent(canonicalPath, opts)
+    })
     this.inFlightLoads.set(canonicalPath, load)
     try {
       return await load
     } finally {
       this.inFlightLoads.delete(canonicalPath)
+      // A failure before openAndRegister acquired the workspace (review or
+      // lease wait) never reaches settleDocumentAfterStart. Release a document
+      // that shutdown or its final holder left waiting for this load too.
+      const doc = this.documents.get(canonicalPath)
+      if (doc && (RuntimeGate.tearingDown || doc.holders.size === 0)) {
+        if (RuntimeGate.tearingDown) doc.holders.clear()
+        this.closeOpenDocument(doc, RuntimeGate.tearingDown ? 'shutdown' : 'released')
+      }
       // Releases the lease when the load failed (the agent is not registered).
       await this.agentLeases?.reconcile()
     }
@@ -952,6 +968,8 @@ export class RuntimeService extends EventEmitter {
       throw new RuntimeLoopError(lease.message, 409, AGENT_LEASED_CODE, { holder: lease.record.holder })
     }
 
+    this.assertNotTearingDown()
+
     // A start on an open document assembles on its workspace and key cell
     // (D4): one handle on the file, and the key unlocked before the start
     // reaches every consumer from the first connect, as Studio's captured key.
@@ -1003,6 +1021,7 @@ export class RuntimeService extends EventEmitter {
       const keyCell: DerivedKeyCell = doc ? doc.keyCell : { current: opts.derivedKey ?? null }
       if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey
       const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
+      this.assertNotTearingDown()
       built = await this.buildLoadedAgent(workspace, canonicalPath, config, provider, keyCell)
       // The document keeps the workspace when the runtime stops.
       if (this.documents.get(canonicalPath) === doc && doc) built.setWorkspaceOwnership(false)
@@ -1079,6 +1098,7 @@ export class RuntimeService extends EventEmitter {
     if (this.documents.get(doc.filePath) !== doc) return
     const managedId = this.filePathToAgentId.get(doc.filePath)
     const managed = managedId ? this.agents.get(managedId) : undefined
+    if (RuntimeGate.tearingDown) doc.holders.clear()
     if (doc.holders.size === 0) {
       this.documents.remove(doc)
       if (registered && managed) {
@@ -1087,7 +1107,7 @@ export class RuntimeService extends EventEmitter {
         try { doc.workspace.dispose() } catch { /* best effort */ }
       }
       console.log(`[RuntimeService] Closed document ${doc.filePath} (released while it was starting)`)
-      this.emitSafely('document-closed', { agentId: doc.agentId, filePath: doc.filePath, reason: 'released' } satisfies RuntimeDocumentEvent)
+      this.emitSafely('document-closed', { agentId: doc.agentId, filePath: doc.filePath, reason: RuntimeGate.tearingDown ? 'shutdown' : 'released' } satisfies RuntimeDocumentEvent)
       return
     }
     if (!registered && !isWorkspaceOpen(doc.workspace)) {
@@ -1236,20 +1256,23 @@ export class RuntimeService extends EventEmitter {
 
   /**
    * Shutdown-facing stop: permanently closes the runtime gate (resume()
-   * becomes a no-op until process exit), waits for in-flight loads to settle
-   * so no agent finishes starting behind the teardown's back, then unloads
-   * every registered agent. Per-agent failures are logged, never thrown.
-   *
-   * `agentTimeoutMs` bounds each unload (daemon shutdown semantics): a wedged
-   * agent is abandoned after the deadline so shutdown always completes.
+   * becomes a no-op until process exit) and unloads every registered agent.
+   * Pending loads/opens settle concurrently, bounded by agentTimeoutMs (10s
+   * by default); late builds dispose themselves instead of registering.
+   * Per-agent failures are logged, never thrown. `agentTimeoutMs` also bounds
+   * each unload when supplied (daemon shutdown semantics).
    */
   async shutdownAll(opts: { mode?: 'graceful' | 'immediate'; agentTimeoutMs?: number } = {}): Promise<void> {
     RuntimeGate.beginTeardown()
-    // In-flight loads observe the teardown flag in registerAgent and dispose
-    // themselves; await them so their teardown completes inside shutdown.
-    await Promise.allSettled(Array.from(this.inFlightLoads.values()))
+    // Never let a slow startup prevent existing agents, compute and host
+    // processes from reaching teardown. Late builds still see the terminal
+    // gate in registerAgent and dispose themselves when they eventually finish.
+    const pending = Promise.allSettled([...this.inFlightLoads.values(), ...this.inFlightOpens.values()])
+    const settling = withDeadline(pending, opts.agentTimeoutMs ?? 10_000, () => {
+      console.error('[RuntimeService] Timed out waiting for pending loads/documents during shutdown — continuing teardown')
+    })
     const mode = opts.mode ?? 'immediate'
-    await Promise.all(
+    const unloading = Promise.all(
       Array.from(this.agents.keys()).map(async (agentId) => {
         try {
           const unload = this.unloadAgent(agentId, { mode })
@@ -1265,8 +1288,11 @@ export class RuntimeService extends EventEmitter {
         }
       }),
     )
-    await Promise.allSettled(Array.from(this.inFlightOpens.values()))
-    for (const doc of this.documents.list()) this.closeOpenDocument(doc, 'shutdown')
+    await Promise.all([unloading, settling])
+    for (const doc of this.documents.list()) {
+      doc.holders.clear()
+      this.closeOpenDocument(doc, 'shutdown')
+    }
     if (this.holderSweep) { clearInterval(this.holderSweep); this.holderSweep = null }
   }
 
@@ -1853,11 +1879,13 @@ export class RuntimeService extends EventEmitter {
    * `needsPassword` tells the client to prompt.
    */
   async openDocument(filePath: string, opts: RuntimeDocumentHoldOptions): Promise<RuntimeOpenDocumentInfo> {
+    this.assertNotTearingDown()
     const holder = requireHolder(opts?.holder)
     const canonicalPath = this.canonicalFilePath(filePath)
     // A load in flight finishes first, so the document joins its workspace.
     const loading = this.inFlightLoads.get(canonicalPath)
     if (loading) await loading.catch(() => {})
+    this.assertNotTearingDown()
     let nameChangedFrom: string | null = null
     let doc = this.documents.get(canonicalPath)
     if (doc) this.assertNotMoving(doc)
@@ -1885,6 +1913,7 @@ export class RuntimeService extends EventEmitter {
         }
       }
     }
+    this.assertNotTearingDown()
     const first = doc.holders.size === 0
     doc.holders.add(holder)
     this.holderSeen.set(holder, Date.now())
@@ -1896,6 +1925,7 @@ export class RuntimeService extends EventEmitter {
   }
 
   private async createDocument(canonicalPath: string): Promise<{ doc: OpenDocument; nameChangedFrom: string | null }> {
+    this.assertNotTearingDown()
     const managedId = this.filePathToAgentId.get(canonicalPath)
     const managed = managedId ? this.agents.get(managedId) : undefined
     if (managed) {
@@ -1916,6 +1946,7 @@ export class RuntimeService extends EventEmitter {
     }
     if (!existsSync(canonicalPath)) throw new RuntimeLoopError(`No agent file at ${canonicalPath}`, 404, 'not_found')
     const leasedBy = (await this.documentOpenHooks.leasedElsewhere?.(canonicalPath)) ?? null
+    this.assertNotTearingDown()
     const workspace = AdfWorkspace.open(canonicalPath)
     try {
       let fresh: AgentConfig
@@ -3990,6 +4021,12 @@ export class RuntimeService extends EventEmitter {
   override on(event: 'document-opened' | 'document-closed', listener: (event: RuntimeDocumentEvent) => void): this
   override on(event: string | symbol, listener: (...args: any[]) => void): this {
     return super.on(event, listener)
+  }
+
+  private assertNotTearingDown(): void {
+    if (RuntimeGate.tearingDown) {
+      throw new RuntimeLoopError('RuntimeService: runtime teardown in progress.', 503, 'unavailable')
+    }
   }
 
   /**

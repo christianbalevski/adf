@@ -18,6 +18,7 @@ import { selectBackgroundAgents } from '../stores/background-agents.store'
 import { agentKey } from '../../shared/types/agent-ref'
 import type { RuntimeId } from '../../shared/runtime-tag'
 import type { AdfApi } from '../../preload/api'
+import { flushEditorsBeforeNavigation } from '../utils/editor-save'
 
 /**
  * The key an agent's saved editor tabs are kept under (localStorage, shared
@@ -434,8 +435,6 @@ export function useAdfFile() {
     const api = isAgentWindow ? window.adfApi : apiFor(runtimeId)
     const keyOf = (fp: string) => windowAgentKey(runtimeId, fp)
     const tTotal = performance.now()
-    // W3-F: unsaved text under a "changed elsewhere" notice is not dropped without asking.
-    if (!options.kept && !confirmDiscardConflicts()) return
     const generation = ++openGeneration
     latestOpenRuntime = runtimeId
     /**
@@ -450,6 +449,12 @@ export function useAdfFile() {
       }
       return true
     }
+
+    // Publish editor-local keystrokes and finish their writes while the old
+    // workspace is still addressable. A failed save keeps that agent open.
+    if (!options.kept && !await flushEditorsBeforeNavigation()) return { ...KEPT_UNSAVED }
+    if (await overtaken(false)) return { ...OVERTAKEN }
+    if (!options.kept && !confirmDiscardConflicts()) return
 
     // Loop history is persisted via the adf_loop table by AgentSession.
     // No need to send the UI log back — DOC_SET_CHAT is a no-op in v0.2.
@@ -644,13 +649,15 @@ export function useAdfFile() {
    * window's runtime.
    */
   const createQuickAgent = useCallback(async (firstMessage?: string, options?: { providerId?: string; modelId?: string; templateId?: string; folder?: string; name?: string; identityDraftId?: string; files?: File[]; runtimeId?: RuntimeId }) => {
-    if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
     const { files, runtimeId, ...createOptions } = options ?? {}
     // An agent window creates on its own runtime only.
     const target = isAgentWindow ? windowRuntime : runtimeId ?? windowRuntime
     // An open still on its way is overtaken by the new agent.
-    openGeneration++
+    const generation = ++openGeneration
     latestOpenRuntime = target
+    if (!await flushEditorsBeforeNavigation()) return { ...KEPT_UNSAVED }
+    if (generation !== openGeneration) return { ...OVERTAKEN }
+    if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
     beginAgentSwitch()
     try {
       const leftOther = await leaveOtherRuntime(target)
@@ -677,10 +684,12 @@ export function useAdfFile() {
   }, [setShowSettings, resetAgent, setFilePath, loadFileContents, clearDetachedForeground, clearLeftView])
 
   const createFile = useCallback(async (name: string) => {
-    if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
     // An open still on its way is overtaken by the new agent.
-    openGeneration++
+    const generation = ++openGeneration
     latestOpenRuntime = windowRuntime
+    if (!await flushEditorsBeforeNavigation()) return { ...KEPT_UNSAVED }
+    if (generation !== openGeneration) return { ...OVERTAKEN }
+    if (!confirmDiscardConflicts()) return { ...KEPT_UNSAVED }
     // Swaps main's workspace exactly like openFile does — same guard.
     beginAgentSwitch()
     try {
@@ -722,6 +731,8 @@ export function useAdfFile() {
   }, [setDirty])
 
   const closeFile = useCallback(async () => {
+    const generation = ++openGeneration
+    if (!await flushEditorsBeforeNavigation() || generation !== openGeneration) return
     if (!confirmDiscardConflicts()) return
     // An agent window shows one agent: closing it (Close Agent, a cancelled password,
     // owner or review dialog) closes the window. Its queued messages go to the main window.
@@ -734,11 +745,17 @@ export function useAdfFile() {
     // Its queued messages stay: a running agent moves to the background, where
     // they go at its turn's end; a stopped one keeps them until it is started,
     // shown in its chat when it is opened again.
-    await openApi().closeFile()
-    resetDocument()
-    resetAgent()
-    useAppStore.getState().resetAgentReview()
-    useEditorTabsStore.getState().reset()
+    beginAgentSwitch()
+    try {
+      await openApi().closeFile()
+      if (generation !== openGeneration) return
+      resetDocument()
+      resetAgent()
+      useAppStore.getState().resetAgentReview()
+      useEditorTabsStore.getState().reset()
+    } finally {
+      endAgentSwitch()
+    }
   }, [resetDocument, resetAgent])
 
   return { openFile, createFile, createQuickAgent, saveFile, closeFile, loadFileContents, completeFileOpen }

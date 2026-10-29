@@ -4,6 +4,8 @@ import type { RuntimeId } from '../../shared/runtime-tag'
 import { windowRuntime } from '../utils/window-kind'
 
 interface DocumentState {
+  /** Distinguishes successive opens, including A → B → A and reopening A. */
+  viewGeneration: number
   documentContent: string
   /**
    * W3-F: the revision `documentContent` is and who wrote it, when the backend
@@ -34,6 +36,7 @@ interface DocumentState {
 }
 
 export const useDocumentStore = create<DocumentState>((set) => ({
+  viewGeneration: 0,
   documentContent: '',
   isDirty: false,
   filePath: null,
@@ -44,13 +47,14 @@ export const useDocumentStore = create<DocumentState>((set) => ({
   setDocumentContent: (content, meta) =>
     set(meta ? { documentContent: content, isDirty: true, documentRevision: meta.revision, documentWriter: meta.writer ?? null } : { documentContent: content, isDirty: true }),
   setFilePath: (path, runtimeId) =>
-    set({
+    set((s) => ({
+      viewGeneration: s.viewGeneration + 1,
       filePath: path,
       ...(runtimeId ? { runtimeId } : {}),
       fileName: path
         ? path.split('/').pop()?.replace('.adf', '') ?? null
         : null
-    }),
+    })),
   setDirty: (dirty) => set({ isDirty: dirty }),
   setDraftInput: (filePath, value) =>
     set((s) => ({ draftInputs: { ...s.draftInputs, [filePath]: value } })),
@@ -62,7 +66,8 @@ export const useDocumentStore = create<DocumentState>((set) => ({
       return { draftInputs: next }
     }),
   reset: () =>
-    set({
+    set((s) => ({
+      viewGeneration: s.viewGeneration + 1,
       documentContent: '',
       documentRevision: undefined,
       documentWriter: undefined,
@@ -71,5 +76,5 @@ export const useDocumentStore = create<DocumentState>((set) => ({
       runtimeId: windowRuntime,
       fileName: null,
       draftInputs: {}
-    })
+    }))
 }))

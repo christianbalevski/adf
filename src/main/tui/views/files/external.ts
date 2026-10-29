@@ -148,9 +148,11 @@ export async function saveBackExternal(deps: ExternalDeps, target: FileTarget): 
   })
   if (!ok) return 'discarded'
 
-  const written = copy.binary && target.kind === 'file'
-    ? await actions.run(`Write ${label}`, c => c.writeFile(agentId, target.path, { contentBase64: edited.toString('base64'), ...(copy.mime ? { mimeType: copy.mime } : {}) }).then(() => true))
-    : await writeOverConflicts(actions, label, copy.file, base => actions.run(`Write ${label}`, c => writeOver(() => writeTarget(c, agentId, target, edited.toString('utf-8'), base))), baseRevision)
+  const written = await writeOverConflicts(actions, label, copy.file, base => actions.run(`Write ${label}`, c => writeOver<unknown>(() =>
+    copy.binary && target.kind === 'file'
+      ? c.writeFile(agentId, target.path, { contentBase64: edited.toString('base64'), ...(copy.mime ? { mimeType: copy.mime } : {}), ...(base !== undefined ? { baseRevision: base } : {}) })
+      : writeTarget(c, agentId, target, edited.toString('utf-8'), base),
+  )), baseRevision)
   if (written === 'reloaded') return 'discarded'
   if (!written) {
     actions.toast(`Write failed. Your copy is still at ${copy.file}`, 'error', 12_000)

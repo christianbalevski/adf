@@ -2,7 +2,7 @@
  * GET /events resume semantics: ?since= / Last-Event-ID, the stream.hello
  * frame (epoch + cursor window) and stream.gap when a resume cannot be exact.
  */
-import { request as httpRequest } from 'node:http'
+import { request as httpRequest, type ServerResponse } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { afterEach, describe, expect, it } from 'vitest'
 import type { FastifyInstance } from 'fastify'
@@ -64,6 +64,26 @@ function readFrames(port: number, path: string, count: number, headers: Record<s
 }
 
 describe('GET /events resume', () => {
+  it('bounds queued output when a reader stops consuming events', async () => {
+    const bus = new DaemonEventBus(2)
+    const port = await start(bus)
+    let response!: ServerResponse
+    server!.server.on('request', (_req, res) => { response = res })
+    const req = httpRequest({ host: '127.0.0.1', port, path: '/events' })
+    const connected = new Promise<void>((resolve, reject) => {
+      req.on('response', res => { res.pause(); resolve() })
+      req.on('error', reject)
+    })
+    req.end()
+    await connected
+    try {
+      for (let i = 0; i < 384; i++) {
+        bus.publish({ seq: 0, event_type: 'test.large', timestamp: 0, source: 'test', payload: { text: 'x'.repeat(65_536) } })
+      }
+      expect(response.writableLength).toBeLessThan(128 * 1024)
+    } finally { req.destroy() }
+  })
+
   it('opens with stream.hello (epoch + cursor window), then replays after ?since=', async () => {
     const bus = new DaemonEventBus(10)
     publish(bus, 3)

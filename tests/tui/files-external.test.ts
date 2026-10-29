@@ -1,6 +1,7 @@
 import { readFileSync, utimesSync, writeFileSync, existsSync } from 'node:fs'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { DaemonClient } from '../../src/main/tui/api/client'
+import { DaemonError } from '../../src/main/tui/api/types'
 import type { TuiActions } from '../../src/main/tui/state/store'
 import { cleanupExternalCopies, externalChanged, externalCopy, openExternal, saveBackExternal, type ExternalDeps } from '../../src/main/tui/views/files/external'
 
@@ -8,11 +9,17 @@ const XLSX = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x00, 0xff, 0x10])
 const target = { kind: 'file' as const, path: 'reports/q3.xlsx' }
 
 function setup(opts: { confirm?: boolean } = {}) {
-  const store = { bytes: XLSX }
+  const store = { bytes: XLSX, revision: 7 }
   const writes: Array<{ path: string; input: Record<string, unknown> }> = []
   const client = {
-    file: vi.fn(async () => ({ encoding: 'base64', content_base64: store.bytes.toString('base64'), mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: store.bytes.length })),
-    writeFile: vi.fn(async (_agent: string, path: string, input: Record<string, unknown>) => { writes.push({ path, input }); return { success: true } }),
+    file: vi.fn(async () => ({ encoding: 'base64', content_base64: store.bytes.toString('base64'), mime_type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', size: store.bytes.length, revision: store.revision })),
+    writeFile: vi.fn(async (_agent: string, path: string, input: Record<string, unknown>) => {
+      writes.push({ path, input })
+      if (input.baseRevision !== undefined && input.baseRevision !== store.revision) throw new DaemonError('changed', 409, { code: 'stale_revision', revision: store.revision, writer: { kind: 'agent' } })
+      store.bytes = Buffer.from(input.contentBase64 as string, 'base64')
+      store.revision++
+      return { success: true }
+    }),
   } as unknown as DaemonClient
   const toasts: string[] = []
   const actions = {
@@ -54,7 +61,27 @@ describe('open in the default app', () => {
     expect(writes).toHaveLength(1)
     expect(Buffer.from(writes[0].input.contentBase64 as string, 'base64').equals(edited)).toBe(true)
     expect(writes[0].input.mimeType).toMatch(/spreadsheetml/)
+    expect(writes[0].input.baseRevision).toBe(7)
     expect(externalChanged(externalCopy('agent-1', target)!)).toBe(false)
+  })
+
+  it.each([true, false])('guards a binary change during confirmation; overwrite=%s', async overwrite => {
+    const { deps, opened, store, writes, actions } = setup()
+    await openExternal(deps, target)
+    const edited = Buffer.from('my spreadsheet')
+    appSaves(opened[0], edited)
+    const theirs = Buffer.from('agent spreadsheet')
+    vi.mocked(actions.confirm).mockImplementationOnce(async () => {
+      store.bytes = theirs
+      store.revision = 8
+      return true
+    }).mockResolvedValueOnce(overwrite)
+    expect(await saveBackExternal(deps, target)).toBe(overwrite ? 'written' : 'discarded')
+    expect(writes.map(w => w.input.baseRevision)).toEqual(overwrite ? [7, 8] : [7])
+    expect(store.bytes.equals(overwrite ? edited : theirs)).toBe(true)
+    expect(actions.confirm).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(actions.confirm).mock.calls[1][0]).toMatchObject({ danger: true, confirmLabel: 'Overwrite', cancelLabel: 'Reload theirs' })
+    expect(readFileSync(opened[0]).equals(edited)).toBe(true)
   })
 
   it('writes nothing when the copy is unchanged or the user cancels', async () => {
