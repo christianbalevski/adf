@@ -99,7 +99,8 @@ An agent can write small scripts (lambdas) that the runtime executes in a sandbo
 - **Sign in with OAuth** — servers that need Google, GitHub, Linear, Atlassian, and similar accounts walk you through the browser sign-in; tokens are stored encrypted and never appear in config or logs.
 - **Credentials travel with the agent** — per-agent keys and OAuth grants are sealed inside the `.adf` file, so moving the file moves the access.
 - **Per-tool control** — every discovered tool can be enabled, hidden from the model, or set to require your approval. New tools start gated, never silently trusted.
-- **Run servers in a container** — MCP servers run in the shared container by default, isolated from your machine, and on the host only if you allow it.
+- **Run servers in a container** — MCP servers run in the shared container by default, isolated from your machine, and on the host only if you allow it, per server or for all of them after an explicit acceptance.
+- **Podman at the moment of need** — when a server needs a container and Podman isn't set up, Studio offers to set it up or run the server on the host; it never falls back to the host on its own.
 - **Agents can install their own MCP servers** — if you enable it, with approval.
 - **Skills are just files** — drop a `SKILL.md` folder into the agent and it is indexed automatically; mute skills without deleting them. Skills can never grant tools or bypass approvals.
 - **Skill catalog** — browse and preview skills from a public catalog or your own sources before installing.

@@ -195,7 +195,8 @@ and agents made with `adf new` are reviewed automatically.
 ## Compute
 
 The daemon starts the shared compute container (Podman) in the background a
-few seconds after boot; without Podman, MCP servers run on the host. Agents
+few seconds after boot. Without Podman, containerized MCP servers do not
+start (status `needs_compute`) and never fall back to the host. Agents
 with isolated compute get their own container when they load.
 
 With `ADF` and `H` set as in the [API guide](api-guide.md#quick-start):
