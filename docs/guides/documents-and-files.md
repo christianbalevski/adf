@@ -106,7 +106,7 @@ These paths aren't enforced but are strongly recommended:
 | Path | Purpose |
 |------|---------|
 | `data/` | Agent-managed data files |
-| `imports/` | Received attachments (namespaced by sender ID) |
+| `imported/<sender>/` | Received agent attachments (namespaced by sender) |
 | `lib/` | Support scripts and utilities |
 | `public/` | Files visible to other agents |
 
