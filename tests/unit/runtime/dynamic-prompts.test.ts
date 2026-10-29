@@ -79,4 +79,29 @@ describe('dynamic instruction templates', () => {
     expect(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_hint).toBeTruthy()
     expect(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_reply_routing).toBe('')
   })
+
+  it('gates idle guidance on live grants and registration, not visibility', () => {
+    const declaration = { name: 'sys_set_state', enabled: true, visible: false }
+    const config = { autonomous: true, tools: [declaration] }
+    let registered = true
+    const registry = { get: () => registered ? {} : undefined, clearCache: () => {} }
+    const executor = new AgentExecutor(config as never, {} as never, registry as never, {} as never)
+    const build = () => (executor as unknown as {
+      buildDynamicInstructions(chat: number, threshold: number): string | undefined
+    }).buildDynamicInstructions(0, 100)
+
+    expect(build()).toContain('sys_set_state')
+    registered = false
+    expect(build()).toBeUndefined()
+    registered = true
+    // First declaration wins, just as it does for the tool schema snapshot.
+    executor.updateConfig({ ...config, tools: [{ ...declaration, enabled: false }, declaration] } as never)
+    expect(build()).toBeUndefined()
+    executor.updateConfig(config as never)
+    expect(build()).toContain('sys_set_state')
+    executor.updateConfig({ ...config, context: { dynamic_instructions: { idle_reminder: false } } } as never)
+    expect(build()).toBeUndefined()
+    executor.updateConfig({ ...config, autonomous: false } as never)
+    expect(build()).toBeUndefined()
+  })
 })

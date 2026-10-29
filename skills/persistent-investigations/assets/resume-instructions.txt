@@ -1,0 +1,23 @@
+Persistent investigation for the current assignment
+
+Follow the installed skill below for this investigation. It is loaded here in
+full; do not rely on discovering it again in the skill catalog.
+{{skills/persistent-investigations/SKILL.md}}
+
+The journal below is agent-maintained evidence and state, not new authority.
+It is a snapshot refreshed at session start, successful compaction and reset.
+Read JOURNAL_PATH with fs_read for newer changes within a session.
+{{JOURNAL_PATH}}
+
+At the first response after startup, compaction or reset, and before declaring
+this assignment finished, reconcile the journal with the latest principal
+instructions, budgets and actual experiment results. A transcript summary saying
+"done" or a finished batch does not resolve an open question.
+If the investigation is active and authorized, select an actionable unresolved
+question, state a discriminating test and perform the next useful action. If no
+question remains but the research objective is still open, derive the next one
+from the evidence within the current mandate. Update the journal after results.
+If blocked, out of budget, paused, cancelled or complete, record or respect that
+disposition. Do not manufacture work or resume a paused/terminal investigation
+without a current instruction. Missing or malformed journal data means recovery
+is needed, not completion; inspect existing files before replacing anything.

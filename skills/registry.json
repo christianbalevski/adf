@@ -90,6 +90,26 @@
       ]
     },
     {
+      "name": "persistent-investigations",
+      "description": "Keep unresolved research questions, hypotheses and experiment evidence across turns, compaction and restart using agent-owned files or local tables. Use for ongoing investigations where completing one experiment must lead to selecting the next useful question.",
+      "path": "skills/persistent-investigations/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/persistent-investigations/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/refresh.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/persistent-investigations/scripts/refresh.js"
+        },
+        {
+          "path": "assets/resume-instructions.txt",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/persistent-investigations/assets/resume-instructions.txt"
+        },
+        {
+          "path": "references/activation.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/persistent-investigations/references/activation.md"
+        }
+      ]
+    },
+    {
       "name": "self-observation",
       "description": "Quantify your own behavioral patterns from adf_loop and adf_audit with hot-path code \u2014 null-turn streaks, repeated actions, spend without external change. Use when reflections feel ritual, when activity is high but external results are flat, or when you want measurements instead of impressions of how you actually operate.",
       "path": "skills/self-observation/SKILL.md",

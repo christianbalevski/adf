@@ -304,7 +304,7 @@ The \`ws_*\` tools manage your configured connections (schemas have the details)
   /** Appended when the agent runs in autonomous mode. */
   _autonomous: `## Autonomous Mode
 
-You are in autonomous mode: no human input this session. Report progress with \`say\`, put results in your final response, and call \`sys_set_state\` when your work is complete.`,
+You are in autonomous mode: the runtime continues after text-only responses. Follow your current instructions, including new directions from your principal and the assignment's stopping conditions. Completing a subtask does not end an ongoing assignment.`,
 }
 
 /**
@@ -327,7 +327,7 @@ export const DEFAULT_DYNAMIC_PROMPTS: Record<string, string> = {
   dyn_context_warning_imminent: "🚨 COMPACTION IMMINENT: Your conversation history has reached {{chat_tokens}} tokens (threshold: {{threshold}}). You are {{tokens_until}} tokens away from the automatic compaction limit. Write what you want to keep to your mind pages NOW (cite [S<seq>] markers), then call 'loop_compact' at a clean stopping point, or compaction will be forced at the threshold.",
   dyn_mesh_update: '[Mesh Update] Available agents:\n{{agent_list}}',
   dyn_mesh_update_empty: '[Mesh Update] No other agents are currently available in the mesh.',
-  dyn_idle_reminder: 'If you have completed your current work, call `sys_set_state` with state "idle" to yield.',
+  dyn_idle_reminder: 'When your current instructions call for stopping and no authorized work remains, call `sys_set_state` with state "idle" to yield.',
 }
 
 /** Labels for dynamic instruction templates, used in settings UI */

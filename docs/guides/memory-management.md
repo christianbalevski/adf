@@ -103,7 +103,7 @@ The compaction LLM is prompted to produce a concise briefing (under 1500 words) 
 
 ### Automatic Compaction
 
-When the loop reaches `context.compact_threshold` (default: 100,000), the runtime injects a system message instructing the agent to call `loop_compact`. The agent triggers compaction, and the LLM-powered summarization handles the rest.
+When the loop reaches `context.compact_threshold` (default: 100,000 tokens), the runtime gives the agent a memory-flush opportunity and then compacts automatically. A preflight check can compact sooner when the next request would exceed the working budget. Automatic compaction does not require the `loop_compact` tool to be enabled.
 
 ### Manual Compaction
 
@@ -140,6 +140,41 @@ By default the agent's own model writes the summary. Set `context.compaction_mod
 ```
 
 If that model can't be reached (the provider isn't configured, or its key is missing), the compaction fails: the history is kept and a `compaction_failed` row in `adf_logs` names the model and the reason. The runtime never switches to the agent's model on its own. Fix the provider, or remove `compaction_model`.
+
+### Summarizer input budget
+
+Compaction serializes full textual tool arguments, results and thinking, including
+call IDs and error status. It no longer clips individual arguments/results to
+200/300 characters or applies a fixed 100,000-character transcript ceiling.
+
+The runtime uses the selected summarizer's tokenizer to estimate the complete
+input, including its system prompt, transcript wrapper and compaction instructions.
+For the agent's own model, the existing compaction threshold supplies a planning
+allowance. The runtime reserves 28,192 output tokens and 1,024 tokens of margin.
+A 300,000-token threshold therefore normally permits up to 270,784 estimated input
+tokens, including prompt overhead. A small 8,192-token input floor allows deliberately
+frequent compaction with a low trigger threshold.
+
+A different summarizer uses a conservative allowance of at most 100,000 tokens
+and no more than the host's allowance, unless its existing model configuration
+already supplies a `compact_threshold` hint. Its explicit positive `max_tokens`
+can lower the output reserve. These are planning heuristics, **not discovered
+model context capacities**; provider tokenizers may also differ from local estimates.
+Provider rejection, empty summaries, and unfinished summaries (output limit or
+a tool request) leave history intact.
+
+The whole transcript is retained when it fits. Otherwise a bounded search keeps
+approximately 20% beginning and 80% recent text, with an explicit omitted-middle
+marker. `compaction_input` log rows record estimated input tokens, the budget,
+original/retained character counts and omitted characters. Larger inputs consume
+more summarizer tokens; the limit now follows the working allowance rather than
+silently discarding most of a long conversation.
+
+For unresolved research questions that must remain available independently of a
+summary, use the [persistent-investigations skill](investigations.md). Keep a
+durable pointer in mind or loop instructions, then read the journal with existing
+file tools when resuming. Optional agent-authored lambdas can publish updates
+through `loop_inject`; there is no investigation-specific runtime integration.
 
 ## Audit
 
