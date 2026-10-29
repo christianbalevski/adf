@@ -7,7 +7,7 @@ import { groupMembers, isUnder, pathBasename, pathDirname, pathSegments } from '
 import { MOD_KEY } from '../../utils/platform'
 import { sendFleetOrders } from '../../utils/queued-delivery'
 import { reportFailure, agentNameOf } from '../../stores/failure-notices.store'
-import { byRuntime, mapTarget, messageByRuntime, saveFleetKeys, selectMapAgents, type MapAgent } from './runtime-fleet'
+import { byRuntime, mapTarget, messageByRuntime, saveFleetKeys, selectMapAgents, stopMapAgent, type MapAgent } from './runtime-fleet'
 import { runtimeName, useRuntimesStore } from '../../stores/runtimes.store'
 import { apiFor } from '../../utils/runtime-api'
 import { agentKey, isRemoteAgentKey, parseAgentKey } from '../../../shared/types/agent-ref'
@@ -293,8 +293,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
             const result = await target.api.startBackgroundAgent(target.filePath)
             if (!result?.success) failures.push({ name, reason: result?.error })
           } else {
-            const target = mapTarget(agent.filePath)
-            await target.api.stopBackgroundAgent(target.filePath)
+            await stopMapAgent(agent.filePath)
           }
         } catch (err) {
           failures.push({ name, reason: err })

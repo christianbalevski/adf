@@ -8,6 +8,8 @@ import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { selectMeshSlice, type MeshSlice } from '../../stores/mesh.store'
 import { apiFor, openAgentKey } from '../../utils/runtime-api'
 import { useFleetStore } from '../../stores/fleet.store'
+import { useAgentStore } from '../../stores/agent.store'
+import { useDocumentStore } from '../../stores/document.store'
 
 /**
  * The fleet map across runtimes (docs/design/multi-runtime.md §6.4).
@@ -124,6 +126,22 @@ export function mapTarget(key: string): { runtimeId: RuntimeId; filePath: string
 /** The map key is the main window's open agent (its foreground calls apply). */
 export function isOpenOnMap(key: string): boolean {
   return openAgentKey() === key
+}
+
+/** Stop the selected agent through its foreground or background lifecycle. */
+export async function stopMapAgent(key: string): Promise<void> {
+  const target = mapTarget(key)
+  const foreground = isOpenOnMap(key)
+  const generation = useDocumentStore.getState().viewGeneration
+  const result = foreground
+    ? await target.api.stopAgent()
+    : await target.api.stopBackgroundAgent(target.filePath)
+  if (!result.success) throw new Error('Agent did not stop')
+  // Foreground teardown detaches its event stream; update the open view
+  // ourselves, unless the user has opened another agent while awaiting it.
+  if (foreground && isOpenOnMap(key) && useDocumentStore.getState().viewGeneration === generation) {
+    useAgentStore.getState().setState('off')
+  }
 }
 
 /** Map keys grouped by runtime, each with the paths of that runtime (one call per runtime, §6.4). */

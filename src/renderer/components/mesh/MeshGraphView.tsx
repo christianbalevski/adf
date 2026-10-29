@@ -61,7 +61,7 @@ import { useMesh } from '../../hooks/useMesh'
 import { useAppStore, type AppState } from '../../stores/app.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import type { FleetAgentStatus, MeshDebugInfo, RemotePeerAgent } from '../../../shared/types/ipc.types'
-import { selectMapAgents, mapTarget, mergeBurn, mergePeers, trackPeerMatchState, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, normalHost, urlHostOf, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
+import { selectMapAgents, mapTarget, stopMapAgent, mergeBurn, mergePeers, trackPeerMatchState, runtimeOfRegion, runtimeRegionRoot, splitRecord, prefixRecord, mergeGroups, mergeStewards, setStoredRuntimeFleet, fleetSettingsPatch, agentDidsOf, setPeerRuntimes, normalHost, urlHostOf, type MapPeer, type PeerMatch, type RuntimeFleetEntry, type RuntimeFleetStore } from './runtime-fleet'
 import { useConnectionStore } from '../../stores/connection.store'
 import { isRemoteAgentKey } from '../../../shared/types/agent-ref'
 import { useRuntimesStore, runtimeHeader } from '../../stores/runtimes.store'
@@ -2824,7 +2824,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         const online = selectMapAgents(useMeshStore.getState()).filter((a) => sel.has(a.filePath) && a.online)
         if (e.shiftKey && online.length > 0) {
           e.preventDefault()
-          for (const a of online) { const t = mapTarget(a.filePath); t.api.stopBackgroundAgent(t.filePath).catch(() => { /* poll reflects it */ }) }
+          for (const a of online) stopMapAgent(a.filePath).catch(() => { /* poll reflects it */ })
         }
       } else if (e.key === '.') {
         e.preventDefault()
