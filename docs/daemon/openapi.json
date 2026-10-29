@@ -24118,8 +24118,10 @@
               "connected",
               "error",
               "installing",
-              "needs_sign_in"
-            ]
+              "needs_sign_in",
+              "needs_compute"
+            ],
+            "description": "`needs_compute`: a containerized server that can't start because the compute environment (Podman, its prerequisites or its machine) is not set up; restart it once compute is ready."
           },
           "error": {
             "type": "string"

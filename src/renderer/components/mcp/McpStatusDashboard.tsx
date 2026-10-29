@@ -6,6 +6,7 @@ import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
 import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
+import { ComputeNeededSheet } from './ComputeNeededSheet'
 import { Tooltip } from '../common/Tooltip'
 import { allowHostTip, registrationPlacement } from '../../../shared/utils/mcp-host-placement'
 import { useSettingsApi } from '../settings/settings-runtime'
@@ -16,7 +17,8 @@ export const STATUS_COLORS: Record<string, string> = {
   error: 'bg-red-500',
   stopped: 'bg-neutral-400',
   installing: 'bg-blue-500 animate-pulse',
-  needs_sign_in: 'bg-amber-500'
+  needs_sign_in: 'bg-amber-500',
+  needs_compute: 'bg-amber-500'
 }
 
 export const STATUS_LABELS: Record<string, string> = {
@@ -25,7 +27,8 @@ export const STATUS_LABELS: Record<string, string> = {
   error: 'Error',
   stopped: 'Stopped',
   installing: 'Installing...',
-  needs_sign_in: 'Sign in needed'
+  needs_sign_in: 'Sign in needed',
+  needs_compute: 'Needs setup'
 }
 
 interface McpStatusDashboardProps {
@@ -40,9 +43,14 @@ interface McpStatusDashboardProps {
   hostApprovedSources?: Record<string, string>
   /** Allow on a host registration that does not run on the host yet (asks first). */
   onAllowHost?: (reg: McpServerRegistration) => void
+  /** settings.compute.mcpOnHost: every MCP server that didn't choose the container runs on this computer. */
+  mcpOnHost?: boolean
+  /** Turn on host access / mcpOnHost without asking again (the compute sheet already asked). Resolve false when not saved. */
+  onEnableHostAccessNow?: () => Promise<boolean>
+  onAcceptMcpOnHost?: () => Promise<boolean>
 }
 
-export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost }: McpStatusDashboardProps) {
+export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost, mcpOnHost, onEnableHostAccessNow, onAcceptMcpOnHost }: McpStatusDashboardProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
   // Ref to always access latest mcpServers inside async callbacks (avoids stale closures)
@@ -58,6 +66,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   /** Add/Configure modal state: open + registration id being edited (null = add). */
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
+  /** A Connect or Reconnect that failed because Podman isn't set up: the compute sheet for it. */
+  const [computeSheet, setComputeSheet] = useState<{ name: string; pinnedToContainer?: boolean; retry: () => void; runOnHost: () => Promise<boolean> } | null>(null)
   /** Reconnect results per server id */
   const [reconnectResults, setReconnectResults] = useState<Record<string, { loading: boolean; count?: number; error?: string }>>({})
   /**
@@ -264,6 +274,22 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         void refreshOAuthStatus()
       } else {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, error: result?.error ?? 'Failed' } }))
+        if (result?.computeUnavailable) {
+          let next = reg
+          setComputeSheet({
+            name: reg.name,
+            pinnedToContainer: reg.runLocation === 'shared',
+            retry: () => void handleReconnect(next),
+            runOnHost: async () => {
+              // The registration as it is now (a stamp may have landed), set to host. A host
+              // registration is approved for its package by SettingsPage (reconcileHostApprovedRegistrations).
+              const latest = mcpServersRef.current.find((s) => s.id === reg.id) ?? reg
+              next = { ...latest, runLocation: 'host' as const }
+              onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id ? next : s)))
+              return hostAccessEnabled || !onEnableHostAccessNow ? true : onEnableHostAccessNow()
+            },
+          })
+        }
       }
     } catch (err) {
       setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, error: String(err) } }))
@@ -304,6 +330,24 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         onSave={handleModalSave}
         onRemove={handleRemove}
         onOAuthChanged={refreshOAuthStatus}
+        onComputeNeeded={(name, actions) => setComputeSheet({ name, pinnedToContainer: actions.pinnedToContainer, retry: actions.retry, runOnHost: actions.runOnHost })}
+        onEnableHostAccessNow={onEnableHostAccessNow}
+        mcpOnHost={mcpOnHost}
+      />
+
+      <ComputeNeededSheet
+        open={!!computeSheet}
+        servers={computeSheet ? [computeSheet.name] : []}
+        api={api}
+        onClose={() => setComputeSheet(null)}
+        onResolved={() => {
+          const sheet = computeSheet
+          setComputeSheet(null)
+          sheet?.retry()
+        }}
+        runOnHost={computeSheet?.runOnHost}
+        // Offered only when it would move this server: not already on, and not pinned to the container.
+        acceptMcpOnHost={(mcpOnHost && hostAccessEnabled) || computeSheet?.pinnedToContainer ? undefined : onAcceptMcpOnHost}
       />
 
       {/* Server list */}
@@ -357,7 +401,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                     ) : (
                       (() => {
                         // One Runs on value: the registration's choice AND the runtime's approval.
-                        const placement = registrationPlacement(reg, { hostAccessEnabled: hostAccessEnabled === true, hostApproved: hostApproved ?? [], hostApprovedSources })
+                        const placement = registrationPlacement(reg, { hostAccessEnabled: hostAccessEnabled === true, hostApproved: hostApproved ?? [], hostApprovedSources, mcpOnHost })
                         return (
                           <>
                             <Tooltip tip={placement.runsOnHost ? HOST_BOUNDARY_TEXT : placement.gap ? 'Chosen: host. Runs isolated in the shared compute container until the host is allowed.' : 'Runs isolated in the shared compute container (requires Podman).'}>

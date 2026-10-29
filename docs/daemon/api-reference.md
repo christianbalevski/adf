@@ -20610,7 +20610,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `name` | string | yes |  |
-| `status` | `"stopped"` \| `"connecting"` \| `"connected"` \| `"error"` \| `"installing"` \| `"needs_sign_in"` | yes |  |
+| `status` | `"stopped"` \| `"connecting"` \| `"connected"` \| `"error"` \| `"installing"` \| `"needs_sign_in"` \| `"needs_compute"` | yes | `needs_compute`: a containerized server that can't start because the compute environment (Podman, its prerequisites or its machine) is not set up; restart it once compute is ready. |
 | `error` | string |  |  |
 | `connectedAt` | integer |  |  |
 | `restartCount` | integer | yes |  |

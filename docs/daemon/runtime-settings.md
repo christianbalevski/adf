@@ -118,6 +118,7 @@ This example shows the broader shape the daemon understands. It is intentionally
   "compute": {
     "hostAccessEnabled": false,
     "hostApproved": [],
+    "mcpOnHost": false,
     "machineCpus": 2,
     "machineMemoryMb": 2048,
     "containerImage": "docker.io/library/node:20-slim"
@@ -205,6 +206,7 @@ The daemon passes `compute` settings to `PodmanService`.
 |-------|-------------|
 | `hostAccessEnabled` | Whether host compute routing can be used |
 | `hostApproved` | Approved host access entries |
+| `mcpOnHost` | Run MCP servers on the host instead of in a container, only while `hostAccessEnabled` is on. Excludes servers pinned to the container (`run_location: "shared"`) and every server of an agent with its own container (`compute.enabled`). Off by default; Studio turns it on (with Host access) only after the owner explicitly accepts |
 | `containerPackages` | Packages installed in compute containers. Omit it to get the defaults (`src/shared/constants/compute-defaults.ts`: Python, Git, Chromium, the desktop/VNC stack, …); a list replaces them entirely |
 | `machineCpus` | CPU allocation for the Podman machine |
 | `machineMemoryMb` | Memory allocation for the Podman machine |

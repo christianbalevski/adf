@@ -159,11 +159,29 @@ describe('runMcpRegistrationTest', () => {
     expect((d.podman.execInContainer as ReturnType<typeof vi.fn>).mock.calls[0][2]).toMatch(/^rm -rf \/workspace\/_settings_test_/)
   })
 
-  it('shared container without podman fails with the install hint', async () => {
+  it('shared container without podman says compute is not ready, flagged for the compute sheet', async () => {
     const d = deps({ podman: { ...deps().podman, findPodman: async () => null } })
     const result = await runMcpRegistrationTest({ registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh' } }, d)
     expect(result.success).toBe(false)
-    expect(result.error).toMatch(/^Podman is unavailable/)
+    expect(result.computeUnavailable).toBe(true)
+    expect(result.error).toMatch(/^MCP server "gh" runs in a container, and the compute environment is not ready: Podman is not installed\./)
+  })
+
+  it('a container that fails for another reason is a plain error', async () => {
+    const d = deps({
+      podman: { ...deps().podman, ensureRunning: async () => { throw new Error('image pull failed') } },
+      podmanAvailability: async () => ({ available: true, machineRequired: false, platform: 'linux', installMethods: [], prerequisites: [] }),
+    })
+    const result = await runMcpRegistrationTest({ registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh' } }, d)
+    expect(result.computeUnavailable).toBeUndefined()
+    expect(result.error).toMatch(/^MCP container for "gh" is not ready: image pull failed/)
+  })
+
+  it('with MCP servers on this computer accepted, a default registration tests on the host', async () => {
+    const d = deps({ computeSettings: () => ({ hostAccessEnabled: true, hostApproved: [], mcpOnHost: true }) })
+    const result = await runMcpRegistrationTest({ registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh' } }, d)
+    expect(result.location).toBe('host')
+    expect(d.podman.ensureRunning).not.toHaveBeenCalled()
   })
 })
 

@@ -76,6 +76,8 @@ export interface EffectiveRuntimeSnapshot {
   compute: {
     host_access_enabled: boolean
     host_approved: string[]
+    /** Present when the owner accepted running MCP servers on this computer (settings.compute.mcpOnHost). */
+    mcp_on_host?: true
     execution_targets: string[]
     container_image?: string
     container_packages: string[]
@@ -200,6 +202,7 @@ export function buildEffectiveRuntime(args: {
   const compute: EffectiveRuntimeSnapshot['compute'] = {
     host_access_enabled: !!computeSettings.hostAccessEnabled,
     host_approved: asArray<string>(computeSettings.hostApproved),
+    ...(computeSettings.mcpOnHost === true ? { mcp_on_host: true as const } : {}),
     execution_targets: asArray<{ id: string }>(computeSettings.executionTargets).map(t => t.id),
     ...(computeSettings.containerImage ? { container_image: computeSettings.containerImage } : {}),
     container_packages: asArray<string>(computeSettings.containerPackages),

@@ -508,8 +508,11 @@ export interface McpConfig {
 // MCP Server Manager types
 // =============================================================================
 
-/** `needs_sign_in`: an http+oauth server with no token whose interactive sign-in is waiting for the agent's next turn. */
-export const MCP_SERVER_STATUSES = ['stopped', 'connecting', 'connected', 'error', 'installing', 'needs_sign_in'] as const
+/**
+ * `needs_sign_in`: an http+oauth server with no token whose interactive sign-in is waiting for the agent's next turn.
+ * `needs_compute`: a containerized server that can't start because the compute environment (Podman) is not set up.
+ */
+export const MCP_SERVER_STATUSES = ['stopped', 'connecting', 'connected', 'error', 'installing', 'needs_sign_in', 'needs_compute'] as const
 export type McpServerStatus = (typeof MCP_SERVER_STATUSES)[number]
 
 export interface McpServerLogEntry {

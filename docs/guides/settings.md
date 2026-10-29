@@ -297,6 +297,7 @@ From **Settings → MCP servers**:
 - **Connect** — The modal's verify button runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
 - **Configure** — Reopens the same modal for any server
 - **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)
+- **Needs setup** — The server runs in a container and Podman isn't set up. Connect or Reconnect opens a sheet that sets Podman up or runs the server on the host; see [Compute](compute.md#mcp-server-execution-location)
 - **Available to agents** — Per-server toggle letting agents attach the server themselves (via `mcp_install`); defaults on for container/remote, off for host
 - **Logs** — View per-server logs including tool call history
 - **Remove** — Delete the server and its installation
@@ -308,7 +309,7 @@ From **Settings → MCP servers**:
 |-------|-------------|
 | **Name** | Server display name |
 | **Transport** | Connection type: `stdio` (local process) or `http` (remote Streamable HTTP endpoint) |
-| **Runs on** | Where the server executes: **Host** (default for Settings installs — runs on the host machine with your user account's access, driven by your agents; auto-added to the host-approved list) or **Container** (shared compute container — isolation upgrade, requires Podman) |
+| **Runs on** | Where the server executes: **Container** (the default — the shared compute container, requires Podman) or **Host** (runs on the host machine with your user account's access, driven by your agents; auto-added to the host-approved list). With **MCP servers on the host** on in Settings → Compute → Advanced, the default shows **Host** |
 | **Command** | Command to start the server (stdio) |
 | **Args** | Command arguments (one per row, supports `~` expansion) |
 | **Environment Variables** | Variables passed to the server process |
