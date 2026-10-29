@@ -76,9 +76,9 @@ export const HOST_ACCESS_CONFIRM: ConfirmOptions = {
 
 /** Running every MCP server on this computer (settings.compute.mcpOnHost): an explicit acceptance. */
 export const MCP_ON_HOST_CONFIRM: ConfirmOptions = {
-  title: 'Run MCP servers on this computer',
-  body: 'MCP servers will run directly on this computer instead of in a container, including servers your agents install. They can read and change your files, use your network, and run programs as you. Servers set to run in the container stay there.',
+  title: 'Run MCP servers on the host',
+  body: 'MCP servers will run directly on the host instead of in a container, including servers your agents install. They can read and change your files, use your network, and run programs as you. This also turns on Host access: agents given host access, and approved servers, run on the host too. Servers set to run in the container, and agents with their own container, stay in a container.',
   acknowledge: 'I understand the risk, and accept it for every MCP server.',
-  confirmLabel: 'Run on this computer',
+  confirmLabel: 'Run on the host',
   danger: true,
 }

@@ -75,7 +75,8 @@ describe('a Settings → MCP registration\'s Runs on', () => {
   })
 
   it('with MCP servers on this computer accepted: host unless the container was chosen', () => {
-    const runtime = { hostAccessEnabled: false, hostApproved: [], mcpOnHost: true }
+    const runtime = { hostAccessEnabled: true, hostApproved: [], mcpOnHost: true }
+    expect(registrationPlacement(reg({ runLocation: undefined }), { ...runtime, hostAccessEnabled: false }).runsOnHost).toBe(false)
     expect(registrationPlacement(reg({ runLocation: undefined }), runtime)).toEqual({ runsOnHost: true, gap: null })
     expect(registrationPlacement(reg(), runtime)).toEqual({ runsOnHost: true, gap: null })
     expect(registrationPlacement(reg({ runLocation: 'shared' }), runtime).runsOnHost).toBe(false)

@@ -2957,7 +2957,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               }}
                               title={placement.choice === location
                                 ? `Runs on ${location.toLowerCase()}. Click to change.`
-                                : `Chosen: ${placement.choice.toLowerCase()}. Runs on ${location.toLowerCase()} until the host is allowed. Click to change.`}
+                                : location === 'Host'
+                                  ? 'Runs on host: MCP servers on the host is on in Settings → Compute. Click to choose a container.'
+                                  : `Chosen: ${placement.choice.toLowerCase()}. Runs on ${location.toLowerCase()} until the host is allowed. Click to change.`}
                             >{location}</button>
                           </span>
                         </div>

@@ -290,9 +290,9 @@ export function deriveRegistrationTestPlan(
     const notes = reg.oauth ? ['Interactive OAuth sign-in runs in a browser during this test.'] : []
     return { location: 'remote http', authMode: reg.oauth ? 'run' : 'none', materializeFiles: false, notes }
   }
-  // The owner accepted MCP servers on this computer: host unless the
-  // container was chosen (shouldContainerize).
-  if (opts?.mcpOnHost && reg.runLocation !== 'shared') {
+  // The owner accepted MCP servers on this computer (and Host access is on):
+  // host unless the container was chosen (shouldContainerize).
+  if (opts?.mcpOnHost && opts.hostAccessEnabled && reg.runLocation !== 'shared') {
     return { location: 'host', authMode: reg.auth ? 'run' : 'none', materializeFiles: true, notes: [] }
   }
   if (reg.runLocation === 'host') {

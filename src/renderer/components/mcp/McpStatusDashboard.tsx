@@ -67,7 +67,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const [modalOpen, setModalOpen] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   /** A Connect or Reconnect that failed because Podman isn't set up: the compute sheet for it. */
-  const [computeSheet, setComputeSheet] = useState<{ name: string; retry: () => void; runOnHost: () => Promise<boolean> } | null>(null)
+  const [computeSheet, setComputeSheet] = useState<{ name: string; pinnedToContainer?: boolean; retry: () => void; runOnHost: () => Promise<boolean> } | null>(null)
   /** Reconnect results per server id */
   const [reconnectResults, setReconnectResults] = useState<Record<string, { loading: boolean; count?: number; error?: string }>>({})
   /**
@@ -275,15 +275,17 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
       } else {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, error: result?.error ?? 'Failed' } }))
         if (result?.computeUnavailable) {
-          const onHost = { ...reg, runLocation: 'host' as const }
           let next = reg
           setComputeSheet({
             name: reg.name,
+            pinnedToContainer: reg.runLocation === 'shared',
             retry: () => void handleReconnect(next),
             runOnHost: async () => {
-              // A host registration is approved for its package by SettingsPage (reconcileHostApprovedRegistrations).
-              next = onHost
-              onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id ? onHost : s)))
+              // The registration as it is now (a stamp may have landed), set to host. A host
+              // registration is approved for its package by SettingsPage (reconcileHostApprovedRegistrations).
+              const latest = mcpServersRef.current.find((s) => s.id === reg.id) ?? reg
+              next = { ...latest, runLocation: 'host' as const }
+              onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id ? next : s)))
               return hostAccessEnabled || !onEnableHostAccessNow ? true : onEnableHostAccessNow()
             },
           })
@@ -328,8 +330,9 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         onSave={handleModalSave}
         onRemove={handleRemove}
         onOAuthChanged={refreshOAuthStatus}
-        onComputeNeeded={(name, actions) => setComputeSheet({ name, ...actions })}
+        onComputeNeeded={(name, actions) => setComputeSheet({ name, pinnedToContainer: actions.pinnedToContainer, retry: actions.retry, runOnHost: actions.runOnHost })}
         onEnableHostAccessNow={onEnableHostAccessNow}
+        mcpOnHost={mcpOnHost}
       />
 
       <ComputeNeededSheet
@@ -343,7 +346,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
           sheet?.retry()
         }}
         runOnHost={computeSheet?.runOnHost}
-        acceptMcpOnHost={mcpOnHost ? undefined : onAcceptMcpOnHost}
+        // Offered only when it would move this server: not already on, and not pinned to the container.
+        acceptMcpOnHost={(mcpOnHost && hostAccessEnabled) || computeSheet?.pinnedToContainer ? undefined : onAcceptMcpOnHost}
       />
 
       {/* Server list */}

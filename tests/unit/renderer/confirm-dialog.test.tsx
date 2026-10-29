@@ -33,7 +33,7 @@ describe('ConfirmDialog', () => {
     const html = renderToStaticMarkup(<ConfirmDialog options={MCP_ON_HOST_CONFIRM} onAnswer={() => {}} />)
     expect(html).toContain('type="checkbox"')
     expect(html).toContain(MCP_ON_HOST_CONFIRM.acknowledge)
-    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Run on this computer</)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Run on the host</)
     // Without an acknowledgement the button is live.
     expect(renderToStaticMarkup(<ConfirmDialog options={HOST_ACCESS_CONFIRM} onAnswer={() => {}} />)).not.toMatch(/disabled=""[^>]*>Allow host access</)
   })

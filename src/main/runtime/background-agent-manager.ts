@@ -1507,7 +1507,10 @@ export class BackgroundAgentManager extends EventEmitter {
           const podman = this.podmanService
           const podmanBin = await prepareMcpContainer(podman, cfg.name, () => isolated
             ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-            : podman.ensureRunning())
+            : podman.ensureRunning()).catch((err: unknown) => {
+            if (err instanceof ComputeUnavailableError) mgr.markFailed(cfg, err.message, 'needs_compute')
+            throw err
+          })
           const { resolveContainerCommand } = await import('../services/container-command-resolver')
           const { isolatedContainerName } = await import('../services/podman.service')
           const cc = resolveContainerCommand(cfg)

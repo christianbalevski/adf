@@ -4326,7 +4326,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               const isolated = shouldIsolate(freshConfig) && !isServerForceShared(connCfg)
               const podmanBin = await prepareMcpContainer(podmanService, serverName, () => isolated
                 ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-                : podmanService.ensureRunning())
+                : podmanService.ensureRunning()).catch((err: unknown) => {
+            if (err instanceof ComputeUnavailableError) currentMcpManager?.markFailed(connCfg, err.message, 'needs_compute')
+            throw err
+          })
               const cc = resolveContainerCommand(connCfg)
               container = {
                 podmanBin,
@@ -4370,12 +4373,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const freshConfig = capturedWorkspace.getAgentConfig()
       return connectConfiguredMcpServer(freshConfig, serverName, 'Agent reconnect')
     }))
-    // The owner's restart takes the agent's own reconnect path, so a server
-    // that never started (needs_compute) connects once compute is set up.
-    if (currentMcpManager) {
-      registerMcpConnector(currentMcpManager, (serverName, reason = 'Owner restart') =>
-        connectConfiguredMcpServer(capturedWorkspace.getAgentConfig(), serverName, reason))
-    }
     agentToolRegistry.register(new McpUninstallTool((serverName) => {
       console.log(`[MCP] Agent uninstalled server "${serverName}"`)
       currentMcpManager?.disconnect(serverName).catch(() => {})
@@ -4442,6 +4439,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       }),
     )
     const mcpManager = new McpClientManager(newScratchDir, mcpOAuthProviderFactory)
+    // The owner's restart takes the agent's own reconnect path, so a server
+    // that never started (needs_compute) connects once compute is set up.
+    // Keyed by this agent's own manager (it becomes currentMcpManager later).
+    registerMcpConnector(mcpManager, (serverName, reason = 'Owner restart') =>
+      connectConfiguredMcpServer(capturedWorkspace.getAgentConfig(), serverName, reason))
     {
 
       // Forward supervisor events to renderer and cache logs

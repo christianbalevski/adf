@@ -22,13 +22,16 @@ export function computeGap(a: PodmanAvailability): string | null {
   if (!a.available) return 'Podman is not installed'
   const missing = a.prerequisites.find((p) => !p.installed)
   if (missing) return `${missing.name} is not installed`
-  if (a.machineRequired && a.machineExists === false) return "Podman's machine is not set up"
+  // machineExists is also false when `podman machine list` failed or timed
+  // out (after sleep, a hung gvproxy): the setup's init step treats an
+  // existing machine as done, so the sheet still recovers either way.
+  if (a.machineRequired && a.machineExists === false) return "Podman's machine is not set up or not responding"
   if (a.machineRequired && !a.machineRunning) return "Podman's machine is not running"
   return null
 }
 
-export function needsComputeMessage(serverName: string, gap: string): string {
-  return `MCP server "${serverName}" runs in a container, and the compute environment is not ready: ${gap}. ` +
+export function needsComputeMessage(serverName: string, gap: string, detail?: string): string {
+  return `MCP server "${serverName}" runs in a container, and the compute environment is not ready: ${gap}${detail ? ` (${detail.replace(/\.$/, '')})` : ''}. ` +
     `The owner can set it up, or let this server run on the host, in ADF Studio; then call mcp_restart("${serverName}") to reconnect.`
 }
 
@@ -46,10 +49,10 @@ export async function prepareMcpContainer(
   try {
     await start()
   } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
     let gap: string | null = null
     try { gap = computeGap(await availability()) } catch { /* unknown: report the container error */ }
-    if (gap) throw new ComputeUnavailableError(needsComputeMessage(serverName, gap))
-    const detail = err instanceof Error ? err.message : String(err)
+    if (gap) throw new ComputeUnavailableError(needsComputeMessage(serverName, gap, detail))
     throw new Error(`MCP container for "${serverName}" is not ready: ${detail} Once the compute environment is fixed, call mcp_restart("${serverName}") to reconnect.`)
   }
   const bin = await podman.findPodman()

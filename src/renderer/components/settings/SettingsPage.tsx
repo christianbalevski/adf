@@ -1306,6 +1306,15 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
     await commit({ compute: patch }, () => set(prev))
   }
 
+  /** MCP servers on the host, already accepted (the compute sheet asked): it applies only with Host access, so both go on in one write. */
+  const acceptMcpOnHostNow = () => {
+    const prev = { host: computeHostAccessEnabled, mcp: computeMcpOnHost }
+    setComputeHostAccessEnabled(true)
+    setComputeMcpOnHost(true)
+    invalidateConfigCaches()
+    return commit({ compute: { hostAccessEnabled: true, mcpOnHost: true } }, () => { setComputeHostAccessEnabled(prev.host); setComputeMcpOnHost(prev.mcp) })
+  }
+
   /** Host approval changes: both lists in one write, the live refs kept in step. */
   const saveHostApproval = (approved: string[], sources: Record<string, string>) => {
     const prev = { approved: computeHostApprovedRef.current, sources: computeHostApprovedSourcesRef.current }
@@ -1941,7 +1950,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
               onEnableHostAccess={() => { void confirm(HOST_ACCESS_CONFIRM).then((yes) => { if (yes) void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled) }) }}
               mcpOnHost={computeMcpOnHost}
               onEnableHostAccessNow={() => persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled)}
-              onAcceptMcpOnHost={() => persistCompute('mcpOnHost', setComputeMcpOnHost, true, computeMcpOnHost)}
+              onAcceptMcpOnHost={acceptMcpOnHostNow}
             />
           )}
 
@@ -1968,7 +1977,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
             computeHostAccessEnabled={computeHostAccessEnabled}
             setComputeHostAccessEnabled={(v) => void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, v, computeHostAccessEnabled)}
             computeMcpOnHost={computeMcpOnHost}
-            setComputeMcpOnHost={(v) => void persistCompute('mcpOnHost', setComputeMcpOnHost, v, computeMcpOnHost)}
+            setComputeMcpOnHost={(v) => void (v ? acceptMcpOnHostNow() : persistCompute('mcpOnHost', setComputeMcpOnHost, false, computeMcpOnHost))}
             computeHostApproved={computeHostApproved}
             revokeHostServer={(name) => {
               const sources = { ...computeHostApprovedSourcesRef.current }
@@ -2381,7 +2390,7 @@ function ComputeTab({
           <span className="mt-0.5 block text-[12px] text-[var(--adf-ui-text-muted)]">Host access and custom Docker or Podman containers.</span>
         </span>
         <span className="flex items-center gap-2 text-[11px] text-[var(--adf-ui-text-muted)]">
-          {executionTargets.length > 0 || computeHostAccessEnabled || computeMcpOnHost ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0) + (computeMcpOnHost ? 1 : 0)} configured` : 'Configure'}
+          {executionTargets.length > 0 || computeHostAccessEnabled ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0) + (computeHostAccessEnabled && computeMcpOnHost ? 1 : 0)} configured` : 'Configure'}
           <svg className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </span>
       </button>
@@ -2398,10 +2407,10 @@ function ComputeTab({
       </SettingsRow>
       <SettingsRow
         separator
-        label={<>MCP servers on this computer<InfoHint tip="Every MCP server runs directly on this computer instead of in a container, including servers agents install. Servers set to run in the container, and servers of agents with their own container, stay in a container." /></>}
+        label={<>MCP servers on the host<InfoHint tip="Every MCP server runs directly on the host instead of in a container, including servers agents install. Servers set to run in the container, and all servers of agents with their own container, stay in a container. Applies only while Host access is on; turning it on turns Host access on." /></>}
         description="Skips the container for MCP servers. They can read and change your files."
       >
-        <Switch label="MCP servers on this computer" checked={computeMcpOnHost} onChange={(next) => void switchMcpOnHost(next)} />
+        <Switch label="MCP servers on the host" checked={computeMcpOnHost && computeHostAccessEnabled} onChange={(next) => void switchMcpOnHost(next)} />
       </SettingsRow>
       {computeHostAccessEnabled && (
         <SettingsRow

@@ -4,10 +4,12 @@
  * Default: ALL MCP servers run in the shared container.
  *
  * The owner can accept running every MCP server on this computer
- * (mcpOnHost, Settings → Compute, confirmed by name). Then a server runs on
- * host unless it explicitly asks for the container (run_location: 'shared')
- * or its agent has its own isolated container (compute.enabled) and the
- * server did not ask for host.
+ * (mcpOnHost, Settings → Compute, an explicit acceptance). It applies only
+ * while Host access (hostAccessEnabled) is on, and never to an agent with
+ * its own isolated container (compute.enabled, locked on review): that
+ * agent's servers follow the rules below even when one asks for host, so
+ * the agent can't use its own run_location to reach the host. A server
+ * pinned to the container (run_location: 'shared') stays there too.
  *
  * Otherwise a server runs on host ONLY when all these conditions are met:
  *   1. Server has run_location: 'host' (or legacy host_requested: true)
@@ -81,9 +83,9 @@ export function shouldContainerize(
 ): boolean {
   const location = effectiveRunLocation(serverConfig)
 
-  // The owner accepted MCP servers on this computer: every server that
-  // didn't ask for a container, its own or the shared one
-  if (settings.mcpOnHost && (location === 'host' || (location === undefined && !shouldIsolate(agentConfig)))) return false
+  // The owner accepted MCP servers on this computer: every server that isn't
+  // pinned to the container, for agents without their own container
+  if (settings.mcpOnHost === true && settings.hostAccessEnabled === true && !shouldIsolate(agentConfig) && location !== 'shared') return false
 
   // Server didn't request host access — containerize (default)
   if (location !== 'host') return true

@@ -983,7 +983,10 @@ export class AgentRuntimeBuilder {
           const podman = this.podmanService
           const podmanBin = await prepareMcpContainer(podman, cfg.name, () => isolated
             ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-            : podman.ensureRunning())
+            : podman.ensureRunning()).catch((err: unknown) => {
+            if (err instanceof ComputeUnavailableError) manager.markFailed(cfg, err.message, 'needs_compute')
+            throw err
+          })
           const cc = resolveContainerCommand(cfg)
           container = {
             podmanBin,

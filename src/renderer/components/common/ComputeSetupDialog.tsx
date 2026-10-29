@@ -8,8 +8,9 @@ import { writeSettings } from '../settings/settings-save'
 import { ComputeNeededSheet } from '../mcp/ComputeNeededSheet'
 import { allowHostPatch, serverSourceIdentity, type RuntimeHostApproval } from '../../../shared/utils/mcp-host-placement'
 import { registrationSourceIdentity } from '../../../shared/utils/mcp-config'
+import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
 import type { AgentConfig, McpServerStatus } from '../../../shared/types/adf-v02.types'
-import type { McpServerRegistration } from '../../../shared/types/ipc.types'
+import type { AppSettings, McpServerRegistration } from '../../../shared/types/ipc.types'
 
 /**
  * Compute at the moment of need, for the open agent. Mounted once in
@@ -25,36 +26,62 @@ export function ComputeSetupDialog() {
   const request = useComputeSetupStore((s) => s.request)
   const openSheet = useComputeSetupStore((s) => s.open)
   const closeSheet = useComputeSetupStore((s) => s.close)
-  const [statuses, setStatuses] = useState<Record<string, McpServerStatus>>({})
+  /** Statuses with the file they belong to: a switch never shows the last agent's servers. */
+  const [statuses, setStatuses] = useState<{ filePath: string | null; byName: Record<string, McpServerStatus> }>({ filePath: null, byName: {} })
   /** Servers already shown for this file: the sheet opens by itself once per server. */
-  const prompted = useRef(new Set<string>())
+  const prompted = useRef<{ filePath: string | null; names: Set<string> }>({ filePath: null, names: new Set() })
 
   useEffect(() => {
-    prompted.current = new Set()
-    setStatuses({})
+    setStatuses({ filePath, byName: {} })
     if (!filePath) return
     let cancelled = false
     void Promise.resolve(openApi()?.getMcpServerStatus?.()).then((res) => {
       if (cancelled || !res?.servers) return
-      setStatuses(Object.fromEntries(res.servers.map((s) => [s.name, s.status])))
+      setStatuses({ filePath, byName: Object.fromEntries(res.servers.map((s) => [s.name, s.status])) })
     }).catch(() => { /* no runtime for this agent */ })
     const unsub = openApi()?.onMcpServerStatusChanged?.((event) => {
-      setStatuses((prev) => ({ ...prev, [event.name]: event.status }))
+      if (cancelled) return
+      setStatuses((prev) => (prev.filePath === filePath ? { filePath, byName: { ...prev.byName, [event.name]: event.status } } : prev))
     })
     return () => { cancelled = true; unsub?.() }
   }, [filePath, openRuntime])
 
   useEffect(() => {
-    if (!filePath) return
-    const fresh = Object.entries(statuses).filter(([name, status]) => status === 'needs_compute' && !prompted.current.has(name)).map(([name]) => name)
+    if (!filePath || statuses.filePath !== filePath) return
+    if (prompted.current.filePath !== filePath) prompted.current = { filePath, names: new Set() }
+    const waiting = Object.entries(statuses.byName).filter(([, status]) => status === 'needs_compute').map(([name]) => name)
+    const fresh = waiting.filter((name) => !prompted.current.names.has(name))
     if (fresh.length === 0) return
-    for (const name of fresh) prompted.current.add(name)
-    const waiting = Object.entries(statuses).filter(([, status]) => status === 'needs_compute').map(([name]) => name)
+    for (const name of fresh) prompted.current.names.add(name)
     openSheet(filePath, waiting)
   }, [statuses, filePath, openSheet])
 
   const open = !!request && request.filePath === filePath
   const servers = open ? request.servers : []
+
+  // The open agent's runtime settings, read when the sheet opens: whether
+  // "run all on the host" would move any of these servers.
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+  useEffect(() => {
+    if (!open) return
+    let cancelled = false
+    setSettings(null)
+    void Promise.resolve(openApi()?.getSettings()).then((s) => { if (!cancelled) setSettings(s ?? null) }).catch(() => {})
+    return () => { cancelled = true }
+  }, [open])
+  const config = useAgentStore((s) => s.config) as AgentConfig | null
+  const mcpOnHostWouldHelp = (() => {
+    if (!settings || !config) return false
+    if (settings.compute?.mcpOnHost === true && settings.compute.hostAccessEnabled === true) return false
+    // An agent with its own container keeps its servers in it (container-routing.ts).
+    if (config.compute?.enabled) return false
+    const registrations = settings.mcpServers ?? []
+    return servers.some((name) => {
+      const reg = registrations.find((r) => r.name === name)
+      const location = reg ? reg.runLocation : config.mcp?.servers?.find((s) => s.name === name)?.run_location
+      return location !== 'shared'
+    })
+  })()
 
   const reconnect = useCallback(() => {
     closeSheet()
@@ -72,6 +99,7 @@ export function ComputeSetupDialog() {
     const registrations = settings.mcpServers ?? []
     let nextRegistrations: McpServerRegistration[] | null = null
     const agentOwned: string[] = []
+    let matched = 0
     for (const name of servers) {
       const reg = registrations.find((r) => r.name === name)
       if (reg) {
@@ -80,6 +108,7 @@ export function ComputeSetupDialog() {
         const patch = allowHostPatch(name, registrationSourceIdentity(reg), true, runtime)
         runtime = { ...runtime, ...patch }
         computePatch = { ...computePatch, ...patch }
+        matched++
       } else {
         const server = config.mcp?.servers?.find((s) => s.name === name)
         if (!server) continue
@@ -87,8 +116,10 @@ export function ComputeSetupDialog() {
         runtime = { ...runtime, ...patch }
         computePatch = { ...computePatch, ...patch }
         agentOwned.push(name)
+        matched++
       }
     }
+    if (matched === 0) return false
     const outcome = await writeSettings({ compute: computePatch, ...(nextRegistrations ? { mcpServers: nextRegistrations } : {}) }, api)
     if (!outcome.ok) return false
     if (agentOwned.length) {
@@ -109,7 +140,8 @@ export function ComputeSetupDialog() {
   }, [servers])
 
   const acceptMcpOnHost = useCallback(async (): Promise<boolean> => {
-    const outcome = await writeSettings({ compute: { mcpOnHost: true } }, openApi())
+    // MCP servers on the host apply only while Host access is on; the acceptance covers both.
+    const outcome = await writeSettings({ compute: { hostAccessEnabled: true, mcpOnHost: true } }, openApi())
     return outcome.ok
   }, [])
 
@@ -121,7 +153,8 @@ export function ComputeSetupDialog() {
       onClose={closeSheet}
       onResolved={reconnect}
       runOnHost={runOnHost}
-      acceptMcpOnHost={acceptMcpOnHost}
+      acceptMcpOnHost={mcpOnHostWouldHelp ? acceptMcpOnHost : undefined}
+      remote={openRuntime !== LOCAL_RUNTIME}
     />
   )
 }

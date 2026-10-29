@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useState } from 'react'
 import { Dialog } from '../common/Dialog'
-import { MCP_ON_HOST_CONFIRM, useConfirm } from '../common/ConfirmDialog'
+import { HOST_ACCESS_CONFIRM, MCP_ON_HOST_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { Button } from '../ui'
 import type { ComputeSetupResult } from '../../../shared/types/compute.types'
 import { computeSetupPlan, type ComputeSetupPlan } from './compute-setup-plan'
@@ -33,14 +33,16 @@ export interface ComputeNeededSheetProps {
   onResolved: () => void
   /** Save "these servers run on this computer". Resolves false when not saved. Absent: not offered. */
   runOnHost?: () => Promise<boolean>
-  /** Save settings.compute.mcpOnHost. Resolves false when not saved. Absent: not offered. */
+  /** Save settings.compute.mcpOnHost (and Host access). Resolves false when not saved. Absent: not offered. */
   acceptMcpOnHost?: () => Promise<boolean>
+  /** The runtime is another machine (a remote daemon): say so instead of "this computer". */
+  remote?: boolean
 }
 
 /** At most this many steps per click: install, machine init, machine start, and slack. */
 const MAX_STEPS = 5
 
-export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, runOnHost, acceptMcpOnHost }: ComputeNeededSheetProps) {
+export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, runOnHost, acceptMcpOnHost, remote }: ComputeNeededSheetProps) {
   const [plan, setPlan] = useState<ComputeSetupPlan | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +59,7 @@ export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, ru
     if (!open) return
     setError(null)
     setBusy(null)
+    setPlan(null)
     void check().catch((err) => setError(String(err)))
   }, [open, check])
 
@@ -85,12 +88,18 @@ export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, ru
   }
 
   const named = servers.length === 1 ? `"${servers[0]}"` : 'These MCP servers'
+  const place = remote ? 'the computer running this agent' : 'this computer'
   const hostOne = async () => {
     if (!runOnHost) return
     const yes = await confirm({
-      title: servers.length === 1 ? `Run ${servers[0]} on this computer` : 'Run these servers on this computer',
-      body: `${named} will run directly on this computer instead of in a container. ${servers.length === 1 ? 'It' : 'They'} can read and change your files, use your network, and run programs as you.`,
-      confirmLabel: 'Run on this computer',
+      title: servers.length === 1 ? `Run ${servers[0]} on the host` : 'Run these servers on the host',
+      body: (
+        <>
+          <p>{named} will run directly on {place} instead of in a container, with its files and network. Servers set up in Settings → MCP servers run on the host for every agent that uses them.</p>
+          <p className="mt-2">This turns on Host access if it is off. {HOST_ACCESS_CONFIRM.body}</p>
+        </>
+      ),
+      confirmLabel: 'Run on the host',
       danger: true,
     })
     if (!yes) return
@@ -113,11 +122,14 @@ export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, ru
     }
   }
 
+  // The confirm renders beside the sheet, not inside it: a nested <dialog>'s
+  // close event would bubble to the sheet's onClose and close it too.
   return (
+    <>
     <Dialog open={open} onClose={onClose} title="Set up a container for MCP servers" preventClose={!!busy}>
       <div className="space-y-4 text-[13px] leading-5">
         <p className="text-[var(--adf-ui-text-muted)]">
-          {named} {servers.length === 1 ? 'needs' : 'need'} Podman to run in a container, away from your files. Podman isn&apos;t set up on this computer yet.
+          {named} {servers.length === 1 ? 'needs' : 'need'} Podman to run in a container, away from your files. Podman isn&apos;t set up on {place} yet.
         </p>
 
         <div className="space-y-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-3 py-2.5">
@@ -136,27 +148,28 @@ export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, ru
               {busy && busy !== 'Saving…' ? busy : plan.kind === 'ready' ? 'Podman is ready: connect' : 'Set up Podman (recommended)'}
             </Button>
           )}
-          {busy && busy !== 'Saving…' && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">This can take a few minutes. Your system may ask for your password.</p>}
+          {busy && busy !== 'Saving…' && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">This can take a few minutes.{remote ? '' : ' Your system may ask for your password.'}</p>}
           {error && <p className="text-[11px] text-[var(--adf-ui-danger)] break-words" role="alert">{error}</p>}
         </div>
 
         {(runOnHost || acceptMcpOnHost) && (
           <div className="space-y-1.5">
-            <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Or skip the container. Servers on this computer can read and change your files.</p>
+            <p className="text-[12px] text-[var(--adf-ui-text-muted)]">Or skip the container. Servers on the host can read and change the files on {place}.</p>
             <div className="flex flex-wrap gap-1.5">
               {runOnHost && (
                 <Button variant="secondary" onClick={() => void hostOne()} disabled={!!busy}>
-                  {servers.length === 1 ? `Run ${servers[0]} on this computer` : 'Run these on this computer'}
+                  {servers.length === 1 ? `Run ${servers[0]} on the host…` : 'Run these on the host…'}
                 </Button>
               )}
               {acceptMcpOnHost && (
-                <Button variant="ghost" onClick={() => void hostAll()} disabled={!!busy}>Run all MCP servers on this computer…</Button>
+                <Button variant="ghost" onClick={() => void hostAll()} disabled={!!busy}>Run all MCP servers on the host…</Button>
               )}
             </div>
           </div>
         )}
       </div>
-      {confirmDialog}
     </Dialog>
+    {confirmDialog}
+    </>
   )
 }

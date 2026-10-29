@@ -178,7 +178,7 @@ describe('runMcpRegistrationTest', () => {
   })
 
   it('with MCP servers on this computer accepted, a default registration tests on the host', async () => {
-    const d = deps({ computeSettings: () => ({ hostAccessEnabled: false, hostApproved: [], mcpOnHost: true }) })
+    const d = deps({ computeSettings: () => ({ hostAccessEnabled: true, hostApproved: [], mcpOnHost: true }) })
     const result = await runMcpRegistrationTest({ registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh' } }, d)
     expect(result.location).toBe('host')
     expect(d.podman.ensureRunning).not.toHaveBeenCalled()

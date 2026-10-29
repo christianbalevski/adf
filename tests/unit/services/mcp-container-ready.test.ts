@@ -9,7 +9,7 @@ describe('computeGap', () => {
   it('names the first missing piece of the compute environment', () => {
     expect(computeGap(avail({ available: false }))).toBe('Podman is not installed')
     expect(computeGap(avail({ prerequisites: [{ id: 'wsl', name: 'WSL', installed: false }] }))).toBe('WSL is not installed')
-    expect(computeGap(avail({ machineExists: false, machineRunning: false }))).toBe("Podman's machine is not set up")
+    expect(computeGap(avail({ machineExists: false, machineRunning: false }))).toBe("Podman's machine is not set up or not responding")
     expect(computeGap(avail({ machineRunning: false }))).toBe("Podman's machine is not running")
     expect(computeGap(avail())).toBeNull()
     expect(computeGap(avail({ machineRequired: false, machineExists: undefined, machineRunning: undefined }))).toBeNull()
@@ -29,7 +29,8 @@ describe('prepareMcpContainer', () => {
     const err = await prepareMcpContainer(podman(null), 'files', async () => { throw new Error('podman: not found') }, async () => avail({ available: false }))
       .catch((e: unknown) => e)
     expect(err).toBeInstanceOf(ComputeUnavailableError)
-    expect((err as Error).message).toBe('MCP server "files" runs in a container, and the compute environment is not ready: Podman is not installed. The owner can set it up, or let this server run on the host, in ADF Studio; then call mcp_restart("files") to reconnect.')
+    // The container's own error is kept, for diagnosis.
+    expect((err as Error).message).toBe('MCP server "files" runs in a container, and the compute environment is not ready: Podman is not installed (podman: not found). The owner can set it up, or let this server run on the host, in ADF Studio; then call mcp_restart("files") to reconnect.')
   })
 
   it('a stopped machine is a ComputeUnavailableError too', async () => {
