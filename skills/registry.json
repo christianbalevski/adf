@@ -260,6 +260,22 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/telegram-remote-hil/scripts/telegram-hil.js"
         }
       ]
+    },
+    {
+      "name": "agent-import",
+      "description": "Bring an OpenClaw workspace or Hermes profile into this ADF agent when the owner asks to import, migrate, or \"become\" it. A throwaway importer agent reads the owner's notes and sends back only generated pages (mind pages, plus persona, rule, and skill drafts for the owner to approve), so the notes stay out of this agent. Importing in place, without copies, happens only if the owner explicitly agrees.",
+      "path": "skills/agent-import/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/scrub.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/scripts/scrub.js"
+        },
+        {
+          "path": "scripts/selftest.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/scripts/selftest.js"
+        }
+      ]
     }
   ]
 }

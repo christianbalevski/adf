@@ -28,6 +28,7 @@ package's preflight before running its examples.
 ## Experimental
 
 - [`telegram-remote-hil`](telegram-remote-hil/SKILL.md) — owner-only remote HIL approvals over Telegram. Review candidate, not live-validated: read the deployment gates in `SKILL.md` before any setup.
+- [`agent-import`](agent-import/SKILL.md) — bring an OpenClaw workspace or Hermes profile into an ADF agent through a throwaway importer agent that hands over generated pages only. Review candidate: the importer creation, approval and `msg_send` handover have not been run end to end. The scrubber is heuristic and can miss secrets.
 
 The package convention is documented in
 [`docs/guides/skills.md`](../docs/guides/skills.md). Installing a package does
