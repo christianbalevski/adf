@@ -59,6 +59,24 @@ Direct execution on the host operating system. Requires both `compute.host_acces
 - **Risk level:** **High** — see [Security Considerations](#security-considerations)
 - **Two-level gate:** If either the agent or runtime setting is off, host is unavailable. ADF never silently falls back from an unavailable default.
 
+In **Agent → Config → Compute**, **Host machine** is directly below the managed
+containers; only external containers are folded under **Advanced**, which is hidden
+when none are registered. The panel names the runtime's machine, which may be a
+remote server. Checkboxes control which environments the agent may use. Beside
+each environment, the panel shows only runtime status and blockers, including
+when unchecked. Starting a container or resolving a runtime blocker does not
+check the agent's permission box. A stopped managed container offers **Start**;
+missing Podman, setup failures, and external
+targets link to that runtime's Compute settings. **Review host access** asks before
+enabling the existing runtime host-access setting. It does not grant other agents
+host access. Templates show permissions without live container status.
+
+Status refreshes when the panel opens or the window returns to view, and container
+phase changes update it live. **Refresh status** checks again explicitly. If the
+command tool is disabled or hidden, **Enable and show compute_exec** updates its
+existing tool entry while keeping its approval setting. Compute target changes
+are read live by the runtime; no agent restart is needed for command targeting.
+
 ## Configuration
 
 Compute settings are per-agent in the agent config:

@@ -140,7 +140,12 @@ describe('transport rule (§9.2): URL matrix', () => {
 
   it('no URL and no token are refused with a sentence, before any request', async () => {
     expect((await connectError({ ...defaultBackendConfig(), mode: 'remote' })).problem).toBe('not_configured')
-    expect((await connectError(remoteConfig('https://adf.example.com', { token: null }))).problem).toBe('no_token')
+    const missingToken = await connectError(remoteConfig('https://adf.example.com', { token: null }))
+    expect(missingToken.problem).toBe('no_token')
+    expect(missingToken.message).toContain('Add → Share')
+    expect(missingToken.message).toContain('Add → Connect')
+    expect(missingToken.message).toContain('adf daemon devices add <label>')
+    expect(missingToken.message).not.toContain('adf daemon token')
   })
 })
 

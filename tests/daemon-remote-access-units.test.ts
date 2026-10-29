@@ -470,6 +470,21 @@ describe('request guard token matrix (§4.4, §4.5)', () => {
   const local = { remoteListener: false }
   const remote = { remoteListener: true }
 
+  it('remote authentication failures explain pairing and device tokens; local failures keep local-token recovery', () => {
+    for (const authorization of [undefined, 'Basic invalid', 'Bearer wrong', `Bearer adfd_unknownaa_${'x'.repeat(43)}`]) {
+      const headers = { authorization }
+      const failure = guard().authenticate('GET', '/agents', headers, remote)
+      expect(failure).toMatchObject({ rejection: { status: 401, body: { code: 'unauthorized' } }, auth: { kind: 'none' } })
+      const message = failure.rejection!.body.error
+      expect(message).toContain('Add → Share')
+      expect(message).toContain('Add → Connect')
+      expect(message).toContain('adf pair')
+      expect(message).toContain('adf daemon devices add <label>')
+      expect(message).not.toContain('adf daemon token')
+      expect(guard().authenticate('GET', '/agents', headers, local).rejection?.body.error).toContain('adf daemon token')
+    }
+  })
+
   it('the install token works on loopback and is refused on a remote listener', () => {
     expect(guard().authenticate('GET', '/agents', bearer(MASTER), local)).toEqual({ rejection: null, auth: { kind: 'master' } })
     expect(guard().authenticate('GET', '/agents', bearer(MASTER), remote).rejection).toMatchObject({ status: 401, body: { code: 'master_token_remote' } })

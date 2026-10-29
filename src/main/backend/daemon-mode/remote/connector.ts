@@ -239,7 +239,7 @@ export function remoteConfigProblem(config: StudioBackendConfig, codec: SecretCo
   const check = checkRemoteDaemonUrl(url)
   if (!check.url) return { error: new RemoteConnectError('transport', `The remote daemon URL is not valid: ${check.reason ?? url}`) }
   const token = readRemoteToken(config, codec)
-  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. Add it in Settings → Connections → Add → Connect (adf daemon token on the server prints it).`) }
+  if (!token) return { error: new RemoteConnectError('no_token', `No token is saved for ${url}, or it cannot be decrypted on this computer. On the server, open Settings → Connections → Add → Share. On this computer, open Settings → Connections → Add → Connect and enter the code, then approve the device on the server. You can also create a device token on the server with adf daemon devices add <label> and enter it in Connect.`) }
   return { url: check.url, token }
 }
 

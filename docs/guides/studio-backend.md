@@ -790,6 +790,7 @@ its state in Settings → Connections, the sidebar and the status bar; **Help
 | "… does not answer as an agent server" | Wrong address or port |
 | "… speaks client API N; this Studio needs M." | Update the daemon on the server (or Studio) to the same version |
 | "No token is saved for … or it cannot be decrypted on this computer." | **Add** the connection again |
+| "This ADF daemon requires a device token (Authorization: Bearer)." | On the server, **Add → Share**; on the client, **Add → Connect**, enter the code, then approve the device on the server. For the CLI, use `adf pair`, or create a device token on the server with `adf daemon devices add <label>` and pass it with `--token` or `ADF_DAEMON_TOKEN`. Opening the server address in a browser does not authenticate it; the server's own token is not accepted on the remote listener. |
 | "The OS keychain did not give the token for *name*; …" | Allow ADF Studio in the keychain prompt, or pair again |
 | "*url* is not *name* (fingerprint …, paired as …); the token was not sent." | Another computer answers at the saved address. Studio checks this before every new connection (launch, a dropped connection, wake, Reconnect), sends nothing, and stops. If that computer was set up again, remove *name* and pair again |
 | "*url* could not prove it is *name*; the token was not sent." | Something at the saved address shows *name*'s fingerprint but does not hold this computer's token. Studio sends nothing and stops. Check the address |

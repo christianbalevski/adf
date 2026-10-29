@@ -1,3 +1,5 @@
+import { AgentComputeEnvironments } from './AgentComputeEnvironments'
+import { requestSettingsRuntime } from '../../stores/settings-runtime.store'
 import { AgentCommandsSection } from './AgentCommandsSection'
 import { AGENT_COMMANDS_SECTION_LOCK, agentCommandsSaveError } from './agent-commands-config'
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
@@ -26,7 +28,6 @@ import { DocsLink, InfoHint } from '../common/DocsLink'
 import { ConfigNavProvider, useConfigNavEntry, CONFIG_NAV_OFFSET_CLASS } from './ConfigNav'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { ExecutionTarget } from '../../../shared/types/compute.types'
-import { resolveExecutionTargetAliases } from '../../../shared/utils/compute-targets'
 import { preLlmHookDraftFromConfig, validatePreLlmHookDraft, PRE_LLM_HOOK_MAIN_TARGET, type PreLlmHookDraft } from './pre-llm-hook-config'
 import { classifyConfigSave } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice } from '../editor/ChangedElsewhereNotice'
@@ -2809,123 +2810,18 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {/* Compute */}
         <Section docs={DOCS.compute} title="Compute" locked={isSectionLocked('compute')} onToggleLock={() => toggleSectionLock('compute')}>
           <div className="space-y-3">
-            {(() => {
-              const externalOptions = resolveExecutionTargetAliases(executionTargets)
-              const legacyAllowed = local.compute?.target
-                ? [local.compute.target]
-                : [
-                    ...(local.compute?.enabled ? ['isolated'] : []),
-                    'shared',
-                    ...(local.compute?.host_access ? ['host'] : []),
-                  ]
-              const allowed = local.compute?.allowed_targets ?? legacyAllowed
-              const defaultTarget = local.compute?.default_target
-                ?? local.compute?.target
-                ?? (local.compute?.enabled ? 'isolated' : 'shared')
-              const managedOptions = [
-                { id: 'shared', label: 'Shared Podman container', detail: 'ADF-managed MCP runtime' },
-                { id: 'isolated', label: 'Dedicated Podman container', detail: 'ADF-managed private environment' },
-              ]
-              const advancedOptions = [
-                ...externalOptions.map(({ target, alias }) => ({
-                  id: target.id,
-                  label: target.name,
-                  detail: `${alias} · user-managed ${target.engine} · ${target.containerRef}`,
-                })),
-                { id: 'host', label: 'Local host', detail: 'Direct access to this machine' },
-              ]
-              const options = [...managedOptions, ...advancedOptions]
-              const optionById = new Map(options.map((option) => [option.id, option]))
-              const missing = allowed.filter((id) => !optionById.has(id))
-
-              const updateAllowed = (nextAllowed: string[]) => {
-                if (nextAllowed.length === 0) return
-                const nextDefault = nextAllowed.includes(defaultTarget) ? defaultTarget : nextAllowed[0]
-                const { target: _legacyTarget, ...current } = local.compute ?? { enabled: false }
-                save({
-                  ...local,
-                  compute: {
-                    ...current,
-                    enabled: nextAllowed.includes('isolated'),
-                    host_access: nextAllowed.includes('host'),
-                    allowed_targets: nextAllowed,
-                    default_target: nextDefault,
-                  },
-                })
-              }
-
-              const renderOption = (option: typeof options[number]) => {
-                const checked = allowed.includes(option.id)
-                return (
-                  <label key={option.id} className="flex items-start gap-2 rounded px-1 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      disabled={checked && allowed.length === 1}
-                      onChange={(event) => updateAllowed(event.target.checked
-                        ? [...allowed, option.id]
-                        : allowed.filter((id) => id !== option.id))}
-                      className="mt-0.5 rounded text-blue-500"
-                    />
-                    <span className="min-w-0">
-                      <span className="block text-xs text-neutral-700 dark:text-neutral-300">{option.label}</span>
-                      <span className="block truncate font-mono text-[9px] text-[var(--adf-ui-text-subtle)]">{option.detail}</span>
-                    </span>
-                  </label>
-                )
-              }
-
-              return <>
-                <div>
-                  <div className="mb-1.5 flex items-center gap-2">
-                    <span className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400">Managed Podman environments</span>
-                    <span className="rounded bg-green-50 px-1 py-0.5 text-[8px] font-medium uppercase tracking-wide text-green-700 dark:bg-green-950/40 dark:text-green-400">Recommended</span>
-                  </div>
-                  <div className="space-y-1 rounded-md border border-neutral-200 p-2 dark:border-neutral-700">
-                    {managedOptions.map(renderOption)}
-                  </div>
-                  <p className="mt-1 text-[9px] text-[var(--adf-ui-text-subtle)]">ADF manages lifecycle, assignment, workspaces, packages, and rebuilds.</p>
-                </div>
-
-                <details className="rounded-md border border-neutral-200 dark:border-neutral-700">
-                  <summary className="flex cursor-pointer list-none items-center justify-between px-2 py-2 text-[10px] font-medium text-neutral-600 dark:text-neutral-400 [&::-webkit-details-marker]:hidden">
-                    <span>Advanced · External containers and host</span>
-                    <span className="font-normal text-[var(--adf-ui-text-subtle)]">{advancedOptions.filter((option) => allowed.includes(option.id)).length} enabled</span>
-                  </summary>
-                  <div className="space-y-1 border-t border-neutral-200 p-2 dark:border-neutral-700">
-                    {advancedOptions.map(renderOption)}
-                    {externalOptions.length === 0 && <p className="px-1 py-1 text-[9px] text-[var(--adf-ui-text-subtle)]">External containers can be registered in Settings &gt; Compute.</p>}
-                    <p className="px-1 pt-1 text-[9px] text-[var(--adf-ui-text-subtle)]">External containers remain user-managed. Host access bypasses container isolation.</p>
-                  </div>
-                </details>
-
-                <label className="block">
-                  <span className="mb-1 block text-[10px] font-medium text-neutral-600 dark:text-neutral-400">Default environment<InfoHint tip="compute_exec uses the default when no target is specified. With multiple environments, the agent may select only from this allowlist." /></span>
-                  <select
-                    value={defaultTarget}
-                    onChange={(event) => {
-                      const { target: _legacyTarget, ...current } = local.compute ?? { enabled: false }
-                      save({ ...local, compute: { ...current, allowed_targets: allowed, default_target: event.target.value } })
-                    }}
-                    className="field-input text-xs"
-                  >
-                    {allowed.map((id) => <option key={id} value={id}>{optionById.get(id)?.label ?? 'Unavailable target'}</option>)}
-                  </select>
-                </label>
-
-                <p className="text-[10px] text-amber-600 dark:text-amber-400">
-                  Restart a running agent after changing this configuration so its tool schema is rebuilt.
-                </p>
-                {allowed.includes('host') && !runtimeHostEnabled && (
-                  <p className="text-[10px] text-amber-600 dark:text-amber-400">
-                    Host access must also be enabled in Settings &gt; Compute before it becomes available.
-                  </p>
-                )}
-                {missing.length > 0 && (
-                  <p className="text-[10px] text-red-500">One or more allowed targets were removed from Settings. Choose an available default.</p>
-                )}
-              </>
-            })()}
+            <AgentComputeEnvironments
+              key={`${openRuntime}:${template ? 'template' : local.id}`}
+              config={local}
+              targets={executionTargets}
+              api={typeof window !== 'undefined' ? openApi() : undefined}
+              machine={runtime?.name ?? 'this runtime’s host'}
+              template={!!template}
+              onChange={(compute) => save({ ...local, compute })}
+              onHostPermission={setRuntimeHostEnabled}
+              onEnableCommands={() => save({ ...local, tools: local.tools.map((tool) => tool.name === 'compute_exec' ? { ...tool, enabled: true, visible: true } : tool) })}
+              onSettings={() => { requestSettingsRuntime(openRuntime); useAppStore.getState().openSettingsAt('compute') }}
+            />
 
             {/* Per-server Runs on: the agent's choice AND the runtime's approval (mcp-host-placement.ts).
                 Clicking a location changes only this agent's config; Allow is the one way to the runtime's. */}

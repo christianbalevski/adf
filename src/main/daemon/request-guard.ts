@@ -88,6 +88,12 @@ export const TOKEN_REQUIRED_MESSAGE =
   'The adf CLI and terminal app read it automatically on the daemon\'s machine; update adf if yours does not. ' +
   'Elsewhere pass --token or set ADF_DAEMON_TOKEN. Print the token on the daemon host with: adf daemon token'
 
+export const REMOTE_TOKEN_REQUIRED_MESSAGE =
+  'This ADF daemon requires a device token (Authorization: Bearer). ' +
+  'On the server, open Settings → Connections → Add → Share; on this computer, open Add → Connect and enter the code, then approve the device on the server. ' +
+  'For the CLI, use adf pair, or create a device token on the server with adf daemon devices add <label> and pass it with --token or ADF_DAEMON_TOKEN. ' +
+  'The server\'s own token is not accepted on this remote listener.'
+
 export function isLoopbackName(host: string): boolean {
   const h = host.toLowerCase().replace(/^\[|\]$/g, '')
   return h === 'localhost' || h === '::1' || /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(h)
@@ -198,11 +204,11 @@ export class DaemonRequestGuard {
     if (isUnauthenticatedRoute(method, path)) return { rejection: null, auth: none }
     if (!this.token) {
       // No token configured (bare test servers): a remote listener never runs without one.
-      return conn.remoteListener ? { rejection: unauthorized(), auth: none } : { rejection: null, auth: none }
+      return conn.remoteListener ? { rejection: unauthorized(conn), auth: none } : { rejection: null, auth: none }
     }
     const auth = single(headers.authorization) ?? ''
     const match = /^Bearer\s+(.+)$/i.exec(auth.trim())
-    if (!match) return { rejection: unauthorized(), auth: none }
+    if (!match) return { rejection: unauthorized(conn), auth: none }
     const presented = match[1].trim()
     const devices = this.options.deviceTokens
     if (devices && isDeviceTokenShape(presented)) {
@@ -219,7 +225,7 @@ export class DaemonRequestGuard {
         return { rejection: null, auth: { kind: 'device', deviceId: result.id, label: result.label } }
       }
     }
-    if (!tokensEqual(presented, this.token)) return { rejection: unauthorized(), auth: none }
+    if (!tokensEqual(presented, this.token)) return { rejection: unauthorized(conn), auth: none }
     if (conn.remoteListener) return { rejection: { status: 401, body: { error: MASTER_TOKEN_REMOTE_MESSAGE, code: 'master_token_remote' } }, auth: none }
     return { rejection: null, auth: { kind: 'master' } }
   }
@@ -257,8 +263,8 @@ export class DaemonRequestGuard {
   }
 }
 
-function unauthorized(): GuardRejection {
-  return { status: 401, body: { error: TOKEN_REQUIRED_MESSAGE, code: 'unauthorized' } }
+function unauthorized(conn: GuardConnection): GuardRejection {
+  return { status: 401, body: { error: conn.remoteListener ? REMOTE_TOKEN_REQUIRED_MESSAGE : TOKEN_REQUIRED_MESSAGE, code: 'unauthorized' } }
 }
 
 function forbidden(error: string, code: string): GuardRejection {
