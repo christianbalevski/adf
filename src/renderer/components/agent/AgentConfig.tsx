@@ -15,6 +15,7 @@ import { agentServerPlacement, allowHostPatch, allowHostTip, serverSourceIdentit
 import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { writeSettings } from '../settings/settings-save'
 import { Dialog } from '../common/Dialog'
+import { ContextMenu, type ContextMenuItem } from '../common/ContextMenu'
 import { IconPicker } from '../common/IconPicker'
 import { Tooltip } from '../common/Tooltip'
 import { pickAgentIcon } from '../../../shared/constants/agent-icons'
@@ -37,6 +38,43 @@ import {
 import {
   ApprovalIcon, ShieldIcon, LockIcon, EyeIcon, PERMISSION_ON_CLASS, PermissionLegend, LockBadge, RowWarning, McpStatusChip, SaveStatusLine, UndoToast,
 } from './config-panel-parts'
+
+function McpServerMenu({ serverName, items }: { serverName: string; items: ContextMenuItem[] }) {
+  const [position, setPosition] = useState<{ x: number; y: number } | null>(null)
+  const anchor = useRef<HTMLButtonElement>(null)
+  const close = useCallback(() => setPosition(null), [])
+
+  return (
+    <>
+      <button
+        ref={anchor}
+        type="button"
+        aria-label={`Actions for ${serverName}`}
+        title="Server actions"
+        aria-haspopup="menu"
+        aria-expanded={position !== null}
+        onClick={() => {
+          if (position) { close(); return }
+          const rect = anchor.current?.getBoundingClientRect()
+          if (rect) setPosition({ x: rect.right, y: rect.bottom + 4 })
+        }}
+        className="flex h-6 w-6 items-center justify-center rounded text-neutral-500 hover:bg-neutral-100 hover:text-neutral-700 dark:text-neutral-400 dark:hover:bg-neutral-800 dark:hover:text-neutral-200 focus-visible:outline focus-visible:outline-2 focus-visible:outline-blue-500"
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+          <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />
+        </svg>
+      </button>
+      <ContextMenu
+        position={position}
+        items={items}
+        onClose={close}
+        placement={{ x: 'end' }}
+        label={`Actions for ${serverName}`}
+        anchor={anchor}
+      />
+    </>
+  )
+}
 
 /**
  * All tools this runtime supports. Any tool listed here will appear
@@ -3028,8 +3066,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           const myServers = local.mcp?.servers ?? []
           // Unattached registry servers available to add
           const availableToAdd = validRegistrations.filter((r) => !attachedNames.has(r.name))
-          // Servers attached to this agent but missing from the app-level runtime
-          const orphanedServers = myServers.filter((s) => !registeredNames.has(s.name))
           const hasAnything = myServers.length > 0 || availableToAdd.length > 0
 
           if (!hasAnything) return null
@@ -3219,18 +3255,20 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             disabled={bulkDisabled}
                             onChange={toggleServerEnabled}
                           />
-                          {!template && (
-                            <button
-                              type="button"
-                              onClick={() => setMcpLogsFor(mcpLogsFor === srv.name ? null : srv.name)}
-                              aria-expanded={mcpLogsFor === srv.name}
-                              className="text-[10px] text-neutral-500 hover:text-neutral-700 dark:text-neutral-400 dark:hover:text-neutral-200 font-medium"
-                            >Logs</button>
-                          )}
-                          <button
-                            onClick={() => handleRemoveServer(srv.name)}
-                            className="text-[10px] text-red-400 hover:text-red-600 font-medium"
-                          >Remove</button>
+                          <McpServerMenu
+                            serverName={srv.name}
+                            items={[
+                              ...(!registeredNames.has(srv.name) ? [{
+                                label: 'Add to runtime',
+                                onSelect: () => { void handleAddToRuntime(srv) },
+                              }] : []),
+                              ...(!template ? [{
+                                label: 'Logs',
+                                onSelect: () => setMcpLogsFor(mcpLogsFor === srv.name ? null : srv.name),
+                              }] : []),
+                              { label: 'Remove', onSelect: () => handleRemoveServer(srv.name), danger: true },
+                            ]}
+                          />
                         </span>
                       </div>
                       {!template && liveFailed && live?.error && (
@@ -3347,51 +3385,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   <p className="text-[10px] text-[var(--adf-ui-text-subtle)] italic">
                     No MCP servers configured. Add from the registry below or use the mcp_install tool.
                   </p>
-                )}
-
-                {/* Servers attached to the agent but not registered in this runtime */}
-                {orphanedServers.length > 0 && (
-                  <div className="pt-2 border-t border-amber-200 dark:border-amber-800">
-                    <label className="text-[10px] text-amber-700 dark:text-amber-400 block mb-1 font-medium">
-                      Not registered in this runtime
-                    </label>
-                    <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mb-1.5">
-                      These servers exist on the agent but have no app-level registration,
-                      so they can't start. Add them to the runtime to configure credentials.
-                    </p>
-                    <div className="space-y-1.5">
-                      {orphanedServers.map((srv) => {
-                        const schema = srv.env_schema ?? []
-                        const appKeys = schema.filter((e) => e.scope === 'app').map((e) => e.key)
-                        const agentKeys = schema.filter((e) => e.scope === 'agent').map((e) => e.key)
-                        const legacyKeys = !schema.length ? (srv.env_keys ?? []) : []
-                        return (
-                          <div key={srv.name} className="border border-amber-200 dark:border-amber-900 bg-amber-50/40 dark:bg-amber-900/10 rounded p-1.5 flex items-center justify-between gap-2">
-                            <div className="min-w-0">
-                              <div className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">{srv.name}</div>
-                              {(srv.npm_package || srv.pypi_package || srv.command) && (
-                                <div className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">
-                                  {srv.npm_package ?? srv.pypi_package ?? srv.command}
-                                </div>
-                              )}
-                              {(appKeys.length > 0 || agentKeys.length > 0 || legacyKeys.length > 0) && (
-                                <div className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5">
-                                  {appKeys.length > 0 && <>App: <span className="font-mono">{appKeys.join(', ')}</span></>}
-                                  {appKeys.length > 0 && agentKeys.length > 0 && ' · '}
-                                  {agentKeys.length > 0 && <>Agent: <span className="font-mono">{agentKeys.join(', ')}</span></>}
-                                  {legacyKeys.length > 0 && <>Keys: <span className="font-mono">{legacyKeys.join(', ')}</span></>}
-                                </div>
-                              )}
-                            </div>
-                            <button
-                              onClick={() => handleAddToRuntime(srv)}
-                              className="text-[11px] px-2 py-1 bg-amber-500 hover:bg-amber-600 text-white rounded font-medium shrink-0"
-                            >Add to runtime</button>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
                 )}
 
                 {/* Add from registry */}
