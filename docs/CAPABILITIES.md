@@ -1,6 +1,6 @@
 # What ADF Studio Can Do
 
-ADF, the Agent Document Format, stores an AI agent in one file. An `.adf` file is one localized agent: its identity, state and behaviour in a single SQLite file ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)). ADF Studio is the desktop app that runs those files: it hosts the agents, shows their conversations, and shows the whole fleet on one map.
+ADF, the Agent Document Format, stores an AI agent in one file. An `.adf` file is one localized agent: its identity, state and behaviour in a single SQLite file ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)). ADF Studio provides desktop and browser interfaces for those files: it shows their conversations and the whole fleet on one map. The daemon runs the agents and serves Browser Studio.
 
 Part 1 lists what an agent can do and what you can do with it. Part 2 describes the mechanisms, for people building on ADF, running it headless, or auditing it.
 
@@ -20,6 +20,18 @@ Items marked *(planned)* are designed but not shipped yet.
 - **Nothing hidden from you** — every prompt, instruction injection, and summary the model sees is stored in the file where you can read it. Secrets never enter the model's context.
 - **Built-in structured storage** — an agent can create its own tables and vector indexes inside the file for anything it needs to track, queried with SQL.
 - **Files inside** — the agent has a private filesystem for documents, scripts, images, and imports. Files can be marked read-only or undeletable; `README.md`, `mind.md` and `soul.md` are undeletable.
+
+## Studio in a browser
+
+*Full reference: [Browser Studio](guides/studio-web.md)*
+
+Browser Studio requires a build containing browser support; published npm v0.8.3 does not include it.
+
+- **Local sign-in** — `adf web` starts the daemon if needed and opens an authenticated browser session. No desktop installation or manual access-token handling is needed.
+- **Remote pairing** — `adf daemon pair` prints a browser address and a two-minute code. The host approves the named browser in the same terminal. Remote access must be enabled on an allowed network.
+- **Shared interface** — desktop and browser clients use the same renderer, typed API factory and daemon handlers for agent conversations, files, settings and approvals.
+- **Host execution** — files, providers and compute remain on the daemon's machine. Closing the browser leaves agents running.
+- **Browser boundaries** — the live Computer viewer and some native sign-in and dialog flows remain desktop integrations. Browser preferences are session-scoped; agent files and daemon settings persist. See the guide for uploads, recovery and session expiry.
 
 ## Talking to your agent
 
@@ -363,10 +375,10 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Runtime service** — in-memory agent map keyed by canonical path, no double-loading, dispatch-object boundary (never calls a turn directly).
 - **Event bus** — monotonic cursor, bounded ring, SSE replay from a cursor.
 - **Endpoints** — lifecycle (load, autostart, review, start, stop, abort, state), content (chat, loop, logs, config, document, mind, files, inbox, outbox, timers, meta, tables), identity and credentials, tasks and asks, runtime diagnostics, auth, compute and package admin, network and mesh, settings.
-- **Tokened, cross-site protected** — every route but `/health` needs a bearer token: a per-install token minted into `<settings dir>/daemon-token` (0600) that local `adf` clients read by themselves, or `ADF_DAEMON_TOKEN` (required for a non-loopback bind). A Host allow-list stops DNS rebinding, and requests with a foreign `Origin` or `Sec-Fetch-Site: cross-site` are refused (no CORS). Credential reads return metadata only; values and key material never leave the process. The SSRF guard blocks agents from reaching the API either way.
+- **Authentication and cross-site protection** — protected REST routes require a bearer credential: the local daemon token or a paired device credential. Local CLI clients read the daemon token automatically. Browser routes use HttpOnly cookie sessions after a one-use local launch or approved pairing; health, discovery and pairing entry points have separate guards. Host and same-origin checks protect browser transport, and no cross-origin API access is enabled. See [API authentication](daemon/api-guide.md#base-url-and-authentication).
 - **CLI** — agents, status, start/stop/abort, runtime, providers, auth, settings, network, usage, config, files, inbox/outbox, timers, tasks/approve/deny, asks/answer, identities, mcp, adapters, events, chat, with `--url` and `--json`.
 - **Terminal app** — `adf` (or `npm run adf`) with no command: the fleet as a tree of agents and their loops, per-loop chat with streaming replies and inline approvals, side loops created from templates (memory consolidator, researcher, critic, reflector) and put on a schedule, files and mind with `$EDITOR` round-trips, live umbilical events, a command palette and themes, plus a welcome checklist, channels (`/channels`), MCP servers (`/mcp`: catalog, npm, Python, remote) and API-key providers (`/provider add`) ([terminal app](daemon/tui.md)).
-- **Known gaps** — no cross-process lock between Studio and daemon on the same file or mesh port; file-change triggers are limited headless.
+- **Runtime ownership** — the default desktop client and Browser Studio attach to the daemon. The legacy Embedded backend remains a separate runtime; follow the [backend guide](guides/studio-backend.md) when switching modes.
 
 ## Settings and persistence
 
@@ -382,10 +394,10 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 
 ## Studio internals
 
-*Full reference: [Studio Documentation](ADF_STUDIO_DOCS.md) · [Mesh view](guides/fleet-map.md)*
+*Full reference: [Studio Documentation](ADF_STUDIO_DOCS.md) · [Browser Studio](guides/studio-web.md) · [Mesh view](guides/fleet-map.md)*
 
-- **Process isolation** — context isolation, sandboxed renderer, no Node integration, strict CSP, sanitized markdown, navigation blocked, external-open protocol allowlist.
-- **IPC** — 200+ typed channels with batched event delivery to the renderer.
+- **Desktop process isolation** — context isolation, sandboxed renderer, no Node integration, strict CSP, sanitized markdown, navigation blocked, external-open protocol allowlist.
+- **Shared client API** — one typed API factory maps renderer calls to Electron IPC or browser RPC and streaming events. Daemon-mode handlers implement ordinary Studio behavior for both clients.
 - **Foreground/background handoff** — a running agent moves between the visible window and the background manager without losing state.
 - **Mesh view performance** — frozen deterministic geography, canvas ambience capped at 30fps, calm-mode governor under load, delta-based polling.
 - **Approval hub** — a central registry of pending approvals across agents and loops with secret-safe previews and a capped resolution history.

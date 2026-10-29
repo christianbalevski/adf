@@ -12,10 +12,18 @@ This guide walks you through your first agent: making one from a message, runnin
 
 ## Prerequisites
 
-1. **ADF Studio** installed on your machine
+1. The **ADF Studio** desktop app, or the [ADF CLI](../cli/getting-started.md) and `adf web` to open Studio in your browser already signed in. A desktop installation is optional. For another device, follow [browser pairing](studio-web.md#access-from-another-device).
 2. Either an LLM API key (Anthropic, OpenAI, OpenRouter, or any OpenAI-compatible endpoint) or a ChatGPT / Grok subscription to sign in with, or a Claude Pro/Max plan with [Claude Code](https://code.claude.com/docs/en/setup) installed. You are asked for it the first time you run an agent, not before.
 
 ## First run
+
+In Browser Studio, agent files, provider credentials and compute belong to the
+daemon's computer. Folder dialogs browse that computer; file attachments upload
+from your browser. The desktop app's native menus and live Computer viewer have
+[browser-specific differences](studio-web.md#browser-differences). To use a
+ChatGPT subscription, sign the daemon in through the desktop app or
+`adf auth login chatgpt` first; starting that sign-in inside Browser Studio
+is unavailable. API keys can be configured in the browser.
 
 The home screen is a message box. Type what you want an agent to do and press Enter. The `+` on the left, or a drop onto the box, attaches files; they are uploaded into the new agent with your first message.
 

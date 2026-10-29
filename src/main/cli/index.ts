@@ -45,7 +45,7 @@ export interface CliIo {
    * Returns the started daemon's pid, or null when it was already up (or
    * may not be started). Absent (tests) = never start anything.
    */
-  ensureDaemon?: (url: string) => Promise<{ pid: number } | null>
+  ensureDaemon?: (url: string, env?: NodeJS.ProcessEnv) => Promise<{ pid: number } | null>
   /**
    * Test seam for line input read while something else runs (the Claude
    * sign-in code). Calls onLine per line until the returned stop is called.
@@ -150,6 +150,10 @@ async function pinnedRemoteOk(io: CliIo, url: string, explicitToken: boolean): P
 }
 
 export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo): Promise<number> {
+  if (argv[0] === 'web') {
+    const { runWebCommand } = await import('./web')
+    return runWebCommand(argv.slice(1), io)
+  }
   const tuiArgv = tuiInvocation(argv)
   if (tuiArgv) {
     const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
@@ -183,6 +187,14 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   }
 
   const { command, args } = parsed
+  if (command === 'web') {
+    const { runWebCommand } = await import('./web')
+    return runWebCommand([
+      ...args, ...(parsed.explicitUrl ? ['--url', parsed.explicitUrl] : []),
+      ...(parsed.options.token ? ['--token', parsed.options.token] : []),
+      ...(parsed.options.json ? ['--json'] : []),
+    ], io)
+  }
   // help, pair and remotes talk to no daemon: only the other commands resolve the URL, and so read the saved remotes.
   const talksToDaemon = !['help', '--help', '-h', 'pair', 'remotes'].includes(command)
   let options: CliOptions
@@ -1564,6 +1576,7 @@ that off). Quitting leaves it running. Another local port, such as an SSH
 tunnel, is never auto-started and needs --token.
 
 Commands:
+  web [--port <n>]                Open Browser Studio already signed in (no desktop app needed)
   tui                            The terminal app (the default)
   agents                         List loaded agents
   status <agent>                 Show runtime status

@@ -132,6 +132,8 @@ export interface ClientSession {
   /** The daemon's session id once opened (requests carry it: X-ADF-Client-Session). */
   readonly sessionId: string | null
   start(listener: ClientStreamListener): void
+  /** Wait until requests can carry this session and its stream can replay their events. */
+  ready?(): Promise<string | null>
   /** The agent whose deltas and full payloads the stream carries (D5). */
   setFocus(agentId: string | null): Promise<void>
   /** Hold an `.adf` (D4), preferring a known agent's identity when its path may have changed. */
@@ -490,6 +492,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
   return {
     kind: 'client-session',
     get sessionId() { return sessionId },
+    ready: currentId,
     start(l) {
       if (listener) return
       listener = l

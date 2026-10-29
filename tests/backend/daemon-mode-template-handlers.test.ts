@@ -1,3 +1,4 @@
+import './daemon-mode-platform'
 /**
  * W3-A: the daemon-mode template handlers answer what the embedded handlers
  * (AgentTemplatesService) answer, refusals included, from the daemon's

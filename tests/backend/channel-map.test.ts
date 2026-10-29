@@ -37,7 +37,7 @@ function sourceFiles(dir: string): Array<{ path: string; text: string }> {
 }
 
 const mainFiles = sourceFiles(join(ROOT, 'src', 'main'))
-const preload = readFileSync(join(ROOT, 'src', 'preload', 'index.ts'), 'utf8')
+const preload = readFileSync(join(ROOT, 'src', 'shared', 'adf-api.ts'), 'utf8')
 const entries = Object.entries(CHANNEL_MAP) as Array<[MappedChannel, ChannelEntry]>
 const nameOf = new Map<string, string>(Object.entries(IPC).map(([name, value]) => [value, name]))
 
@@ -66,7 +66,7 @@ describe('no dead channels (review item 6)', () => {
     const { readFileSync } = await import('node:fs')
     const { join } = await import('node:path')
     expect(Object.keys(IPC)).not.toContain('BACKEND_REMOTE_CHECK')
-    for (const file of ['src/preload/api.ts', 'src/preload/index.ts', 'src/main/backend/backend-settings-ipc.ts']) {
+    for (const file of ['src/preload/api.ts', 'src/preload/index.ts', 'src/shared/adf-api.ts', 'src/main/backend/backend-settings-ipc.ts']) {
       expect(readFileSync(join(__dirname, '../..', file), 'utf-8'), file).not.toMatch(/checkRemoteBackend|BACKEND_REMOTE_CHECK/)
     }
   })

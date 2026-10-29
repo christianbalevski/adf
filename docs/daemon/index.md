@@ -4,12 +4,13 @@ The ADF daemon is the headless ADF runtime that serves an API for `.adf`
 agents. It runs agents without the Studio UI: it loads the agents in your
 tracked folders, keeps them running (timers, triggers, channels, MCP servers,
 compute), serves their websites through the mesh server, and exposes
-everything over a local HTTP API guarded by a per-install access token.
+agent control over an authenticated HTTP API. Native clients use bearer
+tokens; Browser Studio uses same-origin cookies backed by that authority.
 
 The ADF CLI and its terminal app (`adf`, npm package
 [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli))
 are clients of that API, and start the daemon in the background when they need
-it. On current `main`, Studio in Local mode is another client of the daemon,
+it. Desktop Studio in Local mode is another client of the daemon,
 with a desktop UI for authoring and observing agents. The legacy Inside
 Studio mode hosts agents in Studio itself. Both runtime hosts build agents
 with the same canonical assembler; the daemon selects the exhaustive
@@ -18,6 +19,7 @@ with the same canonical assembler; the daemon selects the exhaustive
 ## Documentation
 
 - [Getting Started](getting-started.md): install, owner identity, providers, create or load agents, chat, and the same over HTTP
+- [Studio in a browser](../guides/studio-web.md): the shared Studio UI, local `adf web` launch, remote browser pairing and deployment
 - [Terminal app](../cli/terminal-app.md): `adf` with no command: your fleet, each agent's loops, approvals, files and live events
 - [ADF CLI](../cli/index.md): one-shot commands for agent control, resources, diagnostics, events and chat
 - [API guide](api-guide.md): building on the HTTP API: authentication and remote access, agents and loops, chat and events, approvals, identity, credentials, channels, MCP, providers, templates, skills, errors
@@ -36,7 +38,7 @@ with the same canonical assembler; the daemon selects the exhaustive
 |------|--------|--------|
 | Primary use | Desktop authoring and visual operation | Headless runtime: terminal, scripts, servers, other clients |
 | Entry point | The ADF Studio app (`npm run dev` from source) | `adf` (auto-start), `adf daemon [start]` (`npm run daemon` from source) |
-| Agent control | Desktop UI connected to the daemon; main-process IPC in legacy Inside Studio mode | HTTP API on `127.0.0.1:7385` (bearer token), the terminal app and the CLI |
+| Agent control | Desktop UI connected to the daemon; main-process IPC in legacy Inside Studio mode | HTTP API on `127.0.0.1:7385` (bearer token), Browser Studio (cookie session), the terminal app and the CLI |
 | Agent visibility | Loop panel, logs panel, agent panels | Terminal app, `/events` stream, diagnostics and resource endpoints, daemon log |
 | Settings | App settings UI for the connected runtime | The same `adf-settings.json` (edited by the terminal app, the API, or by hand) |
 | Owner identity | Local mode and legacy Inside Studio share the owner identity and settings on this computer; [secret storage](owner-secret-storage.md) depends on the runtime host | The same identity (shared keychain), or a passphrase file where there is none |
@@ -53,6 +55,7 @@ and [agent leases](../cli/troubleshooting.md#agent-is-already-running-agent_leas
 ## What works today
 
 - Background daemon management (`adf daemon start|stop|status|restart|logs|token`), auto-start from `adf`
+- Browser Studio in builds containing the browser client: shared renderer, local launch tickets and host-approved remote pairing
 - Token-authenticated HTTP API with Host / Origin checks, loopback-only identity and shutdown routes
 - Owner identity create, restore, unlock and lock; agents created from templates, sealed like Studio's
 - Tracked folders with autostart and a review gate; every agent on disk listed with what it needs

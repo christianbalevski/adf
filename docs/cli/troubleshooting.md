@@ -55,15 +55,20 @@ installed one. A daemon too old to have a stop endpoint says so: stop it with
 
 ## 401: run `adf daemon token`
 
-The daemon requires its access token on every request.
+CLI and REST operations use bearer authentication. Browser Studio uses its
+own cookie session; see [Browser Studio sign-in](#browser-studio-sign-in).
 
 - **Same machine:** `adf` reads the token file itself. A `401` here usually
   means the client is older than the daemon: update the CLI
   (`npm i -g @agentdocumentformat/cli@latest`). Also check that the client
   and daemon use the same settings (`ADF_DAEMON_SETTINGS`,
   `ADF_USER_DATA_DIR`), since the token file lives next to them.
-- **Another machine or an SSH tunnel:** run `adf daemon token` on the
-  daemon's machine and pass it with `--token` or `ADF_DAEMON_TOKEN`. A
+- **Another machine using remote access:** pair with `adf pair`, or have the
+  host issue a device token with `adf daemon devices add <label>` and pass it
+  with `--token` or `ADF_DAEMON_TOKEN`. The host's own token is refused on
+  remote-access listeners.
+- **An explicit SSH tunnel:** run `adf daemon token` on the daemon's machine
+  and pass it with `--token` or `ADF_DAEMON_TOKEN`. A
   loopback URL on another port than your own daemon's (e.g.
   `http://127.0.0.1:7386` for `ssh -L 7386:127.0.0.1:7385 host`) counts as a
   tunnel: the local token file is not sent there.
@@ -73,6 +78,34 @@ The daemon requires its access token on every request.
 A `403` "Host header not allowed" means the daemon does not know the host
 name you used: add it to the daemon's `ADF_DAEMON_ALLOWED_HOSTS`. See
 [Remote daemon](remote-daemon.md).
+
+## Browser Studio sign-in
+
+Browser Studio and `adf web` require a browser-enabled CLI and daemon build;
+published npm v0.8.3 does not include them. Installing the currently published
+package alone does not add browser support. See the
+[Browser Studio guide](../guides/studio-web.md) for source-build instructions.
+
+| Symptom | What to do |
+|---|---|
+| `adf web` is unknown, `/studio/` is missing, or the daemon does not support Browser Studio | Use a build containing browser support. Build its web assets, and check that the running daemon is from that build. An old daemon keeps running after a CLI update; restart it when you are ready to stop its agents. |
+| The local daemon is not ready for browser sign-in | Run `adf daemon status`. Start the daemon if needed, and check that CLI and daemon use the same settings/data directory. Both the local token and per-start local proof must be available. |
+| Automatic sign-in refuses a remote address or an unrecognized port | `adf web` only signs in to this computer's daemon. For a known local daemon choose `--port <n>`; for a tunnel or another computer use browser pairing. A saved default CLI remote does not select the browser target. |
+| No browser opens on a headless host | Run `adf daemon remote on`, allow the intended network, then `adf daemon pair`. Open a printed `/studio/` address on your other device, enter the code and approve the request in the host terminal. |
+| A launch link expired or was already used | Run `adf web` again. Its sign-in ticket lasts 60 seconds and can be redeemed once. The ordinary `/studio/` address printed in the terminal does not contain a ticket. |
+| Pairing has no reachable address | Check `adf daemon remote status` and `adf daemon remote allow-network <network-id-or-name>`. Remote access listens only on networks you allow. Check the firewall and use one of the addresses printed by `adf daemon pair`. |
+| Pairing is denied, expired, or the window closes | Start `adf daemon pair` again. Enter the new six-digit code within two minutes and approve the browser name/source address in the host terminal. The code alone does not grant access. |
+| The browser asks to sign in again | Sessions last eight hours. A paired browser's HttpOnly credential cookie can renew access for up to 30 days, including after a daemon restart, while its device remains authorized. Signing out or clearing cookies removes that remembered credential. Local launch sessions have no remembered master credential: run `adf web` again. |
+
+Use `adf daemon devices` and `adf daemon devices revoke <id-or-label>` on the
+host to review and remove browser access. Browser sign-in never asks you to
+paste the daemon's bearer token. For remote setup and HTTPS, see
+[Browser Studio on another device](remote-daemon.md#browser-studio-on-another-device).
+
+If the browser cannot save recovery data, keep the page open and copy your
+unsaved work before reloading. Recovery is stored in this browser; signing in
+as a different paired device does not import another device's drafts or queued
+messages. Recovered queued messages require review before sending.
 
 ## Studio at the same time
 

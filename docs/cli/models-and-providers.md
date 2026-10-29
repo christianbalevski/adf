@@ -23,9 +23,10 @@ written to the settings file, never shown again, and never returned (only
 | `/provider list` | Runtime › Providers: every provider and which agents use it |
 | `/provider remove <id>` | Remove it and its key (asks) |
 
-Studio reads keys added here from the same keychain entry, so the provider
-works in both apps. Keys added in Studio stay in Studio's settings file as
-before.
+Desktop Studio in Local mode and the terminal app use the same daemon's
+provider settings and secret store. In a browser-enabled build, Browser
+Studio uses those settings too. Inside Studio (legacy) runs its own backend;
+see [Studio backend](../guides/studio-backend.md).
 
 One-shot: `adf providers` (providers and which agent resolves to which).
 
@@ -54,10 +55,10 @@ input, and you must enable images in the agent's model settings
 
 ## Subscriptions
 
-Agents on a subscription need the **daemon** to be signed in. The daemon's
-ChatGPT and Grok sign-ins are its own, separate from Studio's. Claude's is
-not: it is the sign-in of the Claude Code installed on the daemon's machine,
-shared with Studio and with Claude Code itself.
+Agents on a subscription need the **daemon** to be signed in. Desktop Studio
+in Local mode, the terminal app and Browser Studio share that daemon's
+ChatGPT and Grok sign-ins. Inside Studio (legacy) uses a separate backend.
+Claude uses the sign-in of Claude Code installed on the daemon's machine.
 
 | In the app | One-shot | How |
 |---|---|---|
@@ -66,6 +67,12 @@ shared with Studio and with Claude Code itself.
 | `/login claude` | `adf auth login claude` | Runs `claude auth login`, which opens your browser; the URL is shown too. Paste the code if the page shows one |
 | `/auth` | `adf auth` | Status of each, and which providers have keys |
 | `/logout <provider>` | `adf auth logout <provider>` | Sign out (the app asks first) |
+
+Browser Studio's own login is separate from these provider sign-ins. You can
+run the commands above on the host before opening `adf web`; desktop Studio
+is not required. Native OAuth callback windows are unavailable in Browser
+Studio, so use the CLI for provider flows that require them. Browser Studio
+requires a browser-enabled build, not published npm v0.8.3.
 
 Claude requires [Claude Code](https://code.claude.com/docs/en/setup) 2.1.248
 or newer on the daemon's machine. `adf auth logout claude` runs `claude auth

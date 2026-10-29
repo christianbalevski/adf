@@ -11,6 +11,18 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterAll, expect, it, vi } from 'vitest'
 
+const savedWatcher = vi.hoisted(() => ({ refresh: null as null | (() => Promise<unknown>) }))
+vi.mock('../../src/main/backend/connections', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../src/main/backend/connections')>()
+  return {
+    ...actual,
+    SavedConnectionsCache: class extends actual.SavedConnectionsCache {
+      // This test owns the ordering after a change. saved-cache.test.ts covers
+      // filesystem notification delivery; drive its refresh explicitly here.
+      override watch(): void { savedWatcher.refresh = () => this.refresh() }
+    },
+  }
+})
 vi.mock('electron', async () => (await import('./main-boot-harness')).h.electron)
 vi.mock('../../src/main/ipc/index', async () => {
   const { h } = await import('./main-boot-harness')
@@ -94,6 +106,8 @@ it('a rename sends the moves, then the runtime set, and re-keys the keys of the 
 
   // While Studio runs, the same computer is saved as lab and host-1 is forgotten.
   writeFileSync(remotesPath, JSON.stringify({ v: 1, default: null, remotes: { lab: { ...HOST_1, deviceId: 'd2' } } }))
+  expect(savedWatcher.refresh).not.toBeNull()
+  await savedWatcher.refresh!()
   await until(() => h.state.sent.slice(from).some((s) => s.channel === IPC.CONNECTION_CHANGED && ids(s.payload).includes('remote:lab')), 'the runtime set lists lab')
 
   const pushes = h.state.sent.slice(from).filter((s) => s.channel === IPC.RUNTIMES_MOVED || s.channel === IPC.CONNECTION_CHANGED)

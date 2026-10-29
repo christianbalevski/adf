@@ -88,9 +88,11 @@ The daemon listens on `http://127.0.0.1:7385` by default (`ADF_DAEMON_HOST`,
 
 ### The access token
 
-Every request except `GET /health` needs `Authorization: Bearer <token>`,
+Ordinary control API requests need `Authorization: Bearer <token>`,
 including `GET /openapi.json` and the `/events` stream. A missing or wrong
-token gets `401` with `code: "unauthorized"`.
+token gets `401` with `code: "unauthorized"`. Public health, remote discovery
+and pairing entry points are exceptions. Browser Studio uses the separate
+[same-origin cookie flow](#browser-studio-sign-in).
 
 - On first start the daemon mints a random token into
   `<settings dir>/daemon-token` (mode 0600, next to `adf-settings.json`). The
@@ -103,8 +105,10 @@ token gets `401` with `code: "unauthorized"`.
   auto-start read the file by themselves, and send it only to loopback URLs,
   never to a remote daemon. The terminal app re-reads it once after a `401`.
 - `adf daemon token` prints the token on stdout (its source on stderr), creating
-  the file if needed. Use it for scripts, or to hand the token to a client on
-  another machine (`adf --token <token>`, or `ADF_DAEMON_TOKEN` there).
+  the file if needed. Use it for local scripts or a trusted client through a
+  loopback tunnel. Remote-access listeners refuse this master token: use a
+  paired device token there (`adf pair`, or a manually issued device token).
+  Explicit `--token` and `ADF_DAEMON_TOKEN` remain supported for REST clients.
 - To rotate: stop the daemon, delete `daemon-token`, start it again.
 
 A client on the daemon's machine can also read the file directly:
@@ -114,10 +118,10 @@ import { readFileSync } from 'node:fs'
 const token = readFileSync('/path/to/settings-dir/daemon-token', 'utf8').trim()
 ```
 
-### Browsers are refused
+### Cross-origin browser requests
 
-The token keeps other local processes' web pages out, and three header checks
-stop a browser from being used against the daemon (CSRF, DNS rebinding):
+Authentication and three header checks protect the daemon against cross-site
+requests and DNS rebinding:
 
 | Check | Refused with |
 |-------|--------------|
@@ -125,10 +129,27 @@ stop a browser from being used against the daemon (CSRF, DNS rebinding):
 | An `Origin` header that is not one of those hosts (`Origin: null` included) | `403 cross_origin` |
 | `Sec-Fetch-Site: cross-site` or `same-site` | `403 cross_origin` |
 
-The daemon sends no CORS headers. So a web page cannot call the daemon, even
-with the token: a hosted or browser-based client needs a server-side backend
-that talks to the daemon (and holds the token). Native apps, CLIs and servers
-send neither `Origin` nor `Sec-Fetch-Site` and are unaffected.
+The daemon sends no CORS headers. An unrelated website cannot call it by
+presenting a token. Browser Studio is served by the daemon at `/studio/` and
+uses its same-origin `/web/*` gateway with cookies. Native apps, CLIs and
+servers normally send neither `Origin` nor `Sec-Fetch-Site`.
+
+### Browser Studio sign-in
+
+In builds that include Browser Studio, `adf web` opens the local UI already
+signed in, starting the daemon if needed. Desktop Studio’s **Open in browser**
+uses the same single-use launch ticket. Neither flow asks the user to copy a
+token. For another device, run `adf daemon pair` on the host, open its displayed
+`/studio/` address, enter the code and a browser name, then approve the request
+in that terminal or desktop Studio. No desktop installation is required.
+Remote access must first be enabled on a network the host allows.
+
+Browser sessions use HttpOnly, SameSite=Strict cookies, with a remembered
+device credential for approved browsers. Host revocation invalidates that
+credential. Public assets and sign-in endpoints do not grant agent access.
+See [browser authentication](http-api.md#browser-studio) and the
+[Browser Studio guide](../guides/studio-web.md). The daemon still speaks HTTP;
+configure TLS or another encrypted transport for remote use.
 
 ### Loopback-only routes
 
@@ -138,6 +159,8 @@ otherwise), on top of the token:
 - `POST /identity/create`, `/identity/restore`, `/identity/unlock`,
   `/identity/lock`, `/identity/confirm-backup` (they move the seed phrase or
   passphrase, or change identity state)
+- `POST /web/launch`: master token and local proof in every mode, with no
+  Origin or proxy headers; used by the local browser launch command
 - `POST /daemon/shutdown`
 - `POST /client/sessions/:id/quit` with `stopDaemon` and
   `POST /client/reload-credentials` (Studio's quit and backend switch)

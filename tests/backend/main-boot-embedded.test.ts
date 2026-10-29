@@ -46,7 +46,8 @@ vi.mock('../../src/main/services/spellcheck-dictionaries.service', async () => {
 })
 vi.mock('../../src/main/runtime/sandbox-host', () => ({ shutdownSandboxHosts: () => {} }))
 
-import { bootMain, h } from './main-boot-harness'
+import { bootMain, h, invokeMain } from './main-boot-harness'
+import { IPC } from '../../src/shared/constants/ipc-channels'
 
 h.state.userData = mkdtempSync(join(tmpdir(), 'adf-main-boot-'))
 process.env.ADF_USER_DATA_DIR = h.state.userData
@@ -98,6 +99,7 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
     'ipcMain.handle(adf:connection:use)',
     'ipcMain.handle(adf:connection:add)',
     'ipcMain.handle(adf:connection:remove)',
+    'ipcMain.handle(adf:studio:open-browser)',
     'registerOrbitalCacheHandlers',
     // W3-F (919b9a7c): the recovery channels, local in both modes.
     'registerEditRecoveryHandlers',
@@ -113,4 +115,9 @@ it('embedded: the same boot, in the same order (characterization)', async () => 
   // The embedded IPC layer is loaded once, before its handlers register.
   expect(h.calls.filter((c) => c === 'load ipc/index')).toHaveLength(1)
   expect(h.calls.indexOf('load ipc/index')).toBeLessThan(h.calls.indexOf('registerAllIpcHandlers(openFile,showMainWindow)'))
+  // Embedded mode registers the shared desktop entry, but cannot mint a daemon ticket.
+  expect(await invokeMain(IPC.STUDIO_OPEN_BROWSER)).toEqual({
+    success: false,
+    error: expect.stringContaining('local server'),
+  })
 })

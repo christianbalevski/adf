@@ -1,3 +1,4 @@
+import { mediaUrl } from '../../utils/media-url'
 import StarterKit from '@tiptap/starter-kit'
 import Placeholder from '@tiptap/extension-placeholder'
 import Image from '@tiptap/extension-image'
@@ -19,6 +20,16 @@ function encodeAdfSrc(src: string): string {
 }
 
 const ResizableImage = Image.extend({
+  addAttributes() {
+    return {
+      ...this.parent?.(),
+      src: {
+        default: null,
+        parseHTML: (element) => element.getAttribute('data-adf-src') || element.getAttribute('src'),
+        renderHTML: (attributes) => ({ src: mediaUrl(attributes.src || ''), ...(attributes.src?.startsWith('adf-file://') ? { 'data-adf-src': attributes.src } : {}) }),
+      },
+    }
+  },
   renderMarkdown: (node) => {
     const src = encodeAdfSrc(node.attrs?.src ?? '')
     const alt = node.attrs?.alt ?? ''

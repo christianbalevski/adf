@@ -35,9 +35,12 @@ start runs it in the background, like adf does on its own when it needs one;
 the log goes to <data dir>/logs/adf-daemon.log. stop is graceful: agents are
 unloaded and compute containers stopped.
 
-Every request but GET /health needs the daemon's access token. adf reads it
-on this machine by itself (<data dir>/daemon-token, created on first start);
-token prints it for a client elsewhere (--token or ADF_DAEMON_TOKEN there).
+CLI and REST operations use bearer authentication. adf reads this machine's
+token itself (<data dir>/daemon-token, created on first start). token prints
+it for advanced clients (--token or ADF_DAEMON_TOKEN); remote-access listeners
+require a device token instead. Browser Studio uses cookie sessions: adf web
+opens a local one-use sign-in link; adf daemon pair prints browser addresses
+and a six-digit code, then asks for approval in this terminal.
 ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 --host (plus ADF_DAEMON_ALLOWED_HOSTS for host names clients use).
 Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity
@@ -237,7 +240,7 @@ async function main(argv: string[]): Promise<number> {
     fetch: globalThis.fetch.bind(globalThis),
     stdout: text => process.stdout.write(text),
     stderr: text => process.stderr.write(text),
-    ensureDaemon: url => control.ensureDaemon(url, { disabled: noDaemon }),
+    ensureDaemon: (url, env) => control.ensureDaemon(url, { disabled: noDaemon, env }),
   })
 }
 

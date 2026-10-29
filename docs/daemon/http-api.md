@@ -6,7 +6,9 @@ The daemon serves a local JSON-over-HTTP API, by default at:
 http://127.0.0.1:7385
 ```
 
-Every request but `GET /health` carries `Authorization: Bearer <token>`. Live
+Ordinary control API requests carry `Authorization: Bearer <token>`. Health,
+remote discovery and pairing have public entry points; Browser Studio uses
+the separate same-origin cookie flow described below. Live
 events come as Server-Sent Events from `GET /events`. The ADF CLI, the
 terminal app and ADF Studio in daemon mode
 ([Studio backend](../guides/studio-backend.md)) are clients of this API.
@@ -22,8 +24,10 @@ terminal app and ADF Studio in daemon mode
 
 Each request passes, in order: a `Host` allow-list (`403 host_not_allowed`),
 a browser check that refuses a foreign `Origin` or `Sec-Fetch-Site:
-cross-site|same-site` (`403 cross_origin`; no CORS headers are sent), and the
-bearer token (`401 unauthorized`). The token is minted on first start into
+cross-site|same-site` (`403 cross_origin`; no CORS headers are sent). Ordinary
+control routes then require a bearer token (`401 unauthorized`); public entry
+points and the browser cookie routes have their own authentication rules.
+The install token is minted on first start into
 `<settings dir>/daemon-token`; local `adf` clients read it by themselves,
 `adf daemon token` prints it, and `ADF_DAEMON_TOKEN` overrides it (required
 for a non-loopback bind, with `ADF_DAEMON_ALLOWED_HOSTS` for host names).
@@ -31,8 +35,31 @@ Owner identity changes and `POST /daemon/shutdown` answer local callers only
 (`403 loopback_only`): loopback, no proxy headers, and behind a proxy
 (`ADF_DAEMON_BEHIND_PROXY`) the local proof file only `adf` on the host sends.
 `POST /identity/import` and the two identity reveal routes require that proof
-in every mode. Details, remote access (SSH tunnel, TLS proxy) and
+in every mode. `POST /web/launch` additionally requires the master token,
+local proof, a direct loopback connection, and no Origin or proxy headers.
+Details, remote access (SSH tunnel, TLS proxy) and
 examples: [Base URL and authentication](api-guide.md#base-url-and-authentication).
+
+### Browser Studio
+
+`/studio/` serves the shared Studio renderer without requiring sign-in to load
+its assets. Agent access still requires authentication. `adf web` or desktop
+**Open in browser** obtains a one-use, 60-second launch ticket; the browser
+exchanges it at `POST /web/session`. Other devices submit the host’s pairing
+code at `POST /web/pair` and wait for approval in desktop Studio or the
+`adf daemon pair` host terminal. Tokens are never returned to JavaScript.
+
+The `/web/invoke`, `/web/events`, `/web/file`, and `/web/snapshot` transport
+authenticates with HttpOnly, SameSite=Strict session cookies and validates the
+current session scope. Active sessions last eight hours. Paired browsers also
+receive an HttpOnly device-credential cookie lasting 30 days, allowing a new
+session after expiry or a daemon restart if the device remains authorized.
+The master token stays server-side. Sign-out clears these cookies; host-side
+device revocation invalidates the paired credential.
+
+Browser routes retain Host, Origin and Fetch Metadata checks and send no CORS
+headers. Browser launch neither enables remote listeners nor configures TLS.
+See [Studio in a browser](../guides/studio-web.md) for deployment and limitations.
 
 ## The API by area
 
@@ -41,6 +68,7 @@ Paths write a parameter as `:id` (the reference writes `{id}`); `{a,b}` lists al
 | Area | Routes | Guide |
 |------|--------|-------|
 | Health and contract | `GET /health` (no token), `GET /version`, `GET /openapi.json`, `POST /daemon/shutdown` | [Authentication](api-guide.md#base-url-and-authentication), [Versioning](api-guide.md#versioning-and-compatibility) |
+| Browser Studio | `/studio/`, `/web/{launch,session,pair,invoke,events,file,snapshot}` | [Browser authentication](#browser-studio), [Studio in a browser](../guides/studio-web.md) |
 | Events | `GET /events` (SSE), `GET /agents/:id/umbilical/events` | [The event stream](api-guide.md#the-event-stream) |
 | Agents and files | `/agents`, `/agents/load`, `/agents/:id/{start,stop,unload,interrupt,abort,state,status,vitals,activity}`, `/agents/autostart`, `/agents/review`, `/tracked-dirs` | [Agents and files](api-guide.md#agents-and-files) |
 | Loops | `/agents/:id/loops[/:name]`, `loop` on chat, history, abort, interrupt, compact and timers | [Loops](api-guide.md#loops) |

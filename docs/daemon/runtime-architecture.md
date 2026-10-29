@@ -132,14 +132,22 @@ GET /events?since=42
 
 `DaemonHost` owns the Fastify server built by `createDaemonHttpApi`
 (`src/main/daemon/http-api.ts`, plus `identity-routes.ts`, `template-routes.ts`,
-`provider-routes.ts` and `context-routes.ts`). Every request passes
-`DaemonRequestGuard` (`request-guard.ts`) first: the `Host` allow-list, the
-`Origin` / `Sec-Fetch-Site` browser check, then the bearer token
-(`daemon-token.ts`) on everything but `GET /health`. Identity routes that move
+`provider-routes.ts` and `context-routes.ts`). Ordinary API requests pass
+`DaemonRequestGuard` (`request-guard.ts`): the `Host` allow-list, the
+`Origin` / `Sec-Fetch-Site` check, then bearer authentication
+(`daemon-token.ts`). Health, remote discovery and pairing have public entry
+points. Browser routes are registered by `web/routes.ts`, which applies the
+request guards and its own cookie or launch-ticket authentication. Public
+`/studio/` assets do not require a session; agent-control transport does.
+Identity routes that move
 secrets, `POST /daemon/shutdown`, Studio's quit with `stopDaemon` and
 `POST /client/reload-credentials` additionally require a loopback peer;
 owner import and the stored-value reveal routes also require the local proof
-file (`daemon-local-proof`) in every mode. See
+file (`daemon-local-proof`) in every mode. The browser launch endpoint also
+requires the master token, local proof, direct loopback and no Origin/proxy
+headers. Browser per-tab contexts use the shared daemon-mode handlers with a
+web platform adapter, preserving the renderer’s `adfApi` contract and the
+original master/device authority. See [Studio in a browser](../guides/studio-web.md) and
 [Base URL and authentication](api-guide.md#base-url-and-authentication).
 
 ## Review Gate

@@ -22,6 +22,7 @@ import { showWindowlessMessageBox } from './utils/windowless-dialog'
 import { keyringAvailable, studioSecretCipher } from './utils/studio-safe-storage'
 import { settleSecretStorageAtLaunch, type LaunchOutcome } from './services/secret-storage-launch'
 import { registerSecretStorageHandlers } from './backend/secret-storage-ipc'
+import { openStudioInBrowser } from './backend/open-studio-browser'
 import { IPC } from '../shared/constants/ipc-channels'
 import { initAppUpdater } from './services/app-updater.service'
 import { initSpellcheckDictionaries } from './services/spellcheck-dictionaries.service'
@@ -1100,6 +1101,10 @@ app.whenReady().then(async () => {
     forgetRuntimeKeys: (id) => { if (daemonMode) forgetRuntimeKeysOf(daemonMode.clientSettings, id) },
   })
   registerConnectionHandlers(connections)
+  ipcMain.handle(IPC.STUDIO_OPEN_BROWSER, () => openStudioInBrowser(
+    daemonMode?.runtimes.runtimes().find((runtime) => runtime.kind === 'local') ?? null,
+    (url) => shell.openExternal(url),
+  ))
   daemonMode?.connection.onState(() => connections?.changed())
   registerOrbitalCacheHandlers(app.getPath('userData'))
   registerEditRecoveryHandlers(join(app.getPath('userData'), 'recovered'))

@@ -19,6 +19,24 @@ npm test
 npm run dev      # launches the Studio
 ```
 
+To work on Studio in a browser without launching Electron:
+
+```bash
+npm run build:web
+npm run adf -- web
+```
+
+The second command starts the local daemon if needed and opens an authenticated
+browser session. Rebuild the assets and reload after renderer changes. For Vite
+development and isolated runtime testing, see [Studio in a browser](docs/guides/studio-web.md#run-from-source).
+
+Desktop and browser Studio share `src/renderer/`, the API method mapping in
+`src/shared/adf-api.ts`, and the daemon-mode handlers in
+`src/main/backend/daemon-mode/`. Add UI and runtime features in those shared
+layers. `src/preload/` and `src/web/` supply their respective transports; native
+services stay behind the injected desktop platform. Browser sessions do not
+import Electron or receive the daemon's master token.
+
 ## Building for distribution
 
 To build a packaged macOS app:
@@ -29,6 +47,11 @@ npm run package
 
 The output is a universal `.dmg` in `dist/`. Code signing requires an Apple
 Developer account; see `electron-builder.yml` for configuration.
+
+`npm run build` builds both the desktop app and browser assets. To build the
+standalone CLI and daemon package, including Browser Studio, run
+`npm run build:npm`; its output is `dist/npm/`. The daemon serves the browser
+assets at `/studio/`, so no separate production web server is required.
 
 ## Pull requests
 

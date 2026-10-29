@@ -1,4 +1,4 @@
-import { app, dialog, nativeImage, shell } from 'electron'
+import { app, dialog, nativeImage, shell } from '../platform'
 import { createWriteStream, rmSync } from 'node:fs'
 import { mkdir, realpath, rename, rm, stat, unlink } from 'node:fs/promises'
 import { tmpdir } from 'node:os'

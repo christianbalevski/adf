@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog } from 'electron'
+import { BrowserWindow, dialog } from '../platform'
 import { writeFile } from 'node:fs/promises'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { AgentConfig } from '../../../../shared/types/adf-v02.types'

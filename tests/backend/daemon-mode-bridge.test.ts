@@ -58,6 +58,12 @@ async function focus(session: DaemonModeSession, filePath: string, agentId: stri
 }
 
 describe('event bridge', () => {
+  it('settles a chat accepted after its tab or window already closed', async () => {
+    const { bridge } = setup()
+    bridge.dispose()
+    await expect(bridge.waitForTurn(AGENT_1, 'late-http-response')).resolves.toBe('stopped')
+  })
+
   it('focused agent: executor frames go to AGENT_EVENT unchanged', async () => {
     const { pushes, batched, session, bridge } = setup()
     await focus(session, FILE_1, AGENT_1)

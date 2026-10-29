@@ -1,4 +1,6 @@
 import { BrowserWindow, ipcMain as electronIpcMain, type IpcMain } from 'electron'
+import * as desktopPlatform from 'electron'
+import { setDaemonDesktopPlatform } from './platform'
 import type { BackendDaemonStatus, StudioBackendMode } from '../../../shared/types/backend.types'
 import type { DaemonClient } from '../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../shared/types/ipc.types'
@@ -25,6 +27,9 @@ import { RuntimeManager, RuntimeRouteError, SLOT_RUNTIME } from './runtime-manag
 import { buildApplicationMenu } from '../../menu'
 import { ADF_WINDOW_HEADER, NoticeOwners } from './windows'
 import { LOCAL_LABEL } from '../../../shared/runtime-name'
+
+// Bind only in the desktop entry. Headless web sessions reuse the tables without Electron.
+setDaemonDesktopPlatform(desktopPlatform)
 
 export { RECOVERY_HINT, remoteWaitingNotice } from './hints'
 export {
@@ -83,6 +88,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
   IPC.BACKEND_SETTINGS_GET,
   IPC.BACKEND_SETTINGS_SET,
   IPC.STUDIO_SECRET_STORAGE_GET,
+  IPC.STUDIO_OPEN_BROWSER,
   IPC.STUDIO_SECRET_STORAGE_USE_KEYRING,
   IPC.RECOVERY_STASH,
   IPC.RECOVERY_LIST,

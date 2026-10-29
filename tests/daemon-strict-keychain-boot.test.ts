@@ -106,6 +106,10 @@ async function runDaemon(vars: Record<string, string> | ((root: string) => Recor
   const port = await freePort()
   const meshPort = await freePort()
   const env: NodeJS.ProcessEnv = {
+    // Keep the selected test runtime in Node mode when the suite itself runs
+    // under Electron-as-Node; the isolated environment intentionally drops all
+    // other inherited variables, but must not launch a desktop Electron child.
+    ...(process.versions.electron ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
     PATH: process.env.PATH,
     HOME: home,
     USERPROFILE: home,

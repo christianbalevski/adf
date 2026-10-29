@@ -18,6 +18,34 @@ ADF Studio has five trust boundaries. A vulnerability at any boundary can escala
 
 ### 1. Renderer to Main Process
 
+Browser Studio shares this renderer, using same-origin HTTP and streaming
+events in place of Electron IPC. Its daemon gateway authenticates browser
+sessions with HttpOnly cookies and checks request origins. Local launch uses
+a short-lived, one-use ticket; remote browsers require pairing and host
+approval. The daemon's master token stays outside browser JavaScript. Browser
+operations reuse the daemon-mode handlers with remote-client restrictions,
+including for a browser on the daemon's own computer. See [Studio in a
+browser](studio-web.md) and [Daemon HTTP API](../daemon/http-api.md) for session,
+revocation and deployment details. The Electron-specific controls below apply
+to the desktop app.
+
+An approved browser is an administrative client with agent-control and code
+execution authority. HttpOnly prevents JavaScript from reading its cookies;
+it does not make a compromised authenticated page harmless. Paired browsers
+remember a device credential in an HttpOnly, SameSite=Strict cookie for up to
+30 days; active sessions expire after eight hours. Host revocation invalidates
+the credential. Browser recovery drafts and queued text are stored locally in
+the browser profile, without envelope encryption; their principal namespaces
+do not protect them from someone with access to that profile.
+
+Local launch (`adf web` or desktop **Open in browser**) requires the master
+token and per-run local proof, then exchanges a single-use ticket valid for
+60 seconds. Remote pairing preserves the request source and existing host
+approval/rate limits; the host can approve in `adf daemon pair` without
+Electron. Browser launch does not enable remote listeners or configure TLS.
+Use an explicitly configured encrypted transport for remote access; the
+daemon itself speaks HTTP, and cookies use Secure when served over HTTPS.
+
 The Electron renderer is treated as untrusted. Even though it's our own React app, XSS from LLM output or inbound messages could inject code into the renderer context.
 
 **Controls:**
@@ -202,7 +230,7 @@ Blocked by default (overridable with `security.allow_local_fetch: true`):
 Always blocked (ignores `allow_local_fetch`):
 
 - **Link-local** — `169.254.0.0/16` (including cloud metadata `169.254.169.254`), `fe80::/10`
-- **The local ADF daemon control API** on loopback (including via `0.0.0.0`/`::`) — this closes the "injected agent drives the local daemon" path unconditionally: without it, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine. (The daemon also requires its bearer token and refuses cross-site browser requests; see [Daemon HTTP API → Authentication](../daemon/http-api.md#authentication-and-cross-site-protection).)
+- **The local ADF daemon control API** on loopback (including via `0.0.0.0`/`::`) — this closes the "injected agent drives the local daemon" path unconditionally: without it, a single poisoned message could make the agent POST to `127.0.0.1` control endpoints on the operator's own machine. (The daemon also authenticates control requests with bearer tokens or same-origin browser sessions and refuses cross-site browser requests; see [Daemon HTTP API → Authentication](../daemon/http-api.md#authentication-and-cross-site-protection).)
 
 The check runs on **DNS-resolved addresses**, not just the literal host — a rebinding record that resolves to `192.168.0.1` is rejected — and on **every redirect hop**: a public URL that `302`s to a private address is stopped at the hop. Redirects are ALWAYS followed manually and re-checked, even under `allow_local_fetch`. Only `http`/`https` URLs are permitted for `sys_fetch` (and `ws`/`wss` for `ws_connect`).
 

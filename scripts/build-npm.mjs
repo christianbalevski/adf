@@ -108,6 +108,11 @@ for (const f of ['coreutils.wasm', 'coreutils.LICENSE']) {
   cpSync(join(root, 'resources', 'wasm', f), join(out, 'resources', 'wasm', f))
 }
 
+// Browser Studio ships beside the daemon, using the same renderer as desktop.
+const webBuild = join(root, 'out', 'web')
+if (!existsSync(join(webBuild, 'index.html'))) throw new Error('Build browser Studio first with npm run build:web')
+cpSync(webBuild, join(out, 'web'), { recursive: true })
+
 // Package manifest: template + version + dependency ranges from the root.
 const template = JSON.parse(readFileSync(join(pkgSrc, 'package.json'), 'utf-8'))
 const manifest = {

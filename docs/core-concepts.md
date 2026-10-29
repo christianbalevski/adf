@@ -28,13 +28,18 @@ ADF has these layers:
 
 | Layer | Component | Description |
 |-------|-----------|-------------|
-| **UI** | ADF Studio | Visual IDE for editing and observing agents |
-| **CLI** | `adf` | Headless interface for running and managing agents |
+| **UI** | ADF Studio | Shared desktop and browser interface for editing and observing agents |
+| **CLI** | `adf` | Terminal app, runtime management and local browser launcher (`adf web`) |
 | **Network** | ADF Mesh | Discovery and transport layer (LAN + Internet) |
 | **Transport** | ALF | Message format and addressing ([ALF spec](../ALF_SPEC_v0.1.md)) |
 | **Logic** | ADF runtime | Runs agents from their files and enforces the spec |
 | **Spec** | ADF specification | What the file stores ([ADF spec](../ADF_SPEC_v0.2.md)) |
 | **Data** | `.adf` file | One agent; a SQLite database |
+
+The daemon runs agents for the default desktop client, Browser Studio and the
+CLI. Browser Studio is served by that daemon; it does not execute agents on
+the browser device. See [Browser Studio](guides/studio-web.md) for local sign-in
+and remote pairing.
 
 ## Asynchronous Communication
 

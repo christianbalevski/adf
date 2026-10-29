@@ -1,4 +1,4 @@
-import { app, BrowserWindow } from 'electron'
+import { app, BrowserWindow } from '../platform'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type AgentToolsResult, type DaemonClient } from '../../../../shared/daemon-client'
 import type { NotificationsSnapshot } from '../../../../shared/types/ipc.types'
@@ -109,11 +109,14 @@ export const APP_HANDLERS: DaemonHandlerTable = {
     // Appearance follows in every other window at once (agent windows, agent-windows.md).
     const appearance = APPEARANCE_KEYS.filter((key) => key in clientPart)
     const senderId = (event as { sender?: { id?: number } } | undefined)?.sender?.id
-    if (appearance.length > 0 && senderId !== undefined) {
+    if (appearance.length > 0 && (ctx.hooks.appearanceChanged || senderId !== undefined)) {
       const changed = Object.fromEntries(appearance.map((key) => [key, clientPart[key]]))
-      for (const win of BrowserWindow.getAllWindows()) {
-        if (win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.id === senderId) continue
-        try { win.webContents.send(IPC.APPEARANCE_CHANGED, changed) } catch { /* window going away */ }
+      if (ctx.hooks.appearanceChanged) ctx.hooks.appearanceChanged(changed)
+      else {
+        for (const win of BrowserWindow.getAllWindows()) {
+          if (win.isDestroyed() || win.webContents.isDestroyed() || win.webContents.id === senderId) continue
+          try { win.webContents.send(IPC.APPEARANCE_CHANGED, changed) } catch { /* window going away */ }
+        }
       }
     }
     return { success: true }

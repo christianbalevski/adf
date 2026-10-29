@@ -4,7 +4,7 @@
 
 Everything `adf` accepts, and every command and key of the terminal app, generated from the code. For task-oriented guides see the [ADF CLI docs](index.md).
 
-- [Command line](#command-line): [commands](#commands), [daemon](#daemon), [options](#options), [terminal app options](#terminal-app-options), [environment](#environment)
+- [Command line](#command-line): [commands](#commands), [browser Studio](#browser-studio), [daemon](#daemon), [options](#options), [terminal app options](#terminal-app-options), [environment](#environment)
 - [Terminal app](#terminal-app): [views](#views), [slash commands](#slash-commands), [palette actions](#palette-actions), [keys](#keys)
 
 ## Command line
@@ -15,12 +15,13 @@ Usage: adf [--url <daemon-url>] [--json] <command>
        adf daemon [start|status|stop|restart|logs|token]
 ```
 
-With no command, `adf` opens the terminal app. Commands that talk to the daemon start a local one in the background first when none answers (not with `--no-daemon` / `ADF_NO_AUTOSTART=1`, a remote `--url`, or next to a running ADF Studio). `<agent>` is an agent id, handle or name.
+With no command, `adf` opens the terminal app. Commands that talk to the daemon start a local one in the background first when none answers (not with `--no-daemon` / `ADF_NO_AUTOSTART=1`, a remote `--url`, or next to ADF Studio running Inside Studio (legacy) with the same settings). `<agent>` is an agent id, handle or name.
 
 ### Commands
 
 | Command | Description |
 |---|---|
+| `adf web [--port <n>]` | Open Browser Studio already signed in (no desktop app needed) |
 | `adf tui` | The terminal app (the default) |
 | `adf agents` | List loaded agents |
 | `adf status <agent>` | Show runtime status |
@@ -71,6 +72,27 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 | `adf pair [<host>[:<port>]] [--name <n>] [--yes]` | Pair with another computer's daemon (its 6-digit code); without a host, lists the ADF computers found on this network and your tailnet. Saves the device token |
 | `adf remotes [use <name\|local> \| forget <name>]` | Saved remote daemons; use picks the default |
 
+### Browser Studio
+
+This section describes a browser-enabled build; published npm v0.8.3 does not include `adf web`. See [Browser Studio](../guides/studio-web.md) for setup and browser limitations.
+
+`adf web --help`:
+
+```text
+Usage: adf web [--port <n> | --url <local-daemon-url>] [--no-daemon]
+
+Open Browser Studio already signed in. Starts this computer's daemon if needed.
+No desktop Studio installation or token copying is required.
+--no-daemon (or ADF_NO_AUTOSTART=1) disables automatic daemon startup.
+
+On a headless host or for another device:
+  adf daemon remote on
+  adf daemon remote allow-network
+  adf daemon pair
+Open the displayed /studio/ address, enter the code, and approve in the terminal.
+Remote access uses only the networks you allow.
+```
+
 ### Daemon
 
 | Command | Description |
@@ -103,9 +125,12 @@ start runs it in the background, like adf does on its own when it needs one;
 the log goes to <data dir>/logs/adf-daemon.log. stop is graceful: agents are
 unloaded and compute containers stopped.
 
-Every request but GET /health needs the daemon's access token. adf reads it
-on this machine by itself (<data dir>/daemon-token, created on first start);
-token prints it for a client elsewhere (--token or ADF_DAEMON_TOKEN there).
+CLI and REST operations use bearer authentication. adf reads this machine's
+token itself (<data dir>/daemon-token, created on first start). token prints
+it for advanced clients (--token or ADF_DAEMON_TOKEN); remote-access listeners
+require a device token instead. Browser Studio uses cookie sessions: adf web
+opens a local one-use sign-in link; adf daemon pair prints browser addresses
+and a six-digit code, then asks for approval in this terminal.
 ADF_DAEMON_TOKEN overrides the file, and is required with a non-loopback
 --host (plus ADF_DAEMON_ALLOWED_HOSTS for host names clients use).
 Behind a reverse proxy on this host set ADF_DAEMON_BEHIND_PROXY=1: identity

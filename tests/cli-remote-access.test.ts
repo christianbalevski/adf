@@ -327,6 +327,8 @@ describe('adf pair (client) + adf daemon pair (host)', () => {
     })
     expect(exit, cerr.join('')).toBe(0)
     expect(await hostDone).toBe(0)
+    expect(h.out.join('')).toContain(`http://192.168.77.10:${h.remotePort}/studio/`)
+    expect(h.out.join('')).toContain('return to this terminal to approve the request. No desktop app is needed.')
     expect(h.out.join('')).toMatch(/Allowed: "agent-2 laptop"/)
     expect(h.err.join('')).toMatch(/Allow "agent-2 laptop" \(127\.0\.0\.1, this network\)/)
     expect(cout.join('')).toMatch(/Paired with "host-1" as "agent-2 laptop"\. Saved as remote "host-1" .*the default/)

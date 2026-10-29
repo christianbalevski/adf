@@ -3,6 +3,19 @@
 From nothing to an agent you can chat with, in the terminal app. Every step
 also has a one-shot command, shown after it.
 
+## Browser option
+
+This walkthrough uses the terminal app, but a browser-enabled build also
+provides `adf web`: it starts the local daemon if needed and opens Browser
+Studio already signed in. Desktop Studio is optional. Published npm v0.8.3
+does not include this command; see [Browser Studio](../guides/studio-web.md)
+for the source-build workflow.
+
+Identity and provider setup can be completed with the CLI commands below
+before opening the browser. For a daemon on another computer, follow
+[browser pairing](remote-daemon.md#browser-studio-on-another-device): the host
+prints a six-digit code and approves your browser in its terminal.
+
 ## 1. Open the terminal app
 
 ```bash
@@ -85,7 +98,7 @@ adf templates
 adf new agent-1 --template <id> --start
 ```
 
-Without `--dir` agents go to Studio's agents folder (`agentsFolder` setting,
+Without `--dir` agents go to the daemon’s agents folder (`agentsFolder` setting,
 else `~/Documents/adf-agents`), which is tracked so the agent loads again at
 every daemon start.
 
@@ -133,6 +146,7 @@ The wizard comes prefilled with a goal, tools and a daily 03:00 timer;
 
 ## Next
 
+- In a browser-enabled build, run `adf web` to use the same daemon from Browser Studio.
 - `?` or `/help` in the app lists every key and command; `Ctrl+K` searches
   everything.
 - Already have `.adf` files? `f` on the Fleet view tracks a folder of agents

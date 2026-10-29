@@ -34,7 +34,7 @@ export const REMOTE_USAGE = `Usage: adf daemon remote on [--name <name>] | off |
        adf daemon devices [list] [--json]
        adf daemon devices add <label>        Print a new device token (shown once)
        adf daemon devices revoke <id|label>  Disconnect that computer and void its token
-       adf daemon pair                       Open a pairing window and show its code
+       adf daemon pair                       Pair a browser or client; approve it in this terminal
 
 Remote access: devices you pair or add use this computer's ADF daemon (no
 restart; agents keep running). It listens only on private and Tailscale
@@ -246,9 +246,21 @@ async function pairCommand(io: HostCliIo, target: HostTarget): Promise<number> {
   const status = await call<RemoteAccessStatus>(io, target, 'GET', '/remote-access')
   const host = status.urls.find(u => u.kind === 'tailnet' || u.kind === 'lan')?.url.replace(/^http:\/\//, '').replace(new RegExp(`:${DEFAULT_DAEMON_PORT}$`), '')
   io.stdout(`Pairing with "${window.name}" (fingerprint ${window.fingerprint}) is open for 2 minutes.\n`)
+  const browserUrls = new Set<string>()
+  for (const address of [...status.urls].sort((a, b) => Number(b.encrypted) - Number(a.encrypted))) {
+    try {
+      const url = new URL(address.url)
+      if ((url.protocol === 'http:' || url.protocol === 'https:') && !url.username && !url.password) browserUrls.add(new URL('/studio/', url).href)
+    } catch { /* invalid advertised address */ }
+  }
+  if (browserUrls.size > 0) {
+    io.stdout('In the other device’s browser, open:\n')
+    for (const url of browserUrls) io.stdout(`  ${url}\n`)
+    io.stdout('Enter the code below and a browser name, then return to this terminal to approve the request. No desktop app is needed.\n')
+  }
   io.stdout(`On the other computer: adf pair${host ? ` ${host}` : ''}, or pair with this computer in ADF Studio → Settings → Connections.\n`)
   io.stdout(`Code: ${window.code.slice(0, 3)} ${window.code.slice(3)}\n`)
-  io.stderr('Waiting for the other computer… (Ctrl+C closes the window)\n')
+  io.stderr('Waiting for a browser or client request to approve here… (Ctrl+C closes the window)\n')
   let interrupted = false
   const stop = io.onInterrupt?.(() => { interrupted = true })
   let lastAttempts = window.attemptsLeft

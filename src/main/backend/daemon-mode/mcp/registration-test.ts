@@ -1,4 +1,4 @@
-import { BrowserWindow, dialog, shell } from 'electron'
+import { BrowserWindow, dialog, shell } from '../platform'
 import { DaemonError } from '../../../../shared/daemon-client'
 import type { McpRegistrationTestResult } from '../../../../shared/types/ipc.types'
 import { enc, type DaemonModeContext } from '../context'

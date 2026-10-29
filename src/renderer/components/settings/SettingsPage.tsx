@@ -1689,7 +1689,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
 
           {activeTab === 'updates' && <>
           <UpdatesGroup />
-          <SettingsGroup title="Update checks">
+          {window.adfApi?.platform !== 'web' && <SettingsGroup title="Update checks">
             <SettingsRow
               label="Automatic checks"
               description="Ask GitHub Releases for a newer version after launch and every hour."
@@ -1697,7 +1697,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
             >
               <Switch label="Automatic checks" checked={updateChecks} onChange={(next) => void persist({ updateChecksEnabled: next }, setUpdateChecks, next, updateChecks)} />
             </SettingsRow>
-          </SettingsGroup>
+          </SettingsGroup>}
           </>}
 
           {activeTab === 'privacy' && <>

@@ -43,7 +43,7 @@ export function useShareDrag(filePath: string | null) {
   const issued = useRef<Promise<string | null> | null>(null)
 
   const onDragStart = useCallback((e: React.DragEvent) => {
-    if (!filePath) return
+    if (!filePath || window.adfApi?.platform === 'web') { e.preventDefault(); return }
     e.preventDefault()
     const token = window.adfApi.prepareShareFile(filePath)
       .then((r) => (r.success && r.token ? r.token : null))
@@ -64,7 +64,7 @@ export function useShareDrag(filePath: string | null) {
   }, [])
 
   return {
-    draggable: !!filePath,
+    draggable: !!filePath && window.adfApi?.platform !== 'web',
     onDragStart,
     onDragEnd,
   }

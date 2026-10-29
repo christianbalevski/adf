@@ -1,16 +1,19 @@
 # ADF CLI
 
 The ADF CLI runs your ADF agents from a terminal, with no desktop app. One
-executable, `adf`, does three things:
+executable, `adf`, provides these entry points:
 
 | You type | You get |
 |---|---|
 | `adf` | The **terminal app**: your whole fleet in one screen. Chat with any agent or any of its loops, approve tool calls, edit files, schedule work, watch live events. |
+| `adf web` | In a browser-enabled build, opens **Browser Studio** already signed in to this computer’s daemon. No desktop app required. |
 | `adf <command>` | One-shot commands for scripts and quick checks: `adf agents`, `adf chat agent-1 "hi"`, `adf identity`, `adf new`. `adf help` lists them. |
 | `adf daemon …` | The **daemon**, the background process that actually runs the agents. `adf` starts it for you; `adf daemon status \| stop \| restart \| logs \| token` manage it. |
 
-The terminal app and the one-shot commands are both clients of the daemon.
-Quitting the app, or closing the terminal, leaves every agent running.
+The terminal app, Browser Studio and one-shot commands are clients of the
+daemon. Quitting a client leaves the agents running. Browser Studio and
+`adf web` require a build containing browser support; they are not included
+in published npm v0.8.3.
 
 ## Install
 
@@ -87,6 +90,28 @@ runs on its own bundled Electron runtime (Electron 43, Chromium 150), whose
 Brotli decoder is Chromium's and has the fix, and starts its daemon on that
 same runtime.
 
+## Open Browser Studio
+
+In a browser-enabled build:
+
+```bash
+adf web
+adf web --port 7485       # a different local daemon port
+adf web --no-daemon       # require an already-running daemon
+```
+
+The launcher starts the local daemon if needed, then opens a one-use sign-in
+link in your browser. It does not print an access token or require desktop
+Studio. Automatic sign-in is local-only: remote URLs and unrecognized
+forwarded ports use [browser pairing](remote-daemon.md#browser-studio-on-another-device)
+instead. A saved default CLI remote does not select the browser launch target.
+`--url <local-daemon-url>` is an alternative to `--port`; it must name a known
+local daemon.
+
+See the [Browser Studio guide](../guides/studio-web.md) for shared UI behavior,
+browser limitations and authentication. A browser-enabled CLI and daemon are
+both needed; installing published npm v0.8.3 does not add this command.
+
 ## Studio and the CLI
 
 On current `main`, ADF Studio in **Local** mode and the CLI are clients of
@@ -102,6 +127,7 @@ Switch Studio to Local mode or quit it first. See
 ## Guides
 
 - [Getting started](getting-started.md): first run, identity, a model, your first agent
+- [Browser Studio](../guides/studio-web.md): local browser launch and pairing from another device
 - [Terminal app](terminal-app.md): layout, views, keys, chat, approvals, mouse and copy/paste
 - [Loops and timers](loops-and-timers.md): inner loops (side loops) and running them on a schedule
 - [Identity and security](identity-and-security.md): owner identity, keychain, daemon token, locked credentials
@@ -112,7 +138,7 @@ Switch Studio to Local mode or quit it first. See
 - [Templates and skills](templates-and-skills.md)
 - [Files](files.md): the agent's document, mind and files
 - [Context](context.md): what fills a loop's context window
-- [Remote daemon](remote-daemon.md): SSH tunnel, tokens, TLS proxy
+- [Remote daemon](remote-daemon.md): terminal/browser pairing, SSH tunnel, device tokens and TLS proxy
 - [Troubleshooting](troubleshooting.md)
 - [Reference](reference.md): every command, flag, environment variable, slash command and key (generated)
 
@@ -124,3 +150,14 @@ For the daemon itself (HTTP API, operations, runtime) see the
 `npm run adf -- <args>` runs the same CLI from the sources (`npm run adf`
 alone opens the terminal app; `npm run tui:mock` runs it against an
 in-memory mock daemon, no daemon or model needed).
+
+For Browser Studio in this source build, compile the shared renderer first:
+
+```bash
+npm run build:web
+npm run adf -- web
+```
+
+`npm run build:npm` includes the browser assets in the CLI package. A daemon
+still running an older build must be updated and restarted before it can serve
+this browser client.

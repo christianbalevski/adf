@@ -1,5 +1,5 @@
 import { basename } from 'node:path'
-import { dialog } from 'electron'
+import { dialog } from '../platform'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'

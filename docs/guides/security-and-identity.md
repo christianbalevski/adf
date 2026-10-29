@@ -41,6 +41,29 @@ The agent's `config.id` (a 12-character nanoid) still exists but is a **local ru
 
 **Rotation and history.** Claiming or re-keying an agent mints a new DID. The old one is never lost: it is appended to `adf_did_history`, so anything that referenced the agent by its old DID — most importantly child agents' parent references — still resolves. Lineage resolution is read-time (current DID → DID history → legacy `config.id`); child files are never rewritten when a parent rotates.
 
+## Browser access and identity
+
+Browser sign-in authorizes access to a daemon; it does not create another owner
+or runtime identity or import the owner’s seed phrase into the browser. The
+connected daemon holds the runtime keys and opens agent envelopes. Browser
+operations retain remote-client restrictions, including from a browser on the
+same computer; local-only identity operations still belong on the host.
+
+`adf web` and desktop **Open in browser** use a short-lived, one-use ticket
+issued with the host’s master token and local proof. Other devices enter a
+pairing code and need host approval, either in desktop Studio or the
+`adf daemon pair` terminal. Session and remembered device credentials use
+HttpOnly, SameSite=Strict cookies; the install master token never enters
+browser JavaScript. A paired browser is a trusted administrative client, with
+the ability to control agents and execute code as the daemon user.
+
+Sign-out clears browser credentials; host-side `adf daemon devices revoke`
+invalidates the device credential itself. Unsaved recovery drafts and pending
+message text stored in the browser profile are not envelope-encrypted, and
+remain accessible to someone with that profile. Remote transport encryption
+requires configuration; the daemon does not automatically enable TLS. See
+[Studio in a browser](studio-web.md) and [Security Architecture](security-architecture.md).
+
 ## Where Identity Data Lives — Three Layers
 
 Identity-adjacent data lands in one of three stores by rule:

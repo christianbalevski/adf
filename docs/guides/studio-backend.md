@@ -9,7 +9,7 @@ see_also:
 
 # Studio backend
 
-ADF Studio runs agents in one of two modes. You choose it in
+The desktop ADF Studio app runs agents in one of two modes. You choose it in
 **Settings → Connections** ([Connection](#connection)); Studio reads the choice
 at launch, so a change applies at the next launch. In Local mode, Studio
 also connects to every saved connection to another computer; adding or
@@ -52,6 +52,24 @@ another computer differs where the machine boundary forces it; [Remote
 computer](#remote-computer) lists each difference.
 
 ## Connection
+
+### Open Studio in a browser
+
+In desktop Studio, **Settings → Studio → Connections → Browser Studio → Open
+in browser** opens the local daemon's Studio page already signed in. It requires
+the local server; Inside Studio mode reports that the local server is needed.
+The button does not launch a saved remote server's page.
+
+You can also install the CLI and run `adf web` without the desktop app. Browser
+Studio uses the same renderer and daemon handlers, with one daemon per browser
+session. Open another daemon's `/studio/` address to use that server. A direct
+URL requires sign-in unless this browser already has a valid session; use
+[browser pairing](studio-web.md#access-from-another-device) for another device.
+Closing a browser tab leaves the daemon running. The backend mode, native
+window and daemon shutdown controls described below apply to desktop Studio.
+See [Studio in a browser](studio-web.md) for browser behavior and limitations.
+
+### Desktop connection settings
 
 Settings has two groups (design:
 [settings-scopes.md](../design/settings-scopes.md)): **Studio**, the app on

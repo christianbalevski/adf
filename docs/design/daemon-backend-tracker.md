@@ -2,6 +2,12 @@
 
 **Design**: [daemon-backend.md](daemon-backend.md) · **Branch**: `feat/daemon-backend`
 
+This tracker records the desktop daemon-backend migration. Browser Studio now
+reuses that renderer and daemon-mode implementation; its current launch,
+development and platform behavior are documented in
+[Studio in a browser](../guides/studio-web.md). The workstreams below remain the
+historical desktop migration record.
+
 Section references (§n) point into the design. Each workstream is sized for one subagent in one focused session. Workstreams in the same wave run in parallel; a wave starts when the workstreams it depends on are merged.
 
 ## 1. Rules for every workstream

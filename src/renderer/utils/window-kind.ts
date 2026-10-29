@@ -23,7 +23,7 @@ export const windowRuntime: string = (isAgentWindow && params.get('runtime')) ||
 export const agentWindowFile: string | null = isAgentWindow ? params.get('file') : null
 
 /** Open in new window is offered (daemon mode, main window). */
-export const agentWindowsAvailable = !isAgentWindow && params.get('agentWindows') === '1'
+export const agentWindowsAvailable = !isAgentWindow && (params.get('agentWindows') === '1' || (typeof window !== 'undefined' && window.adfApi?.platform === 'web'))
 
 /** Open in new window: opens the agent's window, or focuses it when it has one. */
 export function openAgentWindow(request: { filePath: string; agentId?: string | null; name?: string; runtimeId?: string }): void {

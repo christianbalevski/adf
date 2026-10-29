@@ -21,7 +21,7 @@ export function RecoveredEditsNotice() {
   return (
     <div role="status" className="w-full shrink-0 flex flex-wrap items-center gap-2 px-3 py-1.5 border-b border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] text-[11px] text-[var(--adf-ui-warning)]">
       <span className="flex-1 min-w-0">{recoveredEditsMessage(files, { session })}</span>
-      <button type="button" className={button} onClick={() => { void window.adfApi?.recoveryReveal?.() }}>Show folder</button>
+      <button type="button" className={button} onClick={() => { void window.adfApi?.recoveryReveal?.() }}>{window.adfApi?.platform === 'web' ? 'Download copies' : 'Show folder'}</button>
       <button type="button" className={button} onClick={() => { void window.adfApi?.recoveryArchive?.().finally(() => setFiles([])) }}>Dismiss</button>
     </div>
   )

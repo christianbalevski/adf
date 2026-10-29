@@ -15,6 +15,8 @@ import { relaunchEmbeddedForSession, relaunchStudio } from '../boot-handover'
 import type { ApprovalsUi } from './approvals-ui'
 import { createDaemonClientSession, type ClientQuitAnswer, type ClientSession } from './client-stream'
 import { DaemonConnection, type DaemonConnector, type DaemonEndpoint } from './connection'
+import { followConnectionTurns } from './connection-turns'
+export { TURN_DISCONNECT_GRACE_MS } from './connection-turns'
 import { findRunningAgent, type DaemonModeContext } from './context'
 import { EventBridge } from './event-bridge'
 import { DAEMON_MODE_HANDLERS } from './handlers'
@@ -56,8 +58,6 @@ import { RECOVERY_HINT, remoteWaitingNotice } from './hints'
  * - never stops its daemon (M10): quit ends its sessions, bounded.
  */
 
-/** How long a lost daemon connection may last before waiting chats are ended. */
-export const TURN_DISCONNECT_GRACE_MS = 15_000
 /** How long a restart waits for each agent window to keep its unsaved text. */
 export const AGENT_WINDOW_STASH_WAIT_MS = 5_000
 /** How long ending one agent window's session may take; the main session's quit request follows within the quit budget. */
@@ -693,26 +693,10 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   // AGENT_INVOKE waits must not outlive the daemon: a failed connector ends
   // them at once, a disconnect that lasts past the grace period too (the
   // handler reports it).
-  let turnGrace: ReturnType<typeof setTimeout> | null = null
-  connection.onState((state) => {
-    if (state.state === 'failed') failAllTurns('disconnected')
-    if (state.state === 'disconnected' && !turnGrace) {
-      turnGrace = setTimeout(() => {
-        turnGrace = null
-        if (connection.state.state === 'disconnected') {
-          log.warn(`[Backend] The ADF daemon has been away for ${TURN_DISCONNECT_GRACE_MS / 1000}s; ending the chats that wait for their turn`)
-          failAllTurns('disconnected')
-        }
-      }, TURN_DISCONNECT_GRACE_MS)
-      turnGrace.unref?.()
-    }
-    if (state.state === 'connected' && turnGrace) { clearTimeout(turnGrace); turnGrace = null }
-    // Chats whose wait ended while away: their agent's real state now.
-    if (state.state === 'connected') {
-      void bridge.recheckTurns()
-      for (const w of windowSessions.values()) void w.bridge.recheckTurns()
-    }
-  })
+  const stopFollowingTurns = followConnectionTurns(connection, () => failAllTurns('disconnected'), () => {
+    void bridge.recheckTurns()
+    for (const w of windowSessions.values()) void w.bridge.recheckTurns()
+  }, log)
 
   // --- Local mode: the daemon's process exited ---------------------------------
   // A dropped stream is "lost" while the daemon's pid lives (the stream
@@ -1038,7 +1022,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
   const shutdown = (shutdownOpts: QuitOptions = {}): Promise<void> => {
     shutdownPromise ??= (async () => {
       stopExitWatch()
-      if (turnGrace) { clearTimeout(turnGrace); turnGrace = null }
+      stopFollowingTurns()
       connection.dispose()
       deps.powerMonitor?.removeListener('resume', onSystemResume)
       statusUi?.dispose()

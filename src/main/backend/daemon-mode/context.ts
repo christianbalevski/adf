@@ -40,7 +40,13 @@ export interface DaemonModeContext {
   recordRecentFile(filePath: string): void
   /** A runtime other than the primary: its Open Recent entry for a file that moved follows it (runtimeRecentFiles). Absent: `recentFiles` is re-keyed. */
   renameRecentFile?(oldPath: string, newPath: string): void
-  hooks: { showMainWindow?: () => Electron.BrowserWindow | null; openFile?: (filePath: string) => void; mainWindow?: () => Electron.BrowserWindow | null }
+  hooks: {
+    showMainWindow?: () => Electron.BrowserWindow | null
+    openFile?: (filePath: string) => void
+    mainWindow?: () => Electron.BrowserWindow | null
+    /** A non-Electron host forwards appearance changes to its sibling views. */
+    appearanceChanged?: (changed: Record<string, unknown>) => void
+  }
   /**
    * Local mode, after an owner import in the daemon (§5.3.1): rewrite the
    * `studio-runtime:<scope>` entry with a delegation the new owner signs

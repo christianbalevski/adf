@@ -61,6 +61,7 @@ import spec from '../docs/daemon/openapi.json'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { MockLLMProvider } from '../src/main/runtime/headless'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
+import { daemonHostAllowList } from '../src/main/daemon/request-guard'
 
 const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head'] as const
 
@@ -73,6 +74,10 @@ const INTERNAL_ROUTES = new Set<string>([
   // VNC stream, passed through byte for byte for Studio's loopback relay; not an API.
   'GET /compute/desktop/{container}/websockify',
   'GET /compute/desktop/{container}/*',
+  // Browser entry redirect and compiled renderer assets (web/routes.ts), not
+  // API operations. The /web authentication and transport routes are documented.
+  'GET /studio',
+  'GET /studio/*',
 ])
 
 type Json = Record<string, unknown>
@@ -208,6 +213,45 @@ function memorySettings() {
 }
 
 describe('OpenAPI response conformance', () => {
+  it('browser launch, session and transport responses match the cookie-auth contract', async () => {
+    let port = 0
+    const token = 'openapi-browser-token'
+    const proof = 'openapi-browser-proof'
+    const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }), {
+      security: { token, localProof: proof, allowedHosts: () => daemonHostAllowList('127.0.0.1', port) },
+      web: { createTab: async () => ({
+        invoke: async () => ({ version: 'test' }), readFile: async () => new Response('media'),
+        snapshot: async () => new Response('snapshot'), resync: async () => {}, close: async () => {},
+      }) },
+    })
+    const check = (method: string, path: string, response: { statusCode: number; json(): unknown }) => {
+      expect(conformance(method, path, response.statusCode, response.json())).toEqual([])
+    }
+    try {
+      await server.listen({ host: '127.0.0.1', port: 0 })
+      port = (server.server.address() as { port: number }).port
+      const host = `127.0.0.1:${port}`
+      const headers = { host, origin: `http://${host}` }
+      const launch = await server.inject({ method: 'POST', url: '/web/launch', headers: { host, authorization: `Bearer ${token}`, 'x-adf-local-proof': proof } })
+      check('POST', '/web/launch', launch)
+      const ticket = new URLSearchParams(new URL(launch.json().url).hash.slice(1)).get('ticket')
+      const login = await server.inject({ method: 'POST', url: '/web/session', headers, payload: { ticket } })
+      check('POST', '/web/session', login)
+      // Pairing approval uses exactly the same issued-session response shape.
+      check('GET', '/web/pair', login)
+      const cookie = ([login.headers['set-cookie']].flat() as string[]).find(value => value.startsWith('adf_web_session_'))!.split(';')[0]
+      const authHeaders = { ...headers, cookie }
+      check('GET', '/web/session', await server.inject({ url: '/web/session', headers: authHeaders }))
+      check('POST', '/web/invoke', await server.inject({ method: 'POST', url: '/web/invoke', headers: authHeaders, payload: { clientId: 'openapi-browser-tab', storageScope: login.json().storageScope, channel: 'version', args: [] } }))
+      check('DELETE', '/web/session', await server.inject({ method: 'DELETE', url: '/web/session', headers: authHeaders }))
+      for (const path of ['/web/session', '/web/events', '/web/file', '/web/snapshot', '/web/pair']) {
+        check('GET', path, await server.inject({ url: path, headers }))
+      }
+      check('POST', '/web/session', await server.inject({ method: 'POST', url: '/web/session', headers, payload: { token } }))
+      check('POST', '/web/pair', await server.inject({ method: 'POST', url: '/web/pair', headers, payload: { code: '123456', deviceName: 'Test browser' } }))
+    } finally { await server.close() }
+  })
+
   it('sampled responses match their documented status and schema', async () => {
     const runtime = new RuntimeService({ enforceReviewGate: false })
     const ref = runtime.createAgent({ name: 'agent-1', provider: new MockLLMProvider({ tokensPerResponse: 20 }) })

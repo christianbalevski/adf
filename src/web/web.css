@@ -1,0 +1,19 @@
+body { display: flex; flex-direction: column; min-width: 360px; }
+#root { flex: 1; min-height: 0; height: auto; }
+.web-session-bar { display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 3px 12px; min-height: 26px; font-size: 11px; color: var(--adf-ui-text-muted); background: var(--adf-ui-surface-2); border-bottom: 1px solid var(--adf-ui-border); }
+.web-session-bar button { text-decoration: underline; cursor: pointer; }
+.web-login { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: var(--adf-ui-canvas, #fafafa); overflow: auto; }
+.web-login-card { width: min(100%, 420px); display: flex; flex-direction: column; align-items: flex-start; gap: 12px; color: var(--adf-ui-text, #18181b); }
+.web-login-card h1 { font-size: 25px; font-weight: 600; letter-spacing: -0.6px; }
+.web-login-card h2 { font-size: 15px; font-weight: 600; }
+.web-login-local { padding: 14px; border: 1px solid var(--adf-ui-border, #d4d4d8); border-radius: 8px; width: 100%; }
+.web-login-card .web-login-local p { margin-top: 6px; font-size: 12px; }
+.web-login-card p { font-size: 14px; line-height: 1.6; color: var(--adf-ui-text-muted, #71717a); }
+.web-login-host { font-family: monospace; font-size: 12px; padding: 6px 10px; background: var(--adf-ui-surface-2, #f4f4f5); border-radius: 6px; }
+.web-login-card label { font-size: 13px; font-weight: 500; }
+.web-login-card input { width: 100%; padding: 12px 14px; border: 1px solid var(--adf-ui-border, #d4d4d8); border-radius: 8px; background: transparent; font-size: 14px; }
+.web-login-card input:focus { outline: 2px solid var(--adf-ui-accent, #2563eb); outline-offset: 2px; }
+.web-login-card .web-login-help { font-size: 12px; }
+.web-login-card .web-login-error { color: var(--adf-ui-danger, #dc2626); }
+.web-login-card button { width: 100%; padding: 12px; background: var(--adf-ui-text, #18181b); color: var(--adf-ui-canvas, #fafafa); border-radius: 8px; font-weight: 500; cursor: pointer; }
+.web-login-card button:disabled { opacity: 0.6; cursor: wait; }

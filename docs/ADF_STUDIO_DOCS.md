@@ -1,6 +1,6 @@
 # ADF Studio
 
-ADF Studio is the desktop application for creating, configuring, and operating ADF agents. It is the visual IDE for the [Agent Document Format](../README.md): you author a localized agent, follow its turns, configure its tools, and run it on the mesh. Each agent is one `.adf` file, its body ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)).
+ADF Studio is the desktop and browser interface for creating, configuring, and operating ADF agents. It is the visual IDE for the [Agent Document Format](../README.md): you author a localized agent, follow its turns, configure its tools, and run it on the mesh. Each agent is one `.adf` file, its body ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 
 This document covers the **Studio application itself**: its interface, settings, and day-to-day workflows. For the underlying format, runtime, and tool concepts, see the [documentation index](index.md), which links every guide. For the headless runtime, see the [Daemon documentation](daemon/index.md).
 
@@ -14,10 +14,14 @@ This document covers the **Studio application itself**: its interface, settings,
 
 Before you begin you need:
 
-1. **ADF Studio** installed on your machine (macOS, Windows or Linux).
+1. The **ADF Studio** desktop app (macOS, Windows or Linux), or the [ADF CLI](cli/getting-started.md) and `adf web` to open Browser Studio already signed in. No desktop installation is required for browser use; see [Studio in a browser](guides/studio-web.md) for pairing from another device and native integration differences.
 2. **At least one LLM provider**. Studio supports Anthropic, OpenAI, OpenAI-compatible endpoints, and Claude, ChatGPT and Grok subscriptions. Studio asks for one the first time you send a task from Home; see [Getting Started](getting-started.md).
 
-On first launch Studio creates its application data directory (`~/.adf-studio/`), which holds settings, the shared sandbox-package store, and per-agent compute state.
+Settings and compute state live on the runtime's computer. Browser Studio keeps
+agents and provider credentials on the daemon host; file pickers browse that
+host. The data directory depends on the operating system and any configured
+override; see [daemon operations](daemon/operations.md). The interface tour
+below uses desktop screenshots and menu names; Browser Studio shares the UI.
 
 ---
 
