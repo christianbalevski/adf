@@ -1,0 +1,838 @@
+import { IPC } from './constants/ipc-channels'
+import type { RuntimeIpc } from './runtime-ipc'
+import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnapshot, QueueHandoverEntry } from './types/ipc.types'
+import type { AgentConfig } from './types/adf-v02.types'
+import type { ResourceWriter } from './types/resource-revision.types'
+import type { AdfApi } from '../preload/api'
+import type { AskAnswer } from './utils/ask-form'
+import type { ConnectionAddRequest, ConnectionsView, RuntimesMoved } from './types/connection.types'
+import type { OrbitalCacheRequest } from './utils/orbital-cache-key'
+import type { BackendSettingsPatch, RemotePickAnswer, RemotePickRequest } from './types/backend.types'
+import type { NetworkNotice, RemoteAccessChange, RemoteDiscoveryUpdate, RemotePairStartRequest, RemotePairState } from './types/remote-access-ipc.types'
+
+/** The host capabilities that differ between Electron and the browser. */
+export interface AdfApiPlatform {
+  platform: AdfApi['platform']
+  setZoomFactor(factor: number): void
+}
+
+type SubscriptionPayload<Subscription> = Subscription extends (callback: (data: infer Payload) => void) => () => void
+  ? Payload
+  : never
+
+/**
+ * `adfApi` is built by one factory over one runtime's `invoke`, `send` and
+ * `on` (docs/design/multi-runtime.md §4.1). The parameter is named
+ * `ipcRenderer` on purpose: every call below reads as it did, and
+ * tests/backend/channel-map.test.ts reads the kinds from these lines.
+ */
+export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform): Omit<AdfApi, 'runtime' | 'onAnyRuntime' | 'runtimeId'> => ({
+  // App
+  getAppVersion: () => ipcRenderer.invoke(IPC.APP_GET_VERSION),
+  setBadgeCount: (count: number) => ipcRenderer.invoke(IPC.APP_SET_BADGE_COUNT, count),
+
+  // File operations
+  openFile: (filePath?: string) =>
+    ipcRenderer.invoke(IPC.FILE_OPEN, { filePath }),
+  saveFile: () => ipcRenderer.invoke(IPC.FILE_SAVE),
+  createFile: (name: string) =>
+    ipcRenderer.invoke(IPC.FILE_CREATE, { name }),
+  createQuickAgent: (options?: { providerId?: string; modelId?: string; folder?: string; name?: string; templateId?: string; identityDraftId?: string }) =>
+    ipcRenderer.invoke(IPC.FILE_CREATE_QUICK, options ?? {}),
+  mintIdentityDraft: () => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_MINT),
+  discardIdentityDraft: (draftId: string) => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_DISCARD, draftId),
+  getDefaultAgentsFolder: () => ipcRenderer.invoke(IPC.AGENTS_FOLDER_DEFAULT_GET),
+  closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
+  deleteFile: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_DELETE, { filePath }),
+  listTables: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_LIST_TABLES, { filePath }),
+  cloneFile: (filePath: string, selectedTables: string[]) =>
+    ipcRenderer.invoke(IPC.FILE_CLONE, { filePath, selectedTables }),
+  renameFile: (filePath: string, newName: string) =>
+    ipcRenderer.invoke(IPC.FILE_RENAME, { filePath, newName }),
+  onFileRenamed: (callback: (event: { oldPath: string; newPath: string }) => void) => {
+    const handler = (_event: unknown, data: { oldPath: string; newPath: string }) =>
+      callback(data)
+    ipcRenderer.on(IPC.FILE_RENAMED, handler)
+    return () => ipcRenderer.removeListener(IPC.FILE_RENAMED, handler)
+  },
+  getCurrentFile: () => ipcRenderer.invoke(IPC.FILE_GET_CURRENT),
+  revealInFolder: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_REVEAL, { filePath }),
+
+  // Document
+  getDocument: () => ipcRenderer.invoke(IPC.DOC_GET_DOCUMENT),
+  // W3-F: `baseRevision` only when given, so a save without one sends what it always sent.
+  setDocument: (content: string, opts?: { baseRevision?: number }) =>
+    ipcRenderer.invoke(IPC.DOC_SET_DOCUMENT, opts?.baseRevision !== undefined ? { content, baseRevision: opts.baseRevision } : { content }),
+  getAgentConfig: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG),
+  // W3-F: the config and its revision, for a read-modify-write over it.
+  getAgentConfigWithRevision: () => ipcRenderer.invoke(IPC.DOC_GET_AGENT_CONFIG, { withRevision: true }),
+  setAgentConfig: (config: unknown, opts?: { baseRevision?: number }) =>
+    opts?.baseRevision !== undefined
+      ? ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config, { baseRevision: opts.baseRevision })
+      : ipcRenderer.invoke(IPC.DOC_SET_AGENT_CONFIG, config),
+  // Runtime-originated config change push. Never fires for this window's own
+  // save (that path suppresses the host fan-out), so a subscriber can apply the
+  // payload without racing an edit in flight.
+  onAgentConfigChanged: (callback: (data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) => void) => {
+    const handler = (_event: unknown, data: { filePath: string; config: AgentConfig; revision?: number; writer?: ResourceWriter | null }) =>
+      callback(data)
+    ipcRenderer.on(IPC.DOC_AGENT_CONFIG_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.DOC_AGENT_CONFIG_CHANGED, handler) }
+  },
+  // `loop` selects the stream; omitted/'main' = the host loop, so every
+  // pre-loops call site keeps its exact behaviour.
+  getChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_GET_CHAT, { loop }),
+  getChatOlder: (beforeSeq: number, limit?: number, loop?: string) =>
+    ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit, loop }),
+  setChat: (chatHistory: unknown) =>
+    ipcRenderer.invoke(IPC.DOC_SET_CHAT, { chatHistory }),
+  clearChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT, { loop }),
+  getInbox: () => ipcRenderer.invoke(IPC.DOC_GET_INBOX),
+  clearInbox: () => ipcRenderer.invoke(IPC.DOC_CLEAR_INBOX),
+  getOutbox: () => ipcRenderer.invoke(IPC.DOC_GET_OUTBOX),
+  getBatch: () => ipcRenderer.invoke(IPC.DOC_GET_BATCH),
+  getHeader: () => ipcRenderer.invoke(IPC.DOC_GET_HEADER),
+
+  // Agent
+  startAgent: (filePath?: string, hasUserMessage?: boolean) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, hasUserMessage }),
+  reattachAgent: (filePath?: string) => ipcRenderer.invoke(IPC.AGENT_START, { filePath, reattachOnly: true }),
+  stopAgent: () => ipcRenderer.invoke(IPC.AGENT_STOP),
+  invokeAgent: (userMessage?: string, filePath?: string, content?: unknown, loop?: string) =>
+    ipcRenderer.invoke(IPC.AGENT_INVOKE, { userMessage, filePath, content, loop }),
+  runAgentCommand: (args) => ipcRenderer.invoke(IPC.AGENT_RUN_COMMAND, args),
+  compactLoop: () => ipcRenderer.invoke(IPC.AGENT_COMPACT),
+  interruptTurn: (filePath?: string, loop?: string) => ipcRenderer.invoke(IPC.AGENT_INTERRUPT, { filePath, loop }),
+  getAgentStatus: (opts?: { mediaFor?: string }) => opts ? ipcRenderer.invoke(IPC.AGENT_STATUS, opts) : ipcRenderer.invoke(IPC.AGENT_STATUS),
+  respondToolApproval: (requestId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVAL_RESPOND, { requestId, approved, feedback }),
+  alwaysApproveTool: (requestId: string, toolName: string) =>
+    ipcRenderer.invoke(IPC.AGENT_TOOL_ALWAYS_APPROVE, { requestId, toolName }),
+  approveAllGatedTools: () =>
+    ipcRenderer.invoke(IPC.AGENT_TOOL_APPROVE_ALL_GATED),
+  respondAsk: (requestId: string, answers: AskAnswer[]) =>
+    ipcRenderer.invoke(IPC.AGENT_ASK_RESPOND, { requestId, answers }),
+
+  // Global approvals menu (all agents + loops, foreground and background)
+  listPendingNotifications: () => ipcRenderer.invoke(IPC.APPROVALS_LIST),
+  resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.APPROVALS_RESOLVE, { filePath, approvalId, approved, feedback }),
+  // B8: fetch one pending approval's raw tool input on demand (broadcast omits it).
+  getApprovalInput: (filePath: string, approvalId: string) =>
+    ipcRenderer.invoke(IPC.APPROVALS_GET_INPUT, { filePath, approvalId }),
+  onPendingNotificationsChanged: (callback: (snapshot: NotificationsSnapshot) => void) => {
+    const handler = (_event: unknown, data: NotificationsSnapshot) => callback(data)
+    ipcRenderer.on(IPC.APPROVALS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.APPROVALS_CHANGED, handler)
+  },
+  // A clicked OS notification: open that agent, or (summary) the bell panel.
+  onApprovalReveal: (callback: (payload: { filePath?: string; notificationId?: string }) => void) => {
+    const handler = (
+      _event: unknown,
+      data: { filePath?: string; notificationId?: string }
+    ) => callback(data)
+    ipcRenderer.on(IPC.APPROVALS_REVEAL, handler)
+    return () => ipcRenderer.removeListener(IPC.APPROVALS_REVEAL, handler)
+  },
+  // A reveal that arrived while the renderer was still loading (pull + clear).
+  getPendingApprovalReveal: () => ipcRenderer.invoke(IPC.APPROVALS_GET_PENDING_REVEAL),
+  respondSuspend: (resume: boolean) =>
+    ipcRenderer.invoke(IPC.AGENT_SUSPEND_RESPOND, { resume }),
+
+  // Models
+  listModels: (provider: string, filePath?: string) =>
+    ipcRenderer.invoke(IPC.MODELS_LIST, { provider, filePath }),
+
+  // Events (main -> renderer)
+  onAgentEvent: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onAgentEvent']>) => callback(data)
+    ipcRenderer.on(IPC.AGENT_EVENT, handler)
+    return () => { ipcRenderer.removeListener(IPC.AGENT_EVENT, handler) }
+  },
+
+  // Settings
+  getSettings: () => ipcRenderer.invoke(IPC.SETTINGS_GET),
+  setSettings: (settings: Record<string, unknown>) =>
+    ipcRenderer.invoke(IPC.SETTINGS_SET, settings),
+  listTemplates: () => ipcRenderer.invoke(IPC.TEMPLATES_LIST),
+  onTemplatesChanged: (callback) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC.TEMPLATES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.TEMPLATES_CHANGED, handler)
+  },
+  templatesMigrationSeen: () => ipcRenderer.invoke(IPC.TEMPLATES_MIGRATION_SEEN),
+  createTemplate: (args) => ipcRenderer.invoke(IPC.TEMPLATE_CREATE, args),
+  deleteTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_DELETE, { id }),
+  resetShippedTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_RESET_SHIPPED, { id }),
+  revealTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_REVEAL, { id }),
+  setDefaultTemplate: (id) => ipcRenderer.invoke(IPC.TEMPLATE_SET_DEFAULT, { id }),
+  renameTemplate: (args) => ipcRenderer.invoke(IPC.TEMPLATE_RENAME, args),
+  setTemplateMeta: (args) => ipcRenderer.invoke(IPC.TEMPLATE_SET_META, args),
+  getTemplateContents: (id) => ipcRenderer.invoke(IPC.TEMPLATE_GET_CONTENTS, { id }),
+  setTemplateConfig: (args) => ipcRenderer.invoke(IPC.TEMPLATE_SET_CONFIG, args),
+  setTemplateFile: (args) => ipcRenderer.invoke(IPC.TEMPLATE_SET_FILE, args),
+  addTemplateFiles: (id) => ipcRenderer.invoke(IPC.TEMPLATE_ADD_FILES, { id }),
+  removeTemplateFile: (args) => ipcRenderer.invoke(IPC.TEMPLATE_REMOVE_FILE, args),
+  checkTemplateReview: (id) => ipcRenderer.invoke(IPC.TEMPLATE_CHECK_REVIEW, { id }),
+  acceptTemplateReview: (args) => ipcRenderer.invoke(IPC.TEMPLATE_REVIEW_ACCEPT, args),
+  setZoomFactor: (factor: number) => {
+    if (Number.isFinite(factor) && factor > 0) platform.setZoomFactor(factor)
+  },
+
+  // Tracked directories
+  getTrackedDirectories: () => ipcRenderer.invoke(IPC.TRACKED_DIRS_GET),
+  addTrackedDirectory: () => ipcRenderer.invoke(IPC.TRACKED_DIRS_ADD),
+  removeTrackedDirectory: (dirPath: string) =>
+    ipcRenderer.invoke(IPC.TRACKED_DIRS_REMOVE, { dirPath }),
+  scanTrackedDirectory: (dirPath: string) =>
+    ipcRenderer.invoke(IPC.TRACKED_DIRS_SCAN, { dirPath }),
+  onTrackedDirsChanged: (callback: (event: { dirPath: string }) => void) => {
+    const handler = (_event: unknown, data: { dirPath: string }) =>
+      callback(data)
+    ipcRenderer.on(IPC.TRACKED_DIRS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.TRACKED_DIRS_CHANGED, handler)
+  },
+
+  // Mesh (inter-agent messaging)
+  enableMesh: () => ipcRenderer.invoke(IPC.MESH_ENABLE),
+  disableMesh: () => ipcRenderer.invoke(IPC.MESH_DISABLE),
+  getMeshStatus: () => ipcRenderer.invoke(IPC.MESH_STATUS),
+  getMeshFleetStatus: () => ipcRenderer.invoke(IPC.MESH_FLEET_STATUS),
+  getAgentVitals: (filePath: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke(IPC.AGENT_VITALS, { filePath, force: opts?.force }),
+  getAgentActivity: (filePath: string, opts?: { force?: boolean }) =>
+    ipcRenderer.invoke(IPC.AGENT_ACTIVITY, { filePath, force: opts?.force }),
+  getMeshTokenBurn: () => ipcRenderer.invoke(IPC.MESH_TOKEN_BURN),
+  onMeshEvent: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onMeshEvent']>) => callback(data)
+    ipcRenderer.on(IPC.MESH_EVENT, handler)
+    return () => { ipcRenderer.removeListener(IPC.MESH_EVENT, handler) }
+  },
+  getMeshDebug: () =>
+    ipcRenderer.invoke(IPC.MESH_STATUS, { debug: true }),
+  getMeshMapPoll: (sinceSeq?: number) =>
+    ipcRenderer.invoke(IPC.MESH_MAP_POLL, { sinceSeq }),
+  getMeshServerStatus: () =>
+    ipcRenderer.invoke(IPC.MESH_SERVER_STATUS),
+  restartMeshServer: () =>
+    ipcRenderer.invoke(IPC.MESH_SERVER_RESTART),
+  startMeshServer: () =>
+    ipcRenderer.invoke(IPC.MESH_SERVER_START),
+  stopMeshServer: () =>
+    ipcRenderer.invoke(IPC.MESH_SERVER_STOP),
+  getMeshServerLanIps: () =>
+    ipcRenderer.invoke(IPC.MESH_SERVER_LAN_IPS),
+  getDiscoveredRuntimes: (force?: boolean) =>
+    ipcRenderer.invoke(IPC.MESH_DISCOVERED_RUNTIMES, force ? { force: true } : undefined),
+  getPeerSharedFile: (baseUrl: string, filePath: string) =>
+    ipcRenderer.invoke(IPC.MESH_PEER_SHARED_FILE, baseUrl, filePath),
+  getPeerAgentHealth: (healthUrl: string) =>
+    ipcRenderer.invoke(IPC.MESH_PEER_AGENT_HEALTH, healthUrl) as Promise<
+      { ok: true; status?: string; state?: string } | { ok: false; error: string }
+    >,
+  checkLanFirewall: () =>
+    ipcRenderer.invoke(IPC.MESH_FIREWALL_CHECK),
+  getMeshRecentTools: () =>
+    ipcRenderer.invoke(IPC.MESH_GET_RECENT_TOOLS) as Promise<Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]>>,
+  getMeshPendingInteractions: () =>
+    ipcRenderer.invoke(IPC.MESH_PENDING_INTERACTIONS),
+  messageFleetAgents: (filePaths: string[], content: string) =>
+    ipcRenderer.invoke(IPC.MESH_MESSAGE_AGENTS, { filePaths, content }),
+  setFleetAgentState: (filePaths: string[], state: FleetSettableState) =>
+    ipcRenderer.invoke(IPC.MESH_SET_AGENT_STATE, { filePaths, state }),
+  foundFleetAgent: (dir: string, name: string, newRoot?: boolean) =>
+    ipcRenderer.invoke(IPC.MESH_FOUND_AGENT, { dir, name, newRoot }),
+
+  // Background agents
+  startBackgroundAgent: (filePath: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_START, { filePath }),
+  getBackgroundAgentStatus: () =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_STATUS),
+  stopBackgroundAgent: (filePath: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_STOP, { filePath }),
+  onBackgroundAgentEvents: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onBackgroundAgentEvents']>) => callback(data)
+    ipcRenderer.on(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler)
+    return () => { ipcRenderer.removeListener(IPC.BACKGROUND_AGENT_EVENT_BATCH, handler) }
+  },
+  respondBackgroundAgentAsk: (filePath: string, requestId: string, answers: AskAnswer[]) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ASK_RESPOND, { filePath, requestId, answers }),
+  respondBackgroundAgentToolApproval: (filePath: string, requestId: string, approved: boolean, feedback?: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, { filePath, requestId, approved, feedback }),
+  alwaysApproveBackgroundAgentTool: (filePath: string, requestId: string, toolName: string) =>
+    ipcRenderer.invoke(IPC.BACKGROUND_AGENT_ALWAYS_APPROVE, { filePath, requestId, toolName }),
+
+  // Directory bulk operations
+  startAllInDirectory: (dirPath: string) =>
+    ipcRenderer.invoke(IPC.DIRECTORY_START_ALL, { dirPath }),
+  stopAllInDirectory: (dirPath: string) =>
+    ipcRenderer.invoke(IPC.DIRECTORY_STOP_ALL, { dirPath }),
+
+  // Tools
+  getToolDescriptions: () => ipcRenderer.invoke(IPC.TOOLS_DESCRIPTIONS),
+
+  // Token usage tracking
+  getTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_GET),
+  clearTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_CLEAR),
+  saveTokenUsageExport: (json: string) => ipcRenderer.invoke(IPC.TOKEN_USAGE_EXPORT, json),
+  countTokens: (text: string, provider?: string, model?: string) =>
+    ipcRenderer.invoke(IPC.TOKEN_COUNT, { text, provider, model }),
+  countTokensBatch: (texts: string[], provider?: string, model?: string) =>
+    ipcRenderer.invoke(IPC.TOKEN_COUNT_BATCH, { texts, provider, model }),
+  getContextBreakdown: (filePath: string, loop?: string) =>
+    ipcRenderer.invoke(IPC.CONTEXT_BREAKDOWN_GET, { filePath, loop }),
+
+  // Home dashboard — independent slices loaded in parallel
+  getDashboardQuickStats: () => ipcRenderer.invoke(IPC.DASHBOARD_QUICK_STATS),
+  getDashboardProviderTests: () => ipcRenderer.invoke(IPC.DASHBOARD_PROVIDER_TESTS),
+  testProvider: (providerId: string, force?: boolean) => ipcRenderer.invoke(IPC.PROVIDER_TEST, { providerId, force }),
+  getDashboardContainers: () => ipcRenderer.invoke(IPC.DASHBOARD_CONTAINERS),
+  getDashboardAgentStats: () => ipcRenderer.invoke(IPC.DASHBOARD_AGENT_STATS),
+
+  // Timers
+  getTimers: () => ipcRenderer.invoke(IPC.DOC_GET_TIMERS),
+  addTimer: (args: {
+    mode: 'once_at' | 'once_delay' | 'interval' | 'cron'
+    at?: number; delay_ms?: number; every_ms?: number
+    start_at?: number; end_at?: number; max_runs?: number
+    cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string
+    /** Cognition stream the wake dispatches to. Absent = main. */
+    loop?: string
+  }) => ipcRenderer.invoke(IPC.DOC_ADD_TIMER, args),
+  updateTimer: (args: {
+    id: number
+    mode: 'once_at' | 'once_delay' | 'interval' | 'cron'
+    at?: number; delay_ms?: number; every_ms?: number
+    start_at?: number; end_at?: number; max_runs?: number
+    cron?: string; scope: string[]; lambda?: string; warm?: boolean; payload?: string; locked?: boolean
+  }) => ipcRenderer.invoke(IPC.DOC_UPDATE_TIMER, args),
+  deleteTimer: (id: number) =>
+    ipcRenderer.invoke(IPC.DOC_DELETE_TIMER, { id }),
+
+  // Internal files
+  getInternalFiles: () => ipcRenderer.invoke(IPC.DOC_GET_FILES),
+  uploadFile: (path: string, data: number[], mimeType?: string, options?: { unique?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_UPLOAD_FILE, { path, data, mimeType, unique: options?.unique }),
+  importPaths: (hostPaths: string[]) =>
+    ipcRenderer.invoke(IPC.DOC_IMPORT_PATHS, { paths: hostPaths }),
+  pickAndImport: () =>
+    ipcRenderer.invoke(IPC.DOC_PICK_AND_IMPORT),
+  deleteInternalFile: (path: string) =>
+    ipcRenderer.invoke(IPC.DOC_DELETE_INTERNAL_FILE, { path }),
+  renameInternalFile: (oldPath: string, newPath: string) =>
+    ipcRenderer.invoke(IPC.DOC_RENAME_INTERNAL_FILE, { oldPath, newPath }),
+  renameFolder: (oldPrefix: string, newPrefix: string) =>
+    ipcRenderer.invoke(IPC.DOC_RENAME_FOLDER, { oldPrefix, newPrefix }),
+  setFileProtection: (path: string, protection: 'read_only' | 'no_delete' | 'none') =>
+    ipcRenderer.invoke(IPC.DOC_SET_FILE_PROTECTION, { path, protection }),
+  setFileAuthorized: (path: string, authorized: boolean) =>
+    ipcRenderer.invoke(IPC.DOC_SET_FILE_AUTHORIZED, { path, authorized }),
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true }),
+  writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) =>
+    ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, opts?.baseRevision !== undefined ? { path, content, baseRevision: opts.baseRevision } : { path, content }),
+  downloadInternalFile: (path: string) =>
+    ipcRenderer.invoke(IPC.DOC_DOWNLOAD_INTERNAL_FILE, { path }),
+
+  // Meta
+  getAllMeta: () => ipcRenderer.invoke(IPC.DOC_GET_ALL_META),
+  setMeta: (key: string, value: string, protection?: string) =>
+    ipcRenderer.invoke(IPC.DOC_SET_META, { key, value, protection }),
+  deleteMeta: (key: string) =>
+    ipcRenderer.invoke(IPC.DOC_DELETE_META, { key }),
+  setMetaProtection: (key: string, protection: string) =>
+    ipcRenderer.invoke(IPC.DOC_SET_META_PROTECTION, { key, protection }),
+
+  // Logs
+  getLogs: (limit?: number) =>
+    ipcRenderer.invoke(IPC.DOC_GET_LOGS, { limit }),
+  getLogsAfterId: (afterId: number) =>
+    ipcRenderer.invoke(IPC.DOC_GET_LOGS_AFTER, { afterId }),
+  clearLogs: () =>
+    ipcRenderer.invoke(IPC.DOC_CLEAR_LOGS),
+
+  // Tasks
+  getTasks: (limit?: number) =>
+    ipcRenderer.invoke(IPC.DOC_GET_TASKS, { limit }),
+
+  // Local tables
+  listLocalTables: () => ipcRenderer.invoke(IPC.DOC_LIST_LOCAL_TABLES),
+  queryLocalTable: (table: string, limit?: number, offset?: number) =>
+    ipcRenderer.invoke(IPC.DOC_QUERY_LOCAL_TABLE, { table, limit, offset }),
+  dropLocalTable: (table: string) =>
+    ipcRenderer.invoke(IPC.DOC_DROP_LOCAL_TABLE, { table }),
+
+  // Inbox push updates (main -> renderer)
+  onInboxUpdated: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onInboxUpdated']>) => callback(data)
+    ipcRenderer.on(IPC.INBOX_UPDATED, handler)
+    return () => { ipcRenderer.removeListener(IPC.INBOX_UPDATED, handler) }
+  },
+
+  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files mutated
+  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) => void) => {
+    const handler = (_event: unknown, data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) =>
+      callback(data)
+    ipcRenderer.on(IPC.WORKSPACE_DATA_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.WORKSPACE_DATA_CHANGED, handler)
+  },
+
+  // MCP
+  probeMcpServer: (args: {
+    transport?: 'stdio' | 'http'
+    command?: string
+    args?: string[]
+    url?: string
+    name: string
+    env?: Record<string, string>
+    headers?: Record<string, string>
+    headerEnv?: { key: string; value: string }[]
+    bearerTokenEnvVar?: string
+  }) =>
+    ipcRenderer.invoke(IPC.MCP_PROBE_SERVER, args),
+  testMcpRegistration: (args: {
+    registration: import('../shared/types/ipc.types').McpServerRegistration
+    credentialFiles?: { path: string; contentB64: string }[]
+  }) =>
+    ipcRenderer.invoke(IPC.MCP_REGISTRATION_TEST, args),
+  installMcpPackage: (args: { package: string; name: string }) =>
+    ipcRenderer.invoke(IPC.MCP_INSTALL_PACKAGE, args),
+  uninstallMcpPackage: (args: { package: string }) =>
+    ipcRenderer.invoke(IPC.MCP_UNINSTALL_PACKAGE, args),
+  listMcpInstalled: () =>
+    ipcRenderer.invoke(IPC.MCP_LIST_INSTALLED),
+  getMcpServerStatus: () =>
+    ipcRenderer.invoke(IPC.MCP_GET_SERVER_STATUS),
+  restartMcpServer: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.MCP_RESTART_SERVER, args),
+  getMcpServerLogs: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.MCP_GET_SERVER_LOGS, args),
+  getMcpRegistry: () =>
+    ipcRenderer.invoke(IPC.MCP_REGISTRY_GET),
+  mcpOAuthSignOut: (args: { url: string }) =>
+    ipcRenderer.invoke(IPC.MCP_OAUTH_SIGNOUT, args),
+  mcpOAuthStatus: (args: { url: string }) =>
+    ipcRenderer.invoke(IPC.MCP_OAUTH_STATUS, args),
+  onMcpInstallProgress: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onMcpInstallProgress']>) => callback(data)
+    ipcRenderer.on(IPC.MCP_INSTALL_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IPC.MCP_INSTALL_PROGRESS, handler) }
+  },
+  onMcpServerStatusChanged: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onMcpServerStatusChanged']>) => callback(data)
+    ipcRenderer.on(IPC.MCP_SERVER_STATUS_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.MCP_SERVER_STATUS_CHANGED, handler) }
+  },
+
+  // Skill catalogs
+  getSkillsCatalog: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_CATALOG_GET, { url }),
+  getSkillPackage: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_PACKAGE_GET, { url }),
+
+  // Compute environment
+  computeStatus: () =>
+    ipcRenderer.invoke(IPC.COMPUTE_STATUS),
+  computeInit: () =>
+    ipcRenderer.invoke(IPC.COMPUTE_INIT),
+  computeStop: () =>
+    ipcRenderer.invoke(IPC.COMPUTE_STOP),
+  computeDestroy: () =>
+    ipcRenderer.invoke(IPC.COMPUTE_DESTROY),
+  computeListContainers: () =>
+    ipcRenderer.invoke(IPC.COMPUTE_LIST_CONTAINERS),
+  computeStopContainer: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_STOP_CONTAINER, args),
+  computeStartContainer: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_START_CONTAINER, args),
+  computeDestroyContainer: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_DESTROY_CONTAINER, args),
+  computeRebuildContainer: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_REBUILD_CONTAINER, args),
+  computeSetup: (args: { step: 'install' | 'machine_init' | 'machine_start' | 'check'; installCommand?: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_SETUP, args),
+  computeContainerDetail: (args: { name: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_CONTAINER_DETAIL, args),
+  computeExecLog: (args: { name?: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_EXEC_LOG, args),
+  computeTestExecutionTarget: (target: import('../shared/types/compute.types').LocalContainerExecutionTarget) =>
+    ipcRenderer.invoke(IPC.COMPUTE_TEST_EXECUTION_TARGET, target),
+  onBrowserSession: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onBrowserSession']>) => callback(data)
+    ipcRenderer.on(IPC.COMPUTE_BROWSER_SESSION, handler)
+    return () => { ipcRenderer.removeListener(IPC.COMPUTE_BROWSER_SESSION, handler) }
+  },
+  getBrowserSessionInfo: (args: { agentName: string; agentId: string }) =>
+    ipcRenderer.invoke(IPC.COMPUTE_BROWSER_INFO, args),
+  onContainerPhase: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onContainerPhase']>) => callback(data)
+    ipcRenderer.on(IPC.COMPUTE_CONTAINER_PHASE, handler)
+    return () => { ipcRenderer.removeListener(IPC.COMPUTE_CONTAINER_PHASE, handler) }
+  },
+
+  // Python MCP packages (uvx)
+  installPythonMcpPackage: (args: { package: string; name: string }) =>
+    ipcRenderer.invoke(IPC.MCP_INSTALL_PYTHON_PACKAGE, args),
+  uninstallPythonMcpPackage: (args: { package: string }) =>
+    ipcRenderer.invoke(IPC.MCP_UNINSTALL_PYTHON_PACKAGE, args),
+  ensurePythonRuntime: () =>
+    ipcRenderer.invoke(IPC.MCP_ENSURE_PYTHON_RUNTIME),
+
+  // Sandbox packages
+  checkMissingSandboxPackages: (packages: Array<{ name: string; version: string }>) =>
+    ipcRenderer.invoke(IPC.SANDBOX_CHECK_MISSING, packages),
+  installSandboxPackages: (packages: Array<{ name: string; version: string }>) =>
+    ipcRenderer.invoke(IPC.SANDBOX_INSTALL_PACKAGES, packages),
+  onSandboxInstallProgress: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onSandboxInstallProgress']>) => callback(data)
+    ipcRenderer.on(IPC.SANDBOX_INSTALL_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IPC.SANDBOX_INSTALL_PROGRESS, handler) }
+  },
+  listInstalledSandboxPackages: () =>
+    ipcRenderer.invoke(IPC.SANDBOX_LIST_INSTALLED),
+
+  // MCP Credential management (multi-ADF)
+  setMcpCredential: (args: { filePath: string; npmPackage: string; envKey: string; value: string }) =>
+    ipcRenderer.invoke(IPC.MCP_CREDENTIAL_SET, args),
+  getMcpCredentials: (args: { filePath: string; npmPackage: string }) =>
+    ipcRenderer.invoke(IPC.MCP_CREDENTIAL_GET, args),
+  listMcpCredentialFiles: (args: { mcpServerName: string; npmPackage: string }) =>
+    ipcRenderer.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, args),
+  attachMcpServer: (args: { filePath: string; serverConfig: { name: string; npmPackage?: string; command?: string; args?: string[]; envKeys?: string[]; runLocation?: 'host' | 'shared' } }) =>
+    ipcRenderer.invoke(IPC.MCP_ATTACH_SERVER, args),
+  detachMcpServer: (args: { filePath: string; serverName: string; credentialNamespace: string }) =>
+    ipcRenderer.invoke(IPC.MCP_DETACH_SERVER, args),
+  pickAdfFile: () =>
+    ipcRenderer.invoke(IPC.MCP_PICK_ADF_FILE),
+
+  // Channel Adapters
+  installAdapterPackage: (args: { package: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_INSTALL_PACKAGE, args),
+  uninstallAdapterPackage: (args: { package: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_UNINSTALL_PACKAGE, args),
+  listAdapterInstalled: () =>
+    ipcRenderer.invoke(IPC.ADAPTER_LIST_INSTALLED),
+  getAdapterStatus: () =>
+    ipcRenderer.invoke(IPC.ADAPTER_GET_STATUS),
+  restartAdapter: (args: { type: string; filePath?: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_RESTART, args),
+  getAdapterLogs: (args: { type: string; filePath?: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_GET_LOGS, args),
+  onAdapterInstallProgress: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onAdapterInstallProgress']>) => callback(data)
+    ipcRenderer.on(IPC.ADAPTER_INSTALL_PROGRESS, handler)
+    return () => { ipcRenderer.removeListener(IPC.ADAPTER_INSTALL_PROGRESS, handler) }
+  },
+  onAdapterStatusChanged: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onAdapterStatusChanged']>) => callback(data)
+    ipcRenderer.on(IPC.ADAPTER_STATUS_CHANGED, handler)
+    return () => { ipcRenderer.removeListener(IPC.ADAPTER_STATUS_CHANGED, handler) }
+  },
+  setAdapterCredential: (args: { filePath: string; adapterType: string; envKey: string; value: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_CREDENTIAL_SET, args),
+  getAdapterCredentials: (args: { filePath: string; adapterType: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_CREDENTIAL_GET, args),
+  listAdapterCredentialFiles: (args: { adapterType: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_CREDENTIAL_LIST_FILES, args),
+  attachAdapter: (args: { filePath: string; adapterType: string; config: { enabled: boolean; policy?: { dm?: string; groups?: string; allow_from?: string[] }; limits?: { max_attachment_size?: number } } }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_ATTACH, args),
+  detachAdapter: (args: { filePath: string; adapterType: string }) =>
+    ipcRenderer.invoke(IPC.ADAPTER_DETACH, args),
+
+  // Provider Credentials (per-ADF)
+  setProviderCredential: (args: { filePath: string; providerId: string; value: string }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_SET, args),
+  getProviderCredentials: (args: { filePath: string; providerId: string }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_GET, args),
+  listProviderCredentialFiles: (args: { providerId: string }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_CREDENTIAL_LIST_FILES, args),
+  attachProvider: (args: { filePath: string; provider: { id: string; type: string; name: string; baseUrl: string; preset?: string; defaultModel?: string; params?: { key: string; value: string }[]; requestDelayMs?: number } }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_ATTACH, args),
+  detachProvider: (args: { filePath: string; providerId: string }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_DETACH, args),
+  getAgentProviderKeySources: (args: { filePath: string; providers: { id: string; type: string; baseUrl: string }[] }) =>
+    ipcRenderer.invoke(IPC.PROVIDER_AGENT_KEY_SOURCES, args),
+
+  // Identity / Keystore
+  setIdentity: (purpose: string, value: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_SET, { purpose, value }),
+  getIdentity: (purpose: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_GET, { purpose }),
+  deleteIdentity: (purpose: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_DELETE, { purpose }),
+  deleteIdentityByPrefix: (prefix: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_DELETE_PREFIX, { prefix }),
+  listIdentityPurposes: (prefix?: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_LIST, { prefix }),
+
+  // Identity password & encryption
+  checkPassword: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_PASSWORD_CHECK),
+  unlockPassword: (password: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_PASSWORD_UNLOCK, { password }),
+  setPassword: (password: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_PASSWORD_SET, { password }),
+  removePassword: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_PASSWORD_REMOVE),
+  changePassword: (newPassword: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_PASSWORD_CHANGE, { newPassword }),
+  listIdentityEntries: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_LIST_ENTRIES),
+  setIdentityCodeAccess: (purpose: string, codeAccess: boolean) =>
+    ipcRenderer.invoke(IPC.IDENTITY_SET_CODE_ACCESS, { purpose, codeAccess }),
+  revealIdentity: (purpose: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_REVEAL, { purpose }),
+  wipeAllIdentity: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_WIPE_ALL),
+  getDid: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_GET_DID),
+  generateIdentityKeys: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_GENERATE_KEYS),
+  claimAgent: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_CLAIM),
+
+  // Owner identity (app-level, mnemonic-backed)
+  getOwnerIdentityStatus: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_STATUS),
+  revealOwnerMnemonic: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_REVEAL_MNEMONIC),
+  confirmOwnerBackup: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_CONFIRM_BACKUP),
+  importOwnerMnemonic: (mnemonic: string, expectedOwnerDid?: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_OWNER_IMPORT, mnemonic, expectedOwnerDid),
+  getStudioSecretStorage: () =>
+    ipcRenderer.invoke(IPC.STUDIO_SECRET_STORAGE_GET),
+  useKeyringForSecrets: () =>
+    ipcRenderer.invoke(IPC.STUDIO_SECRET_STORAGE_USE_KEYRING),
+  getAgentAttestations: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_GET),
+  reissueAgentAttestations: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ATTESTATIONS_REISSUE),
+
+  // Envelope keystore (dual-envelope secret protection)
+  getEnvelopeStatus: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_STATUS),
+  setSharePassword: (password: string) =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_SET_PASSWORD, password),
+  removeSharePassword: () =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_SHARE_REMOVE_PASSWORD),
+  unlockEnvelopeWithPassword: (password: string, adopt?: boolean) =>
+    ipcRenderer.invoke(IPC.IDENTITY_ENVELOPE_UNLOCK_PASSWORD, password, adopt),
+
+  // Agent registry (bundled .adf files + live index)
+  getAgentRegistry: () =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_GET),
+  refreshAgentRegistry: () =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_REFRESH),
+  bringHomeRegistryAgent: (id: string) =>
+    ipcRenderer.invoke(IPC.AGENT_REGISTRY_BRING_HOME, { id }),
+  setAgentModelForFile: (filePath: string, model: { provider: string; model_id: string }) =>
+    ipcRenderer.invoke(IPC.AGENT_MODEL_SET_FOR_FILE, { filePath, model }),
+
+  // Share by drag
+  prepareShareFile: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_PREPARE, { filePath }),
+  startShareDrag: (token: string) => {
+    ipcRenderer.send(IPC.FILE_SHARE_DRAG_START, { token })
+  },
+  discardShareFile: (token: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_DISCARD, { token }),
+  saveShareCopy: (filePath: string) =>
+    ipcRenderer.invoke(IPC.FILE_SHARE_SAVE_AS, { filePath }),
+
+  // Agent review (file open flow)
+  checkAgentReview: () =>
+    ipcRenderer.invoke(IPC.FILE_CHECK_REVIEW),
+  acceptAgentReview: (args: { claim?: boolean; expectedPath: string; model?: { provider: string; model_id: string } }) =>
+    ipcRenderer.invoke(IPC.FILE_REVIEW_ACCEPT, args),
+
+  // ChatGPT Subscription Auth
+  chatgptAuthStart: () =>
+    ipcRenderer.invoke(IPC.CHATGPT_AUTH_START),
+  chatgptAuthStatus: () =>
+    ipcRenderer.invoke(IPC.CHATGPT_AUTH_STATUS),
+  chatgptAuthLogout: () =>
+    ipcRenderer.invoke(IPC.CHATGPT_AUTH_LOGOUT),
+
+  // Grok (xAI) Subscription Auth
+  grokAuthStart: () =>
+    ipcRenderer.invoke(IPC.GROK_AUTH_START),
+  grokAuthStatus: () =>
+    ipcRenderer.invoke(IPC.GROK_AUTH_STATUS),
+  grokAuthLogout: () =>
+    ipcRenderer.invoke(IPC.GROK_AUTH_LOGOUT),
+
+  // Claude Subscription Auth (delegated to Claude Code)
+  claudeAuthStart: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_START),
+  claudeAuthStatus: (recheck?: boolean) =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_STATUS, { recheck }),
+  claudeAuthSubmitCode: (code: string) =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_SUBMIT_CODE, { code }),
+  claudeAuthCancel: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_CANCEL),
+  claudeAuthLogout: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_LOGOUT),
+  claudeCodeInstall: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_INSTALL),
+
+  // Open file request (main -> renderer, e.g. double-click .adf in Finder)
+  onOpenFileRequest: (callback: (data: { filePath: string; runtimeId?: string }) => void) => {
+    const handler = (_event: unknown, data: { filePath: string; runtimeId?: string }) =>
+      callback(data)
+    ipcRenderer.on(IPC.OPEN_FILE_REQUEST, handler)
+    return () => ipcRenderer.removeListener(IPC.OPEN_FILE_REQUEST, handler)
+  },
+  getPendingOpenFile: () =>
+    ipcRenderer.invoke(IPC.OPEN_FILE_GET_PENDING),
+  pickDirectory: () =>
+    ipcRenderer.invoke(IPC.DIALOG_PICK_DIRECTORY),
+
+  // Application menu actions (main -> renderer)
+  onMenuAction: (callback: (action: string) => void) => {
+    const handler = (_event: unknown, action: string) => callback(action)
+    ipcRenderer.on(IPC.MENU_ACTION, handler)
+    return () => ipcRenderer.removeListener(IPC.MENU_ACTION, handler)
+  },
+
+  // App lifecycle
+  onShuttingDown: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC.APP_SHUTTING_DOWN, handler)
+    return () => ipcRenderer.removeListener(IPC.APP_SHUTTING_DOWN, handler)
+  },
+  getUpdateState: () => ipcRenderer.invoke(IPC.APP_UPDATE_GET_STATE),
+  checkForUpdates: () => ipcRenderer.invoke(IPC.APP_UPDATE_CHECK),
+  downloadUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_DOWNLOAD),
+  installUpdate: () => ipcRenderer.invoke(IPC.APP_UPDATE_INSTALL),
+  downloadSpellcheckDictionaries: () => ipcRenderer.invoke(IPC.SPELLCHECK_DOWNLOAD),
+  onUpdateState: (callback: (state: AppUpdateState) => void) => {
+    const handler = (_event: unknown, state: AppUpdateState) => callback(state)
+    ipcRenderer.on(IPC.APP_UPDATE_STATE, handler)
+    return () => ipcRenderer.removeListener(IPC.APP_UPDATE_STATE, handler)
+  },
+  getFullscreenState: () => ipcRenderer.invoke(IPC.APP_GET_FULLSCREEN),
+  setFullscreen: (fullscreen: boolean) => ipcRenderer.invoke(IPC.APP_SET_FULLSCREEN, fullscreen),
+  onFullscreenChanged: (callback: (isFullscreen: boolean) => void) => {
+    const handler = (_event: unknown, isFullscreen: boolean) =>
+      callback(isFullscreen)
+    ipcRenderer.on(IPC.APP_FULLSCREEN_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.APP_FULLSCREEN_CHANGED, handler)
+  },
+
+  // Rendered agent orbitals
+  orbitalCacheGet: (req: OrbitalCacheRequest) => ipcRenderer.invoke(IPC.ORBITAL_CACHE_GET, req),
+  orbitalCachePut: (req: OrbitalCacheRequest, bytes: Uint8Array) => ipcRenderer.invoke(IPC.ORBITAL_CACHE_PUT, req, bytes),
+
+  // Emergency stop
+  emergencyStop: () => ipcRenderer.invoke(IPC.EMERGENCY_STOP),
+
+  // Settings → Connections
+  getBackendSettings: () => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_GET),
+  setBackendSettings: (patch: BackendSettingsPatch) => ipcRenderer.invoke(IPC.BACKEND_SETTINGS_SET, patch),
+  restartStudio: (kind?: 'reconnect' | 'embedded-session') => ipcRenderer.invoke(IPC.BACKEND_RESTART_STUDIO, kind),
+
+  // Remote access (remote-access.md)
+  getRemoteAccess: (opts?: { refresh?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_GET, opts ?? {}),
+  setRemoteAccess: (request: { enabled?: boolean; name?: string }) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SET, request),
+  shareRemoteAccess: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SHARE),
+  leaveRemoteShare: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_SHARE_LEAVE),
+  addRemoteDevice: (label: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_ADD, label),
+  removeRemoteDevice: (id: string) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_DEVICE_REMOVE, id),
+  openRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_OPEN),
+  closeRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_ACCESS_PAIRING_CLOSE),
+  setRemoteTailscaleServe: (enabled: boolean) => ipcRenderer.invoke(IPC.REMOTE_ACCESS_TAILSCALE_SERVE, enabled),
+  onRemoteAccessChanged: (callback: (change: RemoteAccessChange) => void) => {
+    const handler = (_event: unknown, change: RemoteAccessChange) => callback(change)
+    ipcRenderer.on(IPC.REMOTE_ACCESS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_ACCESS_CHANGED, handler)
+  },
+  startRemoteDiscovery: () => ipcRenderer.invoke(IPC.REMOTE_DISCOVERY_START),
+  stopRemoteDiscovery: () => ipcRenderer.invoke(IPC.REMOTE_DISCOVERY_STOP),
+  onRemoteDiscoveryUpdate: (callback: (update: RemoteDiscoveryUpdate) => void) => {
+    const handler = (_event: unknown, update: RemoteDiscoveryUpdate) => callback(update)
+    ipcRenderer.on(IPC.REMOTE_DISCOVERY_UPDATE, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_DISCOVERY_UPDATE, handler)
+  },
+  listConnections: () => ipcRenderer.invoke(IPC.CONNECTION_LIST),
+  openStudioInBrowser: () => ipcRenderer.invoke(IPC.STUDIO_OPEN_BROWSER),
+  useConnection: (id: string) => ipcRenderer.invoke(IPC.CONNECTION_USE, id),
+  addConnection: (request: ConnectionAddRequest) => ipcRenderer.invoke(IPC.CONNECTION_ADD, request),
+  removeConnection: (id: string) => ipcRenderer.invoke(IPC.CONNECTION_REMOVE, id),
+  onConnectionChanged: (callback: (view: ConnectionsView) => void) => {
+    const handler = (_event: unknown, view: ConnectionsView) => callback(view)
+    ipcRenderer.on(IPC.CONNECTION_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.CONNECTION_CHANGED, handler)
+  },
+  onRuntimesMoved: (callback: (change: RuntimesMoved) => void) => {
+    const handler = (_event: unknown, change: RuntimesMoved) => callback(change)
+    ipcRenderer.on(IPC.RUNTIMES_MOVED, handler)
+    return () => ipcRenderer.removeListener(IPC.RUNTIMES_MOVED, handler)
+  },
+  startRemotePairing: (request: RemotePairStartRequest) => ipcRenderer.invoke(IPC.REMOTE_PAIR_START, request),
+  submitRemotePairingCode: (code: string) => ipcRenderer.invoke(IPC.REMOTE_PAIR_SUBMIT_CODE, code),
+  cancelRemotePairing: () => ipcRenderer.invoke(IPC.REMOTE_PAIR_CANCEL),
+  onRemotePairingState: (callback: (state: RemotePairState) => void) => {
+    const handler = (_event: unknown, state: RemotePairState) => callback(state)
+    ipcRenderer.on(IPC.REMOTE_PAIR_STATE, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_PAIR_STATE, handler)
+  },
+  getNetworkStatus: () => ipcRenderer.invoke(IPC.NETWORK_STATUS_GET),
+  allowNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_ALLOW, id),
+  forgetNetwork: (id: string) => ipcRenderer.invoke(IPC.NETWORK_FORGET, id),
+  getNetworkNotices: () => ipcRenderer.invoke(IPC.NETWORK_NOTICES_GET),
+  dismissNetworkNotice: (key: string) => ipcRenderer.invoke(IPC.NETWORK_NOTICE_DISMISS, key),
+  onNetworkNoticesChanged: (callback: (notices: NetworkNotice[]) => void) => {
+    const handler = (_event: unknown, notices: NetworkNotice[]) => callback(notices)
+    ipcRenderer.on(IPC.NETWORK_NOTICES_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.NETWORK_NOTICES_CHANGED, handler)
+  },
+
+  // Remote mode: daemon-side picker
+  onRemotePickerRequest: (callback: (request: RemotePickRequest) => void) => {
+    const handler = (_event: unknown, request: RemotePickRequest) => callback(request)
+    ipcRenderer.on(IPC.REMOTE_PICKER_REQUEST, handler)
+    return () => ipcRenderer.removeListener(IPC.REMOTE_PICKER_REQUEST, handler)
+  },
+  respondRemotePicker: (requestId: string, answer: RemotePickAnswer | null) => ipcRenderer.invoke(IPC.REMOTE_PICKER_RESPOND, requestId, answer),
+  browseRemoteFolder: (args: { path?: string; showHidden?: boolean }) => ipcRenderer.invoke(IPC.REMOTE_FS_BROWSE, args),
+  createRemoteFolder: (args: { parent: string; name: string }) => ipcRenderer.invoke(IPC.REMOTE_FS_MKDIR, args),
+
+  // Agent windows: Open in new window (daemon mode)
+  openAgentWindow: (request: { filePath: string; agentId?: string | null; name?: string; runtimeId?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_AGENT, request),
+  closeAgentWindow: () => ipcRenderer.invoke(IPC.WINDOW_CLOSE),
+  agentWindowOpenFailed: () => ipcRenderer.invoke(IPC.WINDOW_OPEN_FAILED),
+  openMainSettings: (request: { section?: string; anchor?: string }) => ipcRenderer.invoke(IPC.WINDOW_OPEN_SETTINGS, request),
+  agentWindowStashed: () => ipcRenderer.invoke(IPC.WINDOW_STASH_DONE),
+  syncQueuedMessages: (entries: QueueHandoverEntry[]) => ipcRenderer.invoke(IPC.WINDOW_QUEUE_SYNC, entries),
+  getWindowQueue: () => ipcRenderer.invoke(IPC.WINDOW_QUEUE_GET),
+  takeQueueHandover: () => ipcRenderer.invoke(IPC.QUEUE_HANDOVER_TAKE),
+  onQueueHandover: (callback: () => void) => {
+    const handler = () => callback()
+    ipcRenderer.on(IPC.QUEUE_HANDOVER_READY, handler)
+    return () => ipcRenderer.removeListener(IPC.QUEUE_HANDOVER_READY, handler)
+  },
+  listAgentWindows: () => ipcRenderer.invoke(IPC.WINDOW_LIST_AGENTS),
+  onAgentWindowsChanged: (callback: (payload: { windows: Array<{ filePath: string; agentId: string | null }> }) => void) => {
+    const handler = (_event: unknown, payload: { windows: Array<{ filePath: string; agentId: string | null }> }) => callback(payload)
+    ipcRenderer.on(IPC.WINDOW_AGENTS_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.WINDOW_AGENTS_CHANGED, handler)
+  },
+  takePendingMenuActions: () => ipcRenderer.invoke(IPC.MENU_ACTION_TAKE_PENDING),
+  onAppearanceChanged: (callback: (changed: Partial<AppSettings>) => void) => {
+    const handler = (_event: unknown, changed: Partial<AppSettings>) => callback(changed)
+    ipcRenderer.on(IPC.APPEARANCE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.APPEARANCE_CHANGED, handler)
+  },
+
+  // Recovery copies of unsaved text under a "changed elsewhere" notice (W3-F)
+  recoveryStash: (stash: { agentFilePath: string; path: string; content: string | null; runtimeId?: string }) => ipcRenderer.invoke(IPC.RECOVERY_STASH, stash),
+  recoveryList: () => ipcRenderer.invoke(IPC.RECOVERY_LIST),
+  recoveryArchive: () => ipcRenderer.invoke(IPC.RECOVERY_ARCHIVE),
+  recoveryReveal: () => ipcRenderer.invoke(IPC.RECOVERY_REVEAL),
+
+  // Platform identifier ('darwin' | 'win32' | 'linux' | ...)
+  platform: platform.platform
+})

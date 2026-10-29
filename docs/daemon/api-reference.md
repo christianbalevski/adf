@@ -2,13 +2,15 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 334 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 344 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
 The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).
 
-**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.
+**Authentication.** Ordinary daemon routes require `Authorization: Bearer <token>`. The liveness, remote hello/pairing and browser entry routes declare their exceptions below. Browser Studio uses its same-origin cookie session instead of a browser-supplied bearer. The bearer is the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.
+
+**Browser Studio.** `/studio/` serves the shared renderer. Native local clients obtain a 60-second single-use fragment link from `POST /web/launch`; the browser exchanges it at `POST /web/session`. Another device uses `POST /web/pair` and waits for host approval. Browser JSON responses never contain a daemon/device bearer token. A host-approved device credential may be retained only in an HttpOnly cookie for 30 days; active sessions last eight hours. `/web/invoke`, `/web/events`, `/web/file` and `/web/snapshot` are version-coupled renderer transport, not replacements for the ordinary daemon REST API.
 
 **Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.
 
@@ -53,13 +55,14 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Agent files](#tag-agent-files) (28)
 - [Client (internal)](#tag-client-internal) (13)
 - [Remote access](#tag-remote-access) (13)
+- [Browser Studio](#tag-browser-studio) (10)
 - [Schemas](#schemas)
 
 <a id="tag-health"></a>
 
 ## Health
 
-Liveness. The only route that needs no bearer token.
+Liveness, without a bearer token.
 
 | Method | Path | Summary |
 |---|---|---|
@@ -18348,6 +18351,399 @@ Example 200 (`application/json`):
 }
 ```
 
+<a id="tag-browser-studio"></a>
+
+## Browser Studio
+
+Browser sign-in, host-approved pairing and the shared renderer transport. These same-origin browser routes use HttpOnly cookies; native browser launch requires the install master token and local proof. Transport operations are experimental and tied to the renderer version.
+
+| Method | Path | Summary |
+|---|---|---|
+| POST | [`/web/launch`](#op-createstudiobrowserlaunch) | Create a one-use local browser sign-in link |
+| GET | [`/web/session`](#op-getstudiobrowsersession) | Check or renew browser sign-in |
+| POST | [`/web/session`](#op-exchangestudiobrowserticket) | Exchange a one-use browser launch ticket |
+| DELETE | [`/web/session`](#op-deletestudiobrowsersession) | Sign out this browser |
+| GET | [`/web/pair`](#op-pollstudiobrowserpairing) | Collect browser pairing approval |
+| POST | [`/web/pair`](#op-claimstudiobrowserpairing) | Request host approval for this browser |
+| POST | [`/web/invoke`](#op-invokestudiobrowseroperation) | Invoke a shared Studio operation |
+| GET | [`/web/events`](#op-streamstudiobrowserevents) | Stream shared Studio events for a browser tab |
+| GET | [`/web/file`](#op-getstudiobrowserfile) | Read media from the browser tab’s open agent |
+| GET | [`/web/snapshot`](#op-getstudiobrowsersnapshot) | Download a share copy of an agent |
+
+<a id="op-createstudiobrowserlaunch"></a>
+
+### POST `/web/launch`
+
+**Create a one-use local browser sign-in link**
+
+Native local clients only. Requires the install master bearer token and this daemon run’s X-ADF-Local-Proof. Browser Origin, proxy headers and non-loopback callers are refused. Returns a loopback Studio URL with a one-use ticket in its fragment, valid for 60 seconds. Do not log or persist this URL. The browser exchanges the ticket for an HttpOnly session cookie; the long-lived bearer is never exposed to browser JavaScript.
+
+Operation `createStudioBrowserLaunch` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `X-ADF-Local-Proof` | header | string | yes | This daemon run’s local proof, read from its protected local proof file. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | One-use launch URL. |
+| 401 | — | Missing or invalid install master bearer. |
+| 403 | — | Local master authority and proof are required; browser, proxy and device-token callers are refused. |
+| 429 | — | Too many outstanding launch tickets. |
+| 503 | — | Browser Studio is unavailable. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "url": "string",
+  "expiresAt": "2026-01-01T00:00:00.000Z"
+}
+```
+
+<a id="op-getstudiobrowsersession"></a>
+
+### GET `/web/session`
+
+**Check or renew browser sign-in**
+
+Accepts the active session cookie, or a remembered-device cookie when the active session is absent/expired. Validates device authority and revocation before renewing; a remembered session may survive daemon restart. Renewal issues only a new session cookie, not a new remembered credential cookie. storageScope can change on renewal: stale renderer tabs must preserve local edits and reload. Signed-out device principals cannot silently renew during this daemon process; a fresh host-approved pairing can authorize them again.
+
+Operation `getStudioBrowserSession` · browser cookies
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [WebBrowserSession](#schema-webbrowsersession) | Current or renewed browser session. |
+| 401 | [ErrorResponse](#schema-errorresponse) | No valid browser session, device revoked, or browser signed out (`web_device_signed_out`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin or device authority refused the request. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many browser sessions. |
+| 503 | [ErrorResponse](#schema-errorresponse) | Daemon authentication is not configured. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "authenticated": true,
+  "state": "approved",
+  "storageScope": "string",
+  "recoveryScope": "string"
+}
+```
+
+<a id="op-exchangestudiobrowserticket"></a>
+
+### POST `/web/session`
+
+**Exchange a one-use browser launch ticket**
+
+Consume the fragment ticket from POST /web/launch. Remove it from the address bar before submitting it. Requires the same validated Host authority and a direct loopback connection without proxy headers. A ticket can be used once and expires after 60 seconds. Raw daemon/device tokens are not accepted in this body. Creates an eight-hour HttpOnly session and clears any previous remembered-device cookie. Sign-in attempts are bounded to 20 per source per minute.
+
+Operation `exchangeStudioBrowserTicket` · no authentication
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `ticket` | string | yes |  |
+
+```json
+{
+  "ticket": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [WebBrowserSessionCreated](#schema-webbrowsersessioncreated) | Signed in; no bearer token is returned. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Missing or malformed ticket (`invalid_ticket`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Ticket expired or already used (`ticket_expired`), or token authority is no longer valid. |
+| 403 | [ErrorResponse](#schema-errorresponse) | Ticket authority mismatch (`ticket_origin_mismatch`) or Host/Origin guard failure. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many sign-in attempts or browser sessions. |
+| 503 | [ErrorResponse](#schema-errorresponse) | Daemon authentication is not configured (`web_token_unconfigured`). |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "authenticated": true,
+  "state": "approved",
+  "storageScope": "string",
+  "recoveryScope": "string"
+}
+```
+
+<a id="op-deletestudiobrowsersession"></a>
+
+### DELETE `/web/session`
+
+**Sign out this browser**
+
+Idempotently clear session, pairing and remembered-device cookies; end active browser tabs and sibling sessions renewed from the same device principal. Cancels pending browser pairing collection. Does not revoke the daemon device itself; use the host device-management API or CLI for revocation.
+
+Operation `deleteStudioBrowserSession` · no authentication
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | Signed out, including when no valid cookie was present. |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin guard refused the request. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "authenticated": false
+}
+```
+
+<a id="op-pollstudiobrowserpairing"></a>
+
+### GET `/web/pair`
+
+**Collect browser pairing approval**
+
+Requires the HttpOnly pairing cookie set by POST /web/pair. Returns immediately; poll approximately every two seconds while pending. Approval is collected once, validates device authority and creates browser session plus 30-day HttpOnly remembered-device cookies. The device token is never returned in JSON. Denial creates no credentials. Parallel polls do not collect the approval twice; logout cancels pending collection.
+
+Operation `pollStudioBrowserPairing` · browser cookies
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [WebPairPending](#schema-webpairpending) \| object \| [WebBrowserSessionCreated](#schema-webbrowsersessioncreated) | Pending, denied, or approved browser sign-in. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Pairing service failed (`web_pairing_failed`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Pairing was cancelled, device revoked or approved authority is invalid. |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin or device authority refused the request. |
+| 404 | [ErrorResponse](#schema-errorresponse) | Missing, expired or collected request (`claim_not_found`), or remote access is off. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Too many browser sessions; approval is left uncollected until capacity is available. |
+| 503 | [ErrorResponse](#schema-errorresponse) | Daemon authentication is not configured. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "state": "pending",
+  "expiresAt": "2026-01-01T00:00:00.000Z"
+}
+```
+
+<a id="op-claimstudiobrowserpairing"></a>
+
+### POST `/web/pair`
+
+**Request host approval for this browser**
+
+Submit the six-digit code from Studio or adf daemon pair. Reuses the existing remote-access pairing service with the original request source, its wrong-code delay, rate limits and explicit host approval. Never auto-approves. Returns only pending state; claim identifiers and collection secrets remain on the server behind an HttpOnly pairing cookie. Poll GET /web/pair with the browser cookie jar.
+
+Operation `claimStudioBrowserPairing` · no authentication
+
+**Request body** (required): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `code` | string | yes |  |
+| `deviceName` | string | yes | Display name without control or bidi characters. |
+
+```json
+{
+  "code": "string",
+  "deviceName": "string"
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 202 | [WebPairPending](#schema-webpairpending) | Waiting for explicit host approval. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid pairing code/name (`invalid_pairing`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Wrong code (`wrong_code`) or Host/Origin guard failure. |
+| 404 | [ErrorResponse](#schema-errorresponse) | Remote access is off or no pairing window is open. |
+| 409 | [ErrorResponse](#schema-errorresponse) | Another claim is waiting for the host (`pairing_busy`). |
+| 429 | [ErrorResponse](#schema-errorresponse) | Existing source pairing limit, browser sign-in limit or pending capacity reached; Retry-After may be supplied. |
+
+Example 202 (`application/json`):
+
+```json
+{
+  "state": "pending",
+  "expiresAt": "2026-01-01T00:00:00.000Z"
+}
+```
+
+<a id="op-invokestudiobrowseroperation"></a>
+
+### POST `/web/invoke`
+
+**Invoke a shared Studio operation**
+
+Version-coupled renderer RPC, not a general-purpose replacement for the daemon REST API. Requires the active session cookie and storageScope. The Studio client waits for /web/events generation handshake before mutating and sends generation on every invocation; 409 web_tab_reset means the tab runtime was recreated and the client must preserve local edits and reload, never replay the mutation blindly. Request body limit is 128 MiB for inline attachments. Browser requests share a per-session burst allowance of 120, refilling at 10/second, with at most 64 in flight. Native-only operations return explicit errors.
+
+Operation `invokeStudioBrowserOperation` · browser cookies
+
+**Request body** (required): [WebBrowserInvoke](#schema-webbrowserinvoke)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `clientId` | string | yes |  |
+| `storageScope` | string | yes |  |
+| `generation` | string |  | The web:tab-generation handshake value. The Studio client waits for the first handshake and includes this on every invocation; a different generation returns 409 web_tab_reset before the handler executes. |
+| `channel` | string | yes | A shared Studio IPC channel. Availability and argument/result shapes are defined by the shared renderer API and this daemon version. |
+| `args` | any[] | yes | Positional arguments in the shared IPC shape; no second browser-specific API mapping. |
+
+```json
+{
+  "clientId": "string",
+  "storageScope": "string",
+  "generation": "string",
+  "channel": "string",
+  "args": [
+    null
+  ]
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | object | The shared API result (undefined is serialized as null). |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid renderer input. |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin guard or device authority refused the request. |
+| 409 | [ErrorResponse](#schema-errorresponse) | Tab generation changed (`web_tab_reset`), or shared handler conflict. |
+| 413 | [ErrorResponse](#schema-errorresponse) | JSON attachment body exceeds the request limit. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`). |
+| default | [ErrorResponse](#schema-errorresponse) | A shared handler error; status and code are preserved where available. |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "result": null
+}
+```
+
+<a id="op-streamstudiobrowserevents"></a>
+
+### GET `/web/events`
+
+**Stream shared Studio events for a browser tab**
+
+SSE stream carrying JSON data frames {channel,args}. The first data frame is {channel:"web:tab-generation",args:[generation]}; its 32-hex generation is stable across reconnects until the server recreates this tab runtime. A changed generation requires preserving edits and reloading. Remaining channels use the shared IPC event shape. One stream per clientId; a reconnect supersedes the old stream and triggers state reconciliation. Comments are heartbeats. Buffered events are bounded; disconnected tabs are evicted after five idle minutes. Logout, expiry and device revocation close streams.
+
+Operation `streamStudioBrowserEvents` · browser cookies
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `clientId` | query | string | yes | Per-tab identifier. Different tabs must use different identifiers; reloads may reuse one. |
+| `storageScope` | query | string | yes | Current session identity from /web/session. Rejects stale tabs after another sign-in replaces the shared cookie. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | string | Live shared renderer event stream. Cache-Control: no-store. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid renderer input. |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin guard or device authority refused the request. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`). |
+| 503 | [ErrorResponse](#schema-errorresponse) | Could not open the shared Studio runtime session (`web_session_failed`). |
+
+Example 200 (`text/event-stream`):
+
+```json
+": connected\n\ndata: {\"channel\":\"web:tab-generation\",\"args\":[\"0123456789abcdef0123456789abcdef\"]}\n\n"
+```
+
+<a id="op-getstudiobrowserfile"></a>
+
+### GET `/web/file`
+
+**Read media from the browser tab’s open agent**
+
+Version-coupled renderer file delivery. The path is inside this tab’s open agent; filePath optionally asserts the expected agent document so stale media requests cannot read the next agent’s same-named file. Active HTML/SVG is served with a sandbox Content-Security-Policy and nosniff. Only the local runtime is supported. view is a renderer cache-key hint, not an authorization selector.
+
+Operation `getStudioBrowserFile` · browser cookies
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `clientId` | query | string | yes | Per-tab identifier. Different tabs must use different identifiers; reloads may reuse one. |
+| `storageScope` | query | string | yes | Current session identity from /web/session. Rejects stale tabs after another sign-in replaces the shared cookie. |
+| `path` | query | string | yes | Internal file path. |
+| `filePath` | query | string |  | Expected open agent document path. |
+| `runtime` | query | `"local"` |  | Only this daemon runtime is supported. |
+| `view` | query | integer |  | Renderer view generation used to distinguish media URLs. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | string | Raw internal file; Content-Type follows the file MIME type. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid renderer input. |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin guard or device authority refused the request. |
+| 404 | [ErrorResponse](#schema-errorresponse) | File or open agent was not found. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`). |
+| default | [ErrorResponse](#schema-errorresponse) | Underlying file service status; code web_file_failed. |
+
+Example 200 (`*/*`):
+
+```json
+"string"
+```
+
+<a id="op-getstudiobrowsersnapshot"></a>
+
+### GET `/web/snapshot`
+
+**Download a share copy of an agent**
+
+Version-coupled renderer download. Creates a share-mode agent snapshot, never a full secret-bearing export. path selects an agent document on the daemon; if absent, use this tab’s open document. Response is an attachment named agent.adf with a sandbox Content-Security-Policy. The existing daemon snapshot permissions still apply.
+
+Operation `getStudioBrowserSnapshot` · browser cookies
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `clientId` | query | string | yes | Per-tab identifier. Different tabs must use different identifiers; reloads may reuse one. |
+| `storageScope` | query | string | yes | Current session identity from /web/session. Rejects stale tabs after another sign-in replaces the shared cookie. |
+| `path` | query | string |  | Agent document path; defaults to this tab’s open document. |
+| `runtime` | query | `"local"` |  | Only this daemon runtime is supported. |
+| `mode` | query | `"share"` |  | Only share-mode snapshots are supported. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | string | Share-mode agent snapshot. |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid renderer input. |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin guard or device authority refused the request. |
+| 404 | [ErrorResponse](#schema-errorresponse) | Agent document not found. |
+| 429 | [ErrorResponse](#schema-errorresponse) | Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`). |
+| default | [ErrorResponse](#schema-errorresponse) | Underlying snapshot service status; code web_snapshot_failed. |
+
+Example 200 (`application/octet-stream`):
+
+```json
+"string"
+```
+
 <a id="schemas"></a>
 
 ## Schemas
@@ -23333,3 +23729,46 @@ Type: object \| object \| object
 | `durationMs` | number | yes |  |
 | `deferred` | boolean | yes | The record waits for the current step to finish. |
 | `seq` | integer |  |  |
+
+<a id="schema-webbrowsersession"></a>
+
+### WebBrowserSession
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `authenticated` | `true` | yes |  |
+| `state` | `"approved"` |  | Present when the operation created or renewed a session. |
+| `storageScope` | string | yes | Noncredential session identity; bind every renderer request and pending-message namespace to it. |
+| `recoveryScope` | string | yes | Noncredential stable principal namespace for browser-local recovery copies; it is not encryption or access control for the browser profile. |
+
+<a id="schema-webbrowsersessioncreated"></a>
+
+### WebBrowserSessionCreated
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `authenticated` | `true` | yes |  |
+| `state` | `"approved"` | yes | Present when the operation created or renewed a session. |
+| `storageScope` | string | yes | Noncredential session identity; bind every renderer request and pending-message namespace to it. |
+| `recoveryScope` | string | yes | Noncredential stable principal namespace for browser-local recovery copies; it is not encryption or access control for the browser profile. |
+
+<a id="schema-webpairpending"></a>
+
+### WebPairPending
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `state` | `"pending"` | yes |  |
+| `expiresAt` | string | yes | The host approval-window deadline. An approval made before this time can still be collected during the existing pairing service grace period. |
+
+<a id="schema-webbrowserinvoke"></a>
+
+### WebBrowserInvoke
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `clientId` | string | yes |  |
+| `storageScope` | string | yes |  |
+| `generation` | string |  | The web:tab-generation handshake value. The Studio client waits for the first handshake and includes this on every invocation; a different generation returns 409 web_tab_reset before the handler executes. |
+| `channel` | string | yes | A shared Studio IPC channel. Availability and argument/result shapes are defined by the shared renderer API and this daemon version. |
+| `args` | any[] | yes | Positional arguments in the shared IPC shape; no second browser-specific API mapping. |

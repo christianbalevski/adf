@@ -1,4 +1,4 @@
-import { dialog } from 'electron'
+import { dialog } from '../platform'
 import type { LoopMedia } from '../../../../shared/types/media.types'
 import { basename, dirname } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'

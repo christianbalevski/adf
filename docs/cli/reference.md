@@ -21,6 +21,7 @@ With no command, `adf` opens the terminal app. Commands that talk to the daemon 
 
 | Command | Description |
 |---|---|
+| `adf web [--port <n>]` | Open Browser Studio already signed in (no desktop app needed) |
 | `adf tui` | The terminal app (the default) |
 | `adf agents` | List loaded agents |
 | `adf status <agent>` | Show runtime status |

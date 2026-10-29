@@ -121,7 +121,8 @@ export function readLocalProof(settingsDir: string, port: number = DEFAULT_PORT)
  */
 export function isLocalOnlyRoute(path: string): boolean {
   const p = path.split('?')[0]
-  return p === '/daemon/shutdown'
+  return p === '/web/launch'
+    || p === '/daemon/shutdown'
     || p === '/client/reload-credentials'
     || p === '/client/sessions'
     || /^\/client\/sessions\/[^/]+\/exit-when-closed$/.test(p)

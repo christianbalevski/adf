@@ -99,7 +99,7 @@ export function UpdatesGroup() {
               <span>Release notes</span>
               <span aria-hidden>↗</span>
             </Button>
-            {canDownload ? (
+            {window.adfApi?.platform === 'web' ? <span className="text-xs text-[var(--adf-ui-text-muted)]">Updated with the daemon</span> : canDownload ? (
               <Button onClick={() => void window.adfApi.downloadUpdate()}>
                 {update.status === 'error' ? 'Retry download' : 'Download and restart'}
               </Button>

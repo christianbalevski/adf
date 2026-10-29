@@ -45,7 +45,7 @@ export function ShareAgentDialog() {
     setSaveError(null)
     try {
       const r = await window.adfApi.saveShareCopy(filePath)
-      if (r.success && r.filePath) setSaved(r.filePath)
+      if (r.success) setSaved(r.filePath || (window.adfApi?.platform === 'web' ? 'your browser downloads' : 'a copy'))
       else if (r.error) setSaveError(r.error)
     } catch (err) {
       setSaveError(err instanceof Error ? err.message : String(err))
@@ -62,8 +62,7 @@ export function ShareAgentDialog() {
     <Dialog open={target !== null} onClose={closeShareDialog} title="Share" wide>
       <div className="space-y-5">
         <p className="text-[13px] leading-relaxed text-[var(--adf-ui-text-muted)]">
-          Drag the file into Messages, Mail, Slack, or a folder. They get their own copy,
-          like a PDF you sent. Yours stays here and does not change.
+          {window.adfApi?.platform === 'web' ? 'Download a copy, then send it in Messages, Mail, Slack, or another app. Your agent stays here and does not change.' : 'Drag the file into Messages, Mail, Slack, or a folder. They get their own copy, like a PDF you sent. Yours stays here and does not change.'}
         </p>
 
         <ShareIllustration name={name} seed={seed} icon={icon} />
@@ -72,10 +71,10 @@ export function ShareAgentDialog() {
           <div className="flex items-center gap-3">
             <FileTile file={featured} seed={seed} icon={icon} />
             <div className="min-w-0 flex-1 text-[12px] text-[var(--adf-ui-text-subtle)]">
-              Grab this and drop it anywhere.
+              {window.adfApi?.platform === 'web' ? 'Download this agent to share it.' : 'Grab this and drop it anywhere.'}
             </div>
             <Button size="compact" onClick={() => saveCopy(featured.filePath)} loading={saving}>
-              Save copy…
+              {window.adfApi?.platform === 'web' ? 'Download copy' : 'Save copy…'}
             </Button>
           </div>
         ) : null}

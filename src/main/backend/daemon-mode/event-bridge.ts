@@ -332,6 +332,9 @@ export class EventBridge {
    * `turnTimeoutMs`.
    */
   waitForTurn(agentId: string, turnId: string, loop = 'main'): Promise<TurnOutcome> {
+    // A chat POST can finish after its browser tab/window closed. No stream
+    // remains to settle a new waiter, so do not retain it for thirty minutes.
+    if (this.disposed) return Promise.resolve('stopped')
     const known = this.ended.get(turnKey(agentId, turnId))
     if (known && (known.settled || known.outcome === 'discarded' || !this.loopBusy(agentId, known.loop))) return Promise.resolve(known.outcome)
     return new Promise((resolve) => {

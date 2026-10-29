@@ -1,3 +1,4 @@
+import './daemon-mode-platform'
 /**
  * W3-A agent runtime handlers in daemon mode (documents/agent-handlers.ts)
  * and the core AGENT_START / FILE_OPEN gates (handlers/core.ts): each answers

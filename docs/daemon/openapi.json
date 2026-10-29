@@ -4,7 +4,7 @@
     "title": "ADF Daemon API",
     "version": "0.2.0",
     "summary": "HTTP API of the headless ADF runtime (adf daemon).",
-    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Every route except `GET /health` (and `HEAD /health`) requires `Authorization: Bearer <token>`: the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import`, the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and full exports (`GET /agents/{id}/export`, `GET /files/snapshot?mode=export`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**The token is as powerful as the owner phrase.** A token holder can run code as the daemon (an agent's stdio MCP server or adapter, `POST /agents/{id}/start`), and code running as the daemon can read the owner phrase from the OS keychain or the unlocked identity file. Keep the token as you keep the 12 words: never paste it into a chat, a ticket or a shared shell history, and give a remote client a machine you trust.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
+    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Ordinary daemon routes require `Authorization: Bearer <token>`. The liveness, remote hello/pairing and browser entry routes declare their exceptions below. Browser Studio uses its same-origin cookie session instead of a browser-supplied bearer. The bearer is the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Browser Studio.** `/studio/` serves the shared renderer. Native local clients obtain a 60-second single-use fragment link from `POST /web/launch`; the browser exchanges it at `POST /web/session`. Another device uses `POST /web/pair` and waits for host approval. Browser JSON responses never contain a daemon/device bearer token. A host-approved device credential may be retained only in an HttpOnly cookie for 30 days; active sessions last eight hours. `/web/invoke`, `/web/events`, `/web/file` and `/web/snapshot` are version-coupled renderer transport, not replacements for the ordinary daemon REST API.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import`, the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and full exports (`GET /agents/{id}/export`, `GET /files/snapshot?mode=export`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**The token is as powerful as the owner phrase.** A token holder can run code as the daemon (an agent's stdio MCP server or adapter, `POST /agents/{id}/start`), and code running as the daemon can read the owner phrase from the OS keychain or the unlocked identity file. Keep the token as you keep the 12 words: never paste it into a chat, a ticket or a shared shell history, and give a remote client a machine you trust.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -28,7 +28,7 @@
   "tags": [
     {
       "name": "Health",
-      "description": "Liveness. The only route that needs no bearer token."
+      "description": "Liveness, without a bearer token."
     },
     {
       "name": "Daemon",
@@ -141,6 +141,10 @@
     {
       "name": "Remote access",
       "description": "Other computers reach this daemon (docs/design/remote-access.md): the toggle, device tokens, pairing. Management routes answer this machine only: the install's token, a loopback caller without proxy headers, and the local proof (`X-ADF-Local-Proof`) in every mode; a device token gets 403 `device_token_refused`. `/remote/hello` and `/pair/*` need no token and answer 404 `remote_access_off` while remote access is off."
+    },
+    {
+      "name": "Browser Studio",
+      "description": "Browser sign-in, host-approved pairing and the shared renderer transport. These same-origin browser routes use HttpOnly cookies; native browser launch requires the install master token and local proof. Transport operations are experimental and tied to the renderer version."
     }
   ],
   "paths": {
@@ -17105,6 +17109,995 @@
           }
         }
       }
+    },
+    "/web/launch": {
+      "post": {
+        "operationId": "createStudioBrowserLaunch",
+        "summary": "Create a one-use local browser sign-in link",
+        "description": "Native local clients only. Requires the install master bearer token and this daemon run’s X-ADF-Local-Proof. Browser Origin, proxy headers and non-loopback callers are refused. Returns a loopback Studio URL with a one-use ticket in its fragment, valid for 60 seconds. Do not log or persist this URL. The browser exchanges the ticket for an HttpOnly session cookie; the long-lived bearer is never exposed to browser JavaScript.",
+        "tags": [
+          "Browser Studio"
+        ],
+        "parameters": [
+          {
+            "name": "X-ADF-Local-Proof",
+            "in": "header",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "This daemon run’s local proof, read from its protected local proof file."
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "One-use launch URL.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "url",
+                    "expiresAt"
+                  ],
+                  "properties": {
+                    "url": {
+                      "type": "string",
+                      "format": "uri"
+                    },
+                    "expiresAt": {
+                      "type": "string",
+                      "format": "date-time",
+                      "description": "The one-use launch ticket expiry, at most 60 seconds after minting."
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid install master bearer."
+          },
+          "403": {
+            "description": "Local master authority and proof are required; browser, proxy and device-token callers are refused."
+          },
+          "429": {
+            "description": "Too many outstanding launch tickets."
+          },
+          "503": {
+            "description": "Browser Studio is unavailable."
+          }
+        }
+      }
+    },
+    "/web/session": {
+      "post": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Exchange a one-use browser launch ticket",
+        "description": "Consume the fragment ticket from POST /web/launch. Remove it from the address bar before submitting it. Requires the same validated Host authority and a direct loopback connection without proxy headers. A ticket can be used once and expires after 60 seconds. Raw daemon/device tokens are not accepted in this body. Creates an eight-hour HttpOnly session and clears any previous remembered-device cookie. Sign-in attempts are bounded to 20 per source per minute.",
+        "operationId": "exchangeStudioBrowserTicket",
+        "x-adf-stability": "experimental",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Signed in; no bearer token is returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebBrowserSessionCreated"
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "One or more browser-managed HttpOnly cookies. Preserve separate Set-Cookie header fields. Never expose credential values to application JavaScript.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing or malformed ticket (`invalid_ticket`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Ticket expired or already used (`ticket_expired`), or token authority is no longer valid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Ticket authority mismatch (`ticket_origin_mismatch`) or Host/Origin guard failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many sign-in attempts or browser sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Daemon authentication is not configured (`web_token_unconfigured`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "ticket"
+                ],
+                "properties": {
+                  "ticket": {
+                    "type": "string",
+                    "pattern": "^[A-Za-z0-9_-]{43}$",
+                    "writeOnly": true
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Check or renew browser sign-in",
+        "description": "Accepts the active session cookie, or a remembered-device cookie when the active session is absent/expired. Validates device authority and revocation before renewing; a remembered session may survive daemon restart. Renewal issues only a new session cookie, not a new remembered credential cookie. storageScope can change on renewal: stale renderer tabs must preserve local edits and reload. Signed-out device principals cannot silently renew during this daemon process; a fresh host-approved pairing can authorize them again.",
+        "operationId": "getStudioBrowserSession",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Current or renewed browser session.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebBrowserSession"
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "One or more browser-managed HttpOnly cookies. Preserve separate Set-Cookie header fields. Never expose credential values to application JavaScript.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid browser session, device revoked, or browser signed out (`web_device_signed_out`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many browser sessions.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Daemon authentication is not configured.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "delete": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Sign out this browser",
+        "description": "Idempotently clear session, pairing and remembered-device cookies; end active browser tabs and sibling sessions renewed from the same device principal. Cancels pending browser pairing collection. Does not revoke the daemon device itself; use the host device-management API or CLI for revocation.",
+        "operationId": "deleteStudioBrowserSession",
+        "x-adf-stability": "experimental",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "Signed out, including when no valid cookie was present.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "authenticated"
+                  ],
+                  "properties": {
+                    "authenticated": {
+                      "type": "boolean",
+                      "const": false
+                    }
+                  }
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "One or more browser-managed HttpOnly cookies. Preserve separate Set-Cookie header fields. Never expose credential values to application JavaScript.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin guard refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/web/pair": {
+      "post": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Request host approval for this browser",
+        "description": "Submit the six-digit code from Studio or adf daemon pair. Reuses the existing remote-access pairing service with the original request source, its wrong-code delay, rate limits and explicit host approval. Never auto-approves. Returns only pending state; claim identifiers and collection secrets remain on the server behind an HttpOnly pairing cookie. Poll GET /web/pair with the browser cookie jar.",
+        "operationId": "claimStudioBrowserPairing",
+        "x-adf-stability": "experimental",
+        "security": [],
+        "responses": {
+          "202": {
+            "description": "Waiting for explicit host approval.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WebPairPending"
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "One or more browser-managed HttpOnly cookies. Preserve separate Set-Cookie header fields. Never expose credential values to application JavaScript.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid pairing code/name (`invalid_pairing`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Wrong code (`wrong_code`) or Host/Origin guard failure.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Remote access is off or no pairing window is open.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Another claim is waiting for the host (`pairing_busy`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Existing source pairing limit, browser sign-in limit or pending capacity reached; Retry-After may be supplied.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "required": [
+                  "code",
+                  "deviceName"
+                ],
+                "properties": {
+                  "code": {
+                    "type": "string",
+                    "pattern": "^[0-9]{6}$",
+                    "writeOnly": true
+                  },
+                  "deviceName": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 64,
+                    "description": "Display name without control or bidi characters."
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "get": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Collect browser pairing approval",
+        "description": "Requires the HttpOnly pairing cookie set by POST /web/pair. Returns immediately; poll approximately every two seconds while pending. Approval is collected once, validates device authority and creates browser session plus 30-day HttpOnly remembered-device cookies. The device token is never returned in JSON. Denial creates no credentials. Parallel polls do not collect the approval twice; logout cancels pending collection.",
+        "operationId": "pollStudioBrowserPairing",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Pending, denied, or approved browser sign-in.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/WebPairPending"
+                    },
+                    {
+                      "type": "object",
+                      "required": [
+                        "state"
+                      ],
+                      "properties": {
+                        "state": {
+                          "type": "string",
+                          "const": "denied"
+                        }
+                      }
+                    },
+                    {
+                      "$ref": "#/components/schemas/WebBrowserSessionCreated"
+                    }
+                  ]
+                }
+              }
+            },
+            "headers": {
+              "Set-Cookie": {
+                "description": "One or more browser-managed HttpOnly cookies. Preserve separate Set-Cookie header fields. Never expose credential values to application JavaScript.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Pairing service failed (`web_pairing_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Pairing was cancelled, device revoked or approved authority is invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Missing, expired or collected request (`claim_not_found`), or remote access is off.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Too many browser sessions; approval is left uncollected until capacity is available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Daemon authentication is not configured.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/web/invoke": {
+      "post": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Invoke a shared Studio operation",
+        "description": "Version-coupled renderer RPC, not a general-purpose replacement for the daemon REST API. Requires the active session cookie and storageScope. The Studio client waits for /web/events generation handshake before mutating and sends generation on every invocation; 409 web_tab_reset means the tab runtime was recreated and the client must preserve local edits and reload, never replay the mutation blindly. Request body limit is 128 MiB for inline attachments. Browser requests share a per-session burst allowance of 120, refilling at 10/second, with at most 64 in flight. Native-only operations return explicit errors.",
+        "operationId": "invokeStudioBrowserOperation",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The shared API result (undefined is serialized as null).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "result"
+                  ],
+                  "properties": {
+                    "result": {}
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid renderer input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin guard or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Tab generation changed (`web_tab_reset`), or shared handler conflict.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "JSON attachment body exceeds the request limit.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "A shared handler error; status and code are preserved where available.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WebBrowserInvoke"
+              }
+            }
+          }
+        }
+      }
+    },
+    "/web/events": {
+      "get": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Stream shared Studio events for a browser tab",
+        "description": "SSE stream carrying JSON data frames {channel,args}. The first data frame is {channel:\"web:tab-generation\",args:[generation]}; its 32-hex generation is stable across reconnects until the server recreates this tab runtime. A changed generation requires preserving edits and reloading. Remaining channels use the shared IPC event shape. One stream per clientId; a reconnect supersedes the old stream and triggers state reconciliation. Comments are heartbeats. Buffered events are bounded; disconnected tabs are evicted after five idle minutes. Logout, expiry and device revocation close streams.",
+        "operationId": "streamStudioBrowserEvents",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Live shared renderer event stream. Cache-Control: no-store.",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "type": "string"
+                },
+                "example": ": connected\n\ndata: {\"channel\":\"web:tab-generation\",\"args\":[\"0123456789abcdef0123456789abcdef\"]}\n\n"
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid renderer input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin guard or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "Could not open the shared Studio runtime session (`web_session_failed`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/WebClientId"
+          },
+          {
+            "$ref": "#/components/parameters/WebStorageScope"
+          }
+        ]
+      }
+    },
+    "/web/file": {
+      "get": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Read media from the browser tab’s open agent",
+        "description": "Version-coupled renderer file delivery. The path is inside this tab’s open agent; filePath optionally asserts the expected agent document so stale media requests cannot read the next agent’s same-named file. Active HTML/SVG is served with a sandbox Content-Security-Policy and nosniff. Only the local runtime is supported. view is a renderer cache-key hint, not an authorization selector.",
+        "operationId": "getStudioBrowserFile",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Raw internal file; Content-Type follows the file MIME type.",
+            "content": {
+              "*/*": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid renderer input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin guard or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "File or open agent was not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Underlying file service status; code web_file_failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/WebClientId"
+          },
+          {
+            "$ref": "#/components/parameters/WebStorageScope"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": true,
+            "description": "Internal file path.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            }
+          },
+          {
+            "name": "filePath",
+            "in": "query",
+            "required": false,
+            "description": "Expected open agent document path.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            }
+          },
+          {
+            "name": "runtime",
+            "in": "query",
+            "required": false,
+            "description": "Only this daemon runtime is supported.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "local"
+              ]
+            }
+          },
+          {
+            "name": "view",
+            "in": "query",
+            "required": false,
+            "description": "Renderer view generation used to distinguish media URLs.",
+            "schema": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        ]
+      }
+    },
+    "/web/snapshot": {
+      "get": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Download a share copy of an agent",
+        "description": "Version-coupled renderer download. Creates a share-mode agent snapshot, never a full secret-bearing export. path selects an agent document on the daemon; if absent, use this tab’s open document. Response is an attachment named agent.adf with a sandbox Content-Security-Policy. The existing daemon snapshot permissions still apply.",
+        "operationId": "getStudioBrowserSnapshot",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Share-mode agent snapshot.",
+            "content": {
+              "application/octet-stream": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            },
+            "headers": {
+              "Content-Disposition": {
+                "description": "attachment; filename=\"agent.adf\"",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid renderer input.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin guard or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "429": {
+            "description": "Session request/concurrency limit or tab capacity reached (`web_rate_limited`, `too_many_tabs`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Agent document not found.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "default": {
+            "description": "Underlying snapshot service status; code web_snapshot_failed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        },
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/WebClientId"
+          },
+          {
+            "$ref": "#/components/parameters/WebStorageScope"
+          },
+          {
+            "name": "path",
+            "in": "query",
+            "required": false,
+            "description": "Agent document path; defaults to this tab’s open document.",
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 16384
+            }
+          },
+          {
+            "name": "runtime",
+            "in": "query",
+            "required": false,
+            "description": "Only this daemon runtime is supported.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "local"
+              ]
+            }
+          },
+          {
+            "name": "mode",
+            "in": "query",
+            "required": false,
+            "description": "Only share-mode snapshots are supported.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "share"
+              ]
+            }
+          }
+        ]
+      }
     }
   },
   "components": {
@@ -17113,6 +18106,12 @@
         "type": "http",
         "scheme": "bearer",
         "description": "The install's token from `<settings dir>/daemon-token` (printed by `adf daemon token`; this machine only, refused from other computers), or ADF_DAEMON_TOKEN; or a device token (`adfd_…`) from pairing or `adf daemon devices add`, accepted while remote access is on and never on local-only routes. Local adf clients send the install token automatically."
+      },
+      "browserCookies": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Cookie",
+        "description": "The browser-managed Cookie header, not a bearer token. Keep the exact HttpOnly cookies supplied by Set-Cookie; browser JavaScript must not read or construct them. Names are adf_web_session_<authorityHash>, adf_web_pair_<authorityHash> and adf_web_device_<authorityHash>, where authorityHash is the first 24 hex characters of SHA-256(lowercase Host). Path=/web, SameSite=Strict, Secure on HTTPS. Session and pairing cookies are opaque handles; the remembered-device cookie contains the paired device credential. Which cookies each operation accepts is described there. Cookie is represented as a header scheme because its names vary with the daemon authority."
       }
     },
     "parameters": {
@@ -17402,6 +18401,26 @@
           "enum": [
             "*"
           ]
+        }
+      },
+      "WebClientId": {
+        "name": "clientId",
+        "in": "query",
+        "required": true,
+        "description": "Per-tab identifier. Different tabs must use different identifiers; reloads may reuse one.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[a-zA-Z0-9_-]{16,128}$"
+        }
+      },
+      "WebStorageScope": {
+        "name": "storageScope",
+        "in": "query",
+        "required": true,
+        "description": "Current session identity from /web/session. Rejects stale tabs after another sign-in replaces the shared cookie.",
+        "schema": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{32}$"
         }
       }
     },
@@ -31759,6 +32778,101 @@
           },
           "seq": {
             "type": "integer"
+          }
+        }
+      },
+      "WebBrowserSession": {
+        "type": "object",
+        "required": [
+          "authenticated",
+          "storageScope",
+          "recoveryScope"
+        ],
+        "properties": {
+          "authenticated": {
+            "type": "boolean",
+            "const": true
+          },
+          "state": {
+            "type": "string",
+            "const": "approved",
+            "description": "Present when the operation created or renewed a session."
+          },
+          "storageScope": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "Noncredential session identity; bind every renderer request and pending-message namespace to it."
+          },
+          "recoveryScope": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{64}$",
+            "description": "Noncredential stable principal namespace for browser-local recovery copies; it is not encryption or access control for the browser profile."
+          }
+        }
+      },
+      "WebBrowserSessionCreated": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/WebBrowserSession"
+          },
+          {
+            "type": "object",
+            "required": [
+              "state"
+            ]
+          }
+        ]
+      },
+      "WebPairPending": {
+        "type": "object",
+        "required": [
+          "state",
+          "expiresAt"
+        ],
+        "properties": {
+          "state": {
+            "type": "string",
+            "const": "pending"
+          },
+          "expiresAt": {
+            "type": "string",
+            "format": "date-time",
+            "description": "The host approval-window deadline. An approval made before this time can still be collected during the existing pairing service grace period."
+          }
+        }
+      },
+      "WebBrowserInvoke": {
+        "type": "object",
+        "required": [
+          "clientId",
+          "storageScope",
+          "channel",
+          "args"
+        ],
+        "properties": {
+          "clientId": {
+            "type": "string",
+            "pattern": "^[a-zA-Z0-9_-]{16,128}$"
+          },
+          "storageScope": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$"
+          },
+          "generation": {
+            "type": "string",
+            "pattern": "^[a-f0-9]{32}$",
+            "description": "The web:tab-generation handshake value. The Studio client waits for the first handshake and includes this on every invocation; a different generation returns 409 web_tab_reset before the handler executes."
+          },
+          "channel": {
+            "type": "string",
+            "maxLength": 128,
+            "description": "A shared Studio IPC channel. Availability and argument/result shapes are defined by the shared renderer API and this daemon version."
+          },
+          "args": {
+            "type": "array",
+            "maxItems": 16,
+            "items": {},
+            "description": "Positional arguments in the shared IPC shape; no second browser-specific API mapping."
           }
         }
       }

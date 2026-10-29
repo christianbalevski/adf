@@ -220,8 +220,16 @@ function buildMarkdown() {
     for (const { path, method, op, item } of tagged) {
       out.push(`<a id="${opAnchor(op)}"></a>`, '', `### ${method.toUpperCase()} \`${path}\``, '', `**${op.summary}**`, '')
       if (op.description) out.push(op.description, '')
-      const open = Array.isArray(op.security) && op.security.length === 0
-      out.push(`Operation \`${op.operationId}\` · ${open ? 'no authentication' : 'bearer token'}`, '')
+      const requirements = op.security ?? spec.security ?? []
+      const authentication = requirements.length === 0 ? 'no authentication' : requirements.map((requirement) =>
+        Object.keys(requirement).map((name) => {
+          const scheme = spec.components?.securitySchemes?.[name]
+          if (scheme?.type === 'http' && scheme.scheme === 'bearer') return 'bearer token'
+          if (scheme?.type === 'apiKey' && scheme.in === 'header' && scheme.name.toLowerCase() === 'cookie') return 'browser cookies'
+          return name
+        }).join(' + ') || 'no authentication',
+      ).join(' or ')
+      out.push(`Operation \`${op.operationId}\` · ${authentication}`, '')
 
       const params = [...(item.parameters ?? []), ...(op.parameters ?? [])]
       if (params.length) {

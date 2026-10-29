@@ -784,6 +784,8 @@ export interface AdfApi {
   // Settings → Connections (settings-scopes.md §5). No token reaches the renderer.
   /** The runtimes this window can use, and the one it uses. */
   listConnections: () => Promise<ConnectionsView>
+  /** Open this computer's Studio in its browser using a single-use sign-in link. */
+  openStudioInBrowser: () => Promise<{ success: true } | { success: false; error: string }>
   /** This computer or Inside Studio (legacy): saved for the next launch; Studio does not restart (multi-runtime.md §7.2). */
   useConnection: (id: string) => Promise<ConnectionResult>
   /** Add connection with a token; the code path is startRemotePairing. */
@@ -860,7 +862,7 @@ export interface AdfApi {
   recoveryReveal: () => Promise<{ success: boolean }>
 
   // Platform ('darwin' | 'win32' | 'linux' | ...)
-  platform: NodeJS.Platform
+  platform: NodeJS.Platform | 'web'
 
   // --- Runtimes (docs/design/multi-runtime.md §4.1) ---
   /** The runtime this surface talks to: `local` for window.adfApi in the main window. */

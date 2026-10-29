@@ -1,4 +1,4 @@
-import { BrowserWindow, clipboard, dialog } from 'electron'
+import { BrowserWindow, clipboard, dialog } from '../platform'
 import { stat } from 'node:fs/promises'
 import { basename } from 'node:path'
 import { IPC } from '../../../../shared/constants/ipc-channels'

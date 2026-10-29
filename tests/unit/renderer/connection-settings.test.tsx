@@ -61,6 +61,15 @@ const page = (rows: ConnectionRow[], b = backend()) => {
 }
 
 describe('the page: Add, Local server, Remote servers, Devices, in that order', () => {
+  it('offers a native browser launch only when the desktop supplies the action', () => {
+    expect(page([LOCAL])).not.toContain('Open in browser')
+    const view: ConnectionsView = { current: { id: 'local', kind: 'local', name: 'host-0 (Local)', url: null, state: 'connected' }, next: null, rows: [LOCAL], discovery: null }
+    const html = renderToStaticMarkup(<ConnectionsPage view={view} backend={backend()} busy={false} message={null} onAdd={noop} onConnect={noop} onRemove={noop} onKeepRunning={noop} onRestart={noop} onOpenBrowser={noop} devices={null} />)
+    expect(html).toContain('Open in browser')
+    expect(html).toContain('already signed in')
+    expect(html).not.toContain('ticket=')
+  })
+
   it('one Add at the top, then the three sections', () => {
     const html = page([LOCAL, SAVED])
     const order = ['>Add<', 'data-section="local"', 'data-section="remote"', 'data-section="devices"'].map((s) => html.indexOf(s))

@@ -1,3 +1,4 @@
+import { mediaUrl } from '../../utils/media-url'
 import { useState } from 'react'
 import { adfFileUrl, deletedFilePlaceholder, type DisplayAttachment } from '../../../shared/utils/file-ref'
 
@@ -24,7 +25,7 @@ function nameOfUrl(url: string): string {
 export function AttachedImage({ url, name, alt, className }: { url: string; name?: string; alt?: string; className: string }) {
   const [failed, setFailed] = useState(false)
   if (failed) return <DeletedFile name={name ?? nameOfUrl(url)} />
-  return <img src={url} alt={alt ?? name ?? 'image'} className={className} onError={() => setFailed(true)} />
+  return <img src={mediaUrl(url)} alt={alt ?? name ?? 'image'} className={className} onError={() => setFailed(true)} />
 }
 
 const CHIP = 'inline-flex max-w-[14rem] items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-2 py-1 text-[11px] text-[var(--ink)]'
@@ -38,7 +39,7 @@ function AttachmentChip({ attachment }: { attachment: DisplayAttachment }) {
   return (
     <span className={CHIP} title={attachment.path}>
       {attachment.kind === 'image' && (
-        <img src={adfFileUrl(attachment.path)} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" onError={() => setFailed(true)} />
+        <img src={mediaUrl(adfFileUrl(attachment.path))} alt="" className="h-5 w-5 shrink-0 rounded-sm object-cover" onError={() => setFailed(true)} />
       )}
       <span className="truncate">{attachment.name}</span>
       <span className="shrink-0 font-mono text-[var(--ink-faint)]">{attachment.kind ?? 'file'}</span>

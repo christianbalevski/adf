@@ -1,3 +1,4 @@
+import './daemon-mode-platform'
 /**
  * W3-A file handlers in daemon mode (documents/file-handlers.ts): each answer
  * has the embedded handler's shape (src/main/ipc/index.ts), error answers

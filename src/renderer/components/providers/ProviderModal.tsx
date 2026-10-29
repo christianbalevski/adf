@@ -254,7 +254,9 @@ function ProviderForm({
         )}
 
         {auth ? (
-          <SubscriptionAuth auth={auth} label={entry?.label ?? provider.name} />
+          window.adfApi?.platform === 'web' && provider.type === 'chatgpt-subscription' && !auth.authenticated
+            ? <Field label="Account"><p className="text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">Sign in to ChatGPT from the desktop app on the daemon host, then reload this page. Existing daemon sign-ins can be used here.</p></Field>
+            : <SubscriptionAuth auth={auth} label={entry?.label ?? provider.name} />
         ) : provider.apiKeyStorage === 'secret-store' && provider.apiKeyStatus === 'unavailable' && !provider.apiKey ? (
           <Field label="API key">
             <div role="alert" className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/40 bg-[var(--adf-ui-warning-subtle)] px-2.5 py-1.5 text-[12px] leading-5 text-[var(--adf-ui-warning)]">
@@ -506,10 +508,10 @@ function SubscriptionAccount({ auth, label }: { auth: SubscriptionAuthState; lab
     return (
       <Field label="Account">
         <div className="space-y-1.5 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-3 py-2.5">
-          <p className="text-[12px] text-[var(--adf-ui-text)]">A browser window opened. Confirm this code there:</p>
+          <p className="text-[12px] text-[var(--adf-ui-text)]">{window.adfApi?.platform === 'web' ? 'Open the sign-in page below and confirm this code:' : 'A browser window opened. Confirm this code there:'}</p>
           <div className="select-all text-center font-mono text-lg tracking-widest text-[var(--adf-ui-text)]">{auth.device.userCode}</div>
           <p className="text-[10.5px] text-[var(--adf-ui-text-subtle)]">
-            Waiting for approval… If no window opened, visit <span className="select-all break-all">{auth.device.verificationUri}</span> and enter the code.
+            Waiting for approval… If no window opened, visit <a href={auth.device.verificationUri} target="_blank" rel="noopener noreferrer" className="select-all break-all underline">{auth.device.verificationUri}</a> and enter the code.
           </p>
         </div>
       </Field>

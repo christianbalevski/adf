@@ -1,4 +1,4 @@
-import { dialog } from 'electron'
+import { dialog } from '../platform'
 import { agentWebsiteUrl } from '../../../../shared/utils/agent-website-url'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
@@ -410,12 +410,12 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
       if (focused) ctx.bridge.attach(focused)
       const why = errorMessage(err)
       ctx.log.error(`[EmergencyStop] The stop did not reach the ADF daemon: ${why}`)
-      void dialog.showMessageBox({
+      void Promise.resolve().then(() => dialog.showMessageBox({
         type: 'error',
         message: 'Emergency stop did not reach the ADF daemon.',
         detail: `${why}\n\nAgents may still be running.`,
         buttons: ['OK'],
-      }).catch(() => {})
+      })).catch(() => {})
       throw err
     } finally {
       invalidate(ctx)
@@ -429,12 +429,12 @@ export const MESH_HANDLERS: DaemonHandlerTable = {
       result.failed?.length ? `Failed to stop: ${result.failed.join(', ')}.` : '',
     ].filter(Boolean)
     ctx.log.error(`[EmergencyStop] ${result.error ?? 'Partial stop.'}`)
-    void dialog.showMessageBox({
+    void Promise.resolve().then(() => dialog.showMessageBox({
       type: 'warning',
       message: 'Emergency stop was partial.',
       detail: `${parts.length ? parts.join('\n') : result.error ?? 'The ADF daemon could not stop everything.'}\n\nAgents may still be running.`,
       buttons: ['OK'],
-    }).catch(() => {})
+    })).catch(() => {})
     if (focused) await resyncAfterPartialStop(ctx, focused, result)
     return result
   },

@@ -15,10 +15,10 @@
     "dev:2": "ADF_INSTANCE=2 electron-vite dev",
     "dev:3": "ADF_INSTANCE=3 electron-vite dev",
     "dev:4": "ADF_INSTANCE=4 electron-vite dev",
-    "build": "electron-vite build",
+    "build": "electron-vite build && npm run build:web",
     "preview": "electron-vite preview",
-    "package": "electron-vite build && electron-builder",
-    "release": "electron-vite build && electron-builder --publish always",
+    "package": "npm run build && electron-builder",
+    "release": "npm run build && electron-builder --publish always",
     "postversion": "git push --follow-tags",
     "lint": "eslint src/ tools/ --max-warnings 0",
     "typecheck": "node scripts/typecheck.mjs",
@@ -35,7 +35,7 @@
     "daemon": "tsx src/main/daemon/entry.ts",
     "adf": "tsx --tsconfig tsconfig.node.json src/main/cli/bin.ts",
     "tui": "tsx --tsconfig tsconfig.node.json src/main/cli/bin.ts tui",
-    "build:npm": "node scripts/build-npm.mjs",
+    "build:npm": "npm run build:web && node scripts/build-npm.mjs",
     "tui:mock": "tsx --tsconfig tsconfig.node.json tests/tui/fixtures/run-tui-mock.ts",
     "docs:cli": "tsx --tsconfig tsconfig.node.json scripts/gen-cli-docs.ts",
     "docs:api": "node scripts/gen-api-docs.mjs",
@@ -46,7 +46,9 @@
     "stress:runtime": "node scripts/stress-runtime.mjs",
     "postinstall": "install-electron",
     "check:brand": "node scripts/check-brand-tokens.mjs",
-    "icons": "node scripts/generate-icons.mjs"
+    "icons": "node scripts/generate-icons.mjs",
+    "dev:web": "vite --config vite.web.config.ts",
+    "build:web": "vite build --config vite.web.config.ts"
   },
   "keywords": [
     "agent",

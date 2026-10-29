@@ -42,7 +42,16 @@ interface ViewerState {
  * reconnect=1 retries every 2s while the display stack is down, so a restart
  * reattaches by itself.
  */
-export function BrowserViewer({ meta, reloadNonce }: Props) {
+export function BrowserViewer(props: Props) {
+  if (window.adfApi?.platform === 'web') {
+    return <div className="flex h-full items-center justify-center p-8 text-center text-sm text-[var(--adf-ui-text-muted)]">
+      The live Computer view is available in the desktop app. Your agent’s computer continues running on the daemon.
+    </div>
+  }
+  return <StudioBrowserViewer {...props} />
+}
+
+function StudioBrowserViewer({ meta, reloadNonce }: Props) {
   const [state, setState] = useState<ViewerState>(() => ({
     phase: meta.phase ?? (meta.hostPort != null ? 'ready' : 'absent'),
     detail: meta.detail,

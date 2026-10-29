@@ -1,10 +1,10 @@
-import { shell } from 'electron'
+import { dialog, shell } from '../platform'
 import { z } from 'zod'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError, type DaemonClient } from '../../../../shared/daemon-client'
 import { startCallbackServer } from '../../../providers/chatgpt-subscription/callback-server'
 import { lockedCredentialCancelled } from '../../../services/locked-credential'
-import { askReplaceLockedCredential } from '../../../services/locked-credential-dialog'
+import { askReplaceLockedCredentialWithDialog } from '../../../services/locked-credential-prompt'
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 
 /**
@@ -96,7 +96,7 @@ export async function writeWithLockedChoice(ctx: DaemonModeContext, purpose: str
     const locked = lockedOf(err, purpose)
     if (!locked) throw err
     const where = ctx.mode === 'remote' ? 'the daemon\'s machine' : 'this machine'
-    if (!(await askReplaceLockedCredential(locked, where, (line) => ctx.log.log(`[Backend] ${line}`)))) {
+    if (!(await askReplaceLockedCredentialWithDialog(locked, where, (line) => ctx.log.log(`[Backend] ${line}`), (options) => dialog.showMessageBox(options)))) {
       throw new Error(lockedCredentialCancelled(locked))
     }
     await write(true)

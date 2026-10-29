@@ -42,6 +42,7 @@ import { registerIdentityRoutes, requireLocalCaller, type IdentityRouteDeps } fr
 import { behindProxyFromEnv, type LocalAccessOptions } from './local-access'
 import { requireLocalProof } from './routes/identity-import-routes'
 import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
+import { isWebStudioRoute, registerWebStudio, type WebStudioOptions } from './web/routes'
 import { remoteListenerOf } from './remote-access/listeners'
 import { setRequestAuth } from './remote-access/request-auth'
 import { registerTemplateRoutes } from './template-routes'
@@ -63,6 +64,8 @@ import { ProviderKeyVaultLockedError, SECRET_STORE_KEY_STORAGE } from './provide
 import { SECRET_STORAGE_POLICY_KEY, SETTINGS_SECRET_KEYS, isSecretSettingsKey } from '../services/secret-storage-policy'
 
 export interface DaemonHttpApiOptions {
+  /** The shared Studio renderer served at /studio/. Disable with enabled: false. */
+  web?: WebStudioOptions
   logger?: boolean
   /** Reported by GET /runtime and GET /version (default: ADF_VERSION, else npm_package_version). */
   version?: string
@@ -762,6 +765,7 @@ export function createDaemonHttpApi(
     deviceTokens: remoteAccess?.deviceAuthority() ?? null,
   })
   server.addHook('onRequest', (request, reply, done) => {
+    if (opts.web?.enabled !== false && isWebStudioRoute(request.routeOptions?.url ?? normalizedRequestPath(request.url))) { done(); return }
     // A socket of a remote listener (remote-access.md §3.2) never takes the install's own token.
     const conn = { remoteListener: remoteListenerOf(request.raw.socket) !== null }
     // The route Fastify matched (its pattern), not the raw URL: `/client/session%73` routes to
@@ -775,6 +779,8 @@ export function createDaemonHttpApi(
     remoteAccess?.noteRequest(request.raw, auth)
     done()
   })
+
+  if (opts.web?.enabled !== false) registerWebStudio(server, guard, { ...opts.web, version: opts.web?.version ?? opts.version, localProof: opts.security?.localProof ?? null, remoteAccess })
 
   // Every 4xx/5xx JSON error body carries a machine-readable `code`: routes
   // set specific ones; anything without one (Fastify's own 404, a route

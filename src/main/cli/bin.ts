@@ -237,7 +237,7 @@ async function main(argv: string[]): Promise<number> {
     fetch: globalThis.fetch.bind(globalThis),
     stdout: text => process.stdout.write(text),
     stderr: text => process.stderr.write(text),
-    ensureDaemon: url => control.ensureDaemon(url, { disabled: noDaemon }),
+    ensureDaemon: (url, env) => control.ensureDaemon(url, { disabled: noDaemon, env }),
   })
 }
 

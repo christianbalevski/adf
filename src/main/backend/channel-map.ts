@@ -524,6 +524,7 @@ export const CHANNEL_MAP = {
   [IPC.APP_SHUTTING_DOWN]: local('push'),
   [IPC.APP_GET_VERSION]: local('invoke', 'Studio version; the daemon version is GET /version (W0-D).'),
   [IPC.APP_GET_FULLSCREEN]: local('invoke', 'Registered in main/index.ts.'),
+  [IPC.STUDIO_OPEN_BROWSER]: local('invoke', 'Native browser launch from a one-use local daemon ticket. The address and ticket never reach the renderer.', { reads: ['POST /web/launch'] }),
   [IPC.APP_SET_FULLSCREEN]: local('invoke', 'Registered in main/index.ts.'),
   [IPC.APP_SET_BADGE_COUNT]: local('invoke'),
   [IPC.APP_FULLSCREEN_CHANGED]: local('push'),

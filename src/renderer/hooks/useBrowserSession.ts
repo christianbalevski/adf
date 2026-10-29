@@ -12,7 +12,7 @@ import { openApi, useOpenRuntime } from '../utils/runtime-api'
 export function useBrowserSessionEvents() {
   const runtime = useOpenRuntime()
   useEffect(() => {
-    if (!openApi()?.onBrowserSession) return
+    if (window.adfApi?.platform === 'web' || !openApi()?.onBrowserSession) return
 
     return openApi().onBrowserSession((event: BrowserSessionEvent) => {
       // v1: only auto-open for the currently focused document. Match by agent

@@ -558,7 +558,7 @@ describe('display names (security review item 4)', () => {
 describe('consent review 4: no leftovers of the private-only rule', () => {
   it('trustNetwork and public_network are gone from the code and the design (except the record of what O2 b replaced)', () => {
     const root = join(__dirname, '..')
-    for (const file of ['src/main/daemon/routes/remote-access-routes.ts', 'src/preload/api.ts', 'src/preload/index.ts', 'src/main/backend/remote-access/host.ts']) {
+    for (const file of ['src/main/daemon/routes/remote-access-routes.ts', 'src/preload/api.ts', 'src/preload/index.ts', 'src/shared/adf-api.ts', 'src/main/backend/remote-access/host.ts']) {
       expect(readFileSync(join(root, file), 'utf-8'), file).not.toMatch(/trustNetwork|public_network|Allow on This Network/)
     }
     const design = readFileSync(join(root, 'docs/design/remote-access.md'), 'utf-8')

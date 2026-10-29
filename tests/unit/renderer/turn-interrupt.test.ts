@@ -86,7 +86,7 @@ describe('the composer\'s Stop', () => {
 
   it('reaches main through preload and IPC in both backends', () => {
     expect(IPC.AGENT_INTERRUPT).toBe('adf:agent:interrupt')
-    expect(src('preload/index.ts')).toContain('interruptTurn: (filePath?: string, loop?: string) => ipcRenderer.invoke(IPC.AGENT_INTERRUPT, { filePath, loop })')
+    expect(src('shared/adf-api.ts')).toContain('interruptTurn: (filePath?: string, loop?: string) => ipcRenderer.invoke(IPC.AGENT_INTERRUPT, { filePath, loop })')
     expect(src('main/ipc/index.ts')).toContain('ipcMain.handle(IPC.AGENT_INTERRUPT')
     expect(src('main/ipc/index.ts')).toContain('interruptLoopTurn(assembled.executor, assembled.loopPool, args?.loop)')
     expect(src('main/backend/daemon-mode/documents/agent-handlers.ts')).toContain('[IPC.AGENT_INTERRUPT]')

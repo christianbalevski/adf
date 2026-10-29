@@ -36,7 +36,7 @@ export const STUDIO_NAV_ITEMS: SettingsNavItem[] = [
   { id: 'updates', label: 'Updates', description: 'Version and update checks.', keywords: 'update version release check', docs: DOCS.settingsGeneral },
   { id: 'privacy', label: 'Privacy', description: 'Studio sends no telemetry.', keywords: 'privacy telemetry network spell check dictionaries', docs: DOCS.settingsGeneral },
   { id: 'about', label: 'About', description: 'Concepts and links.', keywords: 'help docs github format', docs: DOCS.index },
-  { id: 'connection', label: 'Connections', description: 'Servers and devices.', keywords: 'backend daemon embedded local remote server servers agent server local server remote servers url token code pair add connect share connection connections this computer runtime remotes devices revoke remote access keep running quit', docs: DOCS.backendConnection },
+  { id: 'connection', label: 'Connections', description: 'Servers and devices.', keywords: 'backend daemon embedded local remote server servers agent server local server remote servers url token code pair add connect share connection connections this computer runtime remotes devices revoke remote access keep running quit browser web website', docs: DOCS.backendConnection },
 ]
 
 /** Runtime: the connected daemon's settings (backend keys). */

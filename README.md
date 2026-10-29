@@ -119,6 +119,20 @@ Then, in Studio:
 
 The `.adf` file it creates is the agent: configuration, memory, files, loops and runtime state. See [Getting Started](docs/getting-started.md) for the full walkthrough.
 
+### Run Studio in a browser
+
+Run `adf web` to start the local daemon if needed and open Studio in your
+browser, already signed in. From a source checkout, run `npm run build:web`
+and then `npm run adf -- web`. The desktop app is optional; its **Settings →
+Studio → Connections → Open in browser** button opens the same client.
+
+For another device, run `adf daemon remote on` and `adf daemon pair` on the
+host. Open the printed browser address on the other device, enter the six-digit
+code, then approve the request in the host terminal. No access token needs to
+be copied. Browser Studio shares the desktop renderer and daemon handlers. See
+the [browser Studio guide](docs/guides/studio-web.md) for development and remote
+access.
+
 ### Run the daemon and CLI
 
 The daemon runs the same `.adf` agents headlessly; Studio uses it too (Local daemon, the default). Configure a provider and create an agent in Studio first, then (with Studio set to the legacy Embedded backend, close Studio first, so it does not own the same file or mesh port):

@@ -1,3 +1,4 @@
+import { resolveHtmlMediaUrls } from './media-url'
 import { marked, type Tokens } from 'marked'
 import DOMPurify from 'dompurify'
 import { useSyncExternalStore } from 'react'
@@ -238,11 +239,11 @@ export function renderMarkdownToSafeHtml(source: string): string {
   } finally {
     pendingBlocks = null
   }
-  const safe = DOMPurify.sanitize(raw, {
+  const safe = resolveHtmlMediaUrls(DOMPurify.sanitize(raw, {
     ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|adf-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
     FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select'],
     FORBID_ATTR: ['style'],
-  })
+  }))
   if (blocks.length === 0) return safe
   const nonce = placeholderNonce
   return safe.replace(

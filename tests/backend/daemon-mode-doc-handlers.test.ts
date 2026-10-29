@@ -1,3 +1,4 @@
+import './daemon-mode-platform'
 /**
  * W3-A DOC_* daemon-mode handlers (documents/doc-handlers.ts): each answers
  * what the embedded handler answers, built from the /agents/:id resource

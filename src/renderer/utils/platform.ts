@@ -4,11 +4,12 @@
  * shortcuts check the platform's command modifier only (`isPrimaryModifier`
  * in keyboard.ts with IS_MAC): ⌘ on macOS, Ctrl elsewhere.
  */
-export const IS_MAC = window.adfApi?.platform === 'darwin'
+export const IS_WEB = window.adfApi?.platform === 'web'
+export const IS_MAC = window.adfApi?.platform === 'darwin' || (IS_WEB && /Mac|iPhone|iPad|iPod/.test(navigator.platform))
 export const IS_WINDOWS = window.adfApi?.platform === 'win32'
 
 /** Menu label for `revealInFolder`, named after the OS file manager. */
-export const REVEAL_IN_FOLDER_LABEL = IS_WINDOWS
+export const REVEAL_IN_FOLDER_LABEL = IS_WEB ? 'Copy path on daemon' : IS_WINDOWS
   ? 'Show in Explorer'
   : IS_MAC
     ? 'Reveal in Finder'

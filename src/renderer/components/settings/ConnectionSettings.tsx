@@ -772,7 +772,7 @@ export function AddBar({ busy, message, onAdd }: { busy: boolean; message: { kin
 }
 
 /** The page (static in tests): notices, Add, Local server, Remote servers, Devices. */
-export function ConnectionsPage({ view, backend, busy, message, onAdd, onConnect, onRemove, onKeepRunning, onRestart, devices }: {
+export function ConnectionsPage({ view, backend, busy, message, onAdd, onConnect, onRemove, onKeepRunning, onRestart, onOpenBrowser, devices }: {
   view: ConnectionsView
   backend: BackendSettingsView
   busy: boolean
@@ -782,6 +782,7 @@ export function ConnectionsPage({ view, backend, busy, message, onAdd, onConnect
   onRemove: (id: string) => void
   onKeepRunning: (next: boolean) => void
   onRestart: () => void
+  onOpenBrowser?: () => void
   devices: React.ReactNode
 }) {
   const override = overrideLine(backend)
@@ -802,6 +803,11 @@ export function ConnectionsPage({ view, backend, busy, message, onAdd, onConnect
       )}
       <AddBar busy={busy} message={message} onAdd={onAdd} />
       <LocalServerSection rows={view.rows} backend={backend} busy={busy} onConnect={onConnect} onKeepRunning={onKeepRunning} />
+      {onOpenBrowser && <PageSection id="browser" title="Browser Studio">
+        <SectionRow separator={false} actions={<Button disabled={busy} onClick={onOpenBrowser}>Open in browser</Button>}>
+          <span className="text-[var(--adf-ui-text-muted)]">Open this computer’s Studio in your browser, already signed in.</span>
+        </SectionRow>
+      </PageSection>}
       <RemoteServersSection rows={view.rows} busy={busy} onConnect={onConnect} onRemove={onRemove} />
       {devices}
     </div>
@@ -857,6 +863,16 @@ export function ConnectionSettings() {
   }
   const connect = (id: string) => void run(() => window.adfApi.useConnection(id))
   const remove = (id: string) => void run(() => window.adfApi.removeConnection(id))
+  const openBrowser = async () => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      const result = await window.adfApi.openStudioInBrowser()
+      setMessage(result.success ? { kind: 'ok', text: 'Studio opened in your browser.' } : { kind: 'error', text: result.error })
+    } catch {
+      setMessage({ kind: 'error', text: 'Studio could not open the browser. Check the local server and try again.' })
+    } finally { setBusy(false) }
+  }
 
   /** Keep running after Studio quits: written at once, "Saved" in the header, put back on a refusal. */
   const saveKeepRunning = (next: boolean) => {
@@ -894,6 +910,7 @@ export function ConnectionSettings() {
         onRemove={remove}
         onKeepRunning={saveKeepRunning}
         onRestart={() => void window.adfApi.restartStudio()}
+        onOpenBrowser={window.adfApi.platform === 'web' ? undefined : () => void openBrowser()}
         devices={<DevicesGroup runtime={localName} />}
       />
       {adding && <AddDialog runtime={shared} onClose={() => setAdding(false)} />}
