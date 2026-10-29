@@ -97,7 +97,7 @@ the agent reads the latest journal when selecting the next experiment. An option
 lambda composes `fs_read` and `loop_inject` to publish
 current state. No new tool definition, tool input schema or special runtime
 injection is introduced. Completion and experiment selection are skill guidance,
-not runtime enforcement. See [persistent investigations](../guides/investigations.md).
+not runtime enforcement. See [persistent investigations](../knowledge/persistent-investigations.md).
 
 ## Evaluation boundary
 

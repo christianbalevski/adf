@@ -171,7 +171,8 @@ more summarizer tokens; the limit now follows the working allowance rather than
 silently discarding most of a long conversation.
 
 For unresolved research questions that must remain available independently of a
-summary, use the [persistent-investigations skill](investigations.md). Keep a
+summary, see [Persistent investigations](../knowledge/persistent-investigations.md)
+for the skill and activation workflow. Keep a
 durable pointer in mind or loop instructions, then read the journal with existing
 file tools when resuming. Optional agent-authored lambdas can publish updates
 through `loop_inject`; there is no investigation-specific runtime integration.

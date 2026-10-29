@@ -1,8 +1,22 @@
+---
+type: reference
+description: Compose existing files, instruction templates and lambdas to retain unresolved research questions across compaction and restart
+see_also:
+  - ../guides/memory-management.md — compaction, memory snapshots and context injection
+  - ../guides/skills.md — skill packaging, discovery and capability boundaries
+  - ../guides/inner-loops.md — worker goals, tool access and lifecycle
+---
+
 # Persistent investigations
 
 Persistent research state is an agent-space workflow built from existing
 capabilities. Load the [persistent-investigations skill](../../skills/persistent-investigations/SKILL.md)
 to keep a goal, unresolved questions and experiment evidence across sessions.
+
+This article explains how those capabilities fit together. Follow the
+[Memory Management](../guides/memory-management.md), [Skills](../guides/skills.md)
+and [Inner Loops](../guides/inner-loops.md) guides for their supported contracts;
+the skill owns the executable workflow and activation procedure.
 
 - Store an ordinary JSON journal with `fs_read` / `fs_write`, or use existing
   database tools with an agent-created `local_*` table when structured queries
