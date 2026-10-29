@@ -1,14 +1,14 @@
 # Getting Started
 
-This guide takes you from a fresh ADF Studio install to an agent's first answer. To do the same in a terminal without Studio, see the [CLI getting started](cli/getting-started.md).
+This guide takes you from ADF Studio to an agent's first answer, in the desktop app or a browser. To do the same in a terminal, see the [CLI getting started](cli/getting-started.md).
 
 ## Prerequisites
 
-1. ADF Studio installed on your machine.
+1. Either the ADF Studio desktop app, or the [ADF CLI](cli/getting-started.md) installed and `adf web` run on the daemon's computer. The command opens Browser Studio already signed in; no desktop app is required. To connect from another device, see [browser pairing](guides/studio-web.md#access-from-another-device).
 2. One of:
    - a ChatGPT, Grok or Claude (Pro or Max, through [Claude Code](https://code.claude.com/docs/en/setup)) plan to sign in with;
    - an API key for Anthropic, OpenAI, OpenRouter or any OpenAI-compatible API;
-   - a model server on this computer, such as Ollama or LM Studio.
+   - a model server reachable from the daemon's computer, such as Ollama or LM Studio.
 
 Studio asks for it the first time you send a task. You do not set it up beforehand.
 
@@ -22,6 +22,12 @@ The chips under the box set up the agent before it exists: its name, the templat
 
 With no provider ready, Home shows a **Model provider** card, and Enter opens the provider sheet instead of making an agent. A provider is ready when it has a key or a sign-in and a default model.
 
+In Browser Studio, ChatGPT subscription setup requires signing the daemon in
+through desktop Studio or `adf auth login chatgpt` first. Existing daemon
+sign-ins work in the browser. API keys can be configured there directly; see
+[browser differences](guides/studio-web.md#browser-differences) for other native
+sign-in limitations.
+
 1. Click the tile for your service. Tiles are grouped into **Subscriptions**, **APIs**, **Local** and **Other**.
 2. Give it a credential:
    - **Subscription:** click **Sign in with …** and finish in the browser. A failed sign-in shows its reason under the button.
@@ -32,13 +38,13 @@ With no provider ready, Home shows a **Model provider** card, and Enter opens th
 
 Escape or the close button cancels. The provider added in the sheet is removed, no agent is created, and your text stays in the box.
 
-Keys and sign-ins are stored in app settings on this computer, not in the agent's file.
+Keys and sign-ins are stored by the agent runtime, not in the agent's file. In Browser Studio they stay on the daemon's computer; a provider's local URL also refers to that computer.
 
 ## 3. See the first turn
 
 After **Done**, Studio creates the agent:
 
-1. A new `.adf` file is created in your agents folder (`Documents/adf-agents` by default) under the name on the name chip, for example `steady-fern`.
+1. A new `.adf` file is created in your agents folder (`Documents/adf-agents` by default) under the name on the name chip, for example `steady-fern`. In Browser Studio this folder is on the daemon's computer.
 2. The agent opens with its loop in the center of the window.
 3. Your text is the agent's first message. The agent starts, and its answer, tool calls and reasoning appear in the loop as the turn runs.
 

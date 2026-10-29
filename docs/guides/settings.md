@@ -9,6 +9,15 @@ see_also:
 
 Open Settings with the gear in the title bar, Edit → Settings… (ADF Studio → Settings… on macOS), or `Cmd/Ctrl + ,`. Settings are global and apply across all agents. Settings replaces the sidebar with its own navigation: **Back to app** returns to where you were, and **Search settings** filters the pages.
 
+In [Browser Studio](studio-web.md), use the gear to open the same settings UI.
+Runtime settings belong to the daemon serving the page; browser appearance
+preferences are separate from desktop preferences. A browser session uses one
+daemon, so open another server's `/studio/` page to work with its settings.
+Native app updates, backend switching and desktop keychain controls are not
+available in the browser. Update the daemon on its host and reload Browser
+Studio to update its UI. Host-only identity and network controls remain on the
+host even when you opened Browser Studio locally.
+
 The sidebar has two groups ([settings-scopes.md](../design/settings-scopes.md)):
 
 - **Studio**, the app on this computer: Appearance, Notifications, Updates, Privacy, About, Connections. These are kept by Studio (`studio-client-settings.json`) and stay the same whichever server it connects to.
@@ -173,6 +182,12 @@ Available models (reported by Claude Code for the signed-in plan; fallback catal
 adf does not store the Claude session. It lives in Claude Code's own credential store, shared by every surface on the machine. The rest of this section covers ChatGPT and Grok.
 
 Sessions are **per-surface**: Studio and the daemon each own a token file and never write to the other's.
+
+Browser Studio uses the daemon's subscription sessions and stores no provider
+tokens in browser storage. Its ChatGPT sign-in button is unavailable: sign the
+daemon in with desktop Studio in Local mode or `adf auth login chatgpt`, then
+use that session from the browser. Other callback and native integration
+limits are listed under [Browser differences](studio-web.md#browser-differences).
 
 | Surface | File | At rest |
 | --- | --- | --- |
@@ -595,9 +610,10 @@ Displays async tasks from `adf_tasks` — tool calls that require human approval
 
 ## Connection
 
-**Studio → Connections** ("Servers and devices.") is last in the Studio group. In Studio the runtime is an agent server (the ADF daemon). From top to bottom, the page has one **Add**, then three sections ([Studio backend › Connection](studio-backend.md#connection)):
+**Studio → Connections** ("Servers and devices.") is last in the Studio group. In Studio the runtime is an agent server (the ADF daemon). In the desktop app the page has one **Add**, then these sections ([Studio backend › Connection](studio-backend.md#connection)):
 
 - **Local server** ("The agent server on this computer."): *name* (Local) with its state, **Details** (pid, who started it, URL, version, key), its **More** menu (⋯, **Inside Studio (legacy)**), and **Keep running after Studio quits** (`keepDaemonRunning`, default off). It is never listed under Remote servers.
+- **Browser Studio**: **Open in browser** opens the local daemon's Studio page already signed in. It requires Local server mode. For a browser without the desktop app, run `adf web`; for another device, use [browser pairing](studio-web.md#access-from-another-device).
 - **Remote servers** ("Agent servers on other computers that this Studio connects to."): each saved connection (shared with `adf`) with its state, address and fingerprint, and **Remove** in its **More** menu. The menu opens over the page, so the card never cuts it.
 - **Devices** ("Devices that can access *name* (Local)."): the **Remote access** switch and the devices that use the local server, each with **Revoke** (see [Studio backend › Devices](studio-backend.md#devices)).
 

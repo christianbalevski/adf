@@ -53,5 +53,5 @@ registered on the daemon).
 ## Not in the terminal app
 
 Remote servers that sign in with OAuth in the browser, and servers with a
-one-time sign-in step, are set up in ADF Studio (Settings → MCP). The dialog
-says so instead of adding a half-working server.
+one-time sign-in step, are set up in desktop ADF Studio (Settings → MCP).
+The dialog says so instead of adding a half-working server.

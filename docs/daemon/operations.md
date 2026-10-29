@@ -97,7 +97,7 @@ Local mode binds no mesh port; the daemon serves it.
 
 ## Access token
 
-Every request but `GET /health` needs `Authorization: Bearer <token>`
+Ordinary control API requests need `Authorization: Bearer <token>`
 ([details](api-guide.md#base-url-and-authentication)). On first start the
 daemon writes a random token to `daemon-token` in its data directory;
 `ADF_DAEMON_TOKEN` overrides it. Local clients (the `adf` CLI, the terminal
@@ -107,15 +107,36 @@ when malformed; delete it and restart the daemon to rotate the token.
 
 | Task | How |
 |------|-----|
-| Print the token (e.g. for a remote client) | `adf daemon token` on the daemon host (token on stdout, its source on stderr) |
-| Use it from another machine | `adf --url http://host:7385 --token <token> …`, or `ADF_DAEMON_TOKEN` |
+| Print the install token (local scripts or a trusted loopback tunnel) | `adf daemon token` on the daemon host (token on stdout, its source on stderr) |
+| Use a device token from another machine | Pair with `adf pair`, or pass an issued device token with `adf --url http://host:7385 --token <token> …` / `ADF_DAEMON_TOKEN`; remote listeners refuse the install token |
 | Scripts / curl | `curl -H "Authorization: Bearer $(adf daemon token 2>/dev/null)" http://127.0.0.1:7385/agents` |
 
-Browser requests are refused: a foreign `Origin` or `Sec-Fetch-Site:
-cross-site` gets `403 cross_origin`, a `Host` outside the allow-list gets
+Cross-origin browser requests are refused: a foreign `Origin` or
+`Sec-Fetch-Site: cross-site|same-site` gets `403 cross_origin`, a `Host` outside the allow-list gets
 `403 host_not_allowed` (DNS rebinding), and the daemon sends no CORS headers.
 An older `adf` without token support gets a `401` that says to update it or
 use `adf daemon token`.
+
+## Browser access
+
+In builds that include Browser Studio, run `adf web` to start or attach to this
+computer’s daemon and open `/studio/` already signed in. It uses a single-use
+launch ticket authorized by the local master token and per-run proof; it does
+not turn on remote access. Desktop Studio also offers **Open in browser**.
+
+For another device, enable remote access and allow the intended network, then
+run `adf daemon pair` on the host. Open a displayed browser address, enter the
+six-digit code and a browser name, and approve the request in that terminal.
+Desktop Studio can also approve it. The browser form does not accept raw
+tokens. Its same-origin transport uses HttpOnly cookies; an approved browser
+can reconnect after a daemon restart using its remembered device credential.
+Sign-out clears browser access; `adf daemon devices revoke <id-or-label>` on
+the host revokes a paired device.
+
+Public `/studio/` assets, health and pairing entry points are exceptions to
+ordinary bearer authentication, not unauthenticated agent-control routes.
+The daemon speaks HTTP; HTTPS needs an explicitly configured TLS proxy or
+Tailscale Serve. See [Studio in a browser](../guides/studio-web.md).
 
 ## Owner identity and credentials
 
@@ -283,8 +304,10 @@ overrides the file on both sides.
 proxy forwarding its public host name (loopback names are accepted on any
 port, so SSH tunnels are fine). See [remote access](api-guide.md#remote-access).
 
-**`403 cross_origin`.** A browser made the request. Browser pages cannot call
-the daemon; use a backend.
+**`403 cross_origin`.** The request came from a foreign Origin or was marked
+cross-site/same-site. Browser Studio must load from the same origin as its
+`/web/*` gateway; check the browser URL and proxy configuration. Do not disable
+the request guards. See [Studio in a browser](../guides/studio-web.md).
 
 **`403 loopback_only`.** An owner identity secret route or `POST
 /daemon/shutdown` from anything but this machine's own `adf`: another host, a

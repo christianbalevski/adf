@@ -275,10 +275,10 @@ agent site offline.
 ## Known gaps
 
 - Remote MCP servers that sign in with OAuth in the browser, and servers
-  with a one-time sign-in step, are set up in ADF Studio.
+  with a one-time sign-in step, are set up in desktop ADF Studio.
 - The WhatsApp pairing QR is not drawn; open
   `imported/whatsapp/pairing-qr.png` from the agent's files, or use Studio.
-- The seed phrase is shown once, at creation. Studio on the same machine can
+- The seed phrase is shown once, at creation. Desktop Studio on the same machine can
   reveal it again (Settings → Back up seed phrase); the daemon cannot.
 - Saved credentials are write-only: forms can replace a value, never show it.
 - `/theme` lasts for the session; use `--theme` or `ADF_TUI_THEME` to keep it.

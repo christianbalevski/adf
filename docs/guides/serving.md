@@ -10,6 +10,10 @@ see_also:
 
 ADF agents can serve content over HTTP through the mesh server. When the mesh is enabled, each agent with a `handle` gets a URL at `http://{host}:{port}/agents/{handle}/` where it can serve static files, expose shared workspace files, and run API endpoints backed by sandboxed JavaScript lambdas.
 
+To open the Studio interface itself, use `adf web`; see [Browser Studio](studio-web.md).
+Its `/studio/` assets are served by the daemon API (port 7385 by default).
+This guide covers content served by agents through the mesh server.
+
 ## Overview
 
 The mesh server (Fastify on port 7295 by default) mounts every servable agent at `/agents/{handle}/`. Three serving modes can be combined:

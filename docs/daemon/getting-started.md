@@ -125,9 +125,19 @@ The terminal app does all of this in one place, plus approvals, questions,
 files and settings: see [Terminal app](tui.md). The full command list is in
 [ADF CLI](cli.md).
 
+## Open Studio in a browser
+
+In a build that includes Browser Studio, run `adf web` to start or attach to
+the local daemon and open the shared Studio UI already signed in. No desktop
+installation or token copying is required. For another device, enable remote
+access on an allowed network, run `adf daemon pair` on the host, and open the
+displayed `/studio/` address. Enter the code and approve the request in that
+terminal. See [Studio in a browser](../guides/studio-web.md) for setup, encrypted
+remote access and browser limitations.
+
 ## The same over HTTP
 
-Every request but `GET /health` needs the daemon's access token:
+The REST examples below, except `GET /health`, need the daemon’s access token:
 
 ```bash
 export ADF=http://127.0.0.1:7385

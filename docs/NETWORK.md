@@ -7,8 +7,9 @@ Nothing below carries agent content or usage data to the ADF project.
 
 Verify it yourself: run Studio behind a logging proxy (mitmproxy, Little Snitch,
 Wireshark) with no agents running. With the three **Privacy** switches below
-off and the default skill catalog removed, an idle Studio makes no outbound
-requests.
+off and the default skill catalog removed, an idle desktop Studio makes no
+external catalog, provider-check or update requests. A daemon-connected client
+still exchanges API requests and events with its daemon.
 
 ## 1. Traffic Studio starts on its own
 
@@ -25,13 +26,25 @@ the Settings pages **Updates**, **Providers**, **MCP servers** and **Privacy**
 | First-party skill catalog | `raw.githubusercontent.com/christianbalevski/adf/main/skills/registry.json` | When you open the skill browser. It is the default entry in the skill-catalog list. | Nothing | Remove it from **Settings → Skills** (not covered by Live catalogs) |
 | Spell-check dictionaries (Linux only) | Google's dictionary CDN (`redirector.gvt1.com`), via Electron's built-in spell checker | Only after you click **Download** under **Spell-check dictionaries**; then also when you add a spell-check language that is not installed | The dictionary language | Off until you click it (`spellcheckDownloadsEnabled`). Until then the downloader points at loopback and nothing leaves the machine. Windows and macOS use the OS spell checker and download nothing. |
 
-Unpackaged (`npm run dev`) builds never run the update check. The headless
-daemon runs none of these.
+Unpackaged (`npm run dev`) builds never run the update check. Browser Studio
+does not run the desktop updater or Electron dictionary downloader. Provider
+checks and catalog requests initiated by the shared UI are handled on the
+daemon host; their destinations and controls are listed above.
 
 The shared compute container is pre-started at launch **only if it already
 exists** (starting it is local). First-time provisioning — which can download a
 Podman machine image, a base container image, and apt packages — happens on
 first use of compute (see section 2).
+
+## Browser Studio transport
+
+A browser-enabled daemon serves Studio assets at `/studio/`. The browser
+connects to the same origin for `/web/` requests and streaming events; there is
+no ADF-hosted relay. Local `adf web` exchanges a one-use launch ticket for a
+session cookie. Other devices pair with the host and receive approval before
+using the browser transport. Agent execution and provider calls remain on the
+daemon host. See [Browser Studio](guides/studio-web.md) for HTTPS, authentication
+and browser-specific limitations.
 
 ## 2. Traffic you configure
 

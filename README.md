@@ -35,7 +35,7 @@
 
 ![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](docs/assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
-This repository contains the spec, the runtime daemon, the CLI, and the desktop app ADF Studio. Together they are the reference implementation of ADF.
+This repository contains the spec, the runtime daemon, the CLI, and ADF Studio for desktop and browser. Together they are the reference implementation of ADF.
 
 ## Download ADF Studio
 
@@ -49,7 +49,7 @@ The [Quick start](#quick-start) below is for developers running ADF from source;
 
 ## Install the ADF CLI from npm
 
-For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. Current `main` requires Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`; published npm v0.8.3 declares `>=22` (see [Node.js versions](docs/cli/index.md#nodejs-versions)). Native modules install from prebuilt binaries, so no compiler is needed. The desktop app brings its own runtime and does not use the Node.js on your system.
+For use without the desktop app (servers, SSH sessions, or Browser Studio in a browser-enabled build), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. Current `main` requires Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`; published npm v0.8.3 declares `>=22` (see [Node.js versions](docs/cli/index.md#nodejs-versions)). Native modules install from prebuilt binaries, so no compiler is needed. The desktop app brings its own runtime and does not use the Node.js on your system.
 
 ```bash
 npm i -g @agentdocumentformat/cli
@@ -63,7 +63,7 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 ## Capabilities
 
 - **One file per agent.** Copy or move the file to copy or move the agent ([what's inside](ADF_SPEC_v0.2.md#13-one-file-one-agent)).
-- **ADF Studio:** a desktop IDE for agents. Author them, follow their turns, configure their tools and approve restricted tool calls.
+- **ADF Studio:** a shared desktop and browser interface for agents. Author them, follow their turns, configure their tools and approve restricted tool calls.
 - **Mesh view:** an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold and command whole groups with hotkeys.
 - **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), a ChatGPT or Grok subscription via OAuth, or a Claude Pro/Max plan through your installed Claude Code. Local servers and their selected models need tool calling for agent tools; vision is needed only when the model must understand images or screenshots. See [local model requirements](docs/cli/models-and-providers.md#local-model-requirements).
 - **Built-in tools and services:** sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving and WebSockets.
@@ -121,21 +121,25 @@ The `.adf` file it creates is the agent: configuration, memory, files, loops and
 
 ### Run Studio in a browser
 
-Run `adf web` to start the local daemon if needed and open Studio in your
-browser, already signed in. From a source checkout, run `npm run build:web`
+With a browser-enabled CLI build, run `adf web` to start the local daemon if
+needed and open Studio in your browser, already signed in. This requires a
+build containing browser support; published npm v0.8.3 does not include it. From a source checkout, run `npm run build:web`
 and then `npm run adf -- web`. The desktop app is optional; its **Settings →
 Studio → Connections → Open in browser** button opens the same client.
 
-For another device, run `adf daemon remote on` and `adf daemon pair` on the
-host. Open the printed browser address on the other device, enter the six-digit
-code, then approve the request in the host terminal. No access token needs to
+For another device, enable access with `adf daemon remote on` on the host.
+If the current network is not allowed, inspect `adf daemon remote status` and
+run `adf daemon remote allow-network <network-id-or-name>`. Run
+`adf daemon pair`, keep that terminal open, and open its printed browser
+address on the other device. Enter the six-digit code, then approve the request
+in the host terminal. No access token needs to
 be copied. Browser Studio shares the desktop renderer and daemon handlers. See
 the [browser Studio guide](docs/guides/studio-web.md) for development and remote
 access.
 
 ### Run the daemon and CLI
 
-The daemon runs the same `.adf` agents headlessly; Studio uses it too (Local daemon, the default). Configure a provider and create an agent in Studio first, then (with Studio set to the legacy Embedded backend, close Studio first, so it does not own the same file or mesh port):
+The daemon runs the same `.adf` agents headlessly; Studio uses it too (Local daemon, the default). Configure a provider and create an agent through Studio or the [terminal app](docs/cli/getting-started.md), then (with Studio set to the legacy Embedded backend, close Studio first, so it does not own the same file or mesh port):
 
 ```bash
 npm run adf -- agents     # starts the daemon in the background if needed
@@ -146,7 +150,7 @@ npm run adf -- agents     # starts the daemon in the background if needed
 ```bash
 curl http://127.0.0.1:7385/health
 
-# every other route needs the daemon's access token
+# protected REST routes use the daemon access token
 TOKEN="$(npm run -s adf -- daemon token)"
 
 # load an agent by path, then talk to it by handle
@@ -159,7 +163,7 @@ npm run adf -- chat example-agent "Hello from the CLI"
 npm run adf -- events example-agent
 ```
 
-The CLI is a client for the running daemon; the daemon API defaults to `http://127.0.0.1:7385` (override with `ADF_DAEMON_URL` or `--url`). The daemon requires its access token on every request but `/health`; `adf` reads it by itself on this machine. See the [daemon quick start](docs/daemon/getting-started.md).
+The CLI is a client for the running daemon; the daemon API defaults to `http://127.0.0.1:7385` (override with `ADF_DAEMON_URL` or `--url`). Protected REST routes require a bearer credential; `adf` reads the local daemon token automatically. Browser Studio uses its own cookie session after local launch or approved pairing. Public discovery, pairing and static browser routes have separate guards; see [API authentication](docs/daemon/api-guide.md#base-url-and-authentication). See the [daemon quick start](docs/daemon/getting-started.md).
 
 Run `npm run adf` with no command for the terminal app: the whole fleet in one screen, chat with any agent or any of its loops (an agent's separate chat sessions, such as an inner loop that consolidates memory every night), approvals, files, schedules and live events. See the [terminal app guide](docs/cli/terminal-app.md); `npm run tui:mock` tries it without a daemon.
 
@@ -234,6 +238,7 @@ down.
 | [Core Concepts](docs/core-concepts.md) | [Identity spec v0.1](docs/design/ADF_IDENTITY_SPEC_v0.1.md): DIDs, envelopes, attestations |
 | [Mesh view guide](docs/guides/fleet-map.md) | [ADF CLI](docs/cli/index.md), [terminal app](docs/cli/terminal-app.md) and [HTTP API](docs/daemon/http-api.md) |
 | [Creating agents](docs/guides/creating-agents.md) | [Tools catalog](docs/guides/tools.md) |
+| [Browser Studio](docs/guides/studio-web.md) | [Shared Studio backend](docs/guides/studio-backend.md) |
 | [Daemon quick start](docs/daemon/getting-started.md) | [Security architecture](docs/guides/security-architecture.md) |
 
 The full guide index lives in [`docs/`](docs/index.md): messaging, code execution, MCP integration, compute, serving, timers, triggers, memory management, and more. Every guide is also fetchable as raw markdown, so agents can read their own documentation.

@@ -1,6 +1,16 @@
 # Remote access
 
-Design for letting Studio's local daemon be reached from another computer, by copy-paste (address + token) or by LAN pairing (discovery + 6-digit code). Status: daemon and CLI built on `feat/remote-access` (`src/main/daemon/remote-access/`, `routes/remote-access-routes.ts`, `src/main/cli/{remote-access-cli,pair,remotes,daemon-discovery}.ts`); Studio UI on `feat/remote-access-ui`.
+Design and implementation record for reaching Studio’s daemon from another
+computer, by explicit address and device token or host-approved pairing.
+Daemon, CLI and desktop flows are implemented in
+`src/main/daemon/remote-access/`, `routes/remote-access-routes.ts` and
+`src/main/cli/{remote-access-cli,pair,remotes,daemon-discovery}.ts`.
+Browser Studio adds same-origin cookie sessions and the existing pairing
+approval flow through `src/main/daemon/web/routes.ts` (§9.4). See the
+[current browser guide](../guides/studio-web.md) for setup; this source-tree
+implementation note is not a claim about previously published npm versions.
+Historical requirements, decisions and work plans below retain their original
+context unless an as-built update is stated.
 
 The key words MUST, MUST NOT, SHOULD, SHOULD NOT and MAY are used as in RFC 2119.
 
@@ -29,7 +39,7 @@ Non-goals: TLS in the daemon (§9.2 of daemon-backend.md stands); scoped (less t
 | R5 | The install's file token (the master token) is never accepted on a remote listener. Device tokens are never accepted on local-only routes or on the remote-access management routes, from anywhere. | §4.4, §4.5 |
 | R6 | "New token" creates a device token and shows it once. "Show" works only while that dialog is open. | §4.6 |
 | R7 | Pairing: 6-digit code, window 120 s, 5 wrong codes lock that source out, 20 in total close it, AND the host MUST confirm "Allow *name*?". Code alone never suffices. | §5 |
-| R8 | No PAKE, no X25519 in v1. Every later request carries the bearer token in clear over http, so protecting only the claim buys nothing against a sniffer. The transport answer is Tailscale (WireGuard) and `tailscale serve` (https). | §5.6, §5.7 |
+| R8 | No PAKE, no X25519 in v1. Authenticated native requests carry bearer tokens, and browser requests carry sensitive cookies, in clear over http, so protecting only the claim buys nothing against a sniffer. The transport answer is Tailscale (WireGuard) and `tailscale serve` (https). | §5.6, §5.7 |
 | R9 | Firewall: rely on the OS prompts (Windows, macOS); never add a rule ourselves; detect a block where it can be read without elevation and say how to fix it. Linux: documented commands. | §6 |
 | R10 | Every state change is visible: a status line, the devices list, notices, the daemon log, `adf daemon remote status`. | §8 |
 
@@ -186,7 +196,7 @@ Rationale for refusing the master token remotely: it cannot be revoked without b
 
 A device token MUST be refused (403 `device_token_refused`), on every listener, for:
 
-- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, credential reload, `GET /client/sessions`), except the three client-session routes whose handlers decide per request: `POST /client/sessions`, `POST /client/sessions/:id/quit`, `PUT /client/sessions/:id/exit-when-closed` (a remote Studio opens and quits its session; `exitDaemonWhenClosed` and `stopDaemon` still refuse a device token through `requireLocalCaller`). Code: `isDeviceRefusedRoute` (local-access.ts). The guard judges the route Fastify matched (`request.routeOptions.url`, the pattern), or, with no match, the percent-decoded path with repeated and trailing slashes and `;` parameters removed: never the raw URL, which `GET /client/session%73` used to slip past (security review item 5). Handlers of local-only routes refuse a device token again themselves (`requireLocalCaller`, `requireLocalProof`, `GET /client/sessions`);
+- every route `isLocalOnlyRoute` lists (owner create / restore / import / unlock / lock / confirm-backup, trust-daemon, untrust-daemon, value reveal, provider key reveal, shutdown, credential reload, `GET /client/sessions`, and browser launch `POST /web/launch` (master token plus local proof)), except the three client-session routes whose handlers decide per request: `POST /client/sessions`, `POST /client/sessions/:id/quit`, `PUT /client/sessions/:id/exit-when-closed` (a remote Studio opens and quits its session; `exitDaemonWhenClosed` and `stopDaemon` still refuse a device token through `requireLocalCaller`). Code: `isDeviceRefusedRoute` (local-access.ts). The guard judges the route Fastify matched (`request.routeOptions.url`, the pattern), or, with no match, the percent-decoded path with repeated and trailing slashes and `;` parameters removed: never the raw URL, which `GET /client/session%73` used to slip past (security review item 5). Handlers of local-only routes refuse a device token again themselves (`requireLocalCaller`, `requireLocalProof`, `GET /client/sessions`);
 - every `/remote-access` management route (§11.2): a device cannot mint tokens, list or revoke devices, open pairing or turn remote access on or off.
 
 `isLocalOnlyRoute` gains `/remote-access` and `/remote-access/*`; `requireLocalCaller` gains the token-kind check, so the refusal does not depend on the peer address (an SSH tunnel to loopback with a device token is still refused). The management routes also require the local proof in every mode, as `POST /identity/import` does, because they create credentials.
@@ -327,7 +337,7 @@ Each claim (address, device name, result) is logged; the code is not.
 
 ### 5.6 Crypto: why no PAKE or X25519 in v1
 
-- After pairing, every request carries `Authorization: Bearer adfd_…` over the same transport. On plain http a passive sniffer reads it from the first request. Hiding the token inside the claim (X25519 box) or never sending the code (SPAKE2) changes nothing for that attacker.
+- After pairing, authenticated native-client requests carry `Authorization: Bearer adfd_…` over the same transport. Browser Studio carries its session and remembered device credential in cookies instead. On plain http a passive sniffer can read either credential. Hiding the token inside the claim (X25519 box) or never sending the code (SPAKE2) changes nothing for that attacker.
 - SPAKE2 would stop one specific attack: a rogue mDNS responder learning the code and relaying it (§10). An attacker who can answer mDNS on the LAN can, with the same tools, ARP-spoof and read every later plain-http request. The host confirmation with the source address is the v1 defence.
 - Protection against a passive sniffer would need the token to stop travelling, for example HMAC-signed requests keyed by the device secret. That changes every client (Studio, CLI, SSE resume) and still leaves responses (chat, files) readable. Listed as a possible follow-up, not designed here.
 - Decision: the code is an authorization factor, not a key. Encryption comes from the transport (§5.7).
@@ -341,7 +351,7 @@ Each claim (address, device name, result) is logged; the code is not.
 | `http://192.168.x.y:7385`, `http://<host>.local:7385` | No | Anyone who can see the traffic on this network can take the token |
 
 - Host panel: URLs are listed in that order with "Encrypted" / "Not encrypted" labels. When Tailscale runs and serve is off, a row offers **Turn On https with Tailscale**. It runs nothing until the owner confirms a dialog naming the exact command (`tailscale serve --bg <port>`); the daemon then runs it, shows its output, and re-reads `tailscale serve status --json`. If it fails (Linux without `tailscale set --operator=$USER`, an older client), the dialog shows the command to run by hand. The daemon MUST NOT run `tailscale serve` without that confirmation, and **Turn Off** removes only the entry for this port (exact command fixed during implementation, verified against the installed client; never `tailscale serve reset`).
-- Client: a daemon found both on the LAN and on the tailnet (same `fp`) is one entry; pairing and the saved URL use https serve, else the tailnet address. Pairing over LAN http requires the existing confirmation "I trust this network; the token is sent unencrypted." inside the pairing dialog, before the code field is enabled. The claim answer lists the host's URLs; when it contains an encrypted one the client saves that one, after checking it answers `/remote/hello` with the same fingerprint.
+- Native desktop/CLI clients: a daemon found both on the LAN and on the tailnet (same `fp`) is one entry; pairing and the saved URL use https serve, else the tailnet address. Pairing over LAN http requires the existing confirmation "I trust this network; the token is sent unencrypted." inside the pairing dialog, before the code field is enabled. The claim answer lists the host's URLs; when it contains an encrypted one the client saves that one, after checking it answers `/remote/hello` with the same fingerprint.
 
 ## 6. Firewall
 
@@ -403,6 +413,12 @@ IPC (new, Studio main): `REMOTE_DISCOVERY_START`, `REMOTE_DISCOVERY_STOP`, push 
 
 ### 9.2 CLI
 
+On the **host**, `adf daemon pair` opens the pairing window, prints browser
+`/studio/` URLs and the six-digit code, and asks whether to allow each pending
+request in that terminal. Remote access must be enabled on an allowed network.
+The browser enters the code and a device name; desktop Studio is optional.
+The commands below instead pair a **native CLI client** with that host.
+
 ```text
 adf pair [<host>[:<port>]] [--name <device name>] [--as <remote name>]
 adf remotes                       list saved remotes; * marks the default
@@ -422,6 +438,14 @@ adf remotes forget <name>         delete the saved URL, then the token unless an
 | Studio | `studio-backend.json` `remote.url`, `remote.allowInsecureHttp`, new `remote.paired: {fingerprint, name, deviceId, label} \| null` | `remote.token` as `safe:` (safeStorage), unchanged; sent only to that origin |
 | CLI | `<data dir>/cli-remotes.json` `{v: 1, default, remotes: {<name>: {url, fingerprint, deviceId, label, pairedAt}}}` | OS keychain, service `ADF`, account `remote-token:<fingerprint>` (`@napi-rs/keyring`, already a CLI dependency); without a keychain `<data dir>/cli-remote-tokens.json`, written with `writeSecretFileAtomic` (§10.1), and `adf pair` says so; both CLI files are written that way |
 
+Browser Studio stores its active session and remembered device credential in
+HttpOnly, SameSite=Strict cookies scoped to the daemon host and `/web` path;
+Secure is added for HTTPS. The remembered credential lasts 30 days. No bearer
+credential is exposed to JavaScript or localStorage; recovery drafts and
+pending message text in localStorage are browser-profile data, not encrypted
+secrets. Browser cookies do not provide the CLI’s fingerprint pinning below.
+Use a trusted origin and encrypted transport.
+
 When a saved remote stops answering at its IP, Studio and the CLI SHOULD look the fingerprint up in mDNS and offer the new address ("*host* is now at 192.168.1.44. Use it?"); they MUST NOT switch silently.
 
 Host pinning in the CLI (security review item 7, trust on first use):
@@ -433,14 +457,51 @@ Host pinning in the CLI (security review item 7, trust on first use):
 - Before any command sends a saved device token, `adf` asks the authenticated hello (§5.2.1) at that URL; another fingerprint, a proof that does not verify, an older ADF, or no answer as that computer refuses the command and the token is not sent. A token given with `--token` / `ADF_DAEMON_TOKEN` is not checked. The terminal app (`adf tui`) asks it again after every failed request or dropped event stream, before the token goes out again (multi-runtime.md §19).
 - `adf pair` refuses a host without `helloProof` before the code is typed, and saves a pairing only after the saved address proved, with the delivered token, that it issued it.
 
+### 9.4 Browser Studio (as built)
+
+The daemon serves the shared Studio renderer at `/studio/`, with shared
+daemon-mode handlers behind `/web/*`. Loading assets or the sign-in page is
+public; controlling agents requires an authenticated cookie session. Host,
+Origin and Fetch Metadata checks apply throughout, and no CORS headers are
+sent. Browser operations retain remote-client restrictions even on loopback.
+
+Local `adf web` and desktop **Open in browser** call `POST /web/launch` with the
+master token and per-run local proof over direct loopback, without Origin or
+proxy headers. It issues a host-bound, one-use ticket valid for 60 seconds in
+the URL fragment. The browser removes the fragment and exchanges the ticket
+for a session; it never receives the master token.
+
+Another device opens an advertised `/studio/` address and submits the host’s
+code and a browser name to `POST /web/pair`. The gateway passes the original
+request source to the existing pairing service; no loopback proxy masks the
+requester. Host approval in Studio or `adf daemon pair` is still required. The
+claim collection secret stays server-side behind a temporary HttpOnly cookie.
+Polling `GET /web/pair` collects approval and sets session/device cookies,
+without returning the device token to JavaScript. Manual REST tokens remain
+supported by native clients; the browser sign-in form does not accept them.
+
+Active sessions expire after eight hours and are lost on daemon restart. An
+approved browser can obtain a fresh session with its 30-day remembered device
+credential, after the daemon revalidates it. Sign-out clears browser access
+and sibling sessions for that device; host device revocation invalidates the
+credential itself. Session scope and tab generation checks reject stale
+transport writes rather than delivering queued messages under another session.
+
+Browser launch does not enable remote listeners, approve networks, or configure
+TLS. An allowed network and explicit remote-access configuration are still
+required. Configure HTTPS with a reverse proxy or Tailscale Serve for remote
+browser use; HttpOnly cookies do not encrypt HTTP traffic. Browser sign-in
+does not implement the native clients’ discovery/fingerprint pinning or their
+plain-HTTP confirmation dialog.
+
 ## 10. Security review
 
 Assets: device tokens (each = the owner phrase, §4.5), the pairing code during its window, the master token (stays on the host).
 
 | Attacker | Can | Mitigation | Accepted |
 |---|---|---|---|
-| Passive sniffer on the LAN | Read every plain-http request, including the bearer token, and chat and file content | Tailnet listener (WireGuard) and `tailscale serve` (TLS) are offered first and labelled; plain LAN http needs an explicit "I trust this network" on the client | Yes, for plain LAN http the owner confirmed. Same as copy-paste today. |
-| Sniffer during pairing | Read the code (single use, consumed by the legitimate claim) and the token in the poll answer | As above | Yes (the token leaks on the next request anyway, §5.6) |
+| Passive sniffer on the LAN | Read every plain-http request, including bearer tokens or browser cookies, and chat and file content | Tailnet listener (WireGuard) and `tailscale serve` (TLS) are offered first and labelled; native clients require explicit confirmation for plain LAN http; browser users must choose a trusted encrypted origin (§9.4) | Residual risk on plain LAN http; native clients ask for confirmation, and browsers provide no additional transport encryption. |
+| Sniffer during pairing | Read the code (single use, consumed by the legitimate claim) and the token in the native poll answer or browser Set-Cookie header | As above | Yes (the token leaks on the next request anyway, §5.6) |
 | Active attacker on the LAN (ARP spoof, rogue AP) | Everything a sniffer can, plus modify traffic, impersonate host or client | Host confirmation shows source address; encrypted transports | Yes on plain http. Not defended without TLS or WireGuard. |
 | Rogue mDNS responder | Announce a fake "*owner*'s PC" with `pair=1` and the real fingerprint; learn the code the user types; relay it to the real host within the window | Host prompt names the source (socket) address and arrival path, never a forwarded header; `adf` pins the fingerprint and refuses an approval from another one; the client's dialog shows the address it is talking to; one claim per window; the window is short and owner-opened | Partly: an owner who allows without reading the address is fooled. SPAKE2 would close this; deferred (§5.6, Q3). |
 | LAN guesser | Guess codes; or enter wrong codes to close the owner's window | 5 wrong codes per source (then locked out), 20 per window, per-source rate limit, host confirmation | Residual 2 × 10^-5 per window, and still needs Allow; one source cannot close the window |
@@ -450,7 +511,7 @@ Assets: device tokens (each = the owner phrase, §4.5), the pairing code during 
 | Web page in the user's browser | CSRF / DNS rebinding to the daemon | Existing Host, Origin, `Sec-Fetch-Site` checks on every listener and route | — |
 | Paired device turned hostile, or a lost laptop | Full control, run code, read the owner phrase | Revocation closes everything now; owner moves agents to a new owner if the phrase may have been read (remote-daemon.md) | Inherent in full-power tokens. It cannot see or collect other devices' pairing claims (no remote_access events, collect secret), nor reach local-only routes by any URL spelling |
 | Device token holder | Mint more tokens, lock the owner out | §4.5: management and local-only routes refuse device tokens | — |
-| Someone who knows the home gateway's MAC address (a former guest) clones it on their own access point, same subnet | Get a listener on a network the user allowed at home | Accepted residual risk: the network identity is the gateway MAC plus the subnet (plus the Wi-Fi name on Linux and on macOS before 14.4); a clone matches it. The clone gets a listener only; every request still needs a device token, and pairing still needs an owner-opened window and the owner's Allow. A gateway that gives no MAC after this check's ARP probe (3 tries, 200 ms apart) is never a match, whatever an earlier check saw (§3.3.1). Not covered: an OS that still lists a stale entry for the old gateway after a switch, until it expires it | Yes |
+| Someone who knows the home gateway's MAC address (a former guest) clones it on their own access point, same subnet | Get a listener on a network the user allowed at home | Accepted residual risk: the network identity is the gateway MAC plus the subnet (plus the Wi-Fi name on Linux and on macOS before 14.4); a clone matches it. The clone gets a listener only; authenticated agent-control requests still need device authority, and pairing still needs an owner-opened window and the owner's Allow. A gateway that gives no MAC after this check's ARP probe (3 tries, 200 ms apart) is never a match, whatever an earlier check saw (§3.3.1). Not covered: an OS that still lists a stale entry for the old gateway after a switch, until it expires it | Yes |
 | Public / hostile Wi-Fi with private addresses (hotel 10.x) | Reach the listeners, attempt pairing | Nothing listens until the user allows that network (§3.3.1); then a token is required; pairing only in an owner-opened window; the status line names the addresses | Yes; see Q4 |
 | Carrier-grade NAT peers | Reach a 100.64/10 listener | Bound only when Tailscale confirms the address | — |
 | Process of the same OS user on the host | Read `daemon-token`, `daemon-devices.json`, mint via the proof | Out of scope, as in daemon-backend.md §5.4.1 | Yes |

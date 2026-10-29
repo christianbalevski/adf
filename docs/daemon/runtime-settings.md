@@ -243,7 +243,7 @@ MESH_HOST=127.0.0.1 MESH_PORT=7296 adf daemon
 ## Live Settings API
 
 With `ADF` and `H` set as in the [API guide](api-guide.md#quick-start)
-(every request needs the access token):
+(each settings REST request below needs the access token):
 
 ```bash
 curl -s -H "$H" $ADF/settings                                  # all settings (secrets removed)

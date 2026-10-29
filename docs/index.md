@@ -1,12 +1,12 @@
 # ADF Documentation
 
-ADF Studio is the desktop application for creating, configuring and running AI agents stored as `.adf` files. The ADF daemon is the headless runtime that runs the same agents behind an HTTP API, without the Studio UI.
+ADF Studio provides desktop and browser interfaces for creating and configuring AI agents stored as `.adf` files. The ADF daemon runs the agents and serves the browser client as well as its HTTP API. Browser Studio can run from the CLI without installing the desktop app.
 
 ## What is ADF?
 
 The Agent Document Format (`.adf`) stores an AI agent in one SQLite file. An `.adf` file is one localized agent: its identity, state and behaviour in a single file ([what's inside](../ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 
-ADF Studio is the visual IDE for working with these files. The daemon is the headless API runtime path for automation, deployment, and service-style operation. Both operate on the same `.adf` file format.
+ADF Studio is the visual IDE for working with these files. The daemon supplies execution and APIs for Studio, automation, deployment, and service-style operation. Both operate on the same `.adf` file format.
 
 ## Documentation
 
@@ -16,7 +16,8 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 
 ### Runtime Tracks
 
-- [Studio Documentation](ADF_STUDIO_DOCS.md) — Desktop authoring and visual runtime reference
+- [Studio Documentation](ADF_STUDIO_DOCS.md) — Visual authoring reference and desktop integrations
+- [Browser Studio](guides/studio-web.md) — Local automatic sign-in with `adf web`, remote pairing, shared implementation and browser differences
 - [Daemon Documentation](daemon/index.md) — Headless runtime overview, API, operations, and performance harness
 
 ### Daemon
@@ -37,6 +38,7 @@ ADF Studio is the visual IDE for working with these files. The daemon is the hea
 ### Studio Getting Started
 
 - [Getting Started](getting-started.md) — Create your first agent and start a conversation
+- [Browser Studio](guides/studio-web.md) — Open Studio locally or connect from another device without installing desktop Studio
 
 ### Knowledge Base
 

@@ -1,8 +1,16 @@
 # Studio on the Daemon Backend
 
-**Status**: Design (not started) · **Difficulty**: 9/10 overall · **Branch**: `feat/daemon-backend` (from `main` 56ab750f)
+**Status**: Historical design with implementation records below. The daemon backend is implemented; Local mode is the desktop default. **Original branch**: `feat/daemon-backend` (from `main` 56ab750f).
 **Tracker**: [daemon-backend-tracker.md](daemon-backend-tracker.md)
 **Depends on**: ADF_IDENTITY_SPEC_v0.1, [mcp-credential-identity.md](mcp-credential-identity.md) (Phase C trusted-daemon slots), [docs/cli/remote-daemon.md](../cli/remote-daemon.md)
+
+The original goals and baseline below describe the migration, not the current
+repository state. Browser Studio extends the implemented backend with the
+same renderer and shared daemon-mode handlers through a same-origin web
+adapter (`src/main/daemon/web/`). Its launch tickets and host-approved browser
+pairing also work with a standalone daemon and CLI. See [Studio in a
+browser](../guides/studio-web.md) for the current workflow and limitations;
+this note does not assert availability in an already published release.
 
 ## 1. Goal and constraints
 
@@ -30,7 +38,7 @@ Modes:
 
 R2 applies to `embedded` vs `local`. `remote` differs where the machine boundary forces it (§9.3), and each such difference is listed.
 
-## 2. Current state (verified anchors)
+## 2. Original baseline (historical anchors)
 
 | Fact | Anchor |
 |---|---|

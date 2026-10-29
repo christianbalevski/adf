@@ -11,6 +11,10 @@ see_also:
 
 Each agent with isolated compute and desktop support enabled has a visible Linux desktop inside its container. Studio streams that display through noVNC into the agent's **Computer** tab, so the user can watch and interact while the agent automates the same screen. The desktop runs one ADF-managed Chromium session by default; anything else the agent launches with a display renders there too.
 
+The live Computer viewer requires the desktop Studio app. [Browser Studio](studio-web.md)
+can run agents and manage compute, but does not relay the container's noVNC
+display into the web page. Agent computer-use tools still execute on the daemon.
+
 ## Prerequisites
 
 - `compute.enabled: true` — the isolated container the desktop runs in (see [Compute Environments](compute.md))

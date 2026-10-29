@@ -1,19 +1,26 @@
 # Remote daemon
 
-Run the daemon on a server and use `adf` (the terminal app or one-shot
-commands) from your laptop. Every client needs two things: the daemon's URL
-and its access token.
+Run the daemon on a server and use `adf` from your laptop. `adf pair` obtains
+and saves a device credential after the host approves it; there is no token to
+copy for normal pairing. In a browser-enabled build, you can also use
+[Browser Studio](#browser-studio-on-another-device) with a six-digit code and
+terminal approval. Neither workflow requires desktop Studio. Published npm
+v0.8.3 does not include Browser Studio or `adf web`.
+
+Advanced CLI and REST clients can still supply a URL and bearer token:
 
 ```bash
-adf --url <url> --token <token>             # terminal app
-adf --url <url> --token <token> agents      # a command
-export ADF_DAEMON_URL=<url> ADF_DAEMON_TOKEN=<token>   # or once per shell
+adf --url <url> --token <device-token>             # terminal app
+adf --url <url> --token <device-token> agents      # a command
+export ADF_DAEMON_URL=<url> ADF_DAEMON_TOKEN=<device-token>
 ```
 
-Get the token on the server with `adf daemon token` (it prints only the
-token). `adf` never starts a daemon for a remote URL (or a tunnelled local
-port), and never sends your machine's own token file to another host. In the app, `/url <url> --token
-<token>` switches daemons live.
+On the host, `adf daemon devices add <label>` prints a device token once.
+`adf daemon token` prints the host's own token, which remote-access listeners refuse;
+it is for local access and explicitly configured local tunnels, not ordinary
+remote pairing. `adf` never starts a daemon for a remote URL or sends your
+machine's own token file to another host. In the terminal app,
+`/url <url> --token <token>` switches daemons live.
 
 ## The token is as powerful as your seed phrase
 
@@ -44,7 +51,9 @@ variable, no foreground daemon, no restart (agents keep running).
 
 ```bash
 # on the server (the computer whose agents you want to reach)
-adf daemon remote on          # also Settings → Connections → Add → Share (or Devices) in ADF Studio
+adf daemon remote on          # also Settings → Connections → Add → Share (or Devices) in desktop Studio
+adf daemon remote status
+adf daemon remote allow-network <network-id-or-name>  # if not already allowed
 adf daemon pair               # shows a 6-digit code for 2 minutes
 
 # on your laptop
@@ -64,8 +73,10 @@ adf pair                      # lists the ADF computers it finds; or: adf pair <
 - The daemon listens only on private and Tailscale addresses, and only on a
   network you allowed, once per network (the tailnet too).
   `adf daemon remote status` shows the networks; `adf daemon remote
-  allow-network` allows the current one, `adf daemon remote forget-network
-  <id|name>` removes one and closes its listeners at once.
+  allow-network` allows the sole current network awaiting permission; give
+  `<id|name>` to choose when more than one awaits permission.
+  `adf daemon remote forget-network <id|name>` removes one and closes its
+  listeners at once.
 - This computer's own token (`adf daemon token`) is refused from other
   computers. A device token cannot reach the owner identity, stored
   values, shutdown or remote-access management; it can still run agents
@@ -81,6 +92,58 @@ adf pair                      # lists the ADF computers it finds; or: adf pair <
   when other computers are connected.
 
 Design and every rule: [remote-access.md](../design/remote-access.md).
+
+## Browser Studio on another device
+
+These steps require a browser-enabled CLI and daemon build, not published npm
+v0.8.3. On the host computer:
+
+```bash
+adf daemon remote on
+adf daemon remote status
+# If the intended network is not allowed:
+adf daemon remote allow-network <network-id-or-name>
+adf daemon pair
+```
+
+`remote on` starts the local daemon when needed. Allow only the network you
+intend to use; `allow-network` without an argument works when exactly one
+current network awaits permission. `adf daemon pair` prints the available
+`/studio/` addresses and a six-digit code valid for two minutes. Keep that
+terminal open.
+
+On the other device, open one of the printed browser addresses and enter the
+code and a browser name. Return to the host terminal, verify the name and
+source address, and approve the **Allow** prompt. The code alone grants no
+access. The browser enters Studio automatically after approval; there is no
+master token to paste. Desktop Studio's Share settings are an alternative place to
+open and approve pairing.
+
+`adf web` automatically signs in only on the daemon's own computer. It will
+not launch a remote browser session or silently send local credentials through
+an unrecognized forwarded port. Use the printed browser address and pairing
+for those cases.
+
+Browser sessions last eight hours. A paired browser is remembered for up to
+30 days in an HttpOnly, SameSite Strict credential cookie and can establish a
+new session after expiry or a daemon restart. Signing out clears that remembered
+credential. Local `adf web` launches use a one-use link and do not create a
+remembered master credential; run `adf web` again to sign in locally.
+
+Manage browser access from the host:
+
+```bash
+adf daemon devices
+adf daemon devices revoke <id-or-label>
+adf daemon remote off
+```
+
+Revoking a device ends that browser's access. Turning off remote access blocks
+all paired devices while keeping the device list. Browser traffic still needs
+the transport appropriate to your network: use HTTPS through Tailscale Serve
+or a configured TLS proxy. Plain HTTP on a LAN does not encrypt credentials.
+For cookie behavior, recovery and desktop-only features, see the
+[Browser Studio guide](../guides/studio-web.md).
 
 ## Option 1: SSH tunnel (recommended)
 

@@ -4,9 +4,12 @@ Browser Studio uses the desktop application's React renderer, stores, styles and
 `AdfApi` factory. It connects to the ADF daemon through a same-origin browser
 session. Agents, files, providers and compute stay on the daemon's machine.
 
+Published npm v0.8.3 does not include browser support. Use a build containing
+this feature or follow [Run from source](#run-from-source).
+
 ## Open locally
 
-With the ADF CLI installed, run:
+With a browser-enabled ADF CLI build installed, run:
 
 ```sh
 adf web
@@ -136,10 +139,13 @@ integration:
 - The live **Computer** viewer requires desktop Studio. Agent execution and
   compute controls still run through the daemon.
 - ChatGPT subscription sign-in and MCP authorization steps that require a
-  desktop callback or native dialog require desktop Studio. Existing daemon
-  credentials remain usable; Grok provides its manual device-code flow.
+  desktop callback or native dialog are unavailable in the browser UI. Set up
+  ChatGPT through [CLI sign-in](../cli/models-and-providers.md) or desktop
+  Studio on the host; existing daemon credentials remain usable. Grok provides
+  its manual device-code flow.
 - Native menus, app updates, OS keychain prompts and owner-identity import are
-  desktop facilities. Native file dragging and adding host files to templates
+  native facilities outside the browser client; [CLI identity commands](../cli/identity-and-security.md)
+  can set up the host owner without desktop Studio. Native file dragging and adding host files to templates
   are unavailable. Agent windows open as browser tabs.
 - Uploads use browser file selection, with a 24 MiB limit per file. Internal
   files and shared agent copies download through the browser. Folder selection
@@ -176,3 +182,22 @@ Signing out closes the browser session immediately. A disconnected tab is
 released after five minutes without activity. Neither action shuts down the
 daemon or stops its agents. The browser does not run the agent runtime on the
 iPad or browser device.
+
+## Troubleshooting
+
+- **`adf web` is unknown or `/studio/` is missing:** install a browser-enabled
+  build on the daemon host. From source, run `npm run build:web` before
+  `npm run adf -- web`. Restart an older running daemon after updating it.
+- **The local address shows a sign-in page:** run `adf web` on that machine.
+  Opening `/studio/` directly does not create a session. A launch link expires
+  after 60 seconds and can be used once; rerun the command if it has expired.
+- **Another device cannot connect:** use the address printed by
+  `adf daemon pair`, not `localhost` or `127.0.0.1`, which refer to the device
+  running the browser. Check `adf daemon remote status` for the listening
+  address and allowed network. The daemon does not configure HTTPS for you.
+- **Pairing is waiting or expired:** keep the host's `adf daemon pair` terminal
+  open and approve the named request there. Start a new pairing window for a
+  fresh two-minute code. Browser sign-in does not accept a daemon access token.
+- **A session expired or the daemon restarted:** paired browsers reconnect
+  while their remembered credential remains valid. For a local launch, run
+  `adf web` again. Review recovered queued messages before resending them.

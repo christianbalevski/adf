@@ -17,7 +17,7 @@ the CLI is the same owner, so agents made in either open in both.
 - **Create** shows the 12 words **once**. Write them down; confirm with `yes`
   (CLI) or `saved` (terminal app). Anyone with the phrase can act as you;
   without it the identity cannot be recovered. The daemon never shows it
-  again (Studio on the same machine can: Settings → Back up seed phrase).
+  again (desktop Studio on the same machine can: Settings → Back up seed phrase).
 - **Restore** reads the phrase at a hidden prompt (CLI) or a masked field
   (app): never argv, shell history, logs or the clipboard. Piping it on stdin
   works for automation.
@@ -70,16 +70,19 @@ asks again at every daemon start.
 
 ## Daemon access token
 
-Every request to the daemon except `GET /health` needs its access token
-(`Authorization: Bearer …`). This is what stops a web page in your browser
-from talking to `127.0.0.1:7385`.
+CLI and REST operations authenticate with a bearer token
+(`Authorization: Bearer …`). Health, pairing and browser sign-in have their
+own access rules. Browser Studio uses a cookie session, described below; it
+does not ask for a token.
 
 - On first start the daemon writes a random token to
   `<data dir>/daemon-token` (mode 0600). `adf` and the terminal app on the
   same machine read it themselves: nothing to configure.
-- `adf daemon token` prints it (only the token on stdout, so it pipes). Use
-  it for a client on another machine: `--token <token>` or
-  `ADF_DAEMON_TOKEN`.
+- `adf daemon token` prints the host token (only the token on stdout, so it
+  pipes). This supports advanced local, explicit SSH-tunnel and configured
+  proxy clients with `--token <token>` or `ADF_DAEMON_TOKEN`. Remote-access
+  listeners refuse the host token: use `adf pair` or issue a device token
+  with `adf daemon devices add <label>` instead.
 - `ADF_DAEMON_TOKEN` set for the daemon replaces the file; it is required
   when the daemon binds a non-loopback `--host`.
 - The local token file is only ever sent to a loopback URL, never to another
@@ -93,8 +96,36 @@ are there) or `<config dir>/adf-studio`, where the config dir is
 `~/Library/Application Support` (macOS), `%APPDATA%` (Windows) or
 `$XDG_CONFIG_HOME` / `~/.config` (Linux). `adf daemon status` prints it.
 
-A `401` means the token is missing or wrong: see
+For CLI/REST requests, a `401` means the credential is missing, wrong or no
+longer authorized: see
 [Troubleshooting](troubleshooting.md#401-run-adf-daemon-token).
+
+## Browser access
+
+In a browser-enabled build (not published npm v0.8.3), `adf web` starts this
+computer's daemon if needed and opens a one-use sign-in link. It requires
+local proof as well as the host token; neither is entered into the browser or
+printed by the launcher. The link expires after 60 seconds. Desktop Studio
+is optional.
+
+For another device, run `adf daemon remote on`, allow the intended network,
+and run `adf daemon pair` on the host. Open a printed browser address, enter
+the six-digit code and approve the request in the host terminal. Browser
+sessions last eight hours. A paired browser keeps its device credential in
+an HttpOnly, SameSite Strict cookie for up to 30 days, allowing a new session
+after expiry or restart. HTTPS adds the Secure cookie flag; plain HTTP on a
+LAN does not encrypt credentials. Local launches do not persist a master
+credential in a remembered-device cookie.
+
+Signing out clears remembered browser access. `adf daemon devices revoke
+<id-or-label>` invalidates that paired device; `adf daemon remote off` blocks
+remote device access. None of these is a substitute for stopping agents you
+want to stop. Browser login is separate from your owner identity and model
+provider sign-ins: initialize those with the host CLI when needed.
+
+See [remote browser setup](remote-daemon.md#browser-studio-on-another-device)
+and the [Browser Studio guide](../guides/studio-web.md) for browser-local
+recovery storage and the features that require desktop Studio.
 
 ## Credentials
 
