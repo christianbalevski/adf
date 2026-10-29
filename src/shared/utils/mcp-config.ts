@@ -231,23 +231,24 @@ export function isRegistrationAgentVisible(reg: McpServerRegistration): boolean 
 
 /**
  * Executable-identity fields of a registration — the fields that determine
- * WHAT actually launches. A "verified" stamp (lastVerifiedAt/version) must
+ * WHAT actually launches, including the HTTP OAuth mode. A "verified" stamp (lastVerifiedAt/version) must
  * never vouch for a config whose executable identity changed after the test,
  * so every stamp site guards on these: the modal's patch() clears the stamp
  * when one changes, and the async stamp paths (Connect success, Reconnect
  * success, managed-install version patch) compare against the tested identity
  * via sameExecutableIdentity before applying.
  */
-export const MCP_EXECUTABLE_IDENTITY_FIELDS = ['type', 'url', 'command', 'args', 'npmPackage', 'pypiPackage'] as const
+export const MCP_EXECUTABLE_IDENTITY_FIELDS = ['type', 'url', 'command', 'args', 'npmPackage', 'pypiPackage', 'oauth'] as const
 
 export type McpExecutableIdentity = Pick<McpServerRegistration, (typeof MCP_EXECUTABLE_IDENTITY_FIELDS)[number]>
 
-/** Do two registrations launch the same thing? Args compared by value (absent ≡ empty). */
+/** Same launch and OAuth mode? Args compared by value (absent ≡ empty). */
 export function sameExecutableIdentity(a: McpExecutableIdentity, b: McpExecutableIdentity): boolean {
   const argsA = a.args ?? []
   const argsB = b.args ?? []
   return a.type === b.type &&
     a.url === b.url &&
+    !!a.oauth === !!b.oauth &&
     a.command === b.command &&
     a.npmPackage === b.npmPackage &&
     a.pypiPackage === b.pypiPackage &&

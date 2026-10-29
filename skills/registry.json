@@ -62,6 +62,12 @@
       ]
     },
     {
+      "name": "gmail-setup",
+      "description": "Connect or repair Gmail mailbox access through ADF's existing MCP setup, guide the owner through Google OAuth, and review individual tool permissions. Use for Gmail setup or authorization failures; receiving email as agent messages is a separate channel workflow.",
+      "path": "skills/gmail-setup/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/gmail-setup/SKILL.md"
+    },
+    {
       "name": "goal-seeking",
       "description": "Pursue an authorized goal through concrete action, creative experiments, learning and pivots, coordinating ADF loops, peers and timers through verified delivery. Use for open-ended or multi-session goals, not routine one-step answers.",
       "path": "skills/goal-seeking/SKILL.md",

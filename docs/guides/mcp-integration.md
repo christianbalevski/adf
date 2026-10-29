@@ -115,6 +115,21 @@ When an agent installs a server with `mcp_install`, ADF connects it immediately 
 
 This makes installation useful in the same turn without silently trusting a new capability. If discovery returns no tools, `mcp_install` reports the connection error and recent server stderr; use `mcp_restart` after correcting credentials, arguments, or runtime placement.
 
+### Browser sign-in for a remote HTTP server
+
+Choose **Remote HTTP server**, enter the provider's MCP URL, and enable
+**Browser sign-in (OAuth)** when the provider supports MCP OAuth. Click
+**Sign in & Connect** to run authorization and discover tools, then save.
+A valid existing authorization may be reused without opening another browser.
+Curated OAuth entries select this flow automatically; custom URLs can select it
+explicitly. Turning it off returns to the existing token/header configuration.
+Changing the mode clears the prior verification status and requires reconnecting.
+
+This uses the existing HTTP OAuth client, including provider metadata discovery.
+It cannot make an arbitrary HTTP endpoint support OAuth; connection errors should
+be resolved against the provider's documented MCP setup. The stdio **Interactive
+authorization** setting runs a local auth command and is a separate mechanism.
+
 ### Transports and Install Types
 
 MCP servers connect over one of two transports:
@@ -237,50 +252,39 @@ A **failed or timed-out** install reports what survived in its `persisted` field
 
 ### Prerequisites (Google OAuth Example)
 
-Many MCP servers that use Google APIs (Gmail, Google Drive, Google Calendar) require a Google Cloud OAuth client credentials file. Here's the one-time setup:
-
-1. Go to [Google Cloud Console](https://console.cloud.google.com/) → **APIs & Services** → **Credentials**
-2. If prompted, configure the **OAuth consent screen**:
-   - User type: **External**
-   - App name: anything (e.g., "ADF Studio")
-   - Support email and developer contact: your email
-   - Add your email as a **test user** under Audience → Test users (if app is in testing mode)
-   - Or click **Publish App** to skip the test user requirement
-3. Click **+ Create Credentials** → **OAuth client ID** → **Desktop app**
-4. Download the JSON file
-5. Rename it to `gcp-oauth.keys.json` and hand it to the agent — declared under `credential_files` on `mcp_install` (with the `content` field, or `fs_transfer` it into the server's filesystem), it is sealed into the identity keystore and materialized at `~/.gmail-mcp/gcp-oauth.keys.json` in the server's filesystem automatically on every spawn
-6. Enable the **Gmail API** in APIs & Services → Library
-
-After this setup, the agent's `mcp_install` with `auth: true` will open a Google consent screen in the browser.
+Google API servers need the appropriate API enabled, a consent configuration, and
+an OAuth client JSON. For Gmail's Studio setup, use the step-by-step
+[Gmail setup article](../knowledge/gmail-setup.md), including private file selection, account
+consent, and per-tool permissions. Do not paste client JSON or tokens into chat,
+and do not publish an OAuth app merely to bypass a missing test user.
 
 ### Example: Gmail MCP Server
 
-Full install flow from the agent's perspective:
+The simplest Studio path is **Settings → MCP servers → Add MCP Server → Gmail**.
+The card prefills Host, the `auth` subcommand, and the two credential-file paths.
+Select the client JSON using **Choose file…**, Connect, complete Google consent,
+then save and make the registration available to the intended agents. An agent
+can attach that existing registration without passing credentials through chat:
 
-```
-mcp_install({
-  package: "@gongrzhe/server-gmail-autoauth-mcp",
-  type: "npm",
-  name: "gmail",
-  auth: true,
-  auth_args: ["auth"],
-  credential_files: [
-    { path: "~/.gmail-mcp/gcp-oauth.keys.json", required: true, content: "<the OAuth client JSON from the user>" },
-    { path: "~/.gmail-mcp/credentials.json" }
-  ]
-})
+```js
+mcp_install({ name: "gmail" })
 ```
 
-What happens:
-1. Runtime runs `npx -y @gongrzhe/server-gmail-autoauth-mcp auth` inside the agent's compute container (the default routing)
-2. Server prints the Google OAuth URL → runtime opens it in the host browser and tunnels the callback port (`localhost:3000` from the URL's `redirect_uri`) into the container
-3. User authorizes Gmail access in the browser; the redirect lands on the in-container listener through the tunnel
-4. Server saves tokens to `~/.gmail-mcp/credentials.json` in the container filesystem (an **agent-scoped** home — servers in the shared container no longer clobber each other's credentials)
-5. User clicks **Continue** in the ADF dialog
-6. Runtime captures `credentials.json` back into the identity keystore (sealed in the credentials envelope), kills the preflight, closes the tunnel, connects via stdio, discovers ~19 Gmail tools
-7. Every later spawn — new machine, rebuilt container — re-materializes both files from the keystore first. No re-consent
+This differs from installing a package directly with `mcp_install`: agent-created
+installs normally run in a container. Such an install must have its client JSON
+securely provisioned into the existing identity credential store and declare
+`~/.gmail-mcp/gcp-oauth.keys.json` (required) and
+`~/.gmail-mcp/credentials.json` (tokens). Do not supply a placeholder or expose
+credential contents in model-visible arguments. If secure provisioning is not
+available, use Studio's file picker instead.
 
-Add `host: true` only if you deliberately want the server on the host (requires host access); then the keys file, the auth flow, and the saved tokens all live in the host's `~/.gmail-mcp/` instead. Host-side credential files must be declared with `~/`-relative paths — they are confined to the home directory.
+For container installs, `auth: true` with `auth_args: ["auth"]` runs the auth
+command in that container, forwards its loopback callback to the host browser,
+and captures declared token files into the identity store after authorization.
+Later spawns materialize these files again. Revoked or expired grants can still
+require renewed consent. For a Settings host registration, the preflight and
+files live in the host home instead; attachment captures declared files into the
+agent identity store. Host credential paths must be `~/`-relative.
 
 **Migration note (agent-scoped home)**: containerized servers now get an agent-scoped `$HOME` instead of the container root's `/root`. Two consequences for installs that predate this:
 - **One-time re-auth**: tokens previously stored under `/root/...` are no longer read, so each agent authorizes once more; from then on the keystore carries the grant across rebuilds and machines.

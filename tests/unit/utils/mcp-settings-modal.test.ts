@@ -674,6 +674,7 @@ describe('sameExecutableIdentity (async stamp guard)', () => {
     ['command', { command: '/bin/other' }],
     ['npmPackage', { npmPackage: '@evil/pkg' }],
     ['pypiPackage', { pypiPackage: 'evil-pkg' }],
+    ['oauth', { oauth: true }],
   ])('a differing %s breaks the match', (_field, change) => {
     expect(sameExecutableIdentity(base(), { ...base(), ...change })).toBe(false)
   })
@@ -682,6 +683,10 @@ describe('sameExecutableIdentity (async stamp guard)', () => {
     expect(sameExecutableIdentity(base(), { ...base(), args: ['--flag', 'other'] })).toBe(false)
     expect(sameExecutableIdentity(base(), { ...base(), args: ['--flag'] })).toBe(false)
     expect(sameExecutableIdentity(base(), { ...base(), args: undefined })).toBe(false)
+  })
+
+  it('treats absent and disabled OAuth as the same authentication mode', () => {
+    expect(sameExecutableIdentity(base(), { ...base(), oauth: false })).toBe(true)
   })
 })
 
