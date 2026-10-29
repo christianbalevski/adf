@@ -36,7 +36,7 @@ import {
 } from './config'
 import { DeviceStore, type DeviceRecord } from './device-store'
 import { probeFirewall, type FirewallProbeInput, type FirewallView } from './firewall'
-import { RemoteListeners, remoteListenerOf, type RequestHandler } from './listeners'
+import { RemoteListeners, remoteListenerOf, type RequestHandler, type UpgradeHandler } from './listeners'
 import { NetworkWatcher, type GatewayMap } from './network-key'
 import { readGatewayReadings, readOsCategories, readWifiNames } from './network-category'
 import { PAIRING_MAX_WRONG, PAIRING_MAX_WRONG_TOTAL, PairingError, PairingManager } from './pairing'
@@ -323,9 +323,9 @@ export class RemoteAccessService {
 
   // --- lifecycle -------------------------------------------------------------------
 
-  /** The daemon listens: remote listeners hand their requests to `handler` (fastify.routing). */
-  async attach(handler: RequestHandler): Promise<void> {
-    this.listeners = new RemoteListeners({ port: this.port, handler, log: this.log, ...(this.opts.bindAddress ? { bindAddress: this.opts.bindAddress } : {}) })
+  /** The daemon listens: remote listeners hand their requests to `handler` (fastify.routing), upgrades to `upgrade`. */
+  async attach(handler: RequestHandler, upgrade?: UpgradeHandler): Promise<void> {
+    this.listeners = new RemoteListeners({ port: this.port, handler, ...(upgrade ? { upgrade } : {}), log: this.log, ...(this.opts.bindAddress ? { bindAddress: this.opts.bindAddress } : {}) })
     this.flushTimer = setInterval(() => this.store.flushLastSeen(), 60_000)
     this.flushTimer.unref?.()
     if (this.envBind && this.config.enabled) {

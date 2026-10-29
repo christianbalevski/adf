@@ -403,10 +403,10 @@ export const CHANNEL_MAP = {
   [IPC.COMPUTE_CONTAINER_DETAIL]: proxied('invoke', ['GET /compute/containers/:name']),
   [IPC.COMPUTE_EXEC_LOG]: proxied('invoke', ['GET /compute/exec-log']),
   [IPC.COMPUTE_TEST_EXECUTION_TARGET]: proxied('invoke', ['POST /compute/execution-targets/test']),
-  [IPC.COMPUTE_BROWSER_SESSION]: unsupported('push', [], 'Unsupported in v1: the noVNC URL is the server\'s loopback (§9.3).', {
+  [IPC.COMPUTE_BROWSER_SESSION]: variant('push', [], 'The push goes on without the server\'s loopback port; the Computer tab then asks COMPUTE_BROWSER_INFO for a relay.', {
     frame: 'push:browser_session',
   }),
-  [IPC.COMPUTE_BROWSER_INFO]: unsupported('invoke', ['GET /compute/browser-info'], 'Unsupported in v1: the noVNC port is on the server\'s loopback (§9.3).'),
+  [IPC.COMPUTE_BROWSER_INFO]: variant('invoke', ['GET /compute/browser-info'], 'The noVNC port is on the server\'s loopback (§9.3): Studio main opens a loopback relay that forwards the page and the VNC stream to the server\'s desktop routes with the device token (remote/desktop-relay.ts). A server without them answers no port and "Open on <name>, or update ADF there…" as the detail.'),
   [IPC.COMPUTE_CONTAINER_PHASE]: proxied('push', [], { frame: 'push:compute_phase' }),
 
   // --- Sandbox packages ------------------------------------------------------

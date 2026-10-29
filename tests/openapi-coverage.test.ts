@@ -68,7 +68,12 @@ const HTTP_METHODS = ['get', 'put', 'post', 'delete', 'patch', 'options', 'head'
  * Registered routes intentionally absent from the contract. Keep empty unless
  * a route is truly internal (not for API clients); comment each entry.
  */
-const INTERNAL_ROUTES = new Set<string>([])
+const INTERNAL_ROUTES = new Set<string>([
+  // The Computer tab's desktop relay (compute-desktop-routes.ts): noVNC's own files and
+  // VNC stream, passed through byte for byte for Studio's loopback relay; not an API.
+  'GET /compute/desktop/{container}/websockify',
+  'GET /compute/desktop/{container}/*',
+])
 
 type Json = Record<string, unknown>
 

@@ -23,7 +23,7 @@ import { electronStub } from './daemon-mode-electron'
 import { createFakeClientSession, createFakeDaemon } from './daemon-mode-fakes'
 import { IPC } from '../../src/shared/constants/ipc-channels'
 import { CHANNEL_MAP, type ChannelEntry, type MappedChannel } from '../../src/main/backend/channel-map'
-import { registerDaemonModeHandlers, REMOTE_BROWSER_SESSION_SENTENCE, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
+import { registerDaemonModeHandlers, type DaemonModeHandle } from '../../src/main/backend/daemon-mode'
 import { REMOTE_MODE_HANDLERS, REMOTE_OWNER_IDENTITY_SENTENCE } from '../../src/main/backend/daemon-mode/remote/handlers'
 import { RemotePicker } from '../../src/main/backend/daemon-mode/remote/picker'
 import type { RemotePickRequest } from '../../src/shared/types/backend.types'
@@ -261,19 +261,18 @@ describe('remote-unsupported channels: each shows its sentence, never a raw erro
 
   it('covers every remote-unsupported invoke channel', () => {
     expect(unsupported.sort()).toEqual([
-      IPC.FILE_REVEAL, IPC.TEMPLATE_REVEAL, IPC.COMPUTE_BROWSER_INFO, IPC.IDENTITY_GET, IPC.IDENTITY_REVEAL,
+      IPC.FILE_REVEAL, IPC.TEMPLATE_REVEAL, IPC.IDENTITY_GET, IPC.IDENTITY_REVEAL,
       IPC.IDENTITY_OWNER_REVEAL_MNEMONIC, IPC.IDENTITY_OWNER_CONFIRM_BACKUP, IPC.IDENTITY_OWNER_IMPORT, IPC.PROVIDER_CREDENTIAL_GET,
     ].sort())
   })
 
   // IDENTITY_GET answers a value slot (placeholder or null), covered in daemon-mode-remote-values.test.ts.
   it.each([
-    IPC.FILE_REVEAL, IPC.TEMPLATE_REVEAL, IPC.COMPUTE_BROWSER_INFO, IPC.IDENTITY_REVEAL,
+    IPC.FILE_REVEAL, IPC.TEMPLATE_REVEAL, IPC.IDENTITY_REVEAL,
     IPC.IDENTITY_OWNER_REVEAL_MNEMONIC, IPC.IDENTITY_OWNER_CONFIRM_BACKUP, IPC.IDENTITY_OWNER_IMPORT, IPC.PROVIDER_CREDENTIAL_GET,
   ])('%s', async (channel) => {
     await handle.session.openFile(SERVER_FILE, async () => AGENT)
     daemon.routes.set('GET /templates', () => ({ folder: '/srv/adf/templates', templates: [] }))
-    daemon.routes.set('GET /compute/browser-info', () => ({ containerName: 'adf-agent-1', hostPort: 6080, phase: 'ready' }))
     const before = electronStub.calls.length
     daemon.routes.set(`GET /agents/${AGENT}/identity`, () => ({ purposes: [] }))
     // An answer, never a rejection: the renderer shows answers; a rejection is a raw error (W4-B review).
@@ -308,12 +307,14 @@ describe('remote-unsupported channels: each shows its sentence, never a raw erro
     expect(daemon.requests.filter((r) => r.path.startsWith('/identity'))).toEqual([])
   })
 
-  it('a browser session push is replaced by a notice: its viewer is on the server\'s loopback', async () => {
+  it('a browser session push opens the Computer tab without the server loopback port', async () => {
     const pushes = electronStub.pushes.length
     const calls = electronStub.calls.length
     handle.bridge.handleFrame({ kind: 'push', topic: 'browser_session', agentId: AGENT, filePath: SERVER_FILE, payload: { agentId: AGENT, agentName: 'agent-1', agentFilePath: SERVER_FILE, containerName: 'adf-agent-1', hostPort: 6080, timestamp: 1 } })
-    expect(electronStub.pushes.slice(pushes).filter((p) => p.channel === IPC.COMPUTE_BROWSER_SESSION)).toEqual([])
-    expect(electronStub.calls.slice(calls).find((c) => c.api === 'Notification.new')?.args[0]).toMatchObject({ body: `agent-1 ${REMOTE_BROWSER_SESSION_SENTENCE}` })
+    const pushed = electronStub.pushes.slice(pushes).filter((p) => p.channel === IPC.COMPUTE_BROWSER_SESSION)
+    expect(pushed).toHaveLength(1)
+    expect(JSON.stringify(pushed[0])).toContain('"hostPort":null')
+    expect(electronStub.calls.slice(calls).find((c) => c.api === 'Notification.new')).toBeUndefined()
   })
 })
 
