@@ -26,6 +26,7 @@ import { registerCatalogRoutes } from './catalog-routes'
 import { registerMcpAdminRoutes } from './mcp-admin-routes'
 import { registerOwnerEnvelopeRoutes } from './owner-envelope-routes'
 import { registerComputeAdminRoutes } from './compute-admin-routes'
+import { registerComputeDesktopRoutes } from './compute-desktop-routes'
 import { registerJobRoutes } from './job-routes'
 import type { GapRouteDeps } from './gap-deps'
 import { registerIdentityImportRoutes } from './identity-import-routes'
@@ -89,6 +90,7 @@ export const DAEMON_ROUTE_MODULES: readonly DaemonRouteModule[] = [
   registerMcpAdminRoutes,
   registerOwnerEnvelopeRoutes,
   registerComputeAdminRoutes,
+  registerComputeDesktopRoutes,
   registerJobRoutes,
   registerIdentityImportRoutes,
   registerFileRoutes,

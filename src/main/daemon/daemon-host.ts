@@ -221,7 +221,8 @@ export class DaemonHost {
     this.installSignalHandlers()
     // Remote listeners hand their requests to this Fastify instance (remote-access.md §3.2).
     const server = this.server
-    await this.routes?.remoteAccess?.attach((req, res) => server.routing(req, res))
+    // @fastify/websocket upgrades on the main server's 'upgrade' event (the Computer tab's desktop stream).
+    await this.routes?.remoteAccess?.attach((req, res) => server.routing(req, res), (req, socket, head) => { server.server.emit('upgrade', req, socket, head) })
     return { host: this.host, port: this.port }
   }
 

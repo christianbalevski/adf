@@ -374,7 +374,17 @@ describe('remote mode', () => {
     expect(remoteHandlers.get('adf:mesh:firewall-apply')).toBeUndefined()
   })
 
-  it('the browser viewer gets no port and says why', async () => {
+  it('the browser viewer gets a loopback relay when the server can relay the desktop', async () => {
+    daemon.routes.set('GET /compute/browser-info', () => ({ containerName: 'adf-agent-1', hostPort: 6080, phase: 'ready' }))
+    daemon.routes.set('GET /compute/desktop/adf-agent-1/vnc.html', () => '<html></html>')
+    const info = await remoteHandlers.get(IPC.COMPUTE_BROWSER_INFO)!({}, { agentName: 'agent-1', agentId: AGENT }) as { hostPort: number | null }
+    daemon.routes.delete('GET /compute/desktop/adf-agent-1/vnc.html')
+    expect(info).toMatchObject({ containerName: 'adf-agent-1', phase: 'ready' })
+    expect(info.hostPort).toEqual(expect.any(Number))
+    expect(info.hostPort).not.toBe(6080)
+  })
+
+  it('a server without the desktop routes: no port, and says why', async () => {
     daemon.routes.set('GET /compute/browser-info', () => ({ containerName: 'adf-agent-1', hostPort: 6080, phase: 'ready' }))
     expect(await remoteHandlers.get(IPC.COMPUTE_BROWSER_INFO)!({}, { agentName: 'agent-1', agentId: AGENT })).toEqual({
       containerName: 'adf-agent-1', hostPort: null, phase: 'ready', detail: remoteBrowserSentence(new URL(BASE).host),

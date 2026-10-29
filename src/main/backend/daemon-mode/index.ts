@@ -33,7 +33,6 @@ export {
   DAEMON_RESPAWN_DELAY_MS,
   DAEMON_RESPAWN_WINDOW_MS,
   isRemoteAccessRoute,
-  REMOTE_BROWSER_SESSION_SENTENCE,
   TURN_DISCONNECT_GRACE_MS,
 } from './runtime-connection'
 export { RuntimeManager, RuntimeRouteError } from './runtime-manager'

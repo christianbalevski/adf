@@ -4,6 +4,7 @@ import type { BrowserSessionInfo, ContainerSummary } from '../../../../shared/ty
 import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { fleetState } from './poll'
 import { remoteName } from './providers'
+import { DesktopRelays } from '../remote/desktop-relay'
 
 /**
  * Daemon-mode handlers for compute (Settings → Compute, the dashboard's
@@ -22,9 +23,23 @@ import { remoteName } from './providers'
 /** Podman install, machine init/start and image pulls take minutes. */
 const LONG_MS = 15 * 60_000
 
-/** The browser viewer of a remote runtime: its noVNC port is on that computer's loopback (settings-scopes.md §7). */
+/** The browser viewer of a remote runtime whose daemon cannot relay the desktop (an older version). */
 export function remoteBrowserSentence(name: string): string {
-  return `Open on ${name}.`
+  return `Open on ${name}, or update ADF there to see this desktop here.`
+}
+
+/** One set of desktop relays per runtime connection; requests use the latest window's client. */
+const relaysByConnection = new WeakMap<object, { relays: DesktopRelays; ctx: DaemonModeContext }>()
+
+function desktopRelays(ctx: DaemonModeContext): DesktopRelays {
+  let entry = relaysByConnection.get(ctx.connection)
+  if (!entry) {
+    const created: { relays: DesktopRelays; ctx: DaemonModeContext } = { ctx, relays: new DesktopRelays(() => created.ctx.ready()) }
+    entry = created
+    relaysByConnection.set(ctx.connection, entry)
+  }
+  entry.ctx = ctx
+  return entry.relays
 }
 
 function errorMessage(err: unknown): string {
@@ -133,15 +148,20 @@ export const COMPUTE_HANDLERS: DaemonHandlerTable = {
     return client.request('POST', '/compute/execution-targets/test', { body: target ?? {}, timeoutMs: 120_000 })
   },
 
-  // Remote: the phase is the server's, the port its loopback (§9.3); no port, and the reason as the detail.
+  // Remote: the server's noVNC port is on its loopback (§9.3), so the viewer gets a loopback
+  // relay on this computer that forwards to GET /compute/desktop/:container/* (desktop-relay.ts).
+  // A server without those routes keeps the old answer: no port, and the reason as the detail.
   [IPC.COMPUTE_BROWSER_INFO]: async (ctx, _event, args: { agentName: string; agentId: string }) => {
     const client = await ctx.ready()
     const info = await client.request<BrowserSessionInfo>('GET', '/compute/browser-info', {
       query: { agentName: args?.agentName, agentId: args?.agentId },
       timeoutMs: 120_000,
     })
-    if (ctx.mode === 'remote') return { ...info, hostPort: null, detail: remoteBrowserSentence(remoteName(ctx)) }
-    return info
+    if (ctx.mode !== 'remote' || info.hostPort == null) return info
+    const unreachable = { ...info, hostPort: null, detail: remoteBrowserSentence(remoteName(ctx)) }
+    const page = await ctx.raw(`/compute/desktop/${enc(info.containerName)}/vnc.html`).catch(() => null)
+    if (!page?.ok) return unreachable
+    return { ...info, hostPort: await desktopRelays(ctx).portFor(info.containerName) }
   },
 
   // The dashboard tile (polled): the same counts and `unavailable` rule as embedded.

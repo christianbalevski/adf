@@ -15,6 +15,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import type { Socket } from 'node:net'
+import type { Duplex } from 'node:stream'
 
 const REMOTE_SOCKET = Symbol.for('adf.remoteListenerAddress')
 
@@ -26,6 +27,7 @@ export function remoteListenerOf(socket: Socket | null | undefined): string | nu
 }
 
 export type RequestHandler = (req: IncomingMessage, res: ServerResponse) => void
+export type UpgradeHandler = (req: IncomingMessage, socket: Duplex, head: Buffer) => void
 
 interface Listener {
   server: Server
@@ -38,6 +40,8 @@ export class RemoteListeners {
   constructor(private readonly opts: {
     port: number
     handler: RequestHandler
+    /** WebSocket upgrades (the Computer tab's desktop stream); without it they are refused. */
+    upgrade?: UpgradeHandler
     log?: (line: string) => void
     /** Test seam: the address actually bound for a candidate (default: itself). */
     bindAddress?: (address: string) => string
@@ -80,6 +84,8 @@ export class RemoteListeners {
   private open(address: string): Promise<void> {
     const sockets = new Set<Socket>()
     const server = createServer(this.opts.handler)
+    const upgrade = this.opts.upgrade
+    if (upgrade) server.on('upgrade', upgrade)
     server.on('connection', (socket: Socket) => {
       ;(socket as unknown as Record<symbol, unknown>)[REMOTE_SOCKET] = address
       sockets.add(socket)

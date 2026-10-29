@@ -70,8 +70,6 @@ export const AGENT_SESSION_END_TIMEOUT_MS = 1_500
 export const DAEMON_RESPAWN_DELAY_MS = 2_000
 export const DAEMON_RESPAWN_WINDOW_MS = 10 * 60_000
 
-/** COMPUTE_BROWSER_SESSION in remote mode (§9.3): the viewer is on the server's loopback, never opened here. */
-export const REMOTE_BROWSER_SESSION_SENTENCE = 'opened a browser in its container on the daemon host. Its viewer is on that host\'s loopback, so Studio cannot show it here; use a tunnel to the container\'s noVNC port, or Studio on that host.'
 
 export type RuntimeKind = 'local' | 'remote'
 
@@ -430,18 +428,12 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     void mcpOAuth.apply(snapshot)
   }
 
-  // Remote mode: a browser session's viewer port is the server's loopback.
-  // Opening it here would load this computer's loopback, so the push is
-  // replaced by a notice (remote-unsupported, design §9.3).
-  // An agent window's bridge drops the push: the main window's says it once.
-  const remoteBrowserSession = (out: BridgeOutput, announce: boolean): BridgeOutput => !remote ? out : {
+  // Remote mode: a browser session's port is the server's loopback. The push goes on without
+  // it; the Computer tab then asks COMPUTE_BROWSER_INFO, which hands it a loopback relay here.
+  const remoteBrowserSession = (out: BridgeOutput): BridgeOutput => !remote ? out : {
     send(channel: string, ...args: unknown[]) {
-      if (channel === IPC.COMPUTE_BROWSER_SESSION) {
-        if (!announce) return
-        const name = (args[0] as { agentName?: unknown } | undefined)?.agentName
-        const text = `${typeof name === 'string' && name ? name : 'An agent'} ${REMOTE_BROWSER_SESSION_SENTENCE}`
-        log.warn(`[Remote] ${text}`)
-        notice(text)
+      if (channel === IPC.COMPUTE_BROWSER_SESSION && args[0] && typeof args[0] === 'object') {
+        out.send(channel, { ...(args[0] as object), hostPort: null }, ...args.slice(1))
         return
       }
       out.send(channel, ...args)
@@ -455,7 +447,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
       if (channel === IPC.APPROVALS_CHANGED) { if (!shutdownPromise) shared.publishApprovals(id, args[0] as NotificationsSnapshot, connection) }
       else output.sendAll(channel, ...args)
     },
-  }, true)
+  })
   bridge = new EventBridge({
     session,
     output: bridgeOutput,
@@ -952,7 +944,7 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     const b = new BackgroundEventBatcher((events) => out.send(IPC.BACKGROUND_AGENT_EVENT_BATCH, events))
     const br = new EventBridge({
       session: s,
-      output: remoteBrowserSession(out, false),
+      output: remoteBrowserSession(out),
       batcher: b,
       client: () => connection.current,
       trackCreatedFiles: false,
