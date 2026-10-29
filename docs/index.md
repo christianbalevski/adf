@@ -48,6 +48,7 @@ The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for re
 - [Persistent Investigations](knowledge/persistent-investigations.md) — Keep unresolved research questions available across compaction and restart using existing capabilities and an installable skill.
 
 - [Gmail setup](knowledge/gmail-setup.md) — Connect a mailbox with MCP and choose tool permissions
+- [Composio MCP](knowledge/composio-mcp.md) — Trial notes on Composio's hosted MCP server, its tool permissions, and Gmail connection
 
 ### Studio Concepts
 
