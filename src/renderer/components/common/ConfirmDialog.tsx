@@ -52,7 +52,7 @@ export function useConfirm(): [React.ReactNode, (options: ConfirmOptions) => Pro
     resolver.current = null
     setOptions(null)
   }, [])
-  return [<ConfirmDialog key="confirm" options={options} onAnswer={answer} />, confirm]
+  return [<ConfirmDialog options={options} onAnswer={answer} />, confirm]
 }
 
 /** Turning on host access (Settings → Compute, and Allow on an MCP server's Runs on). */
