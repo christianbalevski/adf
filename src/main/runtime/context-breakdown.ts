@@ -131,7 +131,7 @@ export function apportion(weights: number[], total: number): number[] {
  * is no longer in the session.
  */
 export function findLastCall(
-  rows: Array<{ seq: number; tokens: LoopTokenUsage }>,
+  rows: ReadonlyArray<{ readonly seq: number; readonly tokens: Readonly<LoopTokenUsage> }>,
   messages: Array<{ seq?: number }>,
   baselineEstimated: boolean,
   fixedPartsMatch: (seq: number) => boolean

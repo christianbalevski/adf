@@ -507,6 +507,12 @@ function ChatView({ width: paneWidth, height, focused }: ViewProps) {
                     expanded={isExpanded(item)}
                     showThinking={chat.showThinking}
                     queued={queuedIds.has(item.id)}
+                    viewportHeight={
+                      // Raw height estimates can exceed Ink's styled height,
+                      // so clipping may extend into earlier visible items.
+                      viewport + (item === visible[visible.length - 1] ? 0 : win.clip)
+                    }
+                    clipBottom={item === visible[visible.length - 1] ? win.clip : 0}
                   />
                 </Box>
               ))}

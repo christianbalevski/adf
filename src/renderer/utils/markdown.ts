@@ -3,6 +3,7 @@ import DOMPurify from 'dompurify'
 import { useSyncExternalStore } from 'react'
 import type { HighlighterCore, LanguageRegistration } from 'shiki/core'
 import { createIncrementalRenderer } from './markdown-split'
+import { MarkdownHighlightCache } from './markdown-highlight-cache'
 
 /**
  * The one sanitized markdown → HTML path in the renderer.
@@ -92,11 +93,15 @@ const failedLanguages = new Set<string>()
 let staleRenders = false
 let highlightVersion = 0
 const listeners = new Set<() => void>()
+// Only trusted Shiki output is cached. Model HTML still passes through the
+// sanitizer on every render, with a fresh unguessable placeholder.
+const highlightedBlocks = new MarkdownHighlightCache()
 
 function notifyIfStale(): void {
   if (!staleRenders) return
   staleRenders = false
   highlightVersion++
+  highlightedBlocks.clear()
   for (const listener of listeners) listener()
 }
 
@@ -207,7 +212,13 @@ marked.use({
       }
       let html: string
       try {
-        html = highlighter.codeToHtml(token.text, { lang: id, themes: THEMES, defaultColor: false })
+        const key = `${highlightVersion}\0${id}\0${THEMES.light}\0${THEMES.dark}\0${token.text}`
+        const cached = highlightedBlocks.get(key)
+        if (cached !== undefined) html = cached
+        else {
+          html = highlighter.codeToHtml(token.text, { lang: id, themes: THEMES, defaultColor: false })
+          highlightedBlocks.set(key, html)
+        }
       } catch {
         return false
       }

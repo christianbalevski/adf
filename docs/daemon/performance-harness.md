@@ -106,3 +106,29 @@ For narrow API changes, normal unit tests are usually enough. For lifecycle, con
 ## Test Gating
 
 `tests/perf/stress-harness.test.ts` is gated by `RUN_BENCH=1`, so normal `npm test` does not run the benchmark scenarios. This keeps regular tests fast while preserving a repeatable benchmark path.
+
+## Context and client regression benchmarks
+
+Use the supported Node version from `package.json`. Run these workloads one at a time so competing workers do not distort their timings:
+
+```bash
+npm run bench:daemon-context
+npm run bench:studio
+npm run bench:tui
+```
+
+The daemon benchmark reads context breakdowns through a real executor and a temporary file-backed SQLite workspace. It measures warm histories and dynamic instruction text, including the production cache invalidation checks. Normal tests also count database reads and tokenizer calls, so a cache regression fails without relying on machine speed. Mutation, rollback, external database writes, tokenizer changes, and cache size limits have separate correctness coverage.
+
+The Studio benchmark launches an isolated Electron/Chromium window and exercises the production Markdown component. It checks sanitized output, DOM retention, selection, code highlighting, and settled rendering before reporting timings. It requires a graphical session; on headless Linux run `xvfb-run -a npm run bench:studio`. When dependencies were installed with `npm ci --ignore-scripts`, run `node node_modules/electron/install.js` first.
+
+Linux CI uses `xvfb-run -a npm run bench:studio -- --no-sandbox` for this isolated local fixture because Ubuntu's AppArmor policy can prevent the unpackaged npm Electron binary from creating its sandbox. The flag is an explicit benchmark-only opt-in; normal benchmark launches retain Electron's sandbox. See [Electron's Ubuntu sandbox issue](https://github.com/electron/electron/issues/41066) and its [testing-only command-line flag](https://www.electronjs.org/docs/latest/api/command-line-switches#--no-sandbox).
+
+The TUI benchmark uses Ink rendering with a synthetic terminal. It verifies visible output and the amount of offscreen rendering work, then measures cold renders and warmed updates. It does not measure terminal emulator or network latency. Markdown blocks with unknown heights are rendered and measured before they can be skipped; a single large block still renders in full.
+
+For a before/after Studio comparison, point the same harness at an unchanged checkout:
+
+```bash
+npm run bench:studio -- --baseline /path/to/baseline --output /tmp/adf-studio-bench.json
+```
+
+For daemon comparisons, copy `tests/perf/daemon-context-bench.test.ts` into the baseline checkout and run it with `RUN_BENCH=1 NODE_ENV=production BENCH_MEASURE_ONLY=1 BENCH_OUT=/tmp/adf-context-before.json`. Run the current checkout without `BENCH_MEASURE_ONLY` to retain its regression assertions. Keep fixtures, runtime versions, and machine load consistent. The benchmarks report isolated costs; they do not establish whole-application throughput or provider latency improvements.

@@ -55,7 +55,21 @@ jobs:
       # Linux only: the Windows job is a focused filesystem gate, and timings
       # from a second OS would add flake without adding signal.
       - name: Performance regression benchmarks
-        run: RUN_BENCH=1 npx vitest run tests/perf/review-bench.test.ts tests/perf/markdown-stream.test.ts --reporter=verbose
+        run: RUN_BENCH=1 npx vitest run tests/perf/review-bench.test.ts tests/perf/markdown-stream.test.ts --maxWorkers=1 --reporter=verbose
+
+      # Run the workloads serially: competing benchmark workers obscure the
+      # cache and rendering costs these checks are intended to catch.
+      - name: Daemon context and TUI rendering regression benchmarks
+        run: |
+          npm run bench:daemon-context
+          npm run bench:tui
+
+      # npm ci skips lifecycle scripts above. Install Electron explicitly for
+      # the real Chromium renderer checks; no native database binding is used.
+      - name: Studio rendering regression benchmarks (Chromium)
+        run: |
+          node node_modules/electron/install.js
+          xvfb-run -a npm run bench:studio -- --no-sandbox
 
       # Verbose output surfaces the independently asserted final ledger totals:
       # 6 fixed, 3 declaredByProfile, 0 pending.

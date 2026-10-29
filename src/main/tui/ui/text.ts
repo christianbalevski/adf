@@ -9,6 +9,9 @@ function isZeroWidth(ch: string): boolean {
 
 /** Terminal cell width of a string (wide CJK/emoji = 2, combining marks = 0). */
 export function displayWidth(text: string): number {
+  // Most terminal prose and code is ASCII; leave Unicode width rules unchanged.
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x00-\x7f]*$/.test(text)) return text.length
   let width = 0
   for (const ch of text) {
     if (isZeroWidth(ch)) continue

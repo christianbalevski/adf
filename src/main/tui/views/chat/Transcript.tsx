@@ -34,6 +34,9 @@ export interface ItemViewProps {
   expanded: boolean
   showThinking: boolean
   queued: boolean
+  /** Conservative visible row budget; source/copy text always stays complete. */
+  viewportHeight?: number
+  clipBottom?: number
 }
 
 function lineCount(text: string): number {
@@ -69,7 +72,7 @@ function AskForm({ questions, answers }: { questions: AskQuestion[]; answers?: A
  * input (`_reason` / `_async` included), the task reference of an async call
  * and the result. Heights: `itemHeight` in model.ts, kept in step with this.
  */
-function ToolBody({ item, w, expanded }: { item: ToolItem; w: number; expanded: boolean }) {
+function ToolBody({ item, w, expanded, viewportHeight, clipBottom = 0 }: { item: ToolItem; w: number; expanded: boolean; viewportHeight?: number; clipBottom?: number }) {
   const theme = useTheme()
   const g = theme.glyph
   const view = toolView(item)
@@ -120,7 +123,7 @@ function ToolBody({ item, w, expanded }: { item: ToolItem; w: number; expanded: 
         <Box flexDirection="row" width={w}>
           <Text color={item.status === 'running' ? theme.color.live : theme.color.assistant}>{g.dot} </Text>
           <Box width={w - 2} flexDirection="column">
-            <Markdown text={sayText(item) || ' '} color={theme.color.assistant} />
+            <Markdown text={sayText(item) || ' '} color={theme.color.assistant} viewport={viewportHeight === undefined ? undefined : { width: w - 2, height: viewportHeight + 2, clipBottom: Math.max(0, clipBottom - 1 - (failed ? 1 : 0)) }} />
             {failed ? (
               <Text wrap="truncate-end" color={theme.color.error}>
                 {g.cross} say failed: {truncate(oneLine(item.result ?? '') || '(no detail)', Math.max(4, w - 20))}<Text color={theme.color.dim}> (Enter)</Text>
@@ -187,7 +190,7 @@ function ToolBody({ item, w, expanded }: { item: ToolItem; w: number; expanded: 
   )
 }
 
-function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemViewProps, 'selected'>) {
+function ItemBody({ item, width, expanded, showThinking, queued, viewportHeight, clipBottom = 0 }: Omit<ItemViewProps, 'selected'>) {
   const theme = useTheme()
   const g = theme.glyph
   const w = Math.max(8, width)
@@ -236,7 +239,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
         <Box flexDirection="row" width={w}>
           <Text color={item.streaming ? theme.color.live : theme.color.assistant}>{g.dot} </Text>
           <Box width={w - 2} flexDirection="column">
-            {item.text ? <Markdown text={item.text} color={theme.color.assistant} /> : <Text> </Text>}
+            {item.text ? <Markdown text={item.text} color={theme.color.assistant} viewport={viewportHeight === undefined ? undefined : { width: w - 2, height: viewportHeight + 2, clipBottom: Math.max(0, clipBottom - 1 - (item.interrupted ? 1 : 0)) }} /> : <Text> </Text>}
             {item.interrupted ? <Text color={theme.color.dim}>[interrupted]</Text> : null}
           </Box>
         </Box>
@@ -256,7 +259,7 @@ function ItemBody({ item, width, expanded, showThinking, queued }: Omit<ItemView
       )
     }
     case 'tool':
-      return <ToolBody item={item} w={w} expanded={expanded} />
+      return <ToolBody item={item} w={w} expanded={expanded} viewportHeight={viewportHeight} clipBottom={clipBottom} />
     case 'hil': {
       const tone = item.status === 'pending' ? theme.color.warn : item.status === 'approved' || item.status === 'completed' ? theme.color.success : theme.color.error
       return (
