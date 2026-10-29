@@ -47,6 +47,8 @@ The [Knowledge Base](knowledge/index.md) is a task-oriented routing layer for re
 - [Desktop Applications with Isolated Compute](knowledge/desktop-apps.md) — Run available Linux GUI applications in a visible, agent-dedicated container, transfer files, and validate screenshots without assuming a full desktop or generic GUI automation.
 - [Persistent Investigations](knowledge/persistent-investigations.md) — Keep unresolved research questions available across compaction and restart using existing capabilities and an installable skill.
 
+- [Gmail setup](knowledge/gmail-setup.md) — Connect a mailbox with MCP and choose tool permissions
+
 ### Studio Concepts
 
 - [Core Concepts](core-concepts.md) — One file, one agent; the access boundary; the ADF stack

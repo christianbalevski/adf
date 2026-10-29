@@ -862,7 +862,7 @@
           "path": "~/.gmail-mcp/credentials.json"
         }
       ],
-      "prerequisite": "Needs a Google OAuth client JSON (Desktop app) from console.cloud.google.com with the Gmail API enabled. Upstream repo was archived in 2025 but this remains the most-used Gmail server."
+      "prerequisite": "Needs a Google OAuth client JSON (Desktop app) from console.cloud.google.com with the Gmail API enabled. Community server; upstream repository archived in March 2026. See the Gmail setup Knowledge Base article for credential handling and tool permissions."
     },
     {
       "name": "teams",

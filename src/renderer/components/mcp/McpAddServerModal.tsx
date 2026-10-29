@@ -9,6 +9,7 @@ import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { McpCredentialPanel } from './McpCredentialPanel'
 import { McpServerLogs } from './McpServerLogs'
+import { McpHttpOAuthToggle } from './McpHttpOAuthToggle'
 import { BrandIcon } from './BrandIcon'
 import { useSettingsApi } from '../settings/settings-runtime'
 
@@ -835,6 +836,9 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           {/* HTTP header config */}
           {isHttp && (
             <div className="space-y-2">
+              {!registryEntry?.oauth && (
+                <McpHttpOAuthToggle enabled={!!draft.oauth} onChange={(enabled) => patch({ oauth: enabled || undefined })} />
+              )}
               {/* OAuth: browser sign-in is the primary affordance; the bearer/
                   header-env paste inputs are hidden (OAuth-only) or tucked
                   behind a disclosure (dual-mode). */}
