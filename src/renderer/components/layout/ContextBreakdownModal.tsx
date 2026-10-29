@@ -42,7 +42,7 @@ function Row({
   tokens: number
   indent?: boolean
   bold?: boolean
-  /** How the figure was obtained: "≈ estimate", "≈ scaled" (calibrated) or "measured". */
+  /** How the figure was obtained: "≈ estimate" or "measured". */
   tag?: string
   /** Present on expandable group rows — toggles the per-tool sub-rows. */
   onClick?: () => void
@@ -252,7 +252,7 @@ export function ContextBreakdownModal({
   // only content added since is an estimate. Uncalibrated: all of it is.
   const cal = b?.calibration
   const tags = breakdownTags(cal)
-  const partTag = tags.part
+  const partTag = cal ? undefined : tags.part
 
   return (
     <Dialog open={open} onClose={onClose} title="Context breakdown" wide>
@@ -330,7 +330,10 @@ export function ContextBreakdownModal({
             {cal && <Row label="Since last call" tokens={cal.since_last_call_tokens} tag={tags.recent} />}
             <div className="border-t border-[var(--adf-ui-separator)] pt-1.5">
               <Row label="Total" tokens={total} bold tag={tags.total} />
-              <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">{calibrationNote(cal, formatTokens)}</p>
+              <p className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
+                {cal && 'Category counts are estimates calibrated to the last call. '}
+                {calibrationNote(cal, formatTokens)}
+              </p>
             </div>
           </div>
 
