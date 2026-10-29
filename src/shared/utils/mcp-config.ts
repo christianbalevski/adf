@@ -283,12 +283,17 @@ export interface RegistrationTestPlan {
  */
 export function deriveRegistrationTestPlan(
   reg: McpServerRegistration,
-  opts?: { hostAccessEnabled?: boolean },
+  opts?: { hostAccessEnabled?: boolean; mcpOnHost?: boolean },
 ): RegistrationTestPlan {
   const isHttp = reg.type === 'http' || !!reg.url
   if (isHttp) {
     const notes = reg.oauth ? ['Interactive OAuth sign-in runs in a browser during this test.'] : []
     return { location: 'remote http', authMode: reg.oauth ? 'run' : 'none', materializeFiles: false, notes }
+  }
+  // The owner accepted MCP servers on this computer (and Host access is on):
+  // host unless the container was chosen (shouldContainerize).
+  if (opts?.mcpOnHost && opts.hostAccessEnabled && reg.runLocation !== 'shared') {
+    return { location: 'host', authMode: reg.auth ? 'run' : 'none', materializeFiles: true, notes: [] }
   }
   if (reg.runLocation === 'host') {
     // The Connect test must honor the app-wide host-access disable, exactly

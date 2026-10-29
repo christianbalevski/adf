@@ -29,6 +29,15 @@ describe('McpClientManager.markFailed', () => {
     expect(events).toEqual([['agent-1-tools', 'error', 'MCP container for "agent-1-tools" is not ready: podman down']])
   })
 
+  it('records needs_compute when the compute environment is missing', () => {
+    const manager = new McpClientManager()
+    const events: Array<[string, string]> = []
+    manager.on('status-changed', (name, status) => events.push([name, status]))
+    manager.markFailed(stdio(), 'MCP server "agent-1-tools" runs in a container, and the compute environment is not ready: Podman is not installed.', 'needs_compute')
+    expect(manager.getServerState('agent-1-tools')).toMatchObject({ status: 'needs_compute' })
+    expect(events).toEqual([['agent-1-tools', 'needs_compute']])
+  })
+
   it('holds a status record, not a spawn spec', async () => {
     const manager = new McpClientManager()
     manager.markFailed(stdio(), 'failed')

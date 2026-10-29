@@ -55,6 +55,16 @@ interface McpAddServerModalProps {
    * mcpServers array reference changes.
    */
   onOAuthChanged?: () => void
+  /**
+   * Connect failed because Podman isn't set up (result.computeUnavailable):
+   * the dashboard shows the compute sheet. `runOnHost` sets this draft to run
+   * on the host; `retry` runs Connect again.
+   */
+  onComputeNeeded?: (name: string, actions: { retry: () => void; runOnHost: () => Promise<boolean>; pinnedToContainer: boolean }) => void
+  /** Turn on host access without asking again (the compute sheet already asked). */
+  onEnableHostAccessNow?: () => Promise<boolean>
+  /** settings.compute.mcpOnHost: a server with no chosen location runs on the host (while Host access is on). */
+  mcpOnHost?: boolean
 }
 
 function newId(): string {
@@ -264,7 +274,7 @@ export function McpAddServerModal(props: McpAddServerModalProps) {
   return <McpAddServerModalBody {...props} />
 }
 
-function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged }: McpAddServerModalProps) {
+function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged, onComputeNeeded, onEnableHostAccessNow, mcpOnHost }: McpAddServerModalProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
@@ -417,6 +427,15 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     reader.readAsDataURL(file)
   }
 
+  // Connect again after the compute sheet resolved, against the draft as it is now.
+  const [retestRequested, setRetestRequested] = useState(false)
+  useEffect(() => {
+    if (!retestRequested) return
+    setRetestRequested(false)
+    void handleConnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retestRequested])
+
   const handleConnect = async () => {
     if (!draft || !canLaunch || hasPlaceholders) return
     // Snapshot the identity under test — the form stays editable while the
@@ -451,6 +470,16 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
         if (result.oauthRan) onOAuthChanged?.()
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
+        if (result?.computeUnavailable && onComputeNeeded) {
+          onComputeNeeded(tested.name, {
+            pinnedToContainer: tested.runLocation === 'shared',
+            retry: () => setRetestRequested(true),
+            runOnHost: async () => {
+              patch({ runLocation: 'host' })
+              return hostAccessEnabled || !onEnableHostAccessNow ? true : onEnableHostAccessNow()
+            },
+          })
+        }
       }
     } catch (err) {
       setTest({ phase: 'done', success: false, error: String(err) })
@@ -712,28 +741,37 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             </div>
           )}
 
-          {/* Run location */}
-          {!isHttp && (
+          {/* Run location: what routing will do (container-routing.ts). With MCP servers
+              on the host accepted, a server with no chosen location runs on the host. */}
+          {!isHttp && (() => {
+            const hostByDefault = mcpOnHost === true && hostAccessEnabled === true && draft.runLocation === undefined
+            const onHost = draft.runLocation === 'host' || hostByDefault
+            return (
             <div>
               <label className={labelCls}>Runs on</label>
               <div className="grid grid-cols-2 gap-1 rounded-md border border-neutral-300 dark:border-neutral-600 p-0.5">
                 <button
                   onClick={() => patch({ runLocation: 'host' })}
-                  className={`py-1 text-[11px] rounded ${draft.runLocation === 'host' ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 font-medium' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
+                  className={`py-1 text-[11px] rounded ${onHost ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 font-medium' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
                 >
                   Host
                 </button>
                 <button
                   onClick={() => patch({ runLocation: 'shared' })}
-                  className={`py-1 text-[11px] rounded ${draft.runLocation !== 'host' ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 font-medium' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
+                  className={`py-1 text-[11px] rounded ${!onHost ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 font-medium' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
                 >
                   Container
                 </button>
               </div>
               <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-                {draft.runLocation === 'host' ? HOST_BOUNDARY_TEXT : CONTAINER_TEXT}
+                {onHost ? HOST_BOUNDARY_TEXT : CONTAINER_TEXT}
               </p>
-              {draft.runLocation !== 'host' && isCustom && (
+              {hostByDefault && (
+                <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">
+                  MCP servers on the host is on in Settings → Compute. Choose Container to keep this one in a container.
+                </p>
+              )}
+              {!onHost && isCustom && (
                 <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
                   {CONTAINER_CUSTOM_COMMAND_TEXT}
                 </p>
@@ -747,7 +785,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 </p>
               )}
             </div>
-          )}
+            )
+          })()}
 
           {/* Available to agents */}
           <div className="flex items-start justify-between gap-3 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">

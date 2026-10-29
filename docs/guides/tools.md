@@ -450,7 +450,7 @@ Install an MCP server package, attach a custom server, or connect a Streamable H
 
 **Parameters:** `name`
 
-Reconnect an MCP server already configured on this agent and refresh its discovered tools. Use after installing a server, changing credentials, or when discovery returned no tools. Existing tool choices are preserved; newly discovered tools require human approval by default.
+Reconnect an MCP server already configured on this agent and refresh its discovered tools. Use after installing a server, changing credentials, or when discovery returned no tools. Existing tool choices are preserved; newly discovered tools require human approval by default. A containerized server whose compute environment is not set up (Podman missing or its machine not running) fails with status `needs_compute` and a message saying so; once the owner sets it up or lets the server run on the host in Studio, `mcp_restart` connects it.
 
 ### mcp_uninstall
 

@@ -855,17 +855,19 @@ export class McpClientManager extends EventEmitter {
    * shows in getServerStates() and the status-changed event like any other
    * failure. A server not held yet is added in that state; a connected or
    * connecting one is left alone (its own attempt reports its outcome).
+   * `needs_compute` marks a failure because the compute environment is
+   * missing (ComputeUnavailableError), which Studio offers to fix.
    */
-  markFailed(config: McpServerConfig, message: string): void {
+  markFailed(config: McpServerConfig, message: string, status: 'error' | 'needs_compute' = 'error'): void {
     let managed = this.servers.get(config.name)
     if (managed?.status === 'connected' || managed?.status === 'connecting') return
     if (!managed) {
       // Name and transport only: this entry is a status record, never a
       // spawn spec (a restart of it has nothing to start).
-      managed = { config: { name: config.name, transport: config.transport }, client: null, transport: null, status: 'error', tools: [], logs: [], restartCount: 0, autoRestart: false }
+      managed = { config: { name: config.name, transport: config.transport }, client: null, transport: null, status, tools: [], logs: [], restartCount: 0, autoRestart: false }
       this.servers.set(config.name, managed)
     }
-    managed.status = 'error'
+    managed.status = status
     managed.error = message
     managed.autoRestart = false
     this.clearRetryTimer(managed)

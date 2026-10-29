@@ -35,6 +35,25 @@ describe('shouldContainerize', () => {
     expect(shouldContainerize('resolve', server({ run_location: 'host' }), agent(), settings({ hostApproved: ['resolve'] }))).toBe(false)
   })
 
+  it('with MCP servers on this computer accepted: host, unless the container was chosen', () => {
+    const accepted = settings({ hostAccessEnabled: true, mcpOnHost: true })
+    expect(shouldContainerize('resolve', server(), agent(), accepted)).toBe(false)
+    expect(shouldContainerize('resolve', server({ run_location: 'host' }), agent(), accepted)).toBe(false)
+    expect(shouldContainerize('resolve', server({ run_location: 'shared' }), agent(), accepted)).toBe(true)
+  })
+
+  it('MCP servers on this computer never reaches past Host access or an agent\'s own container', () => {
+    // Host access is the master switch: off means nothing runs on the host.
+    expect(shouldContainerize('resolve', server(), agent(), settings({ hostAccessEnabled: false, mcpOnHost: true }))).toBe(true)
+    // An isolated agent can't reach the host through it, even by asking for host itself.
+    const isolated = agent({ compute: { enabled: true } } as Partial<AgentConfig>)
+    const accepted = settings({ hostAccessEnabled: true, mcpOnHost: true })
+    expect(shouldContainerize('resolve', server(), isolated, accepted)).toBe(true)
+    expect(shouldContainerize('resolve', server({ run_location: 'host' }), isolated, accepted)).toBe(true)
+    // Only true turns it on.
+    expect(shouldContainerize('resolve', server(), agent(), { ...accepted, mcpOnHost: 'false' as unknown as boolean })).toBe(true)
+  })
+
   it('containerizes host-requested servers with neither host_access nor approval', () => {
     expect(shouldContainerize('resolve', server({ run_location: 'host' }), agent(), settings())).toBe(true)
   })

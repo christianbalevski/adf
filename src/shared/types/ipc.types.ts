@@ -208,6 +208,8 @@ export interface McpRegistrationTestResult {
   stderrTail?: string[]
   /** Version the server reported in the MCP initialize handshake (serverInfo.version). */
   serverVersion?: string
+  /** The shared container could not start because Podman is not set up (ComputeUnavailableError). */
+  computeUnavailable?: boolean
 }
 
 export interface AppSettings {

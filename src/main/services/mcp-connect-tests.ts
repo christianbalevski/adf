@@ -24,7 +24,9 @@ import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
 import type { McpOAuthStore } from './mcp-oauth.types'
 import { PodmanStdioTransport } from './podman-stdio-transport'
+import { prepareMcpContainer, ComputeUnavailableError } from './mcp-container-ready'
 import type { ComputeSettings } from './container-routing'
+import type { PodmanAvailability } from '../../shared/types/compute.types'
 import { resolveContainerCommand } from './container-command-resolver'
 import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan } from '../../shared/utils/mcp-config'
 import type { McpServerLogEntry } from '../../shared/types/adf-v02.types'
@@ -191,6 +193,8 @@ export interface McpRegistrationTestDeps {
   computeSettings: () => ComputeSettings
   uvManager: { ensureUv(): Promise<string> }
   podman: McpTestPodman
+  /** What the compute environment has, asked only after the container fails to start (default: checkPodmanAvailability). */
+  podmanAvailability?: () => Promise<PodmanAvailability>
   /**
    * The app-level OAuth store: a Settings-only test has no agent context, so
    * the app store IS the token store. Null: no store on this host, and an
@@ -233,7 +237,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
   const { registration, credentialFiles } = v.data
   const reg = registration as McpServerRegistration
   const testComputeSettings = deps.computeSettings()
-  const plan = deriveRegistrationTestPlan(reg, { hostAccessEnabled: testComputeSettings.hostAccessEnabled })
+  const plan = deriveRegistrationTestPlan(reg, { hostAccessEnabled: testComputeSettings.hostAccessEnabled, mcpOnHost: testComputeSettings.mcpOnHost === true })
   const notes = [...plan.notes]
   // Whether an interactive OAuth sign-in was driven during this test.
   let oauthRan = false
@@ -359,9 +363,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     // Shared container: real containerized launch under an ephemeral test
     // home (auth + credential capture are per-agent concerns — see plan
     // notes). Cleaned up afterwards.
-    await step(deps.podman.ensureRunning())
-    const podmanBin = await step(deps.podman.findPodman())
-    if (!podmanBin) return finish({ success: false, tools: [], error: 'Podman is unavailable — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute.' })
+    const podmanBin = await step(prepareMcpContainer(deps.podman, reg.name, () => deps.podman.ensureRunning(), deps.podmanAvailability))
     // Per-invocation test dir so overlapping Connect/Reconnect tests never
     // delete each other's ephemeral home.
     const testDir = `/workspace/_settings_test_${randomUUID()}`
@@ -379,7 +381,12 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
       deps.podman.execInContainer('adf-mcp', '/workspace', `rm -rf ${testDir}`).catch(() => {})
     }
   } catch (error) {
-    return finish({ success: false, tools: [], error: error instanceof Error ? error.message : String(error) })
+    return finish({
+      success: false,
+      tools: [],
+      error: error instanceof Error ? error.message : String(error),
+      ...(error instanceof ComputeUnavailableError ? { computeUnavailable: true } : {}),
+    })
   }
 }
 

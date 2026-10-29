@@ -22,14 +22,16 @@ describe('an agent server\'s Runs on', () => {
           for (const hostAccessEnabled of [false, true]) {
             for (const approved of [[], ['files']]) {
               for (const sources of [undefined, { files: 'npm:@scope/files' }, { files: 'npm:@other/files' }]) {
+               for (const mcpOnHost of [false, true]) {
                 const s = server({ run_location })
                 const agent = { compute: { enabled, host_access } } as unknown as AgentConfig
-                const runtime = { hostAccessEnabled, hostApproved: approved, hostApprovedSources: sources }
+                const runtime = { hostAccessEnabled, hostApproved: approved, hostApprovedSources: sources, mcpOnHost }
                 const got = agentServerPlacement(s, agent, runtime)
                 const onHost = !shouldContainerize(s.name, s, agent, runtime)
                 const expected = onHost ? 'Host' : run_location === 'shared' || !shouldIsolate(agent) ? 'Shared' : 'Isolated'
                 expect(got.runsOn, JSON.stringify({ run_location, enabled, host_access, runtime })).toBe(expected)
                 expect(got.gap === null, 'gap only while a host choice is held back').toBe(run_location !== 'host' || onHost)
+               }
               }
             }
           }
@@ -70,6 +72,15 @@ describe('a Settings → MCP registration\'s Runs on', () => {
     expect(registrationPlacement(reg(), { hostAccessEnabled: true, hostApproved: ['files'], hostApprovedSources: { files: 'npm:@other/files' } }).runsOnHost).toBe(false)
     expect(registrationPlacement(reg(), { hostAccessEnabled: true, hostApproved: ['files'], hostApprovedSources: { files: 'npm:@scope/files' } })).toEqual({ runsOnHost: true, gap: null })
     expect(registrationPlacement(reg({ type: 'http', url: 'https://mcp.example.com' }), { hostAccessEnabled: true, hostApproved: ['files'] }).runsOnHost).toBe(false)
+  })
+
+  it('with MCP servers on this computer accepted: host unless the container was chosen', () => {
+    const runtime = { hostAccessEnabled: true, hostApproved: [], mcpOnHost: true }
+    expect(registrationPlacement(reg({ runLocation: undefined }), { ...runtime, hostAccessEnabled: false }).runsOnHost).toBe(false)
+    expect(registrationPlacement(reg({ runLocation: undefined }), runtime)).toEqual({ runsOnHost: true, gap: null })
+    expect(registrationPlacement(reg(), runtime)).toEqual({ runsOnHost: true, gap: null })
+    expect(registrationPlacement(reg({ runLocation: 'shared' }), runtime).runsOnHost).toBe(false)
+    expect(registrationPlacement(reg({ type: 'http', url: 'https://mcp.example.com' }), runtime).runsOnHost).toBe(false)
   })
 })
 

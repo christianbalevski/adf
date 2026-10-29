@@ -16,6 +16,8 @@ export interface RuntimeHostApproval {
   hostAccessEnabled: boolean
   hostApproved: string[]
   hostApprovedSources?: Record<string, string>
+  /** The owner accepted running MCP servers on this computer (settings.compute.mcpOnHost). */
+  mcpOnHost?: boolean
 }
 
 export type McpLocation = 'Isolated' | 'Shared' | 'Host'
@@ -51,6 +53,9 @@ export function agentServerPlacement(
   const isolated = agent.compute?.enabled === true
   const location = server.run_location ?? (server.host_requested ? 'host' : undefined)
   const container: McpLocation = location === 'shared' || !isolated ? 'Shared' : 'Isolated'
+  if (runtime.mcpOnHost === true && runtime.hostAccessEnabled && !isolated && location !== 'shared') {
+    return { choice: location === 'host' ? 'Host' : container, runsOn: 'Host', gap: null }
+  }
   if (location !== 'host') return { choice: container, runsOn: container, gap: null }
   if (!runtime.hostAccessEnabled) return { choice: 'Host', runsOn: container, gap: 'host-access' }
   if (agent.compute?.host_access) return { choice: 'Host', runsOn: 'Host', gap: null }
@@ -60,7 +65,9 @@ export function agentServerPlacement(
 
 /** A Settings → MCP registration: host only when chosen, switched on, and approved for its package. */
 export function registrationPlacement(reg: McpServerRegistration, runtime: RuntimeHostApproval): { runsOnHost: boolean; gap: HostApprovalGap } {
-  if (reg.type === 'http' || reg.runLocation !== 'host') return { runsOnHost: false, gap: null }
+  if (reg.type === 'http') return { runsOnHost: false, gap: null }
+  if (runtime.mcpOnHost === true && runtime.hostAccessEnabled && reg.runLocation !== 'shared') return { runsOnHost: true, gap: null }
+  if (reg.runLocation !== 'host') return { runsOnHost: false, gap: null }
   if (!runtime.hostAccessEnabled) return { runsOnHost: false, gap: 'host-access' }
   if (!approvalMatches(reg.name, registrationSourceIdentity(reg), runtime)) return { runsOnHost: false, gap: 'server' }
   return { runsOnHost: true, gap: null }

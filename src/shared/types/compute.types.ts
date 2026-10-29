@@ -65,6 +65,12 @@ export interface ComputeAppSettings {
   hostApproved: string[]
   /** name → source identity recorded when the name was approved (the host-grant squat guard, container-routing.ts). */
   hostApprovedSources?: Record<string, string>
+  /**
+   * The owner accepted running MCP servers on this computer instead of in a
+   * container (container-routing.ts). Off by default; Studio turns it on only
+   * after an explicit confirmation.
+   */
+  mcpOnHost?: boolean
   containerPackages: string[]
   machineCpus: number
   machineMemoryMb: number

@@ -44,6 +44,7 @@ import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../servic
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
+import { prepareMcpContainer, ComputeUnavailableError } from '../services/mcp-container-ready'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
 import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { adapterCredentialsLocked, createLockedCredentialsAdapter, describeHostEnv, detectLockedEnvelopes } from './agent-runtime-builder'
@@ -1379,21 +1380,17 @@ export class BackgroundAgentManager extends EventEmitter {
         const containerCmd = resolveContainerCommand(connCfg)
         const isolated = shouldIsolate(freshConfig) && !isServerForceShared(connCfg)
         location = isolated ? 'isolated container' : 'shared container'
-        try {
-          if (isolated) {
-            await this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-          } else {
-            await this.podmanService.ensureRunning()
-          }
-        } catch (containerErr) {
-          // Fail plainly — never silently fall back to host execution when
-          // routing decided this server must be containerized.
-          const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
-          throw new Error(`MCP container for "${connCfg.name}" is not ready: ${detail} Once the compute environment is fixed, call mcp_restart("${connCfg.name}") to reconnect.`)
-        }
+        // Fail plainly — never silently fall back to host execution when
+        // routing decided this server must be containerized.
+        const podman = this.podmanService
+        const podmanBin = await prepareMcpContainer(podman, connCfg.name, () => isolated
+          ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+          : podman.ensureRunning(),
+        ).catch((err: unknown) => {
+          if (err instanceof ComputeUnavailableError) mgr.markFailed(serverCfg, err.message, 'needs_compute')
+          throw err
+        })
         const { isolatedContainerName } = await import('../services/podman.service')
-        const podmanBin = await this.podmanService.findPodman()
-        if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${connCfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${connCfg.name}").`)
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
         try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
@@ -1507,11 +1504,13 @@ export class BackgroundAgentManager extends EventEmitter {
         const willContainerize = shouldContainerize(cfg.name, cfg, freshConfig, computeSettings)
         if (this.podmanService && willContainerize) {
           const isolated = shouldIsolate(freshConfig) && !isServerForceShared(cfg)
-          await (isolated
-            ? this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-            : this.podmanService.ensureRunning())
-          const podmanBin = await this.podmanService.findPodman()
-          if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${cfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${cfg.name}").`)
+          const podman = this.podmanService
+          const podmanBin = await prepareMcpContainer(podman, cfg.name, () => isolated
+            ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+            : podman.ensureRunning()).catch((err: unknown) => {
+            if (err instanceof ComputeUnavailableError) mgr.markFailed(cfg, err.message, 'needs_compute')
+            throw err
+          })
           const { resolveContainerCommand } = await import('../services/container-command-resolver')
           const { isolatedContainerName } = await import('../services/podman.service')
           const cc = resolveContainerCommand(cfg)
