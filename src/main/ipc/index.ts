@@ -8191,6 +8191,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
   })
 
+  ipcMain.handle(IPC.CLAUDE_AUTH_INSTALL, async () => {
+    try {
+      const { getClaudeAuthManager } = await import('../providers/claude-subscription/auth-manager')
+      return { success: true, status: await getClaudeAuthManager().install() }
+    } catch (err) {
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
+  })
+
   // --- Emergency Stop ---
 
   ipcMain.handle(IPC.EMERGENCY_STOP, async () => {

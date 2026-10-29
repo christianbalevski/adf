@@ -142,6 +142,8 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
   const refreshGrok = useCallback(() => { api?.grokAuthStatus().then(setGrokAuth).catch(() => {}) }, [])
   const [claudeAuth, setClaudeAuth] = useState<ClaudeAuthStatusView>({ authenticated: false, installed: true })
   const [claudeLoading, setClaudeLoading] = useState(false)
+  const [claudeInstalling, setClaudeInstalling] = useState(false)
+  const [claudeInstallError, setClaudeInstallError] = useState<string | undefined>()
   const [claudeError, setClaudeError] = useState<string | undefined>()
   const refreshClaude = useCallback((recheck = false) => {
     api?.claudeAuthStatus(recheck).then(setClaudeAuth).catch(() => {})
@@ -196,22 +198,45 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     signOut: async () => { await api?.grokAuthLogout(); setGrokDevice(null); refreshGrok() },
   }
 
+  const claudeSignIn = async () => {
+    setClaudeLoading(true)
+    setClaudeError(undefined)
+    try {
+      const result = await api?.claudeAuthStart()
+      if (result && !result.success) setClaudeError(result.error)
+    } catch (err) {
+      setClaudeError(String(err))
+    } finally {
+      setClaudeLoading(false)
+      refreshClaude()
+    }
+  }
+
   const claude: SubscriptionAuthState = {
     ...claudeAuth,
     flowError: claudeError ?? claudeAuth.flowError,
     loading: claudeLoading,
+    installing: claudeInstalling,
+    installError: claudeInstallError,
     signOutHint: 'Also signs out Claude Code on this computer.',
-    signIn: async () => {
-      setClaudeLoading(true)
-      setClaudeError(undefined)
+    signIn: claudeSignIn,
+    // Install (or update) Claude Code, then go straight on to sign-in.
+    install: async () => {
+      setClaudeInstalling(true)
+      setClaudeInstallError(undefined)
       try {
-        const result = await api?.claudeAuthStart()
-        if (result && !result.success) setClaudeError(result.error)
+        const result = await api?.claudeCodeInstall()
+        if (!result?.success || !result.status) {
+          setClaudeInstallError(result?.error ?? 'Claude Code could not be installed.')
+          refreshClaude(true)
+          return
+        }
+        setClaudeAuth(result.status)
+        if (result.status.installed && !result.status.updateRequired && !result.status.authenticated) await claudeSignIn()
       } catch (err) {
-        setClaudeError(String(err))
+        setClaudeInstallError(String(err))
       } finally {
-        setClaudeLoading(false)
-        refreshClaude()
+        setClaudeInstalling(false)
       }
     },
     signOut: async () => {

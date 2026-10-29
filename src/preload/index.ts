@@ -673,6 +673,8 @@ const createAdfApi = (ipcRenderer: RuntimeIpc): Omit<AdfApi, 'runtime' | 'onAnyR
     ipcRenderer.invoke(IPC.CLAUDE_AUTH_CANCEL),
   claudeAuthLogout: () =>
     ipcRenderer.invoke(IPC.CLAUDE_AUTH_LOGOUT),
+  claudeCodeInstall: () =>
+    ipcRenderer.invoke(IPC.CLAUDE_AUTH_INSTALL),
 
   // Open file request (main -> renderer, e.g. double-click .adf in Finder)
   onOpenFileRequest: (callback: (data: { filePath: string; runtimeId?: string }) => void) => {

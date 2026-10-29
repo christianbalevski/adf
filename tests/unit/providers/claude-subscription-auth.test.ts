@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -7,6 +8,8 @@ const h = vi.hoisted(() => ({
   versions: new Map<string, string>(),
   statusJson: '',
   execCalls: [] as string[][],
+  /** Side effects and result of a non-version exec (an update or the installer). */
+  onExec: null as null | ((path: string, args: string[]) => { err?: Error; stdout?: string; stderr?: string } | void),
   children: [] as Array<{ stdout: EventEmitter; stderr: EventEmitter; stdin: { write: (s: string) => void; written: string[] }; kill: () => void; killed: boolean } & EventEmitter>,
 }))
 
@@ -24,7 +27,8 @@ vi.mock('node:child_process', () => ({
         return v ? cb(null, `${v} (Claude Code)\n`, '') : cb(new Error('boom'), '', '')
       }
       if (args[0] === 'auth' && args[1] === 'status') return cb(null, h.statusJson, '')
-      cb(null, '', '')
+      const r = h.onExec?.(path, args)
+      cb(r?.err ?? null, r?.stdout ?? '', r?.stderr ?? '')
     })
   },
   spawn: () => {
@@ -59,6 +63,7 @@ beforeEach(async () => {
   h.versions.clear()
   h.execCalls.length = 0
   h.children.length = 0
+  h.onExec = null
   h.statusJson = JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', email: 'agent-1@example.test', subscriptionType: 'max' })
   process.env.ADF_CLAUDE_CODE_PATH = OLD
   process.env.PATH = ''
@@ -231,6 +236,64 @@ describe('Claude Code discovery', () => {
     expect(b).toBe(a)
     await code.probeClaudeCode()
     expect(h.execCalls.filter(c => c[1] === '--version')).toHaveLength(1)
+  })
+})
+
+describe('Claude Code install', () => {
+  const NATIVE = join(homedir(), '.local', 'bin', process.platform === 'win32' ? 'claude.exe' : 'claude')
+  const isInstaller = (args: string[]) => args.some(a => a.includes('https://claude.ai/install.'))
+  const installerRuns = () => h.execCalls.filter(c => isInstaller(c.slice(1))).length
+  const updateRuns = () => h.execCalls.filter(c => c[1] === 'update').length
+  const installNative = (version: string) => { h.files.add(NATIVE); h.versions.set(NATIVE, version) }
+
+  it('runs the native installer when Claude Code is missing; concurrent callers share the run', async () => {
+    h.files.clear()
+    h.versions.clear()
+    h.onExec = (_path, args) => { if (isInstaller(args)) installNative('2.1.300') }
+    const m = auth.getClaudeAuthManager()
+    expect(await m.getAuthStatus()).toMatchObject({ installed: false })
+    const [a, b] = await Promise.all([code.installClaudeCode(), code.installClaudeCode()])
+    expect(a).toEqual({ path: NATIVE, version: '2.1.300' })
+    expect(b).toBe(a)
+    expect(installerRuns()).toBe(1)
+    expect(updateRuns()).toBe(0)
+    // The manager's cached "not installed" is dropped.
+    expect(await m.install()).toMatchObject({ authenticated: true, installed: true, version: '2.1.300' })
+  })
+
+  it('a supported install is left alone', async () => {
+    expect(await code.installClaudeCode()).toEqual({ path: OLD, version: '2.1.250' })
+    expect(installerRuns() + updateRuns()).toBe(0)
+  })
+
+  it('updates an outdated copy in place with claude update', async () => {
+    h.versions.set(OLD, '2.0.1')
+    h.onExec = (path, args) => { if (path === OLD && args[0] === 'update') h.versions.set(OLD, '2.1.300') }
+    expect(await code.installClaudeCode()).toEqual({ path: OLD, version: '2.1.300' })
+    expect(updateRuns()).toBe(1)
+    expect(installerRuns()).toBe(0)
+  })
+
+  it('falls back to the native installer when claude update leaves it outdated', async () => {
+    h.versions.set(OLD, '2.0.1')
+    h.onExec = (_path, args) => {
+      if (args[0] === 'update') return { stdout: 'Claude is up to date!' }
+      if (isInstaller(args)) installNative('2.1.300')
+    }
+    expect(await code.installClaudeCode()).toEqual({ path: NATIVE, version: '2.1.300' })
+    expect(updateRuns()).toBe(1)
+    expect(installerRuns()).toBe(1)
+  })
+
+  it('a failed installer reports its last line and the manual install page', async () => {
+    h.files.clear()
+    h.versions.clear()
+    h.onExec = (_path, args) => {
+      if (isInstaller(args)) return { err: new Error('exit 22'), stderr: 'Downloading...\ncurl: (6) Could not resolve host: claude.ai\n' }
+    }
+    await expect(code.installClaudeCode()).rejects.toThrow(
+      `Claude Code could not be installed: curl: (6) Could not resolve host: claude.ai. Install it from ${code.CLAUDE_CODE_INSTALL_URL}.`,
+    )
   })
 })
 

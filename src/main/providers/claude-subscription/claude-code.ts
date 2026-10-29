@@ -159,7 +159,66 @@ export async function requireClaudeCode(): Promise<ClaudeCodeInstall> {
   return probe.install
 }
 
-const CLAUDE_ENV_DENY = /^(CLAUDE_CODE_|ANTHROPIC_|CLAUDECODE$)/i
+/**
+ * Anthropic's native installer: no admin rights, installs into
+ * `~/.local/bin` (a path `candidatePaths` checks) and keeps itself updated.
+ * Fixed strings: nothing a caller sends reaches the shell.
+ */
+const NATIVE_INSTALL: { cmd: string; args: string[] } = isWindows
+  ? { cmd: 'powershell.exe', args: ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', 'irm https://claude.ai/install.ps1 | iex'] }
+  : { cmd: 'bash', args: ['-c', 'set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash'] }
+
+const INSTALL_TIMEOUT_MS = 10 * 60_000
+
+function runInstallStep(cmd: string, args: string[]): Promise<{ ok: boolean; output: string }> {
+  return new Promise((resolve) => {
+    execFile(cmd, args, { timeout: INSTALL_TIMEOUT_MS, windowsHide: true, env: claudeCodeEnv(), maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      resolve({ ok: !err, output: `${stdout}\n${stderr}${err && !stdout && !stderr ? err.message : ''}` })
+    })
+  })
+}
+
+/** Last non-empty output line, for an error message. */
+function lastLine(output: string): string {
+  // eslint-disable-next-line no-control-regex
+  const plain = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
+  return plain.trim().split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
+}
+
+let installing: Promise<ClaudeCodeInstall> | null = null
+
+/**
+ * Install Claude Code, or update an install too old for ADF. An outdated copy
+ * gets `claude update` first; when that leaves it outdated (a Homebrew or
+ * WinGet copy updates only through its package manager) the native installer
+ * runs, and the probe picks the newer copy. Concurrent callers share one run.
+ */
+export function installClaudeCode(): Promise<ClaudeCodeInstall> {
+  if (!installing) {
+    installing = runInstall().finally(() => { installing = null })
+  }
+  return installing
+}
+
+async function runInstall(): Promise<ClaudeCodeInstall> {
+  let probe = await probeClaudeCode(true)
+  if (probe.found && probe.supported) return probe.install
+  if (probe.found) {
+    await runInstallStep(probe.install.path, ['update'])
+    probe = await probeClaudeCode(true)
+    if (probe.found && probe.supported) return probe.install
+  }
+  const { ok, output } = await runInstallStep(NATIVE_INSTALL.cmd, NATIVE_INSTALL.args)
+  probe = await probeClaudeCode(true)
+  if (probe.found && probe.supported) return probe.install
+  const detail = lastLine(output)
+  if (probe.found) {
+    throw new Error(`Claude Code ${probe.install.version} is installed; ADF needs ${MIN_CLAUDE_CODE_VERSION} or newer.${detail ? ` ${detail}` : ''}`)
+  }
+  throw new Error(`Claude Code could not be installed${ok ? '' : `: ${detail || 'the installer failed'}`}. Install it from ${CLAUDE_CODE_INSTALL_URL}.`)
+}
+
+const CLAUDE_ENV_DENY =/^(CLAUDE_CODE_|ANTHROPIC_|CLAUDECODE$)/i
 
 /**
  * Environment for every Claude Code child process. Strips Anthropic API

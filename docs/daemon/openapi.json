@@ -6155,6 +6155,37 @@
         }
       }
     },
+    "/auth/claude/install": {
+      "post": {
+        "tags": [
+          "Providers & sign-in"
+        ],
+        "summary": "Install Claude Code",
+        "description": "Installs Claude Code on the daemon host with Anthropic's native installer (`curl -fsSL https://claude.ai/install.sh | bash`, or `install.ps1` on Windows), or runs `claude update` when the installed copy is older than ADF needs. Returns at once when it is already up to date. No body; an install can take a few minutes. Returns the fresh sign-in status.",
+        "operationId": "installClaudeCode",
+        "responses": {
+          "200": {
+            "description": "Installed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ClaudeAuthStatus"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
     "/agents/{id}/providers": {
       "post": {
         "tags": [

@@ -494,6 +494,7 @@ export const CHANNEL_MAP = {
   [IPC.CLAUDE_AUTH_SUBMIT_CODE]: proxied('invoke', ['POST /auth/claude/code']),
   [IPC.CLAUDE_AUTH_CANCEL]: proxied('invoke', ['POST /auth/claude/cancel']),
   [IPC.CLAUDE_AUTH_LOGOUT]: proxied('invoke', ['POST /auth/claude/logout']),
+  [IPC.CLAUDE_AUTH_INSTALL]: proxied('invoke', ['POST /auth/claude/install'], { note: 'Installs Claude Code on the daemon host.' }),
 
   // --- Mesh HTTP server, discovery, firewall ---------------------------------
   [IPC.MESH_SERVER_STATUS]: proxied('invoke', ['GET /network/server']),

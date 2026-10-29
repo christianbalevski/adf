@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { probeClaudeCode, requireClaudeCode, claudeCodeEnv, MIN_CLAUDE_CODE_VERSION, CLAUDE_CODE_INSTALL_URL } from './claude-code'
+import { probeClaudeCode, requireClaudeCode, installClaudeCode, claudeCodeEnv, MIN_CLAUDE_CODE_VERSION, CLAUDE_CODE_INSTALL_URL } from './claude-code'
 import type { ClaudeAuthStatus, ClaudeAuthFlow } from './types'
 
 /**
@@ -144,6 +144,16 @@ class ClaudeAuthManager {
       ...(cli.email ? { email: cli.email } : {}),
       ...(cli.subscriptionType ? { plan: cli.subscriptionType } : {}),
     }
+  }
+
+  /** Install or update Claude Code on this machine, then report the fresh status. */
+  async install(): Promise<ClaudeAuthStatus> {
+    try {
+      await installClaudeCode()
+    } finally {
+      this.invalidateStatus()
+    }
+    return this.getAuthStatus({ fresh: true })
   }
 
   async isAuthenticated(): Promise<boolean> {

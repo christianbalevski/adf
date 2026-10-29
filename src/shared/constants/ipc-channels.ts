@@ -359,6 +359,7 @@ export const IPC = {
   CLAUDE_AUTH_SUBMIT_CODE: 'adf:claude-auth:submit-code',
   CLAUDE_AUTH_CANCEL: 'adf:claude-auth:cancel',
   CLAUDE_AUTH_LOGOUT: 'adf:claude-auth:logout',
+  CLAUDE_AUTH_INSTALL: 'adf:claude-auth:install',
 
   // Mesh HTTP server
   MESH_SERVER_STATUS: 'adf:mesh-server:status',

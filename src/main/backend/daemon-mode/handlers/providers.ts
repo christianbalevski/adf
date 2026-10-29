@@ -404,4 +404,13 @@ export const PROVIDER_HANDLERS: DaemonHandlerTable = {
       return { success: false, error: message(err) }
     }
   },
+
+  [IPC.CLAUDE_AUTH_INSTALL]: async (ctx) => {
+    try {
+      const status = await (await ctx.ready()).request('POST', '/auth/claude/install', { timeoutMs: 11 * 60_000 })
+      return { success: true, status }
+    } catch (err) {
+      return { success: false, error: message(err) }
+    }
+  },
 }

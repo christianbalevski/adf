@@ -145,13 +145,14 @@ Available models (fetched live from xAI when signed in; fallback catalog): `grok
 
 **Claude Subscription** — Use your Claude Pro or Max plan to power agents with Claude models. adf never handles Claude credentials: sign-in runs through your installed, unmodified Claude Code (`claude auth login`), and requests go through the official Claude Agent SDK, which drives that Claude Code binary. Usage draws from your plan's limits as Agent SDK (third-party) usage.
 
-Requirements: Claude Code 2.1.248 or newer, installed per [Claude Code setup](https://code.claude.com/docs/en/setup). adf looks for `claude` in the usual install locations and on `PATH`; set `ADF_CLAUDE_CODE_PATH` to use a specific executable.
+Requirements: Claude Code 2.1.248 or newer. adf looks for `claude` in the usual install locations and on `PATH`; set `ADF_CLAUDE_CODE_PATH` to use a specific executable.
 
 Setup:
 1. Add a provider and pick **Claude** under Subscriptions
-2. Click **Sign in with Claude** — Claude Code opens your browser to Claude's sign-in page. If the page shows a code instead of finishing on its own, paste it into adf
-3. After signing in, the provider shows your email and plan
-4. Select a model from the dropdown (e.g., `claude-opus-5-5`, `claude-sonnet-5-5`)
+2. If Claude Code is missing or too old, click **Install Claude Code and sign in** (or **Update Claude Code and sign in**). adf runs Anthropic's installer (`curl -fsSL https://claude.ai/install.sh | bash`; `irm https://claude.ai/install.ps1 | iex` on Windows), or `claude update` for an old copy, then starts sign-in. No admin password is needed. If it fails, click **Install it yourself** and follow [Claude Code setup](https://code.claude.com/docs/en/setup)
+3. Otherwise click **Sign in with Claude** — Claude Code opens your browser to Claude's sign-in page. If the page shows a code instead of finishing on its own, paste it into adf
+4. After signing in, the provider shows your email and plan
+5. Select a model from the dropdown (e.g., `claude-opus-5-5`, `claude-sonnet-5-5`)
 
 Notes:
 - The session is Claude Code's own and is shared with your normal Claude Code use on that machine. Signing in from Studio, the daemon or a terminal `claude auth login` signs in all of them; **signing out from adf also signs Claude Code out**
