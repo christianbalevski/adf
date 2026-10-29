@@ -27,7 +27,7 @@ import { getTokenUsageService } from '../services/token-usage.service'
 import { MIN_CLAUDE_CODE_VERSION } from '../providers/claude-subscription/claude-code'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { getTokenCounterService } from '../services/token-counter.service'
-import { buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
+import { fitCompactionTranscript, buildCompactionUserMessage, COMPACTION_FOOTER } from './compaction-prompt'
 import { sliceWellFormed, toWellFormed } from '../../shared/utils/well-formed'
 import { DEFAULT_COMPACTION_PROMPT, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../shared/constants/adf-defaults'
 import { nanoid } from 'nanoid'
@@ -49,6 +49,7 @@ import { assembleContextBreakdown, calibrateContextBreakdown, findLastCall, meas
 import { withLoop, withSource, withTurn } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
+import { ToolRepetitionMonitor } from './tool-repetition-monitor'
 import { currentResourceWriter, documentRevision } from './resource-revisions'
 import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
@@ -810,6 +811,8 @@ export class AgentExecutor extends EventEmitter {
    *  citations) while the full context is still in the loop. Compaction itself
    *  never writes files. Reset alongside the other context state. */
   private memoryFlushNudgeIssued = false
+  /** A new context/config invalidates comparisons with earlier tool batches. */
+  private toolObservationEpoch = 0
 
   /** Detail of the last failed compaction, cleared on the next success. The
    *  failure note is appended to the loop only when the detail CHANGES —
@@ -1274,6 +1277,7 @@ export class AgentExecutor extends EventEmitter {
    *  never receives the context entries again and the system prompt keeps
    *  stale injected-file content. */
   resetContextState(): void {
+    this.toolObservationEpoch++
     this.lastSystemPromptHash = undefined
     this.lastDynamicInstructions = undefined
     this.currentDynamicInstructions = undefined
@@ -1311,6 +1315,7 @@ export class AgentExecutor extends EventEmitter {
 
   updateConfig(config: AgentConfig): void {
     this.config = config
+    this.toolObservationEpoch++
     // Invalidate system prompt cache when config changes
     this.systemPromptCache = null
     this.toolSnapshotCache = null
@@ -2468,6 +2473,8 @@ export class AgentExecutor extends EventEmitter {
       // Circuit breaker for autonomous narration loops: consecutive responses
       // with no tool calls. Escalates the continuation nudge, then forces idle.
       let consecutiveTextOnly = 0
+      const repetitionMonitor = new ToolRepetitionMonitor()
+      let repetitionEpoch = this.toolObservationEpoch
       // The silent-turn notice goes in at most once per turn.
       let silenceNoticed = false
       // Deduplication for context injection ("No Secrets" audit trail)
@@ -2547,11 +2554,17 @@ export class AgentExecutor extends EventEmitter {
         // batch has been committed in full and the next provider request has
         // not started, so an injected user message can never split a
         // tool_use/tool_result exchange.
-        this.session.drainContextInjections()
+        if (this.session.drainContextInjections().length > 0) repetitionMonitor.reset()
         this.flushOwnerCommandRecords()
         // Owner chats that arrived while the agent worked join here, at the
         // same safe boundary, as their own user rows after the tool results.
-        if (!opts?.nested) this.deliverQueuedChats('next_step')
+        if (!opts?.nested && this.deliverQueuedChats('next_step') > 0) {
+          // New owner input starts a fresh response/recovery window. Delivery
+          // drains pendingChats, so the post-response queue check cannot see it.
+          consecutiveTextOnly = 0
+          silenceNoticed = false
+          repetitionMonitor.reset()
+        }
 
         // Preflight credential check (UX): if the provider's API key is invalid
         // (missing, revoked, depleted balance, billing failure, etc.) we must NOT enter
@@ -3538,6 +3551,38 @@ export class AgentExecutor extends EventEmitter {
           // changes) so a live transcript can still name a pagination cursor.
           this.emitToolResultSeq(toolResultsMsg, toolResults)
 
+          // A tool call is activity, not proof of progress. Observe completed
+          // batches only, after their results are durable, and never interrupt
+          // terminal actions or fresh input with a stale recovery suggestion.
+          if (this.config.autonomous && continueLoop && !needsLoopReset
+            && !this._interruptRestart && !this._ownerStateTransitionRequested
+            && this.getState() !== 'stopped' && this.pendingChats.length === 0
+            && !this.session.hasPendingContextInjections()) {
+            if (repetitionEpoch !== this.toolObservationEpoch) {
+              repetitionMonitor.reset()
+              repetitionEpoch = this.toolObservationEpoch
+            }
+            const repetition = repetitionMonitor.observe(toolUseBlocks, toolResults)
+            if (repetition) {
+              // Names/counts only: raw arguments and results may hold secrets.
+              const names = repetition.toolNames.slice(0, 6).map(name => sliceWellFormed(name, 0, 80)).join(', ')
+              this.addRuntimeNotice(
+                `[System] Repeated tool pattern: a sequence of ${repetition.period} tool-call batch(es) ` +
+                `has repeated ${repetition.repetitions} times with identical inputs and returned results (${names}). ` +
+                'This does not by itself prove that no progress occurred. If this is intentional polling or replication, ' +
+                'use an appropriate cadence and a clear condition for new evidence. Otherwise, reassess the latest instructions ' +
+                'and results, then try a materially different approach or a discriminating check within the current scope. ' +
+                'Do not repeat a completion report or change permissions just to escape this pattern.'
+              )
+              try {
+                this.session.getWorkspace().insertLog('info', 'executor', 'tool_repetition_observed', null,
+                  `Repeated ${repetition.period}-batch pattern (${repetition.repetitions} times)`, repetition)
+              } catch { /* observability is never fatal */ }
+            }
+          } else {
+            repetitionMonitor.reset()
+          }
+
           // After tool results are committed, reset in-memory session if loop was cleared
           if (needsLoopReset) {
             const workspace = this.session.getWorkspace()
@@ -3673,9 +3718,12 @@ export class AgentExecutor extends EventEmitter {
                 // legitimate, so it resets the narration counter.
                 consecutiveTextOnly = 0
               } else {
+                const stateGuidance = this.canSetState()
+                  ? ' Use sys_set_state to yield only when consistent with your current instructions.'
+                  : ''
                 const nudge = consecutiveTextOnly >= 2
-                  ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Either call a tool now to make progress, or yield by calling sys_set_state with state "idle".]`
-                  : '[Continue working autonomously according to your instructions. Control your state with sys_set_state().]'
+                  ? `[You have responded ${consecutiveTextOnly} times in a row without calling any tools. Do not reply with another status update. Reassess your latest instructions and use an available tool to make progress.${stateGuidance}]`
+                  : `[Continue working autonomously according to your instructions. Use an available tool to advance the work.${stateGuidance}]`
                 this.addRuntimeNotice(nudge)
               }
             }
@@ -5416,10 +5464,8 @@ export class AgentExecutor extends EventEmitter {
   /**
    * Summarize the conversation, clear the loop, and restore from the summary.
    * Shared by the top-of-loop auto-compact, the pre-flight context guard, and
-   * the voluntary loop_compact tool. Always clears even when summary generation
-   * fails — a placeholder summary still beats sending an over-window request
-   * that the provider rejects with context_length_exceeded. Resets context
-   * dedup / warning tier internally.
+   * the voluntary loop_compact tool. A failed summary preserves history.
+   * Successful compaction resets context dedup / warning tier internally.
    *
    * @param reason Human-readable trigger, for logs.
    * @param opts.instructions       Optional agent-supplied compaction guidance.
@@ -5460,8 +5506,26 @@ export class AgentExecutor extends EventEmitter {
     let compactionTranscriptChars = 0
     // Named before the try so a failed build is logged against the override.
     const override = this.config.context?.compaction_model
+    const defaultOutputBudget = COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM
+    const compactionMaxTokens = override?.max_tokens && override.max_tokens > 0
+      ? Math.min(defaultOutputBudget, Math.floor(override.max_tokens))
+      : defaultOutputBudget
+    let compactionInputBudget = 0
+    let compactionInputTokens = 0
     let summarizer: LLMProvider | null = null
     try {
+      summarizer = this.compactionProvider()
+      // This is a planning allowance, not discovered model capacity. A small
+      // trigger can mean "compact often", so keep a modest input floor. A
+      // different summarizer must not blindly inherit a large host allowance.
+      const hostAllowance = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100_000
+      const sameModel = !override || (override.provider === this.config.model.provider
+        && override.model_id === this.config.model.model_id)
+      const allowance = override?.compact_threshold
+        ?? (sameModel ? hostAllowance : Math.min(hostAllowance, 100_000))
+      compactionInputBudget = Math.max(8_192, Math.floor(allowance - compactionMaxTokens - 1_024))
+      const tokenizerProvider = summarizer.providerType ?? summarizer.providerId
+        ?? override?.provider ?? this.config.model.provider
       // Serialize conversation history as a text transcript. Role tags carry
       // the loop seq when known ([USER S137]) so the summary can cite [S<seq>]
       // provenance markers that survive compaction.
@@ -5475,16 +5539,12 @@ export class AgentExecutor extends EventEmitter {
             if (block.type === 'text' && block.text) {
               transcriptLines.push(`[${role}] ${block.text}`)
             } else if (block.type === 'tool_use') {
-              // Every fixed-offset cut below is surrogate-safe: a preview
-              // chopped mid-emoji leaves a lone surrogate, and the codex
-              // backend rejects the whole request with an opaque 400.
-              const inputStr = block.input ? sliceWellFormed(JSON.stringify(block.input), 0, 200) : ''
-              transcriptLines.push(`[${role}] [Called ${block.name}(${inputStr})]`)
+              const inputStr = block.input === undefined ? '' : JSON.stringify(block.input)
+              transcriptLines.push(`[${role}] [Called ${block.name} id=${block.id ?? '?'} (${inputStr})]`)
             } else if (block.type === 'tool_result') {
-              const preview = sliceWellFormed(block.content ?? '', 0, 300)
-              transcriptLines.push(`[${role}] [Result: ${preview}]`)
+              transcriptLines.push(`[${role}] [Result id=${block.tool_use_id ?? '?'}${block.is_error ? ' error' : ''}: ${block.content ?? ''}]`)
             } else if (block.type === 'thinking' && block.thinking) {
-              transcriptLines.push(`[${role}] [Thinking: ${sliceWellFormed(block.thinking, 0, 200)}...]`)
+              transcriptLines.push(`[${role}] [Thinking: ${block.thinking}]`)
             } else if (isFileRefBlock(block)) {
               transcriptLines.push(`[${role}] ${fileRefText(block.file_ref)}`)
             }
@@ -5492,25 +5552,39 @@ export class AgentExecutor extends EventEmitter {
         }
       }
 
-      // Trim to reasonable size if very large (~100k chars ≈ 25k tokens)
-      let transcript = transcriptLines.join('\n')
-      if (transcript.length > 100000) {
-        transcript = sliceWellFormed(transcript, transcript.length - 100000)
-      }
       // Tool output can itself carry lone surrogates (a tool truncated its own
       // result mid-character); repair them so the summarizer request is valid.
-      transcript = toWellFormed(transcript)
-      compactionTranscriptChars = transcript.length
-
+      const completeTranscript = toWellFormed(transcriptLines.join('\n'))
       const entryCount = workspace.getLoopCount()
-      summarizer = this.compactionProvider()
+      const fitted = fitCompactionTranscript(completeTranscript, {
+        maxInputTokens: compactionInputBudget,
+        system: this.compactionPrompt,
+        entryCount,
+        instructions: opts?.instructions,
+        countTokens: text => tokenCounter.countTokens(text, tokenizerProvider, summarizer!.modelId),
+      })
+      const transcript = fitted.transcript
+      compactionTranscriptChars = transcript.length
+      compactionInputTokens = fitted.inputTokens
+      try {
+        workspace.insertLog('info', 'runtime', 'compaction_input', summarizer.modelId,
+          `Prepared ${compactionInputTokens} input tokens; omitted ${fitted.omittedCharacters} transcript characters`, {
+            input_budget_tokens: compactionInputBudget,
+            estimated_input_tokens: compactionInputTokens,
+            original_transcript_chars: completeTranscript.length,
+            transcript_chars: compactionTranscriptChars,
+            omitted_characters: fitted.omittedCharacters,
+            max_output_tokens: compactionMaxTokens,
+          })
+      } catch { /* observability is never fatal */ }
+
       const { response: compactionResponse, metadata: compactionMetadata } = await this.createMessageWithLlmCall('compaction', {
         system: this.compactionPrompt,
         messages: [{
           role: 'user',
           content: buildCompactionUserMessage(transcript, entryCount, opts?.instructions)
         }],
-        maxTokens: COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM,
+        maxTokens: compactionMaxTokens,
         temperature: 0.3,
         signal: this.abortController?.signal,
         oneShot: true
@@ -5552,6 +5626,9 @@ export class AgentExecutor extends EventEmitter {
           `${compactionMetadata.reasoning_tokens ?? 0} reasoning)`
         )
       }
+      if (compactionResponse.stop_reason === 'max_tokens' || compactionResponse.stop_reason === 'tool_use') {
+        throw new Error(`summarizer did not finish its briefing (stop reason: ${compactionResponse.stop_reason}); history preserved`)
+      }
     } catch (error) {
       // No summary → no compaction. Wiping history behind a blank briefing
       // costs the agent its entire context; aborting only costs a retry at the
@@ -5579,7 +5656,9 @@ export class AgentExecutor extends EventEmitter {
           source_messages: sourceMessages.length,
           preserved_messages: preservedMessages.length,
           transcript_chars: compactionTranscriptChars,
-          max_tokens: COMPACTION_TEXT_BUDGET + COMPACTION_REASONING_HEADROOM,
+          input_budget_tokens: compactionInputBudget,
+          estimated_input_tokens: compactionInputTokens,
+          max_tokens: compactionMaxTokens,
         })
       } catch { /* non-fatal */ }
       this.compactionFailedThisTurn = true
@@ -6299,13 +6378,19 @@ export class AgentExecutor extends EventEmitter {
       }
     }
 
-    // Idle reminder — nudge autonomous agents to yield when they're done
-    if (di?.idle_reminder !== false && this.config.autonomous && this.toolRegistry.get('sys_set_state')) {
+    // Registration alone does not grant a tool: disabled tools remain in the
+    // registry. Hidden tools can still be invoked through code or the shell.
+    if (di?.idle_reminder !== false && this.config.autonomous && this.canSetState()) {
       const reminder = this.dynamicPrompt('dyn_idle_reminder')
       if (reminder) parts.push(reminder)
     }
 
     return parts.length > 0 ? parts.join('\n\n') : undefined
+  }
+
+  private canSetState(): boolean {
+    return this.config.tools.find(t => t.name === 'sys_set_state')?.enabled === true
+      && this.toolRegistry.get('sys_set_state') !== undefined
   }
 
   /**

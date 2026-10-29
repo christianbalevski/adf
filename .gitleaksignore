@@ -5,3 +5,9 @@
 6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:curl-auth-user:14
 6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:curl-auth-header:14
 6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:curl-auth-header:86
+
+# Generated /web/events OpenAPI sample: the tab-generation value is the literal
+# 0123456789abcdef0123456789abcdef, not a credential. HTML syntax highlighting
+# (class="token string") triggers generic-api-key. Only this historical finding
+# is excluded; future changes and other documentation remain scanned.
+c831bc1fe56f64798d421482cbeae099f2fc3ba9:docs/daemon/api-reference.html:generic-api-key:8018

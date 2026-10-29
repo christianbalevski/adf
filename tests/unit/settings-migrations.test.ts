@@ -82,6 +82,28 @@ describe('settings migrations — globalSystemPrompt mind section', () => {
 })
 
 describe('settings migrations — toolPrompts backfill and stale-key removal', () => {
+  it('upgrades obsolete autonomous guidance without changing custom or blank prompts', () => {
+    const old = {
+      _autonomous: '## Autonomous Mode\n\nYou are in autonomous mode: no human input this session. Report progress with `say`, put results in your final response, and call `sys_set_state` when your work is complete.',
+      dyn_idle_reminder: 'If you have completed your current work, call `sys_set_state` with state "idle" to yield.',
+    }
+    const data: Record<string, unknown> = { toolPrompts: { ...old } }
+    applySettingsMigrations(data)
+    expect(data.toolPrompts).toMatchObject({
+      _autonomous: DEFAULT_TOOL_PROMPTS._autonomous,
+      dyn_idle_reminder: DEFAULT_DYNAMIC_PROMPTS.dyn_idle_reminder,
+    })
+    expect(applySettingsMigrations(data).changedKeys).not.toContain('toolPrompts')
+
+    for (const value of ['', 'My own stopping policy.']) {
+      const custom: Record<string, unknown> = {
+        toolPrompts: { _autonomous: value, dyn_idle_reminder: value },
+      }
+      applySettingsMigrations(custom)
+      expect(custom.toolPrompts).toMatchObject({ _autonomous: value, dyn_idle_reminder: value })
+    }
+  })
+
   it('backfills missing tool prompt AND dynamic instruction keys from defaults', () => {
     const data: Record<string, unknown> = { toolPrompts: { code_execution: 'my custom section' } }
     const result = applySettingsMigrations(data)

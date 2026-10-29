@@ -165,4 +165,31 @@ describe('AgentExecutor — compaction summarizer failure', () => {
       await agent.disposeAsync()
     }
   })
+
+  it.each(['max_tokens', 'tool_use'] as const)('preserves history when a nonempty briefing stops with %s', async (stopReason) => {
+    const { filePath, workspace } = makeWorkspace(`unfinished-${stopReason}`)
+    const provider = new EmptySummaryProvider()
+    const original = provider.createMessage.bind(provider)
+    provider.createMessage = async (opts: CreateMessageOptions) => {
+      const response = await original(opts)
+      return response.content.length === 0
+        ? { ...response, content: [{ type: 'text' as const, text: 'Incomplete briefing without the unresolved questions' }], stop_reason: stopReason }
+        : response
+    }
+    const agent = await new AgentRuntimeBuilder().build({
+      workspace, filePath, provider,
+      config: { ...workspace.getAgentConfig(), context: { compact_threshold: 200_000 } },
+    })
+    try {
+      await agent.executor.executeTurn(chatDispatch('Original mandate: investigate the unexplained control failure'))
+      await agent.executor.executeTurn(chatDispatch('Continue the experiment'))
+      await agent.executor.executeTurn(chatDispatch('Keep the unresolved question'))
+      expect(provider.compactionCalls).toBeGreaterThanOrEqual(1)
+      expect(loopTexts(workspace).some(t => t.includes('Original mandate'))).toBe(true)
+      expect(loopTexts(workspace).some(t => t.includes('[Loop Compacted'))).toBe(false)
+      expect(workspace.getLogs().some(l => l.event === 'compaction_failed' && l.message.includes(`stop reason: ${stopReason}`))).toBe(true)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
 })

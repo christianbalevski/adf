@@ -217,6 +217,12 @@ const STALE_TOOL_PROMPT_KEYS = ['adf_shell']
  * user-edited and left untouched.
  */
 const OUTDATED_TOOL_PROMPT_DEFAULTS: Record<string, string[]> = {
+  _autonomous: [
+    '## Autonomous Mode\n\nYou are in autonomous mode: no human input this session. Report progress with `say`, put results in your final response, and call `sys_set_state` when your work is complete.',
+  ],
+  dyn_idle_reminder: [
+    'If you have completed your current work, call `sys_set_state` with state "idle" to yield.',
+  ],
   dyn_inbox_hint: [
     '[Inbox: {{unread}} unread] Use msg_read to fetch and process your messages.',
   ],
