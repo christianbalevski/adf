@@ -11,8 +11,7 @@ import { sendComposerMessage, type SendRoute } from '../../utils/composer-send'
 import { composerMedia, gateAttachments, type RefusedAttachment } from '../../utils/attachment-gate'
 import type { LoopMedia } from '../../../shared/types/media.types'
 import { nanoid } from 'nanoid'
-import { renderMarkdownToSafeHtml, createIncrementalMarkdownRenderer, useMarkdownHighlightVersion } from '../../utils/markdown'
-import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { MarkdownEntry } from './MarkdownEntry'
 import { loopColor } from '../../utils/loop-color'
 import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../utils/loop-activity'
 import { contextLabel, describeWake, mergeInstructionRows } from '../../utils/loop-labels'
@@ -217,77 +216,6 @@ function formatLoopTime(ms: number): string {
     : loopDateWithYearFormatter.format(date)
   return `${datePart}, ${time}`
 }
-
-/** Percent-encode spaces in adf-file:// URLs so markdown parsers don't break on them. */
-function encodeAdfFileUrls(src: string): string {
-  return src.replace(
-    /adf-file:\/\/([^\s)>"'\]]+(?:\s[^\s)>"'\]]+)*)/g,
-    (_match, path: string) => 'adf-file://' + path.replace(/ /g, '%20')
-  )
-}
-
-// Parse and sanitize through the shared renderer (utils/markdown.ts), which owns
-// the marked configuration and the DOMPurify allowlist for every untrusted
-// document Studio paints. Only the adf-file:// pre-pass is the loop's own.
-function renderMarkdown(src: string): string {
-  return renderMarkdownToSafeHtml(encodeAdfFileUrls(src))
-}
-
-// How long a streamed answer must hold still before it is parsed once more in
-// full. The incremental path only ever concatenates independently-parsed
-// blocks; this pass guarantees the transcript the user keeps is byte-for-byte
-// the whole-document parse.
-const MARKDOWN_SETTLE_MS = 200
-
-// Memoized markdown component to avoid re-parsing on every render.
-// While an answer streams, `createIncrementalMarkdownRenderer` re-parses only
-// the block still being written instead of the whole accumulated text (which is
-// quadratic at ~20 deltas/s). A row that never changes — every restored
-// transcript row — takes exactly the one full parse it always did.
-const MarkdownEntry = memo(({ content, className = 'px-1.5 py-1 text-neutral-800 dark:text-neutral-200' }: { content: string; className?: string }) => {
-  const renderIncrementally = useRef<((source: string) => string) | null>(null)
-  if (!renderIncrementally.current) renderIncrementally.current = createIncrementalMarkdownRenderer(encodeAdfFileUrls)
-  const mountedContent = useRef(content)
-  const streamed = content !== mountedContent.current
-  // Ticks when a Shiki grammar finishes loading, so plain fallback blocks re-render highlighted.
-  const highlightVersion = useMarkdownHighlightVersion()
-  const [settled, setSettled] = useState<{ source: string; html: string; v: number } | null>(null)
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const streamingHtml = useMemo(() => renderIncrementally.current!(content), [content, highlightVersion])
-  const isSettled = settled?.source === content && settled.v === highlightVersion
-  useEffect(() => {
-    if (!streamed || isSettled) return
-    const timer = setTimeout(
-      () => setSettled({ source: content, html: renderMarkdown(content), v: highlightVersion }),
-      MARKDOWN_SETTLE_MS
-    )
-    return () => clearTimeout(timer)
-  }, [streamed, content, isSettled, highlightVersion])
-  const html = isSettled ? settled.html : streamingHtml
-  const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
-    const anchor = (e.target as HTMLElement).closest('a[href]')
-    if (!anchor) return
-    const href = anchor.getAttribute('href')
-    if (!href) return
-    if (isAdfFileUrl(href)) {
-      e.preventDefault()
-      openAdfFileLink(href)
-    } else if (href.startsWith('http://') || href.startsWith('https://')) {
-      // Plain anchors would navigate the renderer in place, which main's
-      // will-navigate guard blocks. Route through window.open so the
-      // setWindowOpenHandler hands the URL to the OS browser instead.
-      e.preventDefault()
-      window.open(href, '_blank', 'noopener,noreferrer')
-    }
-  }, [])
-  return (
-    <div
-      className={`loop-markdown ${className}`}
-      dangerouslySetInnerHTML={{ __html: html }}
-      onClick={handleClick}
-    />
-  )
-})
 
 // Reasoning traces are mostly plain text, but reasoning summaries (OpenAI
 // codex models) mark section headlines as **bold**. Render just that marker —

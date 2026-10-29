@@ -392,6 +392,14 @@ CREATE INDEX IF NOT EXISTS idx_adf_logs_origin ON adf_logs(origin);
 
 `
 
+/** Immutable usage rows shared by repeated context reads. */
+export type AssistantTokenRows = ReadonlyArray<Readonly<{ seq: number; tokens: Readonly<LoopTokenUsage> }>>
+
+// One retained stream per connection, with both row and serialized-size caps.
+// A large history still reads correctly; it simply does not populate the cache.
+const MAX_CACHED_USAGE_ROWS = 10_000
+const MAX_CACHED_USAGE_CHARS = 512 * 1024
+
 // =============================================================================
 // AdfDatabase Class
 // =============================================================================
@@ -400,6 +408,13 @@ export class AdfDatabase {
   private db: Database.Database
   private filePath: string
   private closed = false
+  private assistantTokenCache: {
+    loop: string
+    revision: number
+    epoch: number
+    dataVersion: number
+    rows: AssistantTokenRows
+  } | null = null
 
   /**
    * Per-stream monotonic counters bumped by EVERY adf_loop mutation (append,
@@ -426,6 +441,7 @@ export class AdfDatabase {
   private loopEpoch = 0
 
   private bumpLoopRevision(loop: string): void {
+    if (this.assistantTokenCache?.loop === loop) this.assistantTokenCache = null
     this.loopRevisions.set(loop, (this.loopRevisions.get(loop) ?? 0) + 1)
   }
 
@@ -433,6 +449,7 @@ export class AdfDatabase {
    *  actually closes the hole — a stream with no counter yet reads 0 either
    *  way, so only a value every guard checks can flag it as changed. */
   private bumpAllLoopRevisions(): void {
+    this.assistantTokenCache = null
     this.loopEpoch++
     for (const [key, value] of this.loopRevisions) this.loopRevisions.set(key, value + 1)
   }
@@ -4022,15 +4039,37 @@ export class AdfDatabase {
     return AdfDatabase.parseLoopTokens(row?.tokens)
   }
 
-  /** Every assistant row's usage record, in loop order (oldest first). */
-  getAssistantTokenRows(loop: string): Array<{ seq: number; tokens: LoopTokenUsage }> {
+  /**
+   * Every assistant row's usage record, in loop order (oldest first).
+   * Unchanged reads reuse one immutable snapshot. Local stream revisions and
+   * SQLite data_version cover our writes and commits from other connections.
+   * Never reuse or retain a transaction's snapshot: it may later roll back.
+   */
+  getAssistantTokenRows(loop: string): AssistantTokenRows {
+    const inTransaction = this.db.inTransaction
+    const dataVersion = this.dataVersion()
+    const revision = this.getLoopRevision(loop)
+    const epoch = this.getLoopEpoch()
+    const cached = this.assistantTokenCache
+    if (!inTransaction && cached?.loop === loop && cached.revision === revision &&
+        cached.epoch === epoch && cached.dataVersion === dataVersion) return cached.rows
+    // Release stale/other-loop snapshots even if the replacement is too large.
+    this.assistantTokenCache = null
     const rows = this.stmts.getAssistantTokenRows!.all(loop) as Array<{ seq: number; tokens: string }>
-    const out: Array<{ seq: number; tokens: LoopTokenUsage }> = []
+    const out: Array<Readonly<{ seq: number; tokens: Readonly<LoopTokenUsage> }>> = []
+    let chars = 0
     for (const row of rows) {
+      chars += row.tokens.length
       const tokens = AdfDatabase.parseLoopTokens(row.tokens)
-      if (tokens) out.push({ seq: row.seq, tokens })
+      if (tokens) out.push(Object.freeze({ seq: row.seq, tokens: Object.freeze(tokens) }))
     }
-    return out
+    const result = Object.freeze(out)
+    if (!inTransaction && rows.length <= MAX_CACHED_USAGE_ROWS && chars <= MAX_CACHED_USAGE_CHARS) {
+      // Stamp BEFORE the query: a concurrent external commit is either seen
+      // by this query or invalidates the snapshot at the next read.
+      this.assistantTokenCache = { loop, revision, epoch, dataVersion, rows: result }
+    }
+    return result
   }
 
   /** Loop rows in display order: each row's seq plus its ordering key
@@ -4899,6 +4938,8 @@ export class AdfDatabase {
    */
   querySQL(sql: string, params?: unknown[]): unknown[] {
     const stmt = this.db.prepare(sql)
+    // Callers normally restrict this to SELECT, but RETURNING can write too.
+    if (!stmt.readonly) this.assistantTokenCache = null
     return params ? stmt.all(...params) : stmt.all()
   }
 
@@ -4907,6 +4948,8 @@ export class AdfDatabase {
    */
   executeSQL(sql: string, params?: unknown[]): { changes: number } {
     const stmt = this.db.prepare(sql)
+    // This public low-level path can bypass the typed loop mutation helpers.
+    this.assistantTokenCache = null
     const result = params ? stmt.run(...params) : stmt.run()
     return { changes: result.changes }
   }
@@ -4974,6 +5017,7 @@ export class AdfDatabase {
   close(): void {
     if (this.closed) return
     this.closed = true
+    this.assistantTokenCache = null
     const remaining = AdfDatabase.decrementOpen(this.filePath)
     // Loaded media of a file no connection holds any more is dead weight.
     if (remaining === 0) this.getFileRefRegistry().media.clear()

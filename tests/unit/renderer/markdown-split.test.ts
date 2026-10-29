@@ -109,3 +109,37 @@ describe('stableBlockBoundary', () => {
     }
   })
 })
+
+describe('unsafe cross-block constructs', () => {
+  it('keeps raw HTML on the whole-document path', () => {
+    expect(stableBlockBoundary('intro\n\n<div>\n\none\n\ntwo')).toBe(UNSAFE_TO_SPLIT)
+    expect(stableBlockBoundary('intro <span>\n\ncontinued')).toBe(UNSAFE_TO_SPLIT)
+  })
+  it('detects reference definitions inside containers', () => {
+    expect(stableBlockBoundary('intro\n\n> [link]: https://example.com')).toBe(UNSAFE_TO_SPLIT)
+  })
+  it('does not close a code fence with trailing non-whitespace', () => {
+    expect(stablePrefix('intro\n\n```\ncode\n``` not a close\n\nmore code')).toBe('intro\n\n')
+  })
+  it('allows raw HTML and references inside literal fenced code', () => {
+    expect(stablePrefix('```\n<div>\n[link]: /x\n```\n\nafter')).toBe('```\n<div>\n[link]: /x\n```\n\n')
+  })
+})
+
+describe('list continuation indentation', () => {
+  it('keeps two-space continuation paragraphs inside their list', () => {
+    expect(stableBlockBoundary('- first\n\n  continuation')).toBe(0)
+  })
+  it('keeps indented fenced code inside its list item', () => {
+    const source = '- first\n\n  ```js\n  code\n  ```\n\n- second'
+    expect(stableBlockBoundary(source)).toBe(0)
+    expect(stablePrefix(source + '\n\nAfter')).toBe(source + '\n\n')
+  })
+})
+
+describe('multiline reference labels', () => {
+  it('does not freeze a candidate definition while its label is incomplete', () => {
+    expect(stableBlockBoundary('[foo\n\nbar')).toBe(UNSAFE_TO_SPLIT)
+    expect(stableBlockBoundary('See [link][foo bar].\n\nOther.\n\n[foo\nbar]: https://example.com')).toBe(UNSAFE_TO_SPLIT)
+  })
+})

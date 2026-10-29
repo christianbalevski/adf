@@ -1,0 +1,7 @@
+# Synthetic credential inputs in the agent-import redaction self-test.
+# The all-history scan includes this separate branch. Limit exceptions to the
+# reviewed historical findings; future edits and other files remain scanned.
+6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:generic-api-key:8
+6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:curl-auth-user:14
+6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:curl-auth-header:14
+6940fd3625ccc94faad8f008d616c0b5e0d6d09f:skills/agent-import/scripts/selftest.js:curl-auth-header:86

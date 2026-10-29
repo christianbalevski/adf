@@ -23,7 +23,7 @@ export const UNSAFE_TO_SPLIT = -1
  * document-wide, so a definition in one half and its use in the other would
  * render as literal text. Any of these and the chunk is off-limits.
  */
-const REFERENCE_DEFINITION = /^ {0,3}\[[^\]]*\]:/
+const REFERENCE_DEFINITION = /\[[^\]]*\]:/
 
 /** A fence opener/closer: three or more backticks or tildes, up to 3 spaces in. */
 const FENCE = /^ {0,3}(`{3,}|~{3,})/
@@ -34,7 +34,7 @@ const FENCE = /^ {0,3}(`{3,}|~{3,})/
  * indented code block's next paragraph. Cutting in front of one of these would
  * split a single element into two, so such a boundary is rejected.
  */
-const CONTINUATION_START = /^(?: {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)| {0,3}>|\|| {4}|\t)/
+const CONTINUATION_START = /^(?: {0,3}(?:[-*+]|\d{1,9}[.)])(?:[ \t]|$)| {0,3}>|\||[ \t])/
 
 function isBlank(line: string): boolean {
   return line.trim().length === 0
@@ -76,7 +76,8 @@ export function stableBlockBoundary(chunk: string): number {
       // Only the matching fence character closes the block; everything between
       // is literal, including text that would otherwise look like a boundary.
       const close = FENCE.exec(line)
-      if (close && close[1][0] === fence[0] && close[1].length >= fence.length) fence = null
+      if (close && close[1][0] === fence[0] && close[1].length >= fence.length
+        && line.slice(close[0].length).trim() === '') fence = null
     } else {
       const open = FENCE.exec(line)
       if (!open && isBlank(line)) {
@@ -84,10 +85,19 @@ export function stableBlockBoundary(chunk: string): number {
         if (pendingBoundary === -1) pendingBoundary = next
         atBlockStart = true
       } else {
-        if (!open && REFERENCE_DEFINITION.test(line)) return UNSAFE_TO_SPLIT
+        // Raw HTML may span blank lines or change the parser's block context.
+        // References can also occur inside containers (quotes/lists). Refuse
+        // both rather than freezing a prefix whose meaning can still change.
+        // A reference label may span lines (even an unfinished blank line),
+        // so an open bracket also prevents freezing a candidate definition.
+        const openLabel = /^[ \t]*(?:>[ \t]*|(?:[-*+]|\d+[.)])[ \t]+)*\[/.test(line)
+          && line.lastIndexOf('[') > line.lastIndexOf(']')
+        if (!open && (REFERENCE_DEFINITION.test(line) || openLabel || line.includes('<'))) return UNSAFE_TO_SPLIT
         if (atBlockStart) {
-          // A fence opener always starts a block of its own.
-          const continuation = !open && CONTINUATION_START.test(line)
+          // An unindented fence starts its own block. An indented fence
+          // can still belong to the preceding list item (two spaces suffice).
+          const continuation: boolean = (openContainer && /^[ \t]/.test(line))
+            || (!open && CONTINUATION_START.test(line))
           if (pendingBoundary !== -1) {
             // Safe unless a container was left open across the blank line and
             // this line could be its next item.

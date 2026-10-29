@@ -763,6 +763,8 @@ export class AgentExecutor extends EventEmitter {
     injectedFiles: ContextBreakdownFileEntry[]
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
+  /** One dynamic-instruction count, shared by preflight and diagnostics. */
+  private dynamicTokenMemo: { text: string; tokenizer: string; tokens: number } | null = null
   /** Fixed-parts fingerprint of the newest main-turn call, keyed by the seq
    *  of the assistant row it produced — the breakdown calibrates to that
    *  row only while the current fixed parts still match. In memory: rows
@@ -968,9 +970,7 @@ export class AgentExecutor extends EventEmitter {
         injectedFiles: this.systemPromptCache.injectedFiles,
         toolGroups: this.toolSnapshotCache.toolGroups,
         toolsTotalTokens: this.toolSnapshotCache.toolsTotalTokens,
-        dynamicInstructionsTokens: this.currentDynamicInstructions
-          ? this.countPromptTokens(this.currentDynamicInstructions)
-          : 0,
+        dynamicInstructionsTokens: this.countDynamicInstructionTokens(this.currentDynamicInstructions),
         messagesTokens: prior.estimated + prior.reported + since.estimated + since.reported,
       })
       return lastCall
@@ -1277,6 +1277,7 @@ export class AgentExecutor extends EventEmitter {
     this.lastSystemPromptHash = undefined
     this.lastDynamicInstructions = undefined
     this.currentDynamicInstructions = undefined
+    this.dynamicTokenMemo = null
     // A rebuilt context must receive the current topology again, including
     // any delta prepared before a preflight compaction replaced the history.
     this.lastMeshSnapshot = undefined
@@ -1322,6 +1323,7 @@ export class AgentExecutor extends EventEmitter {
 
   updateProvider(provider: LLMProvider): void {
     this.provider = provider
+    this.dynamicTokenMemo = null
     // New provider instance — must re-validate on the next turn.
     this.providerValidated = false
     this.providerChangeListener?.(provider)
@@ -1387,6 +1389,7 @@ export class AgentExecutor extends EventEmitter {
     // (usually nothing). lastDynamicInstructions can't serve that role —
     // it's a dedup high-water mark that intentionally never clears.
     this.currentDynamicInstructions = dynamicInstructions
+    if (!dynamicInstructions) this.dynamicTokenMemo = null
 
     // "No Secrets" context injection — write system prompt and dynamic instructions
     // to the loop so they are visible in the UI and queryable via SQL.
@@ -1491,6 +1494,24 @@ export class AgentExecutor extends EventEmitter {
 
   private countPromptTokens(text: string): number {
     return getTokenCounterService().countTokens(text, this.tokenizerProviderId())
+  }
+
+  private countDynamicInstructionTokens(text: string | undefined): number {
+    if (!text) {
+      this.dynamicTokenMemo = null
+      return 0
+    }
+    const counter = getTokenCounterService()
+    const provider = this.tokenizerProviderId()
+    // Resolve every time: opaque settings keys can be re-registered with a
+    // different family without replacing the provider instance.
+    const tokenizer = counter.resolveTokenizer(provider)
+    const cached = this.dynamicTokenMemo
+    if (cached?.text === text && cached.tokenizer === tokenizer) return cached.tokens
+    const tokens = counter.countTokens(text, provider)
+    // Never retain a history of prompts or an unbounded custom template.
+    this.dynamicTokenMemo = text.length <= 64 * 1024 ? { text, tokenizer, tokens } : null
+    return tokens
   }
 
   setMeshContext(fn: () => { handle: string; description: string }[]): void {
@@ -5292,7 +5313,7 @@ export class AgentExecutor extends EventEmitter {
     // earlier than the old message-only estimate did, which is correct: the
     // real request was always that big (~40k larger for MCP-heavy agents).
     const overhead = this.getFixedOverheadTokens() +
-      (dynamicInstructions ? this.countPromptTokens(dynamicInstructions) : 0)
+      this.countDynamicInstructionTokens(dynamicInstructions)
     return Math.max(baselineTokens, estimated + overhead)
   }
 

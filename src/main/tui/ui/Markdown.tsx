@@ -2,8 +2,9 @@
 // code, lists, quotes, rules, links. Anything else renders as plain text —
 // nothing the model wrote is ever dropped.
 
-import type { ReactNode } from 'react'
-import { Box, Text } from 'ink'
+import { useLayoutEffect, useReducer, useRef, type ReactNode } from 'react'
+import { Box, Text, measureElement, type DOMElement } from 'ink'
+import { measuredBlockWindow, type BlockMeasurement, type MarkdownViewport } from './markdown-window'
 import { useTheme, type Theme } from '../app/theme'
 
 export interface MarkdownProps {
@@ -12,6 +13,8 @@ export interface MarkdownProps {
   color?: string
   /** Render syntax as plain text (no parsing). */
   raw?: boolean
+  /** Rows of this Markdown body that can intersect the transcript viewport. */
+  viewport?: MarkdownViewport
 }
 
 type Block =
@@ -148,9 +151,50 @@ function renderBlock(block: Block, index: number, theme: Theme, color?: string) 
   }
 }
 
-export function Markdown({ text, color, raw = false }: MarkdownProps) {
+export function Markdown({ text, color, raw = false, viewport }: MarkdownProps) {
   const theme = useTheme()
+  const [, measured] = useReducer((n: number) => n + 1, 0)
+  const cache = useRef<{ text: string; width: number; theme: Theme; heights: Map<number, BlockMeasurement> } | null>(null)
+  const nodes = useRef(new Map<number, DOMElement>())
+  const blocks = raw ? [] : parseBlocks(text)
+  const signatures = viewport ? blocks.map(block => JSON.stringify(block)) : []
+  if (viewport && (!cache.current || cache.current.width !== viewport.width || cache.current.theme !== theme || !text.startsWith(cache.current.text))) {
+    cache.current = { text, width: viewport.width, theme, heights: new Map() }
+  }
+  const heights = cache.current?.heights
+  if (cache.current) cache.current.text = text
+  const hidden = viewport && heights ? measuredBlockWindow(signatures, heights, viewport) : []
+
+  useLayoutEffect(() => {
+    if (!viewport || !heights) return
+    // Only mounted blocks are measured. Hidden blocks retain their exact Ink
+    // height; a changed/unknown block is always mounted, never guessed away.
+    for (const [i, node] of nodes.current) {
+      if (i < signatures.length) heights.set(i, { signature: signatures[i], height: measureElement(node).height })
+    }
+    for (const i of heights.keys()) if (i >= signatures.length) heights.delete(i)
+    const next = measuredBlockWindow(signatures, heights, viewport)
+    // Measuring a streaming suffix usually leaves the window unchanged. Do
+    // not cause a second render unless newly measured rows can be omitted.
+    if (next.some((value, i) => value !== hidden[i])) measured()
+  })
+
   if (raw) return <Text wrap="wrap" color={color}>{text}</Text>
-  const blocks = parseBlocks(text)
-  return <Box flexDirection="column">{blocks.map((block, i) => renderBlock(block, i, theme, color))}</Box>
+  if (!viewport || !heights) return <Box flexDirection="column">{blocks.map((block, i) => renderBlock(block, i, theme, color))}</Box>
+  const children: ReactNode[] = []
+  let spacer = 0
+  const flush = (i: number) => {
+    if (spacer > 0) children.push(<Box key={`space:${i}`} height={spacer} flexShrink={0} />)
+    spacer = 0
+  }
+  for (let i = 0; i < blocks.length; i++) {
+    if (hidden[i]) { spacer += heights.get(i)!.height; continue }
+    flush(i)
+    children.push(<Box key={i} flexDirection="column" flexShrink={0} ref={node => {
+      if (node) nodes.current.set(i, node)
+      else nodes.current.delete(i)
+    }}>{renderBlock(blocks[i], i, theme, color)}</Box>)
+  }
+  flush(blocks.length)
+  return <Box flexDirection="column">{children}</Box>
 }

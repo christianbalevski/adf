@@ -1575,7 +1575,7 @@ export class AdfWorkspace {
   }
 
   /** Every assistant row's usage record in loop order — see AdfDatabase.getAssistantTokenRows. */
-  getAssistantTokenRows(): Array<{ seq: number; tokens: LoopTokenUsage }> {
+  getAssistantTokenRows(): ReturnType<AdfDatabase['getAssistantTokenRows']> {
     return this.db.getAssistantTokenRows(this.boundLoop)
   }
 
