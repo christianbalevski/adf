@@ -27,6 +27,36 @@ function stream(m: MockDaemon, frames: DaemonEventFrame[], resumes: ResumeInfo[]
 }
 
 describe('EventStream resume verdicts', () => {
+  it.each([0, 5])('resumes a quiet first live connection from hello cursor %s', async buffered => {
+    mock = await startMockDaemon({ stepMs: 5 })
+    for (let i = 0; i < buffered; i++) mock.emit({ event_type: 'agent.loaded', agent_id: AGENT_1_ID })
+    const frames: DaemonEventFrame[] = []
+    const resumes: ResumeInfo[] = []
+    const s = stream(mock, frames, resumes)
+    try {
+      await until(() => s.connection.state === 'open')
+      expect(frames).toEqual([])
+      expect(s.cursor).toBe(buffered)
+      mock.dropEventStreams()
+      mock.emit({ event_type: 'turn.completed', agent_id: AGENT_1_ID, payload: { content: 'while disconnected' } })
+      await until(() => frames.length === 1)
+      expect(frames[0].cursor).toBe(buffered + 1)
+      expect(resumes).toEqual([{ exact: true, epoch: mock.epoch }])
+      expect(mock.requests.filter(r => r.startsWith('GET /events')).at(-1)).toContain(`since=${buffered}&epoch=${mock.epoch}`)
+    } finally { s.close() }
+  })
+
+  it.each([{ replay: true }, { since: 0 }])('still delivers buffered frames with %j', async options => {
+    mock = await startMockDaemon()
+    mock.emit({ event_type: 'agent.loaded', agent_id: AGENT_1_ID })
+    const frames: DaemonEventFrame[] = []
+    const s = new EventStream({ baseUrl: mock.url, ...options, onEvent: f => frames.push(f) }).start()
+    try {
+      await until(() => frames.length === 1)
+      expect(frames[0].cursor).toBe(1)
+    } finally { s.close() }
+  })
+
   it('an exact resume reports exact and sends the epoch back', async () => {
     mock = await startMockDaemon({ stepMs: 5 })
     const frames: DaemonEventFrame[] = []
@@ -84,6 +114,27 @@ describe('EventStream resume verdicts', () => {
     } finally {
       s.close()
     }
+  })
+
+  it('resumes from zero after a restart hello and gap with no data frames', async () => {
+    mock = await startMockDaemon()
+    mock.emit({ event_type: 'agent.loaded', agent_id: AGENT_1_ID })
+    const frames: DaemonEventFrame[] = []
+    const resumes: ResumeInfo[] = []
+    const s = stream(mock, frames, resumes)
+    try {
+      await until(() => s.cursor === 1)
+      mock.restart()
+      await until(() => resumes.length === 1)
+      expect(resumes[0]).toEqual({ exact: false, reason: 'epoch_changed', epoch: mock.epoch })
+      expect(s.cursor).toBe(0)
+      mock.dropEventStreams()
+      mock.emit({ event_type: 'turn.completed', agent_id: AGENT_1_ID, payload: { content: 'after restart' } })
+      await until(() => frames.length === 1)
+      expect(frames[0].cursor).toBe(1)
+      expect(resumes[1]).toEqual({ exact: true, epoch: mock.epoch })
+      expect(mock.requests.filter(r => r.startsWith('GET /events')).at(-1)).toContain(`since=0&epoch=${mock.epoch}`)
+    } finally { s.close() }
   })
 })
 

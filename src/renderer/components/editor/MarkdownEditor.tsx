@@ -21,6 +21,7 @@ const CONFIRM_MD_CHARS = 512_000
 const SERIALIZE_DEBOUNCE_MS = 250
 
 interface MarkdownEditorProps {
+  flushRef?: MutableRefObject<(() => void) | null>
   filePath: string
   content: string
   onChange: (content: string) => void
@@ -250,7 +251,7 @@ function RichMarkdownView({ content, onChange, active, onEditorChange, flushRef,
   return <EditorContent editor={editor} />
 }
 
-export function MarkdownEditor({ filePath, content: externalContent, onChange }: MarkdownEditorProps) {
+export function MarkdownEditor({ filePath, content: externalContent, onChange, flushRef }: MarkdownEditorProps) {
   const text = externalContent || ''
   // Re-evaluated on every render, not frozen at open: an agent can grow (or
   // empty) the file while the tab is open, and the gate has to follow it.
@@ -268,6 +269,14 @@ export function MarkdownEditor({ filePath, content: externalContent, onChange }:
 
   const richFlushRef = useRef<(() => void) | null>(null)
   const rawFlushRef = useRef<(() => void) | null>(null)
+  useEffect(() => {
+    if (!flushRef) return
+    flushRef.current = () => {
+      richFlushRef.current?.()
+      rawFlushRef.current?.()
+    }
+    return () => { flushRef.current = null }
+  }, [flushRef])
   // Consumed by the next gate check: the user explicitly asked for rich mode on
   // an oversized document, so that one push is allowed through.
   const gateOverrideRef = useRef(false)

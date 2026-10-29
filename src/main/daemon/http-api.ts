@@ -30,7 +30,8 @@ import { MIN_CLAUDE_CODE_VERSION } from '../providers/claude-subscription/claude
 import { getTokenCounterService } from '../services/token-counter.service'
 import { getTokenUsageService } from '../services/token-usage.service'
 import type { ComputeEnvInfo } from '../services/podman.service'
-import type { DaemonEventBus, DaemonEventEnvelope } from './event-bus'
+import type { DaemonEventBus } from './event-bus'
+import { streamDaemonEvents } from './event-stream'
 import type { AgentConfig, AdfProviderConfig, CodeExecutionPackage, FileProtectionLevel, McpInstalledPackage, McpServerConfig, MetaProtectionLevel, TaskStatus, WsConnectionInfo } from '../../shared/types/adf-v02.types'
 import type { McpServerRegistration, ProviderConfig } from '../../shared/types/ipc.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
@@ -52,7 +53,6 @@ import type { ProviderKeyVault } from './provider-key-vault'
 import { listFolderAgents, listTrackedAgents, listTrackedDirs, noteAutostartReport, trackDir, TrackedDirError, untrackDir } from './tracked-dirs'
 import { registerDaemonRoutes, type DaemonRouteDeps } from './routes'
 import { RuntimeGate } from '../runtime/runtime-gate'
-import { safeJsonStringify } from './sse-wire'
 import { AGENT_LEASED_CODE } from '../runtime/agent-lease'
 import { FileOpError, leaseHolderElsewhere, requireAdfPath } from './file-ops'
 import { convertOwnLegacyPassword } from '../services/envelope-actions'
@@ -825,16 +825,6 @@ export function createDaemonHttpApi(
       return badRequest(reply, request.query.since !== undefined ? 'since must be an integer' : 'Last-Event-ID must be an integer event cursor')
     }
 
-    // Cursors restart with every daemon run (a new epoch). A client that
-    // names the epoch its cursor came from learns when it no longer applies;
-    // a cursor older than the buffer means frames were dropped. Either way it
-    // gets a `stream.gap` frame and must reload state from the REST API.
-    const epochMismatch = request.query.epoch !== undefined && request.query.epoch !== bus.epoch
-    const oldest = bus.oldestCursor
-    const latest = bus.latestCursor
-    const evicted = !epochMismatch && since !== undefined && since < latest && (oldest === null || since < oldest - 1)
-    const replayFrom = epochMismatch ? 0 : since ?? 0
-
     reply.hijack()
     sseClients.add(reply.raw)
     reply.raw.writeHead(200, {
@@ -843,36 +833,9 @@ export function createDaemonHttpApi(
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
     })
-    reply.raw.write(': connected\n\n')
-    writeSseControl(reply.raw, 'stream.hello', { epoch: bus.epoch, oldestCursor: oldest, latestCursor: latest })
-    if (epochMismatch || evicted) {
-      writeSseControl(reply.raw, 'stream.gap', {
-        reason: epochMismatch ? 'epoch_changed' : 'evicted',
-        epoch: bus.epoch,
-        requestedCursor: since ?? null,
-        oldestCursor: oldest,
-        latestCursor: latest,
-      })
-    }
-
-    const agentId = request.query.agentId
-    const send = (envelope: DaemonEventEnvelope) => {
-      if (agentId && envelope.event.agent_id !== agentId) return
-      writeSseEvent(reply.raw, envelope)
-    }
-
-    for (const envelope of bus.getSince(replayFrom, agentId)) {
-      send(envelope)
-    }
-
-    const unsubscribe = bus.subscribe(send)
-    const heartbeat = setInterval(() => {
-      if (!reply.raw.destroyed) reply.raw.write(`: heartbeat ${Date.now()}\n\n`)
-    }, 30_000)
-
+    const stopStream = streamDaemonEvents(bus, reply.raw, { since, epoch: request.query.epoch, agentId: request.query.agentId })
     const cleanup = () => {
-      clearInterval(heartbeat)
-      unsubscribe()
+      stopStream()
       sseClients.delete(reply.raw)
     }
     request.raw.once('close', cleanup)
@@ -3473,24 +3436,8 @@ function handleRuntimeError(reply: FastifyReply, err: unknown) {
   })
 }
 
-/**
- * Stream control frame (`stream.hello`, `stream.gap`): a named SSE event with
- * no `id:` line (the resume cursor is unchanged) and a non-EventFrame body.
- */
-function writeSseControl(stream: NodeJS.WritableStream, name: string, data: Record<string, unknown>): void {
-  stream.write(`event: ${name}\ndata: ${safeJsonStringify(data)}\n\n`)
-}
-
 function single(value: string | string[] | undefined): string | undefined {
   return Array.isArray(value) ? value[0] : value
-}
-
-function writeSseEvent(stream: NodeJS.WritableStream, envelope: DaemonEventEnvelope): void {
-  // `id` is the resume cursor (matches ?since=), not the per-agent seq.
-  stream.write(`id: ${envelope.cursor}\n`)
-  stream.write(`event: ${envelope.event.event_type}\n`)
-  // Never throws on a BigInt or a cycle in a payload (sse-wire.ts says what the wire keeps).
-  stream.write(`data: ${safeJsonStringify(envelope)}\n\n`)
 }
 
 // Response shapes of the diagnostics builders, for typed clients (the TUI).

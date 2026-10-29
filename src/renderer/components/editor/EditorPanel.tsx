@@ -20,6 +20,7 @@ import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveEditorTab }
 import type { SaveBase } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice, ExternalUpdateNotice } from './ChangedElsewhereNotice'
 import { openApi } from '../../utils/runtime-api'
+import { captureAgentView, type AgentView } from '../../utils/agent-view'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -77,6 +78,8 @@ export function EditorPanel() {
   const centerChatTabActive = useAppStore((s: AppState) => s.centerChatTabActive)
   const setCenterChatTabActive = useAppStore((s: AppState) => s.setCenterChatTabActive)
   const agentFilePath = useDocumentStore((s) => s.filePath)
+  const viewGeneration = useDocumentStore((s) => s.viewGeneration)
+  const runtimeId = useDocumentStore((s) => s.runtimeId)
   const showChat = chatInCenter && centerChatTabActive
   const chatUnread = useAggregateChatUnread(chatInCenter, showChat, agentFilePath)
 
@@ -124,7 +127,8 @@ export function EditorPanel() {
   // `base` (W3-F): the revision and text the edit started from, taken when
   // the save is scheduled, so a save delivered after its tab closed still
   // names it.
-  const pendingSaveRef = useRef<{ path: string; content: string; owner: string | null; base: SaveBase } | null>(null)
+  const pendingSaveRef = useRef<{ path: string; content: string; owner: string | null; base: SaveBase; view: AgentView } | null>(null)
+  const editorFlushRef = useRef<(() => void) | null>(null)
 
   const [lineWrap, setLineWrap] = useState(() => localStorage.getItem(LINE_WRAP_STORAGE_KEY) !== '0')
   const toggleLineWrap = useCallback(() => {
@@ -152,13 +156,14 @@ export function EditorPanel() {
       return
     }
     const owner = useDocumentStore.getState().filePath
+    const view = captureAgentView()
     const previous = pendingSaveRef.current
     const base = previous && previous.path === path && previous.owner === owner ? previous.base : captureSaveBase(path)
-    pendingSaveRef.current = { path, content, owner, base }
+    pendingSaveRef.current = { path, content, owner, base, view }
     saveTimerRef.current = setTimeout(() => {
       pendingSaveRef.current = null
       saveTimerRef.current = null
-      performSave(path, content, owner, base)
+      void performSave(path, content, owner, base, view)
     }, 300)
   }, [])
 
@@ -172,27 +177,27 @@ export function EditorPanel() {
   // elsewhere" notice with the user's text kept (editor-save.ts). Dropped
   // when the agent moved on between scheduling and delivery: writing then
   // would put one agent's text into another agent's file.
-  const performSave = useCallback((path: string, content: string, owner: string | null, base?: SaveBase) => {
-    void saveEditorTab(path, content, owner, base)
+  const performSave = useCallback((path: string, content: string, owner: string | null, base?: SaveBase, view?: AgentView) => {
+    return saveEditorTab(path, content, owner, base, view)
   }, [])
 
   // Ctrl+S / File > Save (App.tsx): the debounced save now, else the active tab if it has unsaved text.
   useEffect(() => registerEditorFlush(() => {
+    editorFlushRef.current?.()
     const pending = pendingSaveRef.current
     if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
     saveTimerRef.current = null
     pendingSaveRef.current = null
     if (pending) {
-      performSave(pending.path, pending.content, pending.owner, pending.base)
-      return
+      return performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
     }
     const store = useEditorTabsStore.getState()
     const active = store.tabs.find((t) => t.path === store.activeTabPath)
-    if (active && active.kind === 'file' && active.isDirty) performSave(active.path, active.content, useDocumentStore.getState().filePath)
+    if (active && active.kind === 'file' && active.isDirty && !active.conflict) return performSave(active.path, active.content, useDocumentStore.getState().filePath)
   }), [performSave])
 
   // What this window's saves produced belongs to the agent they were for.
-  useEffect(() => { resetEditorSaves() }, [agentFilePath])
+  useEffect(() => { resetEditorSaves() }, [viewGeneration, runtimeId])
 
   // Closing a tab: unsaved text under a notice is not dropped without asking;
   // a save still waiting for its debounce goes out now, over its own base
@@ -205,7 +210,7 @@ export function EditorPanel() {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       saveTimerRef.current = null
       pendingSaveRef.current = null
-      if (!tab?.conflict) performSave(pending.path, pending.content, pending.owner, pending.base)
+      if (!tab?.conflict) void performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
     }
     closeTab(path)
   }, [closeTab, performSave])
@@ -319,7 +324,7 @@ export function EditorPanel() {
       if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
       const pending = pendingSaveRef.current
       pendingSaveRef.current = null
-      if (pending) performSave(pending.path, pending.content, pending.owner, pending.base)
+      if (pending) void performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
     }
   }, [performSave])
 
@@ -428,6 +433,7 @@ export function EditorPanel() {
             key={activeTab.path}
             filePath={activeTab.path}
             content={activeTab.content}
+            flushRef={editorFlushRef}
             onChange={(content) => handleChange(activeTab.path, content)}
           />
         ) : (
@@ -436,6 +442,7 @@ export function EditorPanel() {
               key={activeTab.path}
               filePath={activeTab.path}
               content={activeTab.content}
+              flushRef={editorFlushRef}
               onChange={(content) => handleChange(activeTab.path, content)}
               lineWrap={lineWrap}
             />

@@ -15,7 +15,7 @@ import { openApi } from './runtime-api'
  */
 
 /** What setDocument / writeInternalFile / setAgentConfig answer (preload). */
-export type SaveAnswer = { success?: boolean; revision?: number; conflict?: ResourceConflict } | null | undefined
+export type SaveAnswer = { success?: boolean; error?: string; revision?: number; conflict?: ResourceConflict } | null | undefined
 
 /** What a save is based on: the revision and text of the file when the edit began. */
 export interface SaveBase {
@@ -24,6 +24,8 @@ export interface SaveBase {
 }
 
 export type SaveOutcome =
+  | { kind: 'failed'; error: string }
+  | { kind: 'cancelled' }
   | { kind: 'saved'; revision?: number }
   | { kind: 'retry'; baseRevision: number }
   | { kind: 'conflict'; conflict: TabConflict }
@@ -35,7 +37,9 @@ export type SaveOutcome =
  */
 export function classifySave(answer: SaveAnswer, baseContent: string, sent: string): SaveOutcome {
   const conflict = answer?.conflict
-  if (!conflict) return { kind: 'saved', revision: answer?.revision }
+  if (!conflict) return answer?.success === false
+    ? { kind: 'failed', error: answer.error || 'The file was not saved.' }
+    : { kind: 'saved', revision: answer?.revision }
   // Someone wrote exactly this text: nothing of theirs would be lost.
   if (conflict.content === sent) return { kind: 'saved', revision: conflict.revision }
   if (conflict.content != null && conflict.content === baseContent) return { kind: 'retry', baseRevision: conflict.revision }
@@ -52,6 +56,7 @@ export async function saveTabContent(
   content: string,
   write: (content: string, baseRevision: number | undefined) => Promise<SaveAnswer>,
   base?: SaveBase,
+  current: () => boolean = () => true,
 ): Promise<SaveOutcome> {
   const store = useEditorTabsStore.getState
   const tab = store().tabs.find((t) => t.path === path)
@@ -59,12 +64,23 @@ export async function saveTabContent(
   const baseContent = base ? base.baseContent : tab?.savedContent ?? ''
   const baseRevision = base ? base.revision : tab?.revision
   let outcome = classifySave(await write(content, baseRevision), baseContent, content)
+  if (!current()) return { kind: 'cancelled' }
   if (outcome.kind === 'retry') {
     console.info(`[Editor] ${path}: revision moved without a change to the text; saving over ${outcome.baseRevision}`)
     outcome = classifySave(await write(content, outcome.baseRevision), baseContent, content)
+    if (!current()) return { kind: 'cancelled' }
     // Moved twice in a row: let the user see it rather than loop.
     if (outcome.kind === 'retry') outcome = { kind: 'conflict', conflict: { content: baseContent, revision: outcome.baseRevision, writer: null } }
   }
+  if (outcome.kind === 'failed') {
+    // Closing a tab can race its save's answer. Failed text still needs a home.
+    if (!store().tabs.some((t) => t.path === path)) {
+      store().openTab(path, baseContent, false, undefined, baseRevision)
+      store().updateTabContent(path, content)
+    }
+    return outcome
+  }
+  if (outcome.kind === 'cancelled') return outcome
   if (outcome.kind === 'conflict') {
     // A tab closed while this save was on its way comes back with the
     // notice: the refused text has nowhere else to go.

@@ -250,6 +250,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   const confirmResolvers = new Map<string, (value: boolean) => void>()
   const toastTimers = new Map<string, ReturnType<typeof setTimeout>>()
   const debounced = new Map<string, ReturnType<typeof setTimeout>>()
+  /** Destructive loop events invalidate reads started before their boundary. */
+  const historyGenerations = new Map<TranscriptKey, number>()
   let stream: EventStream<DaemonEventFrame> | EventStream<ClientFrame> | null = null
   /** The open client session (design D5), or null on the /events path. */
   let sessionId: string | null = null
@@ -360,6 +362,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       client = next
       plain = next
       current = new WeakSet([next])
+      historyGenerations.clear()
       dispatch({ type: 'daemon/switch', url: next.baseUrl })
       toast(`Switched from ${previous} to ${next.baseUrl} — agents on the old daemon keep running`, 'success', 6000)
       await start()
@@ -648,14 +651,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     async loadTranscript(agentId, loop) {
       const key = transcriptKey(agentId, loop)
       const c = client
+      const generation = historyGenerations.get(key) ?? 0
       dispatch({ type: 'transcript/loading', key })
       try {
         const page = await c.loopHistory(agentId, { loop, limit: pageSize })
-        if (stale(c)) return
+        if (stale(c) || generation !== (historyGenerations.get(key) ?? 0)) return
         dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'replace' })
         settleBackgroundTasks(c, agentId, key)
       } catch (err) {
-        if (!stale(c)) dispatch({ type: 'transcript/error', key, error: describe(err) })
+        if (!stale(c) && generation === (historyGenerations.get(key) ?? 0)) dispatch({ type: 'transcript/error', key, error: describe(err) })
       }
     },
 
@@ -666,14 +670,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       const offset = Math.max(0, t.oldestOffset - pageSize)
       const limit = t.oldestOffset - offset
       const c = client
+      const generation = historyGenerations.get(key) ?? 0
       dispatch({ type: 'transcript/loading', key })
       try {
         const page = await c.loopHistory(agentId, { loop, limit, offset })
-        if (stale(c)) return
+        if (stale(c) || generation !== (historyGenerations.get(key) ?? 0)) return
         dispatch({ type: 'transcript/history', key, entries: page.entries, total: page.total, offset: page.offset, mode: 'prepend' })
         settleBackgroundTasks(c, agentId, key)
       } catch (err) {
-        if (!stale(c)) dispatch({ type: 'transcript/error', key, error: describe(err) })
+        if (!stale(c) && generation === (historyGenerations.get(key) ?? 0)) dispatch({ type: 'transcript/error', key, error: describe(err) })
       }
     },
 
@@ -1024,10 +1029,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
         // the durable record; no model turn is needed for this notification.
         if (event.payload?.category === 'owner_command') debounce(`t:${key}`, () => { void actions.loadTranscript(agentId, loop) })
         break
-      case 'turn.completed':
       case 'loop.cleared':
       case 'loop.compacted':
-        if (state.transcripts[key]?.loaded) debounce(`t:${key}`, () => { void actions.loadTranscript(agentId, loop) })
+        historyGenerations.set(key, (historyGenerations.get(key) ?? 0) + 1)
+        // Even an initial history request can be in flight when it is wiped.
+        // Its response is discarded, so arrange a replacement read as well.
+        if (state.transcripts[key]) debounce(`t:${key}`, () => { void actions.loadTranscript(agentId, loop) })
+        // fall through: refresh loop/status snapshots as after a turn.
+      case 'turn.completed':
+        if (event.event_type === 'turn.completed' && state.transcripts[key]?.loaded) debounce(`t:${key}`, () => { void actions.loadTranscript(agentId, loop) })
         debounce(`loops:${agentId}`, () => { void actions.refreshLoops(agentId) })
         debounce(`status:${agentId}`, () => {
           const c = client

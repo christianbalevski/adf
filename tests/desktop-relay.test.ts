@@ -3,7 +3,7 @@
 // of it, and Studio's loopback relay in front of the daemon.
 import { createServer, request as httpRequest, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import WebSocket, { WebSocketServer } from 'ws'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
@@ -47,7 +47,7 @@ describe('remote Computer tab relay', () => {
     expect(page.status).toBe(200)
     expect(await page.text()).toBe('<html>noVNC</html>')
 
-    const ws = new WebSocket(`ws://127.0.0.1:${port}/websockify`, ['binary'])
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/websockify`, ['binary'], { origin: `http://127.0.0.1:${port}` })
     const reply = await new Promise<string>((resolve, reject) => {
       ws.on('open', () => ws.send(Buffer.from('hi')))
       ws.on('message', (data) => resolve(String(data)))
@@ -56,6 +56,19 @@ describe('remote Computer tab relay', () => {
     expect(ws.protocol).toBe('binary')
     expect(reply).toBe('echo:hi')
     ws.close()
+  })
+
+  it.each(['https://untrusted.example', 'null', undefined, 'http://127.0.0.1:1'])('refuses WebSocket origin %s before obtaining daemon credentials', async (origin) => {
+    const target = vi.fn(async () => ({ url: (p: string) => `http://127.0.0.1:1${p}`, headers: () => ({ Authorization: 'Bearer test-token' }) }))
+    const relays = new DesktopRelays(target)
+    cleanups.push(() => relays.closeAll())
+    const port = await relays.portFor('adf-agent-1-3f1c9a2e')
+    const ws = new WebSocket(`ws://127.0.0.1:${port}/websockify`, origin === undefined ? {} : { origin })
+    const opened = vi.fn()
+    ws.on('open', opened)
+    await new Promise<void>((resolve) => { ws.on('error', () => {}); ws.on('close', () => resolve()) })
+    expect(opened).not.toHaveBeenCalled()
+    expect(target).not.toHaveBeenCalled()
   })
 
   it('refuses another Host (DNS rebinding) and paths that climb', async () => {

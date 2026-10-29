@@ -341,19 +341,24 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
       if (previous && previous !== epoch) {
         // A restarted daemon: its cursor keys mean nothing, and it replays from 1.
         this.forgetCursorKeys()
-        this.lastCursor = -1
+        this.lastCursor = 0
         this.reportResume({ exact: false, reason: 'epoch_changed', epoch })
         return
       }
       const oldest = typeof data.oldestCursor === 'number' ? data.oldestCursor : null
       const latest = typeof data.latestCursor === 'number' ? data.latestCursor : 0
       const since = this.lastCursor
+      // A live-only first connection skipped everything through this hello.
+      // Remember that boundary even if it disconnects before its first event;
+      // otherwise the next attempt skips the disconnected interval as well.
+      // Replay and explicit-since subscriptions still consume their backlog.
+      if (!previous && since < 0 && this.options.since === undefined && !this.options.replay) this.lastCursor = latest
       const lost = since >= 0 && since < latest && (oldest === null || since < oldest - 1)
       this.reportResume(lost ? { exact: false, reason: 'evicted', epoch } : { exact: true, epoch })
       return
     }
     const reason = data.reason === 'epoch_changed' ? 'epoch_changed' : 'evicted'
-    if (reason === 'epoch_changed') { this.forgetCursorKeys(); this.lastCursor = -1 }
+    if (reason === 'epoch_changed') { this.forgetCursorKeys(); this.lastCursor = 0 }
     const gap: StreamGap = { reason, epoch }
     if (typeof data.requestedCursor === 'number' || data.requestedCursor === null) gap.requestedCursor = data.requestedCursor
     if (typeof data.oldestCursor === 'number' || data.oldestCursor === null) gap.oldestCursor = data.oldestCursor

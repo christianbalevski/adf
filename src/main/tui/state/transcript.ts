@@ -212,7 +212,17 @@ export function mergeHistory(existing: TranscriptItem[], incoming: TranscriptIte
         return true
     }
   })
-  return sortByTime([...history, ...keep])
+  // History already has the daemon's display order (compaction can place a
+  // newly written summary before older preserved rows). Interleave local
+  // items without sorting those authoritative rows by creation time.
+  const locals = sortByTime(keep)
+  const merged: TranscriptItem[] = []
+  let local = 0
+  for (const item of history) {
+    while (local < locals.length && locals[local].at <= item.at) merged.push(locals[local++])
+    merged.push(item)
+  }
+  return [...merged, ...locals.slice(local)]
 }
 
 /**

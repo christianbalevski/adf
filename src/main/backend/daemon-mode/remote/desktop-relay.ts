@@ -66,8 +66,10 @@ export class DesktopRelays {
     const wss = new WebSocketServer({ noServer: true })
     const relay: Relay = { server: createServer(), port: 0, sockets: new Set(), idle: null }
 
-    // Only this relay's own origin: a page elsewhere that rebinds a name to 127.0.0.1 is refused.
+    // Host prevents DNS rebinding; Origin prevents another page connecting
+    // directly to the loopback address and using this relay's credentials.
     const ownHost = (req: IncomingMessage) => req.headers.host === `127.0.0.1:${relay.port}`
+    const ownOrigin = (req: IncomingMessage) => req.headers.origin === `http://127.0.0.1:${relay.port}`
 
     relay.server.on('request', (req: IncomingMessage, res: ServerResponse) => {
       void (async () => {
@@ -84,7 +86,7 @@ export class DesktopRelays {
     })
 
     relay.server.on('upgrade', (req: IncomingMessage, socket: Socket, head: Buffer) => {
-      if (!ownHost(req) || pathOf(req.url) !== '/websockify') { socket.destroy(); return }
+      if (!ownHost(req) || !ownOrigin(req) || pathOf(req.url) !== '/websockify') { socket.destroy(); return }
       wss.handleUpgrade(req, socket, head, (ws) => {
         void this.target().then((client) => {
           const url = client.url(`${base}/websockify`).replace(/^http/, 'ws')
