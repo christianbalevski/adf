@@ -172,6 +172,8 @@ import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
+import { prepareMcpContainer, ComputeUnavailableError } from '../services/mcp-container-ready'
+import { registerMcpConnector, mcpConnectorFor } from '../runtime/mcp-connectors'
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
@@ -4133,17 +4135,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           location = isolated ? 'isolated container' : 'shared container'
           hostDenied = hostDenialReason(connCfg.name, connCfg, freshConfig, computeSettings) ?? undefined
 
-          try {
-            await (isolated
-              ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-              : podmanService.ensureRunning())
-          } catch (containerErr) {
-            const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
-            throw new Error(`MCP container for "${serverName}" is not ready: ${detail} Once the compute environment is fixed, call mcp_restart("${serverName}") to reconnect.`)
-          }
+          const podmanBin = await prepareMcpContainer(podmanService, serverName, () => isolated
+            ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+            : podmanService.ensureRunning(),
+          ).catch((err: unknown) => {
+            if (err instanceof ComputeUnavailableError) currentMcpManager?.markFailed(serverCfg, err.message, 'needs_compute')
+            throw err
+          })
           const { isolatedContainerName } = await import('../services/podman.service')
-          const podmanBin = await podmanService.findPodman()
-          if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${serverName}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${serverName}").`)
           const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
           try { await podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
           try { await podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
@@ -4325,11 +4324,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
             const willContainerize = shouldContainerize(connCfg.name, connCfg, freshConfig, computeSettings)
             if (podmanService && willContainerize) {
               const isolated = shouldIsolate(freshConfig) && !isServerForceShared(connCfg)
-              await (isolated
+              const podmanBin = await prepareMcpContainer(podmanService, serverName, () => isolated
                 ? podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
                 : podmanService.ensureRunning())
-              const podmanBin = await podmanService.findPodman()
-              if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${serverName}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${serverName}").`)
               const cc = resolveContainerCommand(connCfg)
               container = {
                 podmanBin,
@@ -4373,6 +4370,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const freshConfig = capturedWorkspace.getAgentConfig()
       return connectConfiguredMcpServer(freshConfig, serverName, 'Agent reconnect')
     }))
+    // The owner's restart takes the agent's own reconnect path, so a server
+    // that never started (needs_compute) connects once compute is set up.
+    if (currentMcpManager) {
+      registerMcpConnector(currentMcpManager, (serverName, reason = 'Owner restart') =>
+        connectConfiguredMcpServer(capturedWorkspace.getAgentConfig(), serverName, reason))
+    }
     agentToolRegistry.register(new McpUninstallTool((serverName) => {
       console.log(`[MCP] Agent uninstalled server "${serverName}"`)
       currentMcpManager?.disconnect(serverName).catch(() => {})
@@ -4567,19 +4570,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               // Container path: resolve commands for in-container execution
               const containerCmd = resolveContainerCommand(connCfg)
               const isolated = shouldIsolate(config) && !isServerForceShared(connCfg)
-              try {
-                if (isolated) {
-                  await podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
-                } else {
-                  await podmanService.ensureRunning()
-                }
-              } catch (containerErr) {
-                const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
-                throw new Error(`MCP container for "${connCfg.name}" is not ready: ${detail} Once the compute environment is fixed, call mcp_restart("${connCfg.name}") to reconnect.`)
-              }
+              const podmanBin = await prepareMcpContainer(podmanService, connCfg.name, () => isolated
+                ? podmanService.ensureIsolatedRunning(config.name, config.id, config.compute?.packages?.pip)
+                : podmanService.ensureRunning(),
+              ).catch((err: unknown) => {
+                if (err instanceof ComputeUnavailableError) mcpManager.markFailed(serverCfg, err.message, 'needs_compute')
+                throw err
+              })
               const { isolatedContainerName } = await import('../services/podman.service')
-              const podmanBin = await podmanService.findPodman()
-              if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${connCfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${connCfg.name}").`)
               const containerName = isolated ? isolatedContainerName(config.name, config.id) : 'adf-mcp'
               try { await podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, config.id)) } catch { /* ignore */ }
               try { await podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, config.id)) } catch { /* ignore */ }
@@ -7142,6 +7140,13 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const args = v.data
     if (!currentMcpManager) return { success: false, error: 'No MCP manager active' }
     try {
+      // A server that never started (needs_compute) has nothing to restart:
+      // connect it the way the agent's own mcp_restart does.
+      const connector = mcpConnectorFor(currentMcpManager)
+      if (connector && currentMcpManager.getServerState(args.name)?.status === 'needs_compute') {
+        const outcome = await connector(args.name)
+        return { success: !outcome.error, ...(outcome.error ? { error: outcome.error } : {}) }
+      }
       const tools = await currentMcpManager.restart(args.name)
       return { success: tools !== null }
     } catch (error) {

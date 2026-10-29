@@ -122,6 +122,7 @@ export function mcpStatusView(status: McpServerStatus | undefined): { label: str
     case 'connecting': return { label: 'Connecting', tone: 'pending' }
     case 'installing': return { label: 'Installing', tone: 'pending' }
     case 'needs_sign_in': return { label: 'Sign-in', tone: 'pending' }
+    case 'needs_compute': return { label: 'Needs setup', tone: 'pending' }
     case 'error': return { label: 'Failed', tone: 'failed' }
     case 'stopped': return { label: 'Stopped', tone: 'idle' }
     default: return null

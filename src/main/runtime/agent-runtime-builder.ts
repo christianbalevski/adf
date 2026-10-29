@@ -44,6 +44,7 @@ import { captureEnvSchema, resolveMcpEnvVars, resolveMcpSpawnConfig } from '../s
 import type { UvxPackageResolver } from '../services/uvx-package-resolver'
 import type { UvManager } from '../services/uv-manager'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
+import { prepareMcpContainer, ComputeUnavailableError } from '../services/mcp-container-ready'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReason, type ComputeSettings } from '../services/container-routing'
 import { resolveContainerCommand } from '../services/container-command-resolver'
@@ -758,21 +759,16 @@ export class AgentRuntimeBuilder {
         // Why a host-preferring server runs in a container (Studio foreground
         // parity: mcp_install / mcp_restart report it to the agent).
         hostDenied = hostDenialReason(connCfg.name, connCfg, freshConfig, computeSettings) ?? undefined
-        try {
-          if (isolated) {
-            await this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-          } else {
-            await this.podmanService.ensureRunning()
-          }
-        } catch (containerErr) {
-          // Fail plainly — never silently fall back to host execution when
-          // routing decided this server must be containerized.
-          const detail = containerErr instanceof Error ? containerErr.message : String(containerErr)
-          throw new Error(`MCP container for "${connCfg.name}" is not ready: ${detail} Once the compute environment is fixed, call mcp_restart("${connCfg.name}") to reconnect.`)
-        }
-
-        const podmanBin = await this.podmanService.findPodman()
-        if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${connCfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${connCfg.name}").`)
+        // Fail plainly — never silently fall back to host execution when
+        // routing decided this server must be containerized.
+        const podman = this.podmanService
+        const podmanBin = await prepareMcpContainer(podman, connCfg.name, () => isolated
+          ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+          : podman.ensureRunning(),
+        ).catch((err: unknown) => {
+          if (err instanceof ComputeUnavailableError) manager.markFailed(serverCfg, err.message, 'needs_compute')
+          throw err
+        })
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
         try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
@@ -899,7 +895,8 @@ export class AgentRuntimeBuilder {
           // Recorded on the manager, so the server's status says why.
           const message = err instanceof Error ? err.message : String(err)
           console.error(`[AgentRuntimeBuilder][MCP] Reconcile: connect failed for "${name}":`, message)
-          manager.markFailed(serverCfg, message)
+          // A needs_compute failure was already recorded where it was thrown.
+          if (!(err instanceof ComputeUnavailableError)) manager.markFailed(serverCfg, message)
         }
       }
 
@@ -983,11 +980,10 @@ export class AgentRuntimeBuilder {
         const willContainerize = shouldContainerize(cfg.name, cfg, freshConfig, this.getComputeRoutingSettings())
         if (this.podmanService && willContainerize) {
           const isolated = shouldIsolate(freshConfig) && !isServerForceShared(cfg)
-          await (isolated
-            ? this.podmanService.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
-            : this.podmanService.ensureRunning())
-          const podmanBin = await this.podmanService.findPodman()
-          if (!podmanBin) throw new Error(`Podman is unavailable for MCP server "${cfg.name}" — install it (https://podman.io/docs/installation) or start the compute environment in ADF Studio → Settings → Compute, then call mcp_restart("${cfg.name}").`)
+          const podman = this.podmanService
+          const podmanBin = await prepareMcpContainer(podman, cfg.name, () => isolated
+            ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
+            : podman.ensureRunning())
           const cc = resolveContainerCommand(cfg)
           container = {
             podmanBin,
@@ -1037,7 +1033,7 @@ export class AgentRuntimeBuilder {
             return { name: serverCfg.name, skipped: false, attempted: true, connected: outcome.toolsDiscovered > 0 }
           } catch (err) {
             console.error(`[AgentRuntimeBuilder][MCP] connect failed for "${serverCfg.name}":`, err)
-            manager.markFailed(serverCfg, err instanceof Error ? err.message : String(err))
+            if (!(err instanceof ComputeUnavailableError)) manager.markFailed(serverCfg, err instanceof Error ? err.message : String(err))
             return { name: serverCfg.name, skipped: false, attempted: true, connected: false }
           }
         }),
@@ -1294,6 +1290,7 @@ export class AgentRuntimeBuilder {
         ? raw.hostApproved.filter((value): value is string => typeof value === 'string')
         : [],
       ...(hostApprovedSources ? { hostApprovedSources } : {}),
+      ...(raw?.mcpOnHost === true ? { mcpOnHost: true } : {}),
     }
   }
 

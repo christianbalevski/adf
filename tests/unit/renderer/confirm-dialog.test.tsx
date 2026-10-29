@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { ConfirmDialog, HOST_ACCESS_CONFIRM } from '../../../src/renderer/components/common/ConfirmDialog'
+import { ConfirmDialog, HOST_ACCESS_CONFIRM, MCP_ON_HOST_CONFIRM } from '../../../src/renderer/components/common/ConfirmDialog'
 
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
@@ -27,6 +27,22 @@ describe('ConfirmDialog', () => {
   it('host access is asked for as Allow host access', () => {
     expect(HOST_ACCESS_CONFIRM.confirmLabel).toBe('Allow host access')
     expect(HOST_ACCESS_CONFIRM.body).toMatch(/bypasses container isolation/)
+  })
+
+  it('an acknowledgement must be ticked before the button works', () => {
+    const html = renderToStaticMarkup(<ConfirmDialog options={MCP_ON_HOST_CONFIRM} onAnswer={() => {}} />)
+    expect(html).toContain('type="checkbox"')
+    expect(html).toContain(MCP_ON_HOST_CONFIRM.acknowledge)
+    expect(html).toMatch(/<button[^>]*disabled=""[^>]*>Run on this computer</)
+    // Without an acknowledgement the button is live.
+    expect(renderToStaticMarkup(<ConfirmDialog options={HOST_ACCESS_CONFIRM} onAnswer={() => {}} />)).not.toMatch(/disabled=""[^>]*>Allow host access</)
+  })
+
+  it('MCP servers on this computer is an explicit acceptance, in Settings → Compute and the compute sheet', () => {
+    expect(MCP_ON_HOST_CONFIRM.acknowledge).toMatch(/accept/)
+    expect(MCP_ON_HOST_CONFIRM.body).toMatch(/read and change your files/)
+    expect(readFileSync(join(SETTINGS_DIR, 'SettingsPage.tsx'), 'utf-8')).toContain('confirm(MCP_ON_HOST_CONFIRM)')
+    expect(readFileSync(join(__dirname, '../../../src/renderer/components/mcp/ComputeNeededSheet.tsx'), 'utf-8')).toContain('confirm(MCP_ON_HOST_CONFIRM)')
   })
 
   it('no Settings file calls window.confirm; the risky actions go through the dialog', () => {

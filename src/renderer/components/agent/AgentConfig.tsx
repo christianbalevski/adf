@@ -2,6 +2,7 @@ import { AgentCommandsSection } from './AgentCommandsSection'
 import { AGENT_COMMANDS_SECTION_LOCK, agentCommandsSaveError } from './agent-commands-config'
 import { useState, useEffect, useCallback, useRef, createContext, useContext } from 'react'
 import { useAgentStore } from '../../stores/agent.store'
+import { useComputeSetupStore } from '../../stores/compute-setup.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-tabs.store'
@@ -680,6 +681,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const agentRunning = useAgentStore((s) => s.state !== 'off')
   const config = template ? template.value : storeConfig
   const setConfig = useAgentStore((s) => s.setConfig)
+  const openComputeSetup = useComputeSetupStore((s) => s.open)
   const docFilePath = useDocumentStore((s) => s.filePath)
   // Template mode has no open workspace: everything keyed on the file path is off.
   const filePath = template ? null : docFilePath
@@ -749,6 +751,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [missingPackages, setMissingPackages] = useState<CodeExecutionPackage[]>([])
   const [showPkgInstallModal, setShowPkgInstallModal] = useState(false)
   const [runtimeHostEnabled, setRuntimeHostEnabled] = useState(false)
+  const [runtimeMcpOnHost, setRuntimeMcpOnHost] = useState(false)
   // The runtime's host approvals: shown in each MCP server's Runs on, changed only by a confirmed Allow.
   const [runtimeHostApproved, setRuntimeHostApproved] = useState<string[]>([])
   const [runtimeHostApprovedSources, setRuntimeHostApprovedSources] = useState<Record<string, string>>({})
@@ -819,6 +822,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     openApi()?.getSettings().then((s) => {
       if (!live) return
       setRuntimeHostEnabled(s?.compute?.hostAccessEnabled ?? false)
+      setRuntimeMcpOnHost(s?.compute?.mcpOnHost === true)
       setRuntimeHostApproved((s?.compute?.hostApproved as string[] | undefined) ?? [])
       setRuntimeHostApprovedSources((s?.compute?.hostApprovedSources as Record<string, string> | undefined) ?? {})
       setExecutionTargets(s.compute?.executionTargets ?? [])
@@ -2892,7 +2896,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             {/* Per-server Runs on: the agent's choice AND the runtime's approval (mcp-host-placement.ts).
                 Clicking a location changes only this agent's config; Allow is the one way to the runtime's. */}
             {(local.mcp?.servers ?? []).length > 0 && (() => {
-              const runtimeApproval: RuntimeHostApproval = { hostAccessEnabled: runtimeHostEnabled, hostApproved: runtimeHostApproved, hostApprovedSources: runtimeHostApprovedSources }
+              const runtimeApproval: RuntimeHostApproval = { hostAccessEnabled: runtimeHostEnabled, hostApproved: runtimeHostApproved, hostApprovedSources: runtimeHostApprovedSources, mcpOnHost: runtimeMcpOnHost }
               const choices: McpLocation[] = [...(local.compute?.enabled ? ['Isolated' as const] : []), 'Shared', 'Host']
               const allowHost = async (server: NonNullable<typeof local.mcp>['servers'][number]) => {
                 const needsServer = !local.compute?.host_access
@@ -3238,6 +3242,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       )}
                       {!template && live?.status === 'needs_sign_in' && live.error && (
                         <p className="text-[10px] text-amber-700 dark:text-amber-400 break-words">{live.error}</p>
+                      )}
+                      {!template && live?.status === 'needs_compute' && filePath && (
+                        <p className="text-[10px] text-amber-700 dark:text-amber-400">
+                          Podman isn&apos;t set up, so this server can&apos;t run in a container.{' '}
+                          <button type="button" className="underline font-medium" onClick={() => openComputeSetup(filePath, [srv.name])}>Set up</button>
+                        </p>
                       )}
                       {mcpLogsFor === srv.name && (
                         <McpServerLogs serverName={srv.name} logs={mcpLogs} onClose={() => setMcpLogsFor(null)} />

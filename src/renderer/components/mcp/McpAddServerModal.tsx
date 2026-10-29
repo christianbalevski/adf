@@ -55,6 +55,14 @@ interface McpAddServerModalProps {
    * mcpServers array reference changes.
    */
   onOAuthChanged?: () => void
+  /**
+   * Connect failed because Podman isn't set up (result.computeUnavailable):
+   * the dashboard shows the compute sheet. `runOnHost` sets this draft to run
+   * on the host; `retry` runs Connect again.
+   */
+  onComputeNeeded?: (name: string, actions: { retry: () => void; runOnHost: () => Promise<boolean> }) => void
+  /** Turn on host access without asking again (the compute sheet already asked). */
+  onEnableHostAccessNow?: () => Promise<boolean>
 }
 
 function newId(): string {
@@ -264,7 +272,7 @@ export function McpAddServerModal(props: McpAddServerModalProps) {
   return <McpAddServerModalBody {...props} />
 }
 
-function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged }: McpAddServerModalProps) {
+function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged, onComputeNeeded, onEnableHostAccessNow }: McpAddServerModalProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
@@ -417,6 +425,15 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     reader.readAsDataURL(file)
   }
 
+  // Connect again after the compute sheet resolved, against the draft as it is now.
+  const [retestRequested, setRetestRequested] = useState(false)
+  useEffect(() => {
+    if (!retestRequested) return
+    setRetestRequested(false)
+    void handleConnect()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [retestRequested])
+
   const handleConnect = async () => {
     if (!draft || !canLaunch || hasPlaceholders) return
     // Snapshot the identity under test — the form stays editable while the
@@ -451,6 +468,15 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
         if (result.oauthRan) onOAuthChanged?.()
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
+        if (result?.computeUnavailable && onComputeNeeded) {
+          onComputeNeeded(tested.name, {
+            retry: () => setRetestRequested(true),
+            runOnHost: async () => {
+              patch({ runLocation: 'host' })
+              return hostAccessEnabled || !onEnableHostAccessNow ? true : onEnableHostAccessNow()
+            },
+          })
+        }
       }
     } catch (err) {
       setTest({ phase: 'done', success: false, error: String(err) })

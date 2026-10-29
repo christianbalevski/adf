@@ -9,6 +9,7 @@ import { PasswordDialog } from '../common/PasswordDialog'
 import { OwnerMismatchDialog } from '../common/OwnerMismatchDialog'
 import { AgentReviewDialog } from '../common/AgentReviewDialog'
 import { ProviderSetupDialog } from '../common/ProviderSetupDialog'
+import { ComputeSetupDialog } from '../common/ComputeSetupDialog'
 import { ShareAgentDialog } from '../common/ShareAgentDialog'
 import { AgentReviewBanner } from '../common/AgentReviewBanner'
 import { RecoveredEditsNotice } from '../common/RecoveredEditsNotice'
@@ -299,6 +300,7 @@ export function AppShell() {
       <OwnerMismatchDialog />
       <AgentReviewDialog />
       <ProviderSetupDialog />
+      <ComputeSetupDialog />
       <ShareAgentDialog />
       <ShutdownOverlay />
     </div>

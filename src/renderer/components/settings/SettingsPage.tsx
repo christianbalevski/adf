@@ -31,7 +31,7 @@ import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { CONNECTION_STATE_LABELS } from '../../../shared/types/connection.types'
 import { ContainerDestroyDialog, containerStopConfirmation, type ContainerDestroyRequest } from './ContainerDestroyDialog'
 import { Dialog } from '../common/Dialog'
-import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
+import { HOST_ACCESS_CONFIRM, MCP_ON_HOST_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { Tooltip } from '../common/Tooltip'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -984,6 +984,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
   // '' = default (Documents/adf-agents); saved directly, not via the debounced bundle
   const [agentsFolder, setAgentsFolder] = useState('')
   const [computeHostAccessEnabled, setComputeHostAccessEnabled] = useState(false)
+  const [computeMcpOnHost, setComputeMcpOnHost] = useState(false)
   const [computeHostApproved, setComputeHostApproved] = useState<string[]>([])
   const [computeHostApprovedSources, setComputeHostApprovedSources] = useState<Record<string, string>>({})
   // Live view of the registrations for transition-based reconciliation — the
@@ -1171,12 +1172,13 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
       setSandboxMaxWorkers((settings.sandboxMaxWorkers as number) ?? 0)
       setAgentsFolder((settings.agentsFolder as string) ?? '')
       const compute = settings.compute as {
-        hostAccessEnabled?: boolean; hostApproved?: string[]; hostApprovedSources?: Record<string, string>;
+        hostAccessEnabled?: boolean; hostApproved?: string[]; hostApprovedSources?: Record<string, string>; mcpOnHost?: boolean;
         containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerImage?: string;
         executionTargets?: ExecutionTarget[];
       } | undefined
       if (compute) {
         setComputeHostAccessEnabled(!!compute.hostAccessEnabled)
+        setComputeMcpOnHost(compute.mcpOnHost === true)
         setComputeHostApproved(compute.hostApproved ?? [])
         computeHostApprovedRef.current = compute.hostApproved ?? []
         setComputeHostApprovedSources(compute.hostApprovedSources ?? {})
@@ -1937,6 +1939,9 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
               hostApprovedSources={computeHostApprovedSources}
               onAllowHost={(reg) => void allowRegistrationOnHost(reg)}
               onEnableHostAccess={() => { void confirm(HOST_ACCESS_CONFIRM).then((yes) => { if (yes) void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled) }) }}
+              mcpOnHost={computeMcpOnHost}
+              onEnableHostAccessNow={() => persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled)}
+              onAcceptMcpOnHost={() => persistCompute('mcpOnHost', setComputeMcpOnHost, true, computeMcpOnHost)}
             />
           )}
 
@@ -1962,6 +1967,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
             setComputeEnvStatus={setComputeEnvStatus}
             computeHostAccessEnabled={computeHostAccessEnabled}
             setComputeHostAccessEnabled={(v) => void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, v, computeHostAccessEnabled)}
+            computeMcpOnHost={computeMcpOnHost}
+            setComputeMcpOnHost={(v) => void persistCompute('mcpOnHost', setComputeMcpOnHost, v, computeMcpOnHost)}
             computeHostApproved={computeHostApproved}
             revokeHostServer={(name) => {
               const sources = { ...computeHostApprovedSourcesRef.current }
@@ -1997,6 +2004,7 @@ type ComputeEnvView = { status: string; activeAgents: string[]; leftRunning?: Ar
 function ComputeTab({
   computeEnvStatus, setComputeEnvStatus,
   computeHostAccessEnabled, setComputeHostAccessEnabled,
+  computeMcpOnHost, setComputeMcpOnHost,
   computeHostApproved, revokeHostServer,
   containerPackages, setContainerPackages,
   machineCpus, setMachineCpus,
@@ -2008,6 +2016,8 @@ function ComputeTab({
   setComputeEnvStatus: (s: ComputeEnvView) => void
   computeHostAccessEnabled: boolean
   setComputeHostAccessEnabled: (v: boolean) => void
+  computeMcpOnHost: boolean
+  setComputeMcpOnHost: (v: boolean) => void
   computeHostApproved: string[]
   revokeHostServer: (name: string) => void
   containerPackages: string
@@ -2045,6 +2055,11 @@ function ComputeTab({
   const switchHostAccess = async (next: boolean) => {
     if (next && !await confirm(HOST_ACCESS_CONFIRM)) return
     setComputeHostAccessEnabled(next)
+  }
+  /** MCP servers on this computer is an explicit acceptance when it turns on, never asked when it turns off. */
+  const switchMcpOnHost = async (next: boolean) => {
+    if (next && !await confirm(MCP_ON_HOST_CONFIRM)) return
+    setComputeMcpOnHost(next)
   }
   const confirmRevoke = async (name: string) => {
     if (await confirm({
@@ -2366,7 +2381,7 @@ function ComputeTab({
           <span className="mt-0.5 block text-[12px] text-[var(--adf-ui-text-muted)]">Host access and custom Docker or Podman containers.</span>
         </span>
         <span className="flex items-center gap-2 text-[11px] text-[var(--adf-ui-text-muted)]">
-          {executionTargets.length > 0 || computeHostAccessEnabled ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0)} configured` : 'Configure'}
+          {executionTargets.length > 0 || computeHostAccessEnabled || computeMcpOnHost ? `${executionTargets.length + (computeHostAccessEnabled ? 1 : 0) + (computeMcpOnHost ? 1 : 0)} configured` : 'Configure'}
           <svg className={`transition-transform ${advancedOpen ? 'rotate-180' : ''}`} width="12" height="12" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
         </span>
       </button>
@@ -2380,6 +2395,13 @@ function ComputeTab({
         description="Host execution bypasses container isolation."
       >
         <Switch label="Host access" checked={computeHostAccessEnabled} onChange={(next) => void switchHostAccess(next)} />
+      </SettingsRow>
+      <SettingsRow
+        separator
+        label={<>MCP servers on this computer<InfoHint tip="Every MCP server runs directly on this computer instead of in a container, including servers agents install. Servers set to run in the container, and servers of agents with their own container, stay in a container." /></>}
+        description="Skips the container for MCP servers. They can read and change your files."
+      >
+        <Switch label="MCP servers on this computer" checked={computeMcpOnHost} onChange={(next) => void switchMcpOnHost(next)} />
       </SettingsRow>
       {computeHostAccessEnabled && (
         <SettingsRow
