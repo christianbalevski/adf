@@ -55,6 +55,75 @@ release is a clean, deliberate point.
 > Version bumps are **not** per-commit. Normal work commits stay unversioned;
 > you only run `npm version` when you actually cut a build.
 
+## Release communication review (future releases)
+
+This checklist is a proposal for a separately authorized future release.
+It does not authorize a version bump, tag, release, website publication or
+social post, and does not lift a release hold. The workflow above still
+publishes automatically after a tag is pushed; this documentation adds no
+manual CI gate.
+
+Before preparing a future release, record the candidate commit and the
+published Studio and npm versions separately. Review these items against
+that candidate:
+
+- Open the [website](https://agentdocumentformat.org/), its
+  [guides](https://agentdocumentformat.org/guides) and
+  [CLI page](https://agentdocumentformat.org/cli). Compare the displayed
+  version, each platform's download URL and the guides' source version with
+  the intended published tag and its actual assets. Record the URLs and
+  check date. Do not assume that editing this repository updates the site.
+- Check Studio/CLI coexistence guidance against the selected version's
+  behavior: Local mode uses a shared daemon; Inside Studio runs an embedded
+  runtime and must not start a second runtime on the same settings and files.
+  Keep the website and [CLI guide](docs/cli/index.md#studio-and-the-cli)
+  consistent with the [backend guide](docs/guides/studio-backend.md).
+- Copy the exact Node engine range for the version being described and
+  check it against that version's startup guard. Current main uses
+  `^22.23.4 || ^24.22.1 || ^26.12.1`; published npm v0.8.3 declares `>=22`.
+  Do not assign main's restrictions to v0.8.3. Recheck both facts for the
+  next candidate rather than treating these values as a permanent policy.
+- Begin the release notes with a short paragraph describing what users can
+  do or what problem is fixed, followed by upgrade requirements and known
+  limitations. Put the generated commit groups after that opening. Verify
+  each claim against the candidate diff and test evidence; avoid claiming
+  a full regression run from a source review.
+- Review the install footer against the actual artifacts and signing
+  verification. The generator describes signed official Windows installers
+  and signed, notarized macOS builds without promising that the operating
+  system shows no warnings.
+
+### Reviewed release-note openings
+
+Write the reviewed opening and any version-specific caveats in
+`docs/release-notes/<exact-tag>.md`, for example
+[`docs/release-notes/v0.8.3.md`](docs/release-notes/v0.8.3.md). Include the file
+in the candidate commit before a separately authorized release. Keep the
+opening focused on user-visible changes; the generator adds the technical
+changelog and installation section.
+
+`node scripts/release-notes.mjs <existing-tag>` prints the assembled notes
+without publishing anything. The script reads the exact matching Markdown
+file from the current checkout and prepends it to the generated commit
+groups. It does not reuse a different version's opening. A missing or empty
+file leaves the generated changelog in place, so this adds no release gate.
+Review from the intended checkout: running the generator for an older tag
+uses the current checkout's opening and install copy, not those stored at
+that tag. The release workflow already calls this script; no workflow change
+is needed. Adding an opening locally does not update a published release.
+
+The v0.8.3 opening is based on the
+[v0.8.2…v0.8.3 changes](https://github.com/christianbalevski/adf/compare/v0.8.2...v0.8.3),
+including `7c062a1d` (question forms) and `05525d1a` (remote website links).
+Its Node requirement describes published npm v0.8.3, separately from main.
+This source review is not evidence of an executed application walkthrough.
+
+Run the generator checks without application dependencies:
+
+```bash
+node --test tests/scripts/release-notes.node-test.mjs
+```
+
 ## Watching / re-running a release
 
 ```bash

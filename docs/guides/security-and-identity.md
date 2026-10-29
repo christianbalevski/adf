@@ -99,14 +99,20 @@ Only the credentials envelope ever gets daemon slots — identity keys stay boun
 
 ## Sharing an Agent
 
-The intended flow for handing a configured agent — including its API keys — to another person:
+### Before you send an agent
 
-1. **Sender:** Agent → Identity → **Set a share password…** This adds a password slot to the *credentials* envelope only. Use a strong passphrase; it is the only thing protecting the keys while the file is in transit.
+Sharing can include conversation history, including cleared chats retained in the audit archive; clearing the conversation is not a privacy scrub. Whether a clear archives its rows depends on the agent's [loop audit setting](memory-management.md#audit). Existing archives remain in the `.adf` file. Review what the file contains before sending it, and do not share a file whose retained history is sensitive.
+
+A share password gives the recipient access to the credentials included in the file. It does not hide configuration, conversation history, memory, or audit archives. Once the recipient unlocks the credentials, revoking access means rotating those credentials at the provider or service that issued them.
+
+### Send and claim
+
+To hand a configured agent to another person, including any credentials you intend to give them:
+
+1. **Sender:** Agent → Identity → **Set a share password…** This adds a password slot to the *credentials* envelope only. Use a strong passphrase; anyone with the file and that password can unlock its included credentials.
 2. Send the `.adf` file however you like, and tell them the password out of band.
-3. **Recipient:** opening the file shows the arrival dialog — a capability review (tools, triggers, network, compute) followed by a claim step. They enter the password there → the credentials unlock, are **re-wrapped to their own owner/runtime keys, and the password slot is removed** (it's a transit artifact, not a standing secret). The password can also be skipped and entered later in the Identity panel.
-4. **Claim & Open** completes the handover: the agent gets a fresh DID under their ownership, with a `clone` attestation recording where it came from. Your identity never transfers — the agent runs for them, with your API keys, as *their* agent.
-
-Be clear about what sharing means: once unlocked, the recipient has the credentials. Revoking access later means rotating those keys upstream. And the file's non-secret contents (configuration, conversation history, memory) are readable regardless of any password — don't share files whose history is sensitive.
+3. **Recipient:** opening the file shows the arrival dialog — a capability review (tools, triggers, network, compute) followed by a claim step. Entering the password unlocks the credentials; claiming then wraps access to their own owner/runtime keys. The share password remains valid until explicitly changed or removed in the Identity panel. They can also skip the password and enter it later in that panel.
+4. **Claim & Open** completes the handover: the agent gets a fresh DID under their ownership, with a `clone` attestation recording where it came from. Your signing identity does not transfer. The agent runs under their ownership with the credentials they unlocked from the file; claiming does not replace those credentials with their own API keys. They can replace the included credentials with their own API keys before running it.
 
 ## Claiming a Foreign Agent
 
@@ -128,7 +134,7 @@ Claiming (whether from the arrival dialog or Config → Security):
 - records the old DID in `adf_did_history` (lineage stays resolvable),
 - stamps your owner/runtime DIDs and issues fresh owner/operator attestations,
 - appends an owner-signed **`clone` attestation** (`scope` = the prior DID) as permanent provenance,
-- keeps the credentials envelope **only while it is recoverable** — a share password slot exists and it guards at least one stored secret. A foreign credentials envelope with no password slot (or nothing in it) is cryptographically dead: nothing can ever derive its key, and leaving its descriptor in place would silently prevent every credential stored *after* the claim from being sealed. Claiming drops dead envelopes (and their unreadable rows) and provisions a fresh one under your keys.
+- keeps an unlocked credentials envelope, or a locked one with a share password slot, including an empty envelope. A locked foreign envelope without a password slot cannot be recovered on this machine. Claiming drops that envelope and its unreadable rows, then provisions a fresh one under your keys so new credentials can be sealed.
 
 Claiming is always explicit and user-confirmed. An agent arriving on the wrong machine should never silently become someone else's.
 

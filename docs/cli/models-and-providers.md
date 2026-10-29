@@ -29,6 +29,29 @@ before.
 
 One-shot: `adf providers` (providers and which agent resolves to which).
 
+## Local model requirements
+
+You can use any local server that implements the OpenAI-compatible chat API,
+including Ollama and LM Studio. Start the server, load a model, then choose
+its preset or **OpenAI-compatible** in `/provider add`. Enter the server's
+API base URL and the model ID it serves. The presets use
+`http://localhost:11434/v1` for Ollama and `http://localhost:1234/v1` for
+LM Studio. An API key is needed only if the server requires authentication.
+The URL must be reachable from the daemon; `localhost` means the daemon's
+computer.
+
+Both the server and the selected model must support native tool (function)
+calling for the agent to use tools. Supporting ordinary chat alone is not
+enough: ADF sends tool definitions and expects structured tool calls, with
+no text-based fallback. Choose a model with tool-calling support and enable
+that support in the server if needed.
+
+Vision is optional. Text and tool work do not require it. To understand
+images or screenshots, both the model and the server must support image
+input, and you must enable images in the agent's model settings
+(`model.multimodal.image`). ADF does not detect model capabilities; see
+[Media when changing models](#media-when-changing-models).
+
 ## Subscriptions
 
 Agents on a subscription need the **daemon** to be signed in. The daemon's

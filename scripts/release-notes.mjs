@@ -1,28 +1,35 @@
 #!/usr/bin/env node
 // Generate Markdown release notes from the commits between the previous
-// version tag and the given tag, grouped by conventional-commit prefix.
+// version tag and the given tag, grouped by conventional-commit prefix,
+// with an optional reviewed opening from docs/release-notes/<tag>.md.
 //
 // Usage: node scripts/release-notes.mjs <tag>   e.g. v0.1.3
 // Prints the notes to stdout. Designed for the `publish` job in
 // .github/workflows/release.yml (see RELEASING.md), but runnable locally.
 
-import { execSync } from 'node:child_process'
+import { execFileSync } from 'node:child_process'
+import { readFileSync } from 'node:fs'
+import { join } from 'node:path'
 
 const tag = process.argv[2]
 if (!tag) {
   console.error('usage: node scripts/release-notes.mjs <tag>')
   process.exit(1)
 }
+if (!/^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/.test(tag)) {
+  console.error('release tag must have the form vX.Y.Z (optional prerelease/build suffix)')
+  process.exit(1)
+}
 
-const sh = (cmd) => execSync(cmd, { encoding: 'utf8', windowsHide: true }).trim()
+const git = (...args) => execFileSync('git', args, { encoding: 'utf8', windowsHide: true }).trim()
 const repo =
   process.env.GITHUB_REPOSITORY ||
-  sh('git config --get remote.origin.url')
+  git('config', '--get', 'remote.origin.url')
     .replace(/^git@github\.com:|^https:\/\/github\.com\//, '')
     .replace(/\.git$/, '')
 
 // Previous version tag = the vX.Y.Z tag immediately preceding `tag` by semver.
-const versionTags = sh("git tag --list 'v*' --sort=-v:refname")
+const versionTags = git('tag', '--list', 'v*', '--sort=-v:refname')
   .split('\n')
   .filter(Boolean)
 const idx = versionTags.indexOf(tag)
@@ -30,7 +37,7 @@ const prevTag = idx >= 0 ? versionTags[idx + 1] : versionTags[0]
 const range = prevTag ? `${prevTag}..${tag}` : tag
 
 // %H<TAB>%s — hash and subject, no merge commits.
-const raw = sh(`git log --no-merges --pretty=format:%H%x09%s ${range}`)
+const raw = git('log', '--no-merges', '--pretty=format:%H%x09%s', '--end-of-options', range, '--')
 const commits = raw
   ? raw.split('\n').map((l) => {
       const [hash, ...rest] = l.split('\t')
@@ -94,26 +101,34 @@ if (parts.length === 0) {
   parts.push('_No notable changes._')
 }
 
+// A reviewed opening belongs to one exact version. Missing files keep the
+// existing generated changelog; they do not introduce a release gate.
+const openingPath = join(git('rev-parse', '--show-toplevel'), 'docs', 'release-notes', `${tag}.md`)
+try {
+  const opening = readFileSync(openingPath, 'utf8').trim()
+  if (opening) parts.unshift(opening)
+} catch (error) {
+  if (error.code !== 'ENOENT') throw error
+}
+
 if (prevTag) {
   parts.push(
     `\n**Full changelog:** https://github.com/${repo}/compare/${prevTag}...${tag}`
   )
 }
 
-// Stable install footer. macOS builds are Developer ID-signed and notarized
-// (no Gatekeeper prompt). Windows is still unsigned, so spell out the
-// SmartScreen bypass so a download isn't a dead end; trim once a Windows
-// cert lands.
+// Install copy follows the tagged-release workflow's signing configuration.
+// A signature does not guarantee that the operating system shows no warning.
 parts.push(
   [
     '---',
     '### 📥 Install',
     '',
     '**macOS** (`.dmg`) — pick `-arm64` for Apple Silicon, `-universal` for Intel.',
-    'Signed and notarized: drag to Applications and open, no warnings.',
+    'Signed and notarized: drag to Applications and open.',
     '',
-    '**Windows** (`.exe`) — SmartScreen shows *"Windows protected your PC"*.',
-    'Click **More info → Run anyway** (unsigned installer).',
+    '**Windows** (`.exe`) — open the installer and follow the setup prompts.',
+    'Official release installers are signed by Christian Balevski.',
     '',
     '**Linux** — prefer the `.deb` (note: lowercase name, underscores):',
     '`sudo apt install ./adf-studio_*_amd64.deb`',
