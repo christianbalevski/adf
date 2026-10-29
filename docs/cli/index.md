@@ -14,7 +14,9 @@ Quitting the app, or closing the terminal, leaves every agent running.
 
 ## Install
 
-Needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (see [Node.js versions](#nodejs-versions)).
+Current `main` requires Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`.
+The published npm v0.8.3 package declares `>=22`; see
+[Node.js versions](#nodejs-versions) for the version-specific requirements.
 Native modules (SQLite, the OS keychain) come as prebuilt binaries for
 Windows, macOS (arm64, x64) and Linux (x64, arm64, glibc), so no compiler is
 needed.
@@ -57,8 +59,10 @@ until you restart it. `adf --version` prints the installed version,
 
 ## Node.js versions
 
-`adf` and the daemon run on the Node.js on your system, and need
-**22.23.4+, 24.22.1+ or 26.12.1+** (`^22.23.4 || ^24.22.1 || ^26.12.1`).
+`adf` and the daemon run on the Node.js on your system. On current `main`,
+both package engine declarations and the runtime check require
+`^22.23.4 || ^24.22.1 || ^26.12.1`: Node.js 22.x from 22.23.4,
+24.x from 24.22.1, or 26.x from 26.12.1.
 Earlier releases, and every 23.x and 25.x, ship a Brotli decoder with an
 out-of-bounds write ([CVE-2026-111497](https://nodejs.org/en/blog/vulnerability/october-2026-security-releases)),
 and the daemon decodes Brotli it did not produce: web responses agents fetch
@@ -67,9 +71,14 @@ On such a release every `adf` command stops at once with
 `ADF refuses to run on Node.js …` and changes nothing. There is no override.
 Node.js 27 and later are refused the same way until ADF is tested on them.
 
-The check is the version number plus the fixed decoder's new error code, so a
-distribution package that backports the fix under an older version number is
-refused too; use a build from [nodejs.org](https://nodejs.org) or your
+Published npm v0.8.3 declares `engines.node: ">=22"`. That published package
+predates the stricter range above; the current-main runtime check and refusal
+behavior do not describe v0.8.3. Use the requirements for the version you
+install, rather than treating `main` as the published package.
+
+On current `main`, the check is the version number plus the fixed decoder's
+new error code, so a distribution package that backports the fix under an
+older version number is refused too; use a build from [nodejs.org](https://nodejs.org) or your
 vendor's current release. After upgrading Node.js, restart a daemon that was
 already running (`adf daemon restart`): it keeps the runtime it started with.
 
@@ -80,11 +89,15 @@ same runtime.
 
 ## Studio and the CLI
 
-ADF Studio (the desktop app) and the CLI use the same settings file and the
-same owner identity on one machine, so providers, tracked folders and agents
-you set up in one show up in the other. They must not run the same agents at
-the same time: `adf` never starts a daemon while Studio is running and tells
-you so. Quit Studio first, or keep using Studio.
+On current `main`, ADF Studio in **Local** mode and the CLI are clients of
+the same daemon. They share settings, owner identity and agents on this
+computer and can run side by side.
+
+With **Inside Studio (legacy)**, Studio runs agents in its own process.
+`adf` refuses to start a daemon while that Studio runs on the same settings.
+Switch Studio to Local mode or quit it first. See
+[Studio backend](../guides/studio-backend.md) and
+[Studio at the same time](troubleshooting.md#studio-at-the-same-time).
 
 ## Guides
 

@@ -14,8 +14,11 @@ the [releases](https://github.com/christianbalevski/adf/releases).
 
 ## Install
 
-Requires Node.js 22.23.4+, 24.22.1+ or 26.12.1+; `adf` refuses older releases
-and 23.x/25.x, whose Brotli decoder has CVE-2026-111497. Native modules (SQLite, OS keychain) come
+Current `main` requires Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`; `adf`
+refuses earlier releases and 23.x/25.x because of CVE-2026-111497, and 27+
+until tested. Published npm v0.8.3 declares `>=22` and predates this check.
+See [Node.js versions](https://github.com/christianbalevski/adf/blob/main/docs/cli/index.md#nodejs-versions).
+Native modules (SQLite, OS keychain) come
 prebuilt for Windows, macOS (arm64, x64) and Linux (x64, arm64, glibc).
 
 ```bash
@@ -28,6 +31,15 @@ adf
 
 Upgrade: `npm i -g @agentdocumentformat/cli@latest`, then
 `adf daemon restart`.
+
+## Local models
+
+Use Ollama, LM Studio, or any server that implements the OpenAI-compatible
+chat API. Both the server and selected model need tool calling for agent
+tools. Vision is needed only when the model must understand images or screenshots. Add the server with
+`/provider add`, using its API base URL and model ID; supply a key only if
+the server requires one. See
+[local model requirements](https://github.com/christianbalevski/adf/blob/main/docs/cli/models-and-providers.md#local-model-requirements).
 
 ## Quickstart
 
@@ -50,9 +62,11 @@ adf chat agent-1 "hello"
 adf events agent-1
 ```
 
-Daemon: `adf daemon status | stop | restart | logs -f | token`. Studio and
-the CLI share settings and the owner identity on one machine; `adf` does not
-start a daemon while Studio is running.
+Daemon: `adf daemon status | stop | restart | logs -f | token`. On current
+`main`, Studio in Local mode and the CLI share one daemon, settings and owner
+identity, and can run side by side. With Inside Studio (legacy), `adf`
+refuses to start a daemon on the same settings while Studio runs; switch
+Studio to Local mode or quit it first.
 
 ## Docs
 

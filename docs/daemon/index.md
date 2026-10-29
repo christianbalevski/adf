@@ -9,9 +9,11 @@ everything over a local HTTP API guarded by a per-install access token.
 The ADF CLI and its terminal app (`adf`, npm package
 [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli))
 are clients of that API, and start the daemon in the background when they need
-it. Studio remains the visual IDE for authoring and observing agents. Both
-hosts build agents with the same canonical assembler; the daemon selects the
-exhaustive `daemon` capability profile.
+it. On current `main`, Studio in Local mode is another client of the daemon,
+with a desktop UI for authoring and observing agents. The legacy Inside
+Studio mode hosts agents in Studio itself. Both runtime hosts build agents
+with the same canonical assembler; the daemon selects the exhaustive
+`daemon` capability profile.
 
 ## Documentation
 
@@ -34,16 +36,19 @@ exhaustive `daemon` capability profile.
 |------|--------|--------|
 | Primary use | Desktop authoring and visual operation | Headless runtime: terminal, scripts, servers, other clients |
 | Entry point | The ADF Studio app (`npm run dev` from source) | `adf` (auto-start), `adf daemon [start]` (`npm run daemon` from source) |
-| Agent control | Renderer UI and main-process IPC | HTTP API on `127.0.0.1:7385` (bearer token), the terminal app and the CLI |
+| Agent control | Desktop UI connected to the daemon; main-process IPC in legacy Inside Studio mode | HTTP API on `127.0.0.1:7385` (bearer token), the terminal app and the CLI |
 | Agent visibility | Loop panel, logs panel, agent panels | Terminal app, `/events` stream, diagnostics and resource endpoints, daemon log |
-| Settings | App settings UI | The same `adf-settings.json` (edited by the terminal app, the API, or by hand) |
-| Owner identity | Seed phrase in `adf-settings.json` (encrypted with `safeStorage` when available), mirrored to the OS keychain | The same identity (shared keychain), or a passphrase file where there is none |
-| Mesh serving | Mesh server on port `7295` | Same mesh server on port `7295`, on by default |
-| Runtime wiring | Canonical assembler with Studio foreground/background profiles | Canonical assembler with the `daemon` profile, hosted by `RuntimeService` |
+| Settings | App settings UI for the connected runtime | The same `adf-settings.json` (edited by the terminal app, the API, or by hand) |
+| Owner identity | Local mode and legacy Inside Studio share the owner identity and settings on this computer; [secret storage](owner-secret-storage.md) depends on the runtime host | The same identity (shared keychain), or a passphrase file where there is none |
+| Mesh serving | The connected daemon's mesh; an in-process server in legacy Inside Studio mode | Same mesh server on port `7295`, on by default |
+| Runtime wiring | Daemon client in Local mode; canonical assembler with Studio foreground/background profiles in legacy Inside Studio mode | Canonical assembler with the `daemon` profile, hosted by `RuntimeService` |
 
-Run one of them at a time on the same agents: both would open the same files,
-start the same channels and bind the same mesh port. `adf` refuses to
-auto-start a daemon while Studio runs on the same settings.
+Studio in Local mode and `adf` can use the same daemon at the same time.
+In legacy Inside Studio mode, Studio runs agents itself, so `adf` refuses
+to auto-start a daemon while that Studio runs on the same settings. Agent
+leases normally prevent separate runtimes on one computer from running the
+same file; the caveat below applies when lease storage is unavailable. See [Studio at the same time](../cli/troubleshooting.md#studio-at-the-same-time)
+and [agent leases](../cli/troubleshooting.md#agent-is-already-running-agent_leased).
 
 ## What works today
 
@@ -66,5 +71,5 @@ auto-start a daemon while Studio runs on the same settings.
 - The `/events` replay buffer is in memory (1000 frames): live visibility and short reconnects, not an audit log. Durable history is in each agent's file.
 - File-change triggers are incomplete without Studio's document editor.
 - The daemon speaks plain HTTP; remote use needs an SSH tunnel or TLS in front ([remote access](api-guide.md#remote-access)).
-- No cross-process lock keeps Studio and a hand-started daemon off the same `.adf` files.
+- If the lease folder is not writable, the agent starts with a warning and without protection against a second runtime opening it. See [agent leases](../cli/troubleshooting.md#agent-is-already-running-agent_leased).
 - From a source checkout, switching between Studio (Electron) and the daemon (Node) rebuilds `better-sqlite3`.

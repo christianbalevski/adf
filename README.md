@@ -49,7 +49,7 @@ The [Quick start](#quick-start) below is for developers running ADF from source;
 
 ## Install the ADF CLI from npm
 
-For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. It needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ (earlier releases are refused: CVE-2026-111497, see [Node.js versions](docs/cli/index.md#nodejs-versions)); native modules install from prebuilt binaries, so no compiler is needed. The desktop app brings its own runtime and does not use the Node.js on your system.
+For terminal-only use (servers, SSH sessions, no desktop app), install the [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli) package. Current `main` requires Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`; published npm v0.8.3 declares `>=22` (see [Node.js versions](docs/cli/index.md#nodejs-versions)). Native modules install from prebuilt binaries, so no compiler is needed. The desktop app brings its own runtime and does not use the Node.js on your system.
 
 ```bash
 npm i -g @agentdocumentformat/cli
@@ -65,7 +65,7 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 - **One file per agent.** Copy or move the file to copy or move the agent ([what's inside](ADF_SPEC_v0.2.md#13-one-file-one-agent)).
 - **ADF Studio:** a desktop IDE for agents. Author them, follow their turns, configure their tools and approve restricted tool calls.
 - **Mesh view:** an RTS-style command surface. Every agent is a tile on a hex map; select, message, hold and command whole groups with hotkeys.
-- **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), a ChatGPT or Grok subscription via OAuth, or a Claude Pro/Max plan through your installed Claude Code.
+- **Model providers:** Anthropic, OpenAI, OpenRouter, any OpenAI-compatible endpoint (Ollama, LM Studio and others), a ChatGPT or Grok subscription via OAuth, or a Claude Pro/Max plan through your installed Claude Code. Local servers and their selected models need tool calling for agent tools; vision is needed only when the model must understand images or screenshots. See [local model requirements](docs/cli/models-and-providers.md#local-model-requirements).
 - **Built-in tools and services:** sandboxed code execution, lambdas, timers, triggers, skills, MCP servers, container-backed compute, HTTP serving and WebSockets.
 - **Code path:** lambdas run on a trigger, a timer or a message, and middleware sits on the inbox, outbox, routes and fetches. A model turn runs only when a trigger, timer or message starts one.
 - **Inner loops:** up to 16 inner loops (side loops) next to the main loop, each with its own transcript, goal and tool subset, all stored in the agent's file.
@@ -102,7 +102,7 @@ Studio and the CLI share the same settings file and owner identity (OS keychain)
 
 ## Quick start
 
-**Prerequisites:** Node.js 22.23.4+, 24.22.1+ or 26.12.1+, npm, and an API key for a supported model provider. Optional: Podman for container-backed compute.
+**Prerequisites for current `main`:** Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`, npm, and a supported model provider (an API key, subscription sign-in, or a [local server](docs/cli/models-and-providers.md#local-model-requirements) with a tool-calling model). Optional: Podman for container-backed compute.
 
 ```bash
 git clone https://github.com/christianbalevski/adf.git

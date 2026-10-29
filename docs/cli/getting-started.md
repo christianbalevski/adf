@@ -57,10 +57,15 @@ One-shot: `adf identity new`, `adf identity restore`, `adf identity`.
   [Claude Code](https://code.claude.com/docs/en/setup) (2.1.248 or newer),
   then `/login claude`. Sign-in runs through Claude Code and shares its
   session.
-- **API key** (Anthropic, OpenAI, OpenRouter, Gemini, a local Ollama or LM
-  Studio, any OpenAI-compatible URL): `/provider add`, pick the provider,
-  paste the key. It goes to the daemon's secret store, never the settings
-  file.
+- **Hosted API** (Anthropic, OpenAI, OpenRouter, Gemini, or an
+  OpenAI-compatible URL): `/provider add`, pick the provider and paste its
+  API key. It goes to the daemon's secret store, never the settings file.
+- **Local server** (Ollama, LM Studio, or any OpenAI-compatible chat server):
+  start the server and load a model, then use `/provider add` with its API
+  base URL and model ID. Both the server and model need tool calling for
+  agent tools. Vision is needed only to understand images or screenshots;
+  a key is needed only if the server requires one. See
+  [Local model requirements](models-and-providers.md#local-model-requirements).
 
 One-shot: `adf auth login chatgpt`, `adf auth login grok`, `adf auth login
 claude`, `adf providers`.
@@ -93,8 +98,12 @@ transcript.
 - **Newline:** `Alt+Enter`, `Ctrl+J`, or `Shift+Enter` where the terminal
   supports it (`/terminal-setup` checks yours).
 - **Approvals:** when the agent wants to run a restricted tool, a card
-  appears under the transcript. `y` approves (press twice), `n` rejects, `f`
-  rejects with feedback, `a` always approves that tool.
+  appears under the transcript. Focus the transcript with `Shift+Tab`: `y`
+  approves with one press when that pending approval is selected; otherwise
+  press `y` twice while the confirmation hint is visible. `n` rejects, `f` rejects
+  with feedback, and `a` follows the same selection/two-press rule before
+  asking you to confirm always approving that tool. In the prompt, typed
+  `y` is text; use `/approve` to approve from there.
 - **Stop a turn:** `Esc` interrupts the running turn; the agent stays up and
   keeps accepting work.
 

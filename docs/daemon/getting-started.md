@@ -8,8 +8,10 @@ and watches it work, first with the ADF CLI, then over HTTP.
 
 The [`@agentdocumentformat/cli`](https://www.npmjs.com/package/@agentdocumentformat/cli)
 package ships the daemon and the ADF CLI, terminal app included, as one `adf`
-command. It needs Node.js 22.23.4+, 24.22.1+ or 26.12.1+ ([why](../cli/index.md#nodejs-versions)),
-and no Electron or compiler: native
+command. Current `main` requires Node.js `^22.23.4 || ^24.22.1 || ^26.12.1`;
+published npm v0.8.3 declares `>=22`
+([version-specific requirements](../cli/index.md#nodejs-versions)).
+The package needs no Electron or compiler: native
 modules (SQLite, the OS keychain) install from prebuilt binaries for Windows
 x64, macOS (arm64/x64) and Linux (x64/arm64, glibc).
 
