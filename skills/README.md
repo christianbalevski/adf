@@ -8,6 +8,7 @@ agent's virtual filesystem under `skills/<name>/`.
 - [`agent-memory`](agent-memory/SKILL.md) — maintain the mind.md wiki with audit-grounded citations: retrieval lambda, lint workflow, page templates.
 - [`browser-profile-portability`](browser-profile-portability/SKILL.md) — securely carry browser sessions and saved passwords between containers.
 - [`conventional-skill-to-adf`](conventional-skill-to-adf/SKILL.md) — adapt filesystem-oriented skills to ADF primitives.
+- [`docs-search`](docs-search/SKILL.md) — find the right ADF guide, Knowledge Base article, or skill from the three docs indexes, fetching at most three top hits.
 - [`file-search`](file-search/SKILL.md) — find files by literal keyword, BM25 relevance, or regex with line-located snippets and an explicit coverage report.
 - [`gmail-setup`](gmail-setup/SKILL.md) — connect Gmail through existing MCP setup, guide OAuth consent, and review mailbox tool permissions.
 - [`persistent-investigations`](persistent-investigations/SKILL.md) — retain unresolved questions and experiment evidence using existing files, lambdas and context injection.
