@@ -73,6 +73,5 @@ and [agent leases](../cli/troubleshooting.md#agent-is-already-running-agent_leas
 
 - The `/events` replay buffer is in memory (1000 frames): live visibility and short reconnects, not an audit log. Durable history is in each agent's file.
 - File-change triggers are incomplete without Studio's document editor.
-- The daemon speaks plain HTTP; remote use needs an SSH tunnel or TLS in front ([remote access](api-guide.md#remote-access)).
+- The daemon speaks plain HTTP. Remote access on a LAN sends the token unencrypted; for https use `adf daemon remote serve on` (tailscale serve), an SSH tunnel or a TLS proxy ([Remote daemon](../cli/remote-daemon.md)).
 - If the lease folder is not writable, the agent starts with a warning and without protection against a second runtime opening it. See [agent leases](../cli/troubleshooting.md#agent-is-already-running-agent_leased).
-- From a source checkout, switching between Studio (Electron) and the daemon (Node) rebuilds `better-sqlite3`.
