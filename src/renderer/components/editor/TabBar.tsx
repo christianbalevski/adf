@@ -14,7 +14,7 @@ export interface ChatTabProps {
   unread: boolean
   onSelect: () => void
   /** Sends the chat back to the side dock — the X, and Ctrl+W on this tab. */
-  onClose: () => void
+  onClose?: () => void
 }
 
 interface Props {
@@ -88,10 +88,10 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
             {/* The same X the file tabs carry, in the same slot: on a tab bar,
                 "close" is the one gesture the user should not have to relearn.
                 Here it means "put the chat back in the side dock". */}
-            <span
+            {chatTab.onClose && <span
               onClick={(e) => {
                 e.stopPropagation()
-                chatTab.onClose()
+                chatTab.onClose?.()
               }}
               title="Close — put the chat back in the side panel"
               className={`ml-1 ${TAB_ICON_BUTTON} ${
@@ -99,7 +99,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
               }`}
             >
               <CloseGlyph />
-            </span>
+            </span>}
           </button>
           <span aria-hidden className="relative z-10 w-px shrink-0 self-stretch bg-hairline" />
         </>

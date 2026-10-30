@@ -1,4 +1,5 @@
 import { DocsLink, InfoHint } from '../common/DocsLink'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 
 interface SettingsGroupProps {
   title?: string
@@ -46,14 +47,15 @@ interface SettingsRowProps {
 }
 
 export function SettingsRow({ label, description, children, separator = false, stacked = false, disabled = false, help, error, className = '' }: SettingsRowProps) {
+  const compactWeb = useCompactWebLayout()
   return (
-    <div className={`${separator ? 'border-t border-[var(--adf-ui-separator)]' : ''} px-4 py-3 ${disabled ? 'opacity-60' : ''} ${className}`}>
+    <div data-settings-row={compactWeb || undefined} className={`${separator ? 'border-t border-[var(--adf-ui-separator)]' : ''} px-4 py-3 ${disabled ? 'opacity-60' : ''} ${className}`}>
       <div className={stacked ? 'space-y-2' : 'flex flex-col gap-2 min-[900px]:flex-row min-[900px]:items-center min-[900px]:justify-between min-[900px]:gap-6'}>
         <div className="min-w-0">
           <div className="text-[13px] font-medium text-[var(--adf-ui-text)]">{label}</div>
           {description && <div className="mt-0.5 text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">{description}</div>}
         </div>
-        {children && <div className={stacked ? '' : 'shrink-0'}>{children}</div>}
+        {children && <div data-settings-control={compactWeb || undefined} className={stacked ? '' : 'shrink-0'}>{children}</div>}
       </div>
       {help && <div className="mt-1.5 text-[11px] text-[var(--adf-ui-text-subtle)]">{help}</div>}
       {error && <div className="mt-1.5 text-[11px] text-[var(--adf-ui-danger)]">{error}</div>}

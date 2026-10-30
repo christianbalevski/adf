@@ -1,0 +1,54 @@
+.compact-web-overlay {
+  position: fixed;
+  inset: var(--web-viewport-top, 0px) 0 auto;
+  height: var(--web-viewport-height, 100dvh);
+  z-index: 100;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--adf-ui-surface);
+  color: var(--adf-ui-text);
+  overflow: hidden;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+}
+
+.compact-web-overlay[hidden] { display: none; }
+
+.compact-web-overlay-header {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 56px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--adf-ui-border);
+}
+
+.compact-web-overlay-content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.compact-web-navigation-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  min-height: 44px;
+  min-width: 44px;
+  padding: 8px 12px;
+  border-radius: var(--adf-ui-control-radius);
+  font-size: 13px;
+  touch-action: manipulation;
+}
+
+.compact-web-navigation-button:hover { background: var(--adf-ui-surface-hover); }
+.compact-web-navigation-button:focus-visible { outline: 2px solid var(--adf-ui-accent); outline-offset: -2px; }
+.compact-web-overlay-content > [data-compact-sidebar] { flex: 1; min-height: 0; border-right: 0; }
+.compact-web-overlay-content [data-dock-tabs] { min-height: 48px; flex-shrink: 0; overflow-x: auto; }
+.compact-web-overlay-content [data-dock-subtabs] { min-height: 44px; flex-shrink: 0; }

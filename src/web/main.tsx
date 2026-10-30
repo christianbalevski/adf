@@ -1,9 +1,10 @@
 import { preserveBrowserEdits, preserveBrowserQueues } from './recovery'
+import { installWebViewport } from './viewport'
 import { takeLaunchTicket, readBrowserSession, redeemLaunchTicket, startBrowserPairing, pollBrowserPairing, type BrowserSession, type BrowserPairing, BrowserSessionRenewal } from './login'
 import { browserMediaUrl } from './media-url'
 import { claimBrowserClient, readStored } from './browser-storage'
 import { setMediaUrlResolver } from '../renderer/utils/media-url'
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createAdfApi } from '../shared/adf-api'
 import { createRuntimeIpc, onAnyRuntime } from '../shared/runtime-ipc'
@@ -14,9 +15,13 @@ import type { AdfApi } from '../preload/api'
 import { WebTransport, type WebConnectionState } from './transport'
 import { browserIpc } from './browser-ipc'
 import { Wordmark } from '../renderer/components/common/Wordmark'
+import { installBrowserSessionControls } from '../renderer/utils/browser-session'
 import '@fontsource-variable/inter-tight/wght.css'
 import '../renderer/styles/globals.css'
 import './web.css'
+
+const disposeViewport = installWebViewport()
+if (import.meta.hot) import.meta.hot.dispose(disposeViewport)
 
 // A bfcache restore resumes stale streams/leases; rebuild the same tab session.
 window.addEventListener('pageshow', (event) => { if (event.persisted) location.reload() })
@@ -87,7 +92,7 @@ function WebSession() {
   const [state, setState] = useState<WebConnectionState>('connecting')
   const renewal = useRef(new BrowserSessionRenewal())
   const signingOut = useRef(false)
-  const preserveEdits = async (includeQueues = true) => {
+  const preserveEdits = useCallback(async (includeQueues = true) => {
     const { stashUnsavedEditors } = await import('../renderer/utils/edit-recovery')
     await preserveBrowserEdits(stashUnsavedEditors, (entry) => window.adfApi.recoveryStash(entry))
     if (!includeQueues) return
@@ -100,7 +105,7 @@ function WebSession() {
       await preserveBrowserQueues(queueEntries(useMessageQueueStore.getState().queues, useDocumentStore.getState().filePath), storage,
         transport.storageScope, transport.clientId, (entry) => window.adfApi.recoveryStash(entry))
     }
-  }
+  }, [])
   const recoveryFailure = (cause: unknown) => setError(`Your edits or pending messages could not be saved for recovery. Keep this tab open and copy your edits before reloading. ${cause instanceof Error ? cause.message : String(cause)}`)
   const reset = async () => {
     try {
@@ -194,7 +199,7 @@ function WebSession() {
     } catch (cause) { setError(cause instanceof Error ? cause.message : String(cause)) }
     finally { setBusy(false) }
   }
-  const logout = async () => {
+  const logout = useCallback(async () => {
     if (signingOut.current) return
     signingOut.current = true
     renewal.current.stop()
@@ -206,11 +211,15 @@ function WebSession() {
       if (!response.ok) throw new Error('Sign out failed. Please try again.')
       location.reload()
     } catch (cause) { signingOut.current = false; setError(cause instanceof Error ? cause.message : String(cause)); setBusy(false) }
-  }
-  if (authenticated) return <div className="web-session-bar">
-    <span role="status">{state === 'connected' ? 'Studio Web' : state === 'reset' ? 'Restoring Studio connection…' : 'Reconnecting to daemon…'}</span>
+  }, [preserveEdits])
+  useEffect(() => {
+    if (!authenticated) return
+    return installBrowserSessionControls({ busy, signOut: logout })
+  }, [authenticated, busy, logout])
+
+  if (authenticated) return state === 'connected' && !error ? null : <div className="web-session-bar">
+    {state !== 'connected' && <span role="status">{state === 'reset' ? 'Restoring Studio connection…' : 'Reconnecting to daemon…'}</span>}
     {error && <span role="alert">{error}</span>}
-    <button type="button" onClick={() => void logout()} disabled={busy}>Sign out</button>
   </div>
   return <main className="web-login">
     <form onSubmit={(event) => void pair(event)} className="web-login-card">

@@ -56,6 +56,7 @@ import { startConnectionFeed, useConnectionStore } from '../../stores/connection
 import { DetailsList, PageSection, SectionRow, StateDot } from './page-section'
 import { runtimeLabel, useRuntimes } from '../../stores/runtimes.store'
 import { LOCAL_RUNTIME } from '../../../shared/runtime-tag'
+import { useBrowserSessionControls } from '../../utils/browser-session'
 
 /** The modes as users see them. Inside Studio is the legacy backend, kept for this release only. */
 const MODE_LABELS: Record<StudioRunMode, string> = {
@@ -814,6 +815,17 @@ export function ConnectionsPage({ view, backend, busy, message, onAdd, onConnect
   )
 }
 
+/** Session controls stay available even when connection settings cannot load. */
+export function BrowserSessionSettings() {
+  const session = useBrowserSessionControls()
+  if (window.adfApi?.platform !== 'web' || !session) return null
+  return <PageSection id="browser-session" title="Browser session">
+    <SectionRow separator={false} actions={<Button disabled={session.busy} onClick={() => void session.signOut()}>{session.busy ? 'Signing out…' : 'Sign out'}</Button>}>
+      <span className="text-[var(--adf-ui-text-muted)]">Sign out of this browser. Your agents keep running.</span>
+    </SectionRow>
+  </PageSection>
+}
+
 export function ConnectionSettings() {
   const view = useConnectionStore((s) => s.view)
   const [backend, setBackend] = useState<BackendSettingsView | null>(null)
@@ -889,9 +901,12 @@ export function ConnectionSettings() {
 
   if (!view || !backend) {
     return (
+      <>
+      <BrowserSessionSettings />
       <PageSection id="loading" title="Connections">
         <SectionRow separator={false}><span className="text-[var(--adf-ui-text-muted)]">{loadError ?? 'Loading…'}</span></SectionRow>
       </PageSection>
+      </>
     )
   }
 
@@ -900,6 +915,7 @@ export function ConnectionSettings() {
 
   return (
     <>
+      <BrowserSessionSettings />
       <ConnectionsPage
         view={view}
         backend={backend}

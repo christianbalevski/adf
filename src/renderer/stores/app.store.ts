@@ -4,6 +4,8 @@ import { AGENT_AVATAR_MODE_DEFAULT, type AgentAvatarMode } from '../components/o
 import type { AgentConfigSummary } from '../../shared/types/ipc.types'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../shared/runtime-tag'
 import { LOGS_PANEL_HEIGHT_KEY, SIDEBAR_WIDTH_KEY, loadStoredSize } from '../utils/stored-size'
+import { isCompactWebLayout } from '../hooks/useCompactWebLayout'
+import { useCompactNavigationStore } from './compact-navigation.store'
 
 export type RightPanel = 'overview' | 'loop' | 'inbox' | 'files' | 'agent'
 export type AgentSubTab = 'config' | 'timers' | 'identity' | 'skills'
@@ -482,6 +484,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // An agent window has no Settings: they open in the main window (agent-windows.md).
   setShowSettings: (show) => {
     if (show && isAgentWindow) { openMainSettings(); return }
+    if (isCompactWebLayout()) useCompactNavigationStore.setState({ panel: null })
     set({
       showSettings: show,
       ...(show ? { showMeshGraph: false, showHome: false } : {})
@@ -489,6 +492,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   openSettingsAt: (section, anchor) => {
     if (isAgentWindow) { openMainSettings(section, anchor); return }
+    if (isCompactWebLayout()) useCompactNavigationStore.setState({ panel: null })
     set({ showSettings: true, showMeshGraph: false, showHome: false, pendingSettingsSection: section, pendingSettingsAnchor: anchor ?? null })
   },
   consumePendingSettingsAnchor: () => {
@@ -501,8 +505,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (current) set({ pendingSettingsSection: null })
     return current
   },
-  setRightPanel: (panel) => set({ rightPanel: panel }),
-  setAgentSubTab: (tab) => set({ agentSubTab: tab }),
+  setRightPanel: (panel) => {
+    if (isCompactWebLayout()) { get().expandRightPanelToTab(panel); return }
+    set({ rightPanel: panel })
+  },
+  setAgentSubTab: (tab) => {
+    if (isCompactWebLayout()) { useCompactNavigationStore.setState({ agentSubTab: tab }); return }
+    set({ agentSubTab: tab })
+  },
   setPendingConfigSection: (section) => set({ pendingConfigSection: section }),
   setPendingConfigLoop: (loop) => set({ pendingConfigLoop: loop }),
   setComputerMatchTab: (on) => {
@@ -512,6 +522,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ computerMatchTab: on })
   },
   setChatPlacement: (placement) => {
+    if (isCompactWebLayout()) { get().expandRightPanelToTab('loop'); return }
     saveChatPlacement(placement)
     set((s) => {
       if (placement === 'center') {
@@ -532,15 +543,36 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
   setChatWidth: (width) => {
+    if (isCompactWebLayout()) return
     saveChatWidth(width)
     set({ chatWidth: width })
   },
-  setCenterChatTabActive: (active) => set({ centerChatTabActive: active }),
-  revealRightPanel: () => set({ rightPanelCollapsed: false }),
-  toggleSidebar: () => set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed })),
-  setSidebarWidth: (w) => set({ sidebarWidth: w }),
-  toggleRightPanel: () =>
-    set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed })),
+  setCenterChatTabActive: (active) => {
+    if (isCompactWebLayout()) { useCompactNavigationStore.setState({ chatTabActive: active, panel: null }); return }
+    set({ centerChatTabActive: active })
+  },
+  revealRightPanel: () => {
+    if (isCompactWebLayout()) {
+      if (get().showMeshGraph) useCompactNavigationStore.setState({ panel: 'details' })
+      return
+    }
+    set({ rightPanelCollapsed: false })
+  },
+  toggleSidebar: () => {
+    if (isCompactWebLayout()) {
+      useCompactNavigationStore.setState(s => ({ panel: s.panel === 'agents' ? null : 'agents' }))
+      return
+    }
+    set((s) => ({ sidebarCollapsed: !s.sidebarCollapsed }))
+  },
+  setSidebarWidth: (w) => { if (!isCompactWebLayout()) set({ sidebarWidth: w }) },
+  toggleRightPanel: () => {
+    if (isCompactWebLayout()) {
+      useCompactNavigationStore.setState(s => ({ panel: s.panel === 'details' ? null : 'details' }))
+      return
+    }
+    set((s) => ({ rightPanelCollapsed: !s.rightPanelCollapsed }))
+  },
   setTheme: (theme) => set({ theme }),
   setUiFont: (uiFont) => set({ uiFont }),
   setUiFontCustom: (uiFontCustom) => set({ uiFontCustom }),
@@ -566,17 +598,30 @@ export const useAppStore = create<AppState>((set, get) => ({
       next.delete(filePath)
       return { stoppingFilePaths: next }
     }),
-  setShowMeshGraph: (show) =>
+  setShowMeshGraph: (show) => {
+    if (isCompactWebLayout()) useCompactNavigationStore.setState({ panel: null })
     set((s) => ({
       showMeshGraph: show,
       ...(show ? { showHome: false } : {}),
       // A center-mode chat yields to the dock while the map holds the stage:
       // the dock lands on its Loops tab once, as the map opens, and the tabs
       // then switch as usual (as a selector override they could not).
-      ...(show && !s.showMeshGraph && s.chatPlacement === 'center' ? { rightPanel: 'loop' as const } : {}),
-    })),
-  setShowHome: (show) => set(show ? { showHome: true, showSettings: false, showMeshGraph: false } : { showHome: false }),
-  expandRightPanelToTab: (panel, subTab) =>
+      ...(show && !s.showMeshGraph && s.chatPlacement === 'center' && !isCompactWebLayout() ? { rightPanel: 'loop' as const } : {}),
+    }))
+  },
+  setShowHome: (show) => {
+    if (isCompactWebLayout()) useCompactNavigationStore.setState({ panel: null })
+    set(show ? { showHome: true, showSettings: false, showMeshGraph: false } : { showHome: false })
+  },
+  expandRightPanelToTab: (panel, subTab) => {
+    if (isCompactWebLayout()) {
+      if (panel === 'loop' && !get().showMeshGraph) {
+        useCompactNavigationStore.setState({ panel: null, chatTabActive: true })
+      } else {
+        useCompactNavigationStore.setState({ panel: 'details', rightPanel: panel, ...(subTab ? { agentSubTab: subTab } : {}) })
+      }
+      return
+    }
     set((s) => {
       // "Take me to the chat" has to land wherever the chat actually IS right
       // now, not where the raw preference says (B3). While the fleet map holds
@@ -592,7 +637,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         rightPanel: panel,
         ...(subTab ? { agentSubTab: subTab } : {})
       }
-    }),
+    })
+  },
   setAgentReviewDialog: (open, summary) =>
     set((s) => ({
       agentReviewDialogOpen: open,

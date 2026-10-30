@@ -129,6 +129,25 @@ and include its hostname in the daemon's host allow-list. See
 [remote daemon access](../cli/remote-daemon.md) for daemon and proxy
 configuration.
 
+## Phones and narrow touch screens
+
+On touch browsers up to 1024 CSS pixels wide, **Agents** and **Agent details**
+open the existing list and configuration panels as full-screen overlays.
+**Close** returns to the workspace without closing the agent or discarding its
+chat draft. Settings has a **Sections** button that opens its navigation; choosing
+a section closes the navigation and gives that page the full width.
+
+Chat uses the center stage in this layout. These presentation choices do not
+change the saved desktop sidebar widths, collapsed state or chat placement.
+Electron and desktop browsers keep their existing layout. The compact footer
+keeps save status and context usage visible, with secondary actions under
+**More**. Inputs use a larger font and the app follows the visible viewport
+when the software keyboard opens; pinch zoom remains available.
+
+In all browser layouts, sign out through **Settings → Connections → Browser
+session → Sign out**. The connection banner appears only while reconnecting
+or reporting a session error.
+
 ## Browser differences
 
 The renderer is shared, but browser Studio does not yet support every desktop

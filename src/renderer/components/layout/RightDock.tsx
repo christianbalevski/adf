@@ -11,6 +11,7 @@ import type { RightPanel } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useInboxStore } from '../../stores/inbox.store'
 import { useLayoutEffect, useRef } from 'react'
+import { useCompactNavigationStore } from '../../stores/compact-navigation.store'
 import { dockStateKey, elementAtPath, elementPath, readDockState, writeDockState, type DockScroll } from '../../stores/dock-panel-state'
 import { Tooltip } from '../common/Tooltip'
 import { IS_MAC } from '../../utils/platform'
@@ -31,12 +32,22 @@ const DOCK_TABS_CHAT_IN_CENTER: readonly RightPanel[] = ['overview', 'inbox', 'f
  * With `chatPlacement: 'center'` the Loops tab moves to the center stage and
  * the dock renders without it — every other tab, and manual collapse, unchanged.
  */
-export function RightDock({ reserveWindowControls = false }: { reserveWindowControls?: boolean }) {
-  const chatInCenter = useAppStore(selectChatInCenter)
-  const rightPanel = useAppStore(selectActiveDockPanel)
-  const setRightPanel = useAppStore((s) => s.setRightPanel)
-  const agentSubTab = useAppStore((s) => s.agentSubTab)
-  const setAgentSubTab = useAppStore((s) => s.setAgentSubTab)
+export function RightDock({ reserveWindowControls = false, compact = false }: { reserveWindowControls?: boolean; compact?: boolean }) {
+  const storedChatInCenter = useAppStore(selectChatInCenter)
+  const showMeshGraph = useAppStore(s => s.showMeshGraph)
+  const chatInCenter = compact ? !showMeshGraph : storedChatInCenter
+  const storedPanel = useAppStore(selectActiveDockPanel)
+  const storedSetPanel = useAppStore((s) => s.setRightPanel)
+  const storedSubTab = useAppStore((s) => s.agentSubTab)
+  const storedSetSubTab = useAppStore((s) => s.setAgentSubTab)
+  // Mobile navigation never rewrites desktop dock placement, tabs or widths.
+  const compactPanel = useCompactNavigationStore(s => s.rightPanel)
+  const compactSubTab = useCompactNavigationStore(s => s.agentSubTab)
+  const selectedPanel = compact ? compactPanel : storedPanel
+  const rightPanel = chatInCenter && selectedPanel === 'loop' ? 'overview' : selectedPanel
+  const setRightPanel = storedSetPanel
+  const agentSubTab = compact ? compactSubTab : storedSubTab
+  const setAgentSubTab = storedSetSubTab
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel)
   const filePath = useDocumentStore((s) => s.filePath)
   const unreadInboxCount = useInboxStore((s) => s.unreadCount)
@@ -68,8 +79,8 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       {/* Top-level tab switcher */}
       {/* Collapse sits on the INNER edge, like the sidebar's: the chevron
           points the way the panel slides away, at the seam it slides from. */}
-      <div className="flex h-9 items-center border-b border-hairline pl-1">
-        <Tooltip tip="Collapse panel" shortcut={formatKey(ACCELERATORS.togglePanel, IS_MAC)} className="flex shrink-0">
+      <div data-dock-tabs className="flex h-9 items-center border-b border-hairline pl-1">
+        {!compact && <Tooltip tip="Collapse panel" shortcut={formatKey(ACCELERATORS.togglePanel, IS_MAC)} className="flex shrink-0">
           <button
             onClick={toggleRightPanel}
             aria-label="Collapse panel"
@@ -79,7 +90,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
               <polyline points="9 18 15 12 9 6" />
             </svg>
           </button>
-        </Tooltip>
+        </Tooltip>}
         <div className="flex-1 flex justify-center gap-1 self-stretch">
           {(chatInCenter ? DOCK_TABS_CHAT_IN_CENTER : DOCK_TABS).map((tab) => (
             <button
@@ -109,7 +120,7 @@ export function RightDock({ reserveWindowControls = false }: { reserveWindowCont
       </div>
       {/* Agent sub-tabs */}
       {rightPanel === 'agent' && (
-        <div className="flex border-b border-hairline bg-surface-0">
+        <div data-dock-subtabs className="flex border-b border-hairline bg-surface-0">
           {(['timers', 'identity', 'skills', 'config'] as const).map((sub) => (
             <button
               key={sub}
