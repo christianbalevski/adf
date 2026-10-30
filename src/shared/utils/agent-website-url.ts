@@ -27,3 +27,24 @@ export function meshWebsiteUrl(server: { host: string; port: number }, path: str
   if (host.includes(':') && !host.startsWith('[')) host = `[${host}]`
   return agentWebsiteUrl(`http://${host}:${server.port}${path}`, remoteRuntimeUrl)
 }
+
+/** Only this root-relative namespace has ADF runtime semantics. */
+export function isRuntimeWebsiteLink(href: string): boolean {
+  return /^\/agents(?:[/?#]|$)/.test(href)
+}
+
+/** Resolve display/navigation links only; never rewrite stored Markdown or absolute URLs. */
+export function resolveRelativeWebsiteLink(href: string, websiteBase: string): string {
+  if (!isRuntimeWebsiteLink(href)) return href
+  const base = new URL(websiteBase)
+  if (!['http:', 'https:'].includes(base.protocol) || base.username || base.password) {
+    throw new Error('The runtime website address is unavailable.')
+  }
+  const target = new URL(href, base)
+  // URL parsing normalizes dot segments. Do not turn a website reference into
+  // a different origin or an unrelated runtime/control endpoint.
+  if (/[\\\u0000-\u0020]/.test(href) || target.origin !== base.origin || !/^\/agents(?:\/|$)/.test(target.pathname)) {
+    throw new Error('The agent website link is invalid.')
+  }
+  return target.href
+}

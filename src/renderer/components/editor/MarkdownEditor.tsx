@@ -3,6 +3,7 @@ import { useEffect, useRef, useCallback, useState, type MutableRefObject } from 
 import { getEditorExtensions } from './EditorExtensions'
 import { EditorToolbar } from './EditorToolbar'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
+import { useRuntimeWebsiteLink } from '../../hooks/useRuntimeWebsiteLink'
 
 const DEBUG = false // Set to true to enable verbose logging
 
@@ -49,6 +50,9 @@ interface RichMarkdownViewProps {
  * that opens in source view never pays the parse until rich mode is asked for.
  */
 function RichMarkdownView({ content, onChange, active, onEditorChange, flushRef, shouldGate, onRendered }: RichMarkdownViewProps) {
+  const openWebsite = useRuntimeWebsiteLink()
+  const openWebsiteRef = useRef(openWebsite)
+  openWebsiteRef.current = openWebsite
   // Use a ref to always have access to the latest content in callbacks
   const contentRef = useRef(content)
   contentRef.current = content
@@ -147,7 +151,7 @@ function RichMarkdownView({ content, onChange, active, onEditorChange, flushRef,
 
   const editor = useEditor({
     immediatelyRender: !deferCreate,
-    extensions: getEditorExtensions(),
+    extensions: getEditorExtensions((href) => openWebsiteRef.current(href)),
     content: '',
     onCreate: ({ editor: editorInstance }) => {
       // Set initial content as markdown once the editor (and Markdown extension) is ready

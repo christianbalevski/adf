@@ -2,6 +2,8 @@ import { memo, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
 import { renderMarkdownToSafeHtml, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { createMarkdownDomRenderer } from '../../utils/markdown-dom'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { isRuntimeWebsiteLink } from '../../../shared/utils/agent-website-url'
+import { useRuntimeWebsiteLink } from '../../hooks/useRuntimeWebsiteLink'
 
 /** Percent-encode spaces in adf-file:// URLs so markdown parsers don't break on them. */
 function encodeAdfFileUrls(src: string): string {
@@ -30,6 +32,7 @@ const MARKDOWN_SETTLE_MS = 200
 // quadratic at ~20 deltas/s). A row that never changes — every restored
 // transcript row — takes exactly the one full parse it always did.
 export const MarkdownEntry = memo(({ content, className = 'px-1.5 py-1 text-neutral-800 dark:text-neutral-200' }: { content: string; className?: string }) => {
+  const openWebsite = useRuntimeWebsiteLink()
   const container = useRef<HTMLDivElement>(null)
   const renderer = useRef<ReturnType<typeof createMarkdownDomRenderer> | null>(null)
   const mountedContent = useRef(content)
@@ -49,7 +52,10 @@ export const MarkdownEntry = memo(({ content, className = 'px-1.5 py-1 text-neut
     if (!anchor) return
     const href = anchor.getAttribute('href')
     if (!href) return
-    if (isAdfFileUrl(href)) {
+    if (isRuntimeWebsiteLink(href)) {
+      e.preventDefault()
+      openWebsite(href)
+    } else if (isAdfFileUrl(href)) {
       e.preventDefault()
       openAdfFileLink(href)
     } else if (href.startsWith('http://') || href.startsWith('https://')) {
@@ -59,7 +65,7 @@ export const MarkdownEntry = memo(({ content, className = 'px-1.5 py-1 text-neut
       e.preventDefault()
       window.open(href, '_blank', 'noopener,noreferrer')
     }
-  }, [])
+  }, [openWebsite])
   return (
     <div
       className={`loop-markdown ${className}`}

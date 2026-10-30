@@ -7,6 +7,7 @@ import { TableKit } from '@tiptap/extension-table'
 import { Extension } from '@tiptap/core'
 import { Plugin, PluginKey } from '@tiptap/pm/state'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
+import { isRuntimeWebsiteLink } from '../../../shared/utils/agent-website-url'
 
 // Extend Image so resized dimensions persist through markdown round-trips.
 // When width/height are set, serialize as <img> HTML (which parseHTML handles).
@@ -59,19 +60,31 @@ const ResizableImage = Image.extend({
 })
 
 /** Intercept double-clicks on <a> tags: adf-file:// opens in editor tab, http(s) opens externally. */
-const LinkClickHandler = Extension.create({
+const LinkClickHandler = Extension.create<{ openWebsite: (href: string) => void }>({
   name: 'adfLinkClickHandler',
+  // Handle runtime-relative links before StarterKit's browser-origin opener.
+  priority: 1100,
   addProseMirrorPlugins() {
     return [
       new Plugin({
         key: new PluginKey('adfLinkClick'),
         props: {
+          handleClick: (_view, _pos, event) => {
+            const href = (event.target as HTMLElement).closest('a[href]')?.getAttribute('href')
+            if (!href || !isRuntimeWebsiteLink(href)) return false
+            event.preventDefault()
+            if (event.detail <= 1) this.options.openWebsite(href)
+            return true
+          },
           handleDoubleClick(_view, _pos, event) {
             const anchor = (event.target as HTMLElement).closest('a[href]')
             if (!anchor) return false
 
             const href = anchor.getAttribute('href')
             if (!href) return false
+
+            // The first click already opened it; never fall through to the UI origin.
+            if (isRuntimeWebsiteLink(href)) { event.preventDefault(); return true }
 
             if (isAdfFileUrl(href)) {
               event.preventDefault()
@@ -93,7 +106,7 @@ const LinkClickHandler = Extension.create({
   }
 })
 
-export function getEditorExtensions() {
+export function getEditorExtensions(openWebsite: (href: string) => void) {
   return [
     StarterKit,
     TableKit.configure({
@@ -106,6 +119,6 @@ export function getEditorExtensions() {
       placeholder: 'Start writing...'
     }),
     Markdown,
-    LinkClickHandler
+    LinkClickHandler.configure({ openWebsite })
   ]
 }

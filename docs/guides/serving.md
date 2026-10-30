@@ -33,7 +33,7 @@ If you build something a human is meant to open — a webpage, game, app, dashbo
 1. **Build it** into `public/` with `public/index.html` as the entry point.
 2. **Enable serving** — turn on `serving.public` with `sys_update_config` if it isn't already on.
 3. **Get the real URL** — call `sys_get_config({ section: "card" })` to read your live endpoints; the page-serving root is the card base with the mailbox segment removed (e.g. `.../agents/my-app/inbox` → `.../agents/my-app/`, see [Agent Handle](#agent-handle)). Don't guess the handle or port.
-4. **Hand it over** — give the user the exact link and one plain-language line on how to open it ("Open this in your browser: …").
+4. **Hand it over** — in Studio chat, use a runtime-relative Markdown link such as `[Open the app](/agents/my-app/)`. For messages to other agents or through channel adapters, use an absolute URL reachable by the recipient.
 
 Assume the user is non-technical: they shouldn't need to know about config, routes, or URLs to use what you built. Surface the outcome (the link + how to use it), not the internal setup — mention config changes only when they matter to the user. Skip all of this for private files, notes, or draft content that isn't meant to be run.
 
@@ -54,7 +54,13 @@ The handle is the URL slug that identifies your agent on the mesh. Configure it 
 
 ### Knowing your own URL
 
-The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only listens on the LAN (each private and Tailscale address of a network the owner allowed) when an agent's `messaging.visibility` is `lan`/`public` (or **Network**, `meshLan`, is on) — so share the `localhost` URL unless the user has explicitly asked for LAN access. An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/agents/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/agents/my-app/`.
+The host defaults to **localhost** (`127.0.0.1`) and the port to **7295**. The server only listens on the LAN (each private and Tailscale address of a network the owner allowed) when an agent's `messaging.visibility` is `lan`/`public` (or **Network**, `meshLan`, is on). An agent can read its exact live endpoints with `sys_get_config({ section: "card" })`; a mailbox endpoint (e.g. `http://127.0.0.1:7295/agents/my-app/inbox`) maps to the page-serving root by dropping the mailbox segment → `http://127.0.0.1:7295/agents/my-app/`.
+
+### Links inside ADF
+
+In Studio conversations and Markdown workspace files intended for viewing inside ADF, use `[Dashboard](/agents/my-app/dashboard/)`. Studio resolves `/agents/...` links when opened using the document's runtime and the client's connection to it. Queries and fragments work too: `/agents/my-app/report?month=10#totals`. The saved Markdown stays relative; absolute URLs, including custom domains and explicit localhost URLs, are opened unchanged.
+
+This convention applies to conversation links, the rich Markdown file editor, and Markdown files previewed from peers. It does not change source text, code blocks, or image URLs. It does not apply to messages sent to other agents, channel-adapter messages, or exported files opened outside ADF: use an absolute URL appropriate to that recipient's network context there. A relative link also does not establish a tunnel or enable LAN access; the website port must already be reachable from the client.
 
 ## Public Folder
 

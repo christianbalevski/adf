@@ -1,7 +1,9 @@
 import { memo, useEffect, useMemo, useState } from 'react'
 import { marked } from 'marked'
 import type { RemotePeerAgent } from '../../../shared/types/ipc.types'
+import { reportFailure } from '../../stores/failure-notices.store'
 import { PeerAvatar } from '../orbital/PeerAvatar'
+import { isRuntimeWebsiteLink, resolveRelativeWebsiteLink } from '../../../shared/utils/agent-website-url'
 
 /**
  * Full agent-card readout for a remote agent on a peer runtime — the
@@ -149,6 +151,18 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
     return marked.parse(escapeHtml(fileView.content)) as string
   }, [fileView])
 
+  const openFileLink = (event: React.MouseEvent<HTMLDivElement>): void => {
+    const href = (event.target as HTMLElement).closest('a[href]')?.getAttribute('href')
+    if (!href || !isRuntimeWebsiteLink(href)) return
+    event.preventDefault()
+    try {
+      if (!fileBase) throw new Error('The peer’s website address is unavailable.')
+      window.open(resolveRelativeWebsiteLink(href, fileBase), '_blank', 'noopener,noreferrer')
+    } catch (error) {
+      reportFailure('Could not open the peer’s website', error)
+    }
+  }
+
   const endpointRows = Object.entries(agent.endpoints ?? {}).filter(
     (e): e is [string, string] => typeof e[1] === 'string' && e[1].length > 0
   )
@@ -234,6 +248,7 @@ export const FleetPeerAgentReadout = memo(function FleetPeerAgentReadout({
             {fileHtml && (
               <div
                 className="loop-markdown text-[13px] leading-relaxed text-neutral-700 dark:text-neutral-200"
+                onClick={openFileLink}
                 dangerouslySetInnerHTML={{ __html: fileHtml }}
               />
             )}

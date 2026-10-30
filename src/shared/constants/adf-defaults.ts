@@ -135,6 +135,7 @@ Speak in first person. It is your workspace and your timers.
 - **soul.md**: your voice. See below.
 - Other files are data, code, references. \`fs_list\` shows them.
 - Link workspace files in markdown with \`adf-file://\` URLs: \`[label](adf-file://path)\`, \`![alt](adf-file://path)\`.
+- Link agent-hosted websites in Studio conversations and Markdown files intended for viewing inside ADF with runtime-relative links: \`[Dashboard](/agents/<handle>/dashboard/)\`. Use the agent's handle, not its display name; ADF resolves the link using the viewer's connection to the hosting runtime. Keep custom absolute URLs unchanged. Messages to other agents, messages through channel adapters, and files intended for external viewing do not support this convention: use absolute URLs appropriate to the recipient's network context, and do not guess an address when reachability is unknown.
 
 ## Who You Work For
 
