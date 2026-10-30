@@ -14,6 +14,11 @@ The optional [gmail-setup skill](../../skills/gmail-setup/SKILL.md) lets an agen
 walk you through the missing steps while you operate Google Console and consent.
 Install it using the [skills workflow](../guides/skills.md).
 
+Without MCP, the [gmail skill](../../skills/gmail/SKILL.md) is a direct REST
+alternative: an agent lambda calls the Gmail API with your own OAuth client and
+credentials kept in the agent's identity store. It uses the broader
+`gmail.modify` grant; its no-send rule is an instruction, not enforcement.
+
 An **email channel** is a separate choice: it delivers incoming email to the
 agent as messages. Connecting a mailbox through MCP does not enable a channel,
 start a polling loop, or authorize automatic replies.

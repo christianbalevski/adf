@@ -62,6 +62,22 @@
       ]
     },
     {
+      "name": "gmail",
+      "description": "Search, read, label, archive and draft Gmail messages through Google's Gmail REST API from an ADF lambda, using the owner's own OAuth client and identity-stored credentials, with no MCP server. Use for direct mailbox work; ask before every label or archive change, and never send or delete mail.",
+      "path": "skills/gmail/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/gmail/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/gmail.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/gmail/scripts/gmail.js"
+        },
+        {
+          "path": "tests/gmail.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/gmail/tests/gmail.test.mjs"
+        }
+      ]
+    },
+    {
       "name": "gmail-setup",
       "description": "Connect or repair Gmail mailbox access through ADF's existing MCP setup, guide the owner through Google OAuth, and review individual tool permissions. Use for Gmail setup or authorization failures; receiving email as agent messages is a separate channel workflow.",
       "path": "skills/gmail-setup/SKILL.md",

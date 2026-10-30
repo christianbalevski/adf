@@ -9,6 +9,7 @@ agent's virtual filesystem under `skills/<name>/`.
 - [`browser-profile-portability`](browser-profile-portability/SKILL.md) — securely carry browser sessions and saved passwords between containers.
 - [`conventional-skill-to-adf`](conventional-skill-to-adf/SKILL.md) — adapt filesystem-oriented skills to ADF primitives.
 - [`file-search`](file-search/SKILL.md) — find files by literal keyword, BM25 relevance, or regex with line-located snippets and an explicit coverage report.
+- [`gmail`](gmail/SKILL.md) — search, read, label, archive and draft Gmail through the REST API with the owner's own OAuth client; no MCP server, no send or delete helper.
 - [`gmail-setup`](gmail-setup/SKILL.md) — connect Gmail through existing MCP setup, guide OAuth consent, and review mailbox tool permissions.
 - [`persistent-investigations`](persistent-investigations/SKILL.md) — retain unresolved questions and experiment evidence using existing files, lambdas and context injection.
 - [`self-observation`](self-observation/SKILL.md) — quantify your own behavioral patterns from loop and audit history with hot-path code.
