@@ -46,6 +46,22 @@
       ]
     },
     {
+      "name": "docs-search",
+      "description": "Find the right ADF feature guide, Knowledge Base article, or first-party skill for a task without fetching every doc. Ranks entries from the guides index, KB index, and skills registry, then returns repository paths, raw URLs, match reasons, and bounded text of at most three top hits. Use before reading ADF docs to answer how-to or setup questions.",
+      "path": "skills/docs-search/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/docs-search/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/docs-search.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/docs-search/scripts/docs-search.js"
+        },
+        {
+          "path": "tests/docs-search.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/docs-search/tests/docs-search.test.mjs"
+        }
+      ]
+    },
+    {
       "name": "file-search",
       "description": "Search the agent's virtual filesystem by literal keyword, BM25 relevance, or regex and get ranked paths with line-located snippets plus an explicit coverage report. Use when you need to find which files mention something before reading them, instead of listing and reading files one by one.",
       "path": "skills/file-search/SKILL.md",
