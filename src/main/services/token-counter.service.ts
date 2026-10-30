@@ -30,6 +30,27 @@ function anthropicCountTokens(text: string): number {
   return anthropicCountFn(text)
 }
 
+// BPE is quadratic in the length of one pre-tokenized chunk: 100k characters
+// without whitespace take ~5 s, 400k ~60 s, all on the calling thread (a
+// daemon froze compacting a 4 MB tool call). Runs this long are base64,
+// minified code or padding, never prose; they are estimated at ~3 characters
+// per token, a little above what such runs actually cost, and the rest of the
+// text is tokenized as usual.
+const LONG_RUN = /\S{512,}/g
+
+function countWithLongRunsEstimated(text: string, count: (text: string) => number): number {
+  let total = 0
+  let last = 0
+  for (const match of text.matchAll(LONG_RUN)) {
+    if (match.index > last) total += count(text.slice(last, match.index))
+    total += Math.ceil(match[0].length / 3)
+    last = match.index + match[0].length
+  }
+  if (last === 0) return count(text)
+  if (last < text.length) total += count(text.slice(last))
+  return total
+}
+
 /**
  * Token counting service that supports multiple providers
  */
@@ -93,9 +114,9 @@ export class TokenCounterService {
 
     try {
       if (this.resolveTokenizer(provider, model) === 'anthropic') {
-        return anthropicCountTokens(text)
+        return countWithLongRunsEstimated(text, anthropicCountTokens)
       }
-      return gptEncode(text).length
+      return countWithLongRunsEstimated(text, (t) => gptEncode(t).length)
     } catch (err) {
       console.warn(`[TokenCounter] Error counting tokens for provider ${provider}:`, err)
       // Fallback to rough estimate: ~4 characters per token
