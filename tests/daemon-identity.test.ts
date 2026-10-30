@@ -359,6 +359,30 @@ describe('daemon agent creation', () => {
       parent.close()
     }
   }, 60_000)
+
+  it('sys_create_adf from a sealed .adf template: the child keeps its own envelopes and can sign', async () => {
+    const { server, identity } = makeDaemon()
+    await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+    const parent = AdfWorkspace.create(join(agentsDir, 'agent-1.adf'), { name: 'agent-1' })
+    try {
+      // The template is a sealed agent file carried in the parent's VFS (an agent cloning itself).
+      expect((await new CreateAdfTool().execute({ name: 'agent-2' }, parent)).isError).toBe(false)
+      parent.getDatabase().writeFile('tpl.adf', readFileSync(join(agentsDir, 'agent-2.adf')))
+
+      const made = await new CreateAdfTool().execute({ name: 'agent-3', template: 'tpl.adf' }, parent)
+      expect(made.isError).toBe(false)
+      const ws = AdfWorkspace.open(join(agentsDir, 'agent-3.adf'))
+      try {
+        identity.service.unlockWorkspaceEnvelopes(ws)
+        expect(ws.getEnvelopeState('identity')).toBe('unlocked')
+        expect(ws.getSigningKeys(null)).not.toBeNull()
+      } finally {
+        ws.close()
+      }
+    } finally {
+      parent.close()
+    }
+  }, 60_000)
 })
 
 describe('Studio ↔ daemon on one machine (shared keychain entry)', () => {
