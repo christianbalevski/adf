@@ -5,6 +5,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
 import { sendComposerMessage, type SendRoute } from '../../utils/composer-send'
@@ -2883,7 +2884,9 @@ export function AgentLoop() {
   // Also suppressed while the fleet map holds the center stage (B2): promoting
   // there would send the chat to a stage the map is covering, and it would
   // vanish. selectCanPromoteChat = dock placement AND not on the map.
-  const canPromote = useAppStore(selectCanPromoteChat)
+  const compactWeb = useCompactWebLayout()
+  const desktopCanPromote = useAppStore(selectCanPromoteChat)
+  const canPromote = desktopCanPromote && !compactWeb
 
   // A loop the user was viewing can be deleted (config edit, the tab menu or
   // `loop_manage`) — fall back to main rather than rendering a dead tab. A

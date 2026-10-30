@@ -17,3 +17,83 @@ body { display: flex; flex-direction: column; min-width: 360px; }
 .web-login-card .web-login-error { color: var(--adf-ui-danger, #dc2626); }
 .web-login-card button { width: 100%; padding: 12px; background: var(--adf-ui-text, #18181b); color: var(--adf-ui-canvas, #fafafa); border-radius: 8px; font-weight: 500; cursor: pointer; }
 .web-login-card button:disabled { opacity: 0.6; cursor: wait; }
+
+/* Only the browser entry carries this class/attribute. Narrow touch devices
+   get a compact shell without changing Electron or desktop browser layouts. */
+.adf-web[data-compact-web] body {
+  position: fixed;
+  top: var(--web-viewport-top, 0px);
+  left: 0;
+  width: 100%;
+  min-width: 0;
+  height: var(--web-viewport-height, 100dvh);
+  box-sizing: border-box;
+  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
+  overscroll-behavior: none;
+}
+.adf-web[data-compact-web] #root { min-width: 0; }
+.adf-web[data-compact-web] #web-session { flex-shrink: 0; }
+.adf-web[data-compact-web] .web-session-bar { flex-wrap: wrap; gap: 4px 12px; }
+.adf-web[data-compact-web] .web-login {
+  top: var(--web-viewport-top, 0px);
+  bottom: auto;
+  height: var(--web-viewport-height, 100dvh);
+  padding: 20px max(16px, env(safe-area-inset-right)) 20px max(16px, env(safe-area-inset-left));
+}
+
+/* A readable input font avoids Safari's focus zoom. Leave viewport pinch zoom
+   enabled; shrinking the whole app would reintroduce the same problem. */
+.adf-web[data-compact-web] :is(input:not([type=checkbox]):not([type=radio]):not([type=range]), textarea, select, [contenteditable=true], [contenteditable=plaintext-only]) {
+  font-size: 16px !important;
+}
+.adf-web[data-compact-web] :is(.loop-composer-input, .home-composer-input) {
+  max-height: min(160px, 30dvh, calc(var(--web-viewport-height, 100dvh) * .3));
+}
+.adf-web[data-compact-web] {
+  --adf-ui-control-height: 40px;
+  --adf-ui-control-height-compact: 36px;
+}
+.adf-web[data-compact-web] :is(button[title="Attach files"], button[aria-label="Attach files"], button[aria-label="Send"], button[aria-label="Start agent"], button[aria-label="Queue message"], button[aria-label="Stop"]) {
+  min-width: 44px;
+  min-height: 44px;
+}
+
+/* Shared settings controls already stack; constrain fixed desktop field widths
+   and the few multi-column groups to the available mobile content width. */
+.adf-web[data-compact-web] [data-settings-row] { padding: 12px; }
+.adf-web[data-compact-web] [data-settings-control] { min-width: 0; max-width: 100%; }
+.adf-web[data-compact-web] [data-settings-control] > * { max-width: 100%; }
+.adf-web[data-compact-web] :is(.settings-content, .compact-web-overlay) :is(input, textarea, select) { max-width: 100% !important; }
+.adf-web[data-compact-web] .settings-content :is(.grid-cols-2, .grid-cols-3) { grid-template-columns: minmax(0, 1fr); }
+.adf-web[data-compact-web] .settings-inner { padding: 16px 12px 24px; }
+.adf-web[data-compact-web] .settings-sidebar nav button { min-height: 44px; }
+.adf-web[data-compact-web] .settings-compact-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-shrink: 0;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--adf-ui-border);
+}
+.adf-web[data-compact-web] .settings-compact-toolbar button { min-height: 44px; }
+.adf-web[data-compact-web] [data-compact-container-table] { overflow: auto; }
+.adf-web[data-compact-web] [data-compact-container-table] > .grid { min-width: 540px; }
+.adf-web[data-compact-web] nav[aria-label="Application navigation"] button { min-width: 36px; min-height: 36px; }
+.adf-web[data-compact-web] [data-compact-sidebar] button.opacity-0 { opacity: 1; min-width: 36px; min-height: 36px; }
+.adf-web[data-compact-web] :is(pre, .tableWrapper) { max-width: 100%; overflow-x: auto; }
+
+/* Native <dialog> lives in the top layer, so it needs the visual viewport
+   bounds too; resizing only body would leave its bottom behind the keyboard. */
+.adf-web[data-compact-web] dialog[data-studio-dialog] {
+  top: calc(var(--web-viewport-top, 0px) + env(safe-area-inset-top) + 8px) !important;
+  bottom: auto !important;
+  margin: 0 auto !important;
+  max-height: calc(var(--web-viewport-height, 100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 16px);
+}
+.adf-web[data-compact-web] [data-studio-dialog-content] {
+  max-height: calc(var(--web-viewport-height, 100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 18px);
+  padding: 16px;
+  overscroll-behavior: contain;
+}
+.adf-web[data-compact-web] dialog[data-studio-dialog] button[aria-label="Close"] { min-width: 40px; min-height: 40px; }

@@ -28,6 +28,8 @@ import { isPrimaryModifier } from './utils/keyboard'
 import { useKeyboardStore } from './stores/keyboard.store'
 import { AgentSwitcher } from './components/common/AgentSwitcher'
 import { KeyboardShortcutsDialog } from './components/common/KeyboardShortcutsDialog'
+import { isCompactWebLayout } from './hooks/useCompactWebLayout'
+import { useCompactNavigationStore } from './stores/compact-navigation.store'
 
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
@@ -176,7 +178,14 @@ export default function App() {
   // tab left closes, as Close Agent does there (agent-windows.md).
   const closeActiveTab = useCallback(() => {
     const app = useAppStore.getState()
-    if (app.chatPlacement === 'center' && app.centerChatTabActive) {
+    if (isCompactWebLayout()) {
+      const navigation = useCompactNavigationStore.getState()
+      if (navigation.panel) { navigation.setPanel(null); return }
+      // Chat is pinned on touch screens. Do not close an editor behind it or
+      // send it into the desktop dock through a keyboard shortcut.
+      if (navigation.chatTabActive) return
+    }
+    if (!isCompactWebLayout() && app.chatPlacement === 'center' && app.centerChatTabActive) {
       app.setChatPlacement('side')
       return
     }

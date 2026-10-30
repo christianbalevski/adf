@@ -14,6 +14,9 @@ import { readFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+const compactLayout = vi.hoisted(() => ({ enabled: false }))
+vi.mock('../../../src/renderer/hooks/useCompactWebLayout', () => ({ useCompactWebLayout: () => compactLayout.enabled }))
+
 import type { ConnectionsView, RuntimeView } from '../../../src/shared/types/connection.types'
 
 ;(globalThis as { React?: typeof React }).React = React
@@ -80,14 +83,15 @@ function surface(runtimeId: string | undefined, impl: Record<string, unknown> = 
 }
 
 /** A fresh main window (`search`: an agent window's query) with the runtime set and a recording surface per runtime. */
-async function page(runtimes: RuntimeView[] | undefined, opts: { search?: string; local?: Record<string, unknown>; remote?: Record<string, unknown>; remote2?: Record<string, unknown> } = {}) {
+async function page(runtimes: RuntimeView[] | undefined, opts: { compact?: boolean; search?: string; local?: Record<string, unknown>; remote?: Record<string, unknown>; remote2?: Record<string, unknown> } = {}) {
   vi.resetModules()
+  compactLayout.enabled = opts.compact ?? false
   const bind = (id: string) => (id === HOST_1 ? remote.api : id === HOST_2 ? remote2.api : local.api)
   const remote = surface(HOST_1, { platform: 'linux', runtime: bind, ...opts.remote })
   const remote2 = surface(HOST_2, { platform: 'linux', runtime: bind, ...opts.remote2 })
   const local = surface(undefined, { platform: 'linux', runtime: bind, ...opts.local })
   const own = opts.search?.includes('runtime=') ? remote : local
-  vi.stubGlobal('window', { location: { search: opts.search ?? '?agentWindows=1' }, adfApi: own.api, addEventListener: () => {}, removeEventListener: () => {} })
+  vi.stubGlobal('window', { innerWidth: 375, innerHeight: 667, location: { search: opts.search ?? '?agentWindows=1' }, adfApi: own.api, addEventListener: () => {}, removeEventListener: () => {} })
   vi.stubGlobal('localStorage', { getItem: () => null, setItem: () => {}, removeItem: () => {} })
   // The popover's portal target; the portal itself renders in place.
   vi.stubGlobal('document', { body: {} })
@@ -305,5 +309,89 @@ describe('Settings runtime banner (§6.3)', () => {
     expect(header).toBeGreaterThan(0)
     expect(at).toBeGreaterThan(header)
     expect(src.indexOf('<h1', header)).toBeGreaterThan(at)
+  })
+})
+
+
+describe('compact browser status bar', () => {
+  it('keeps save, context and emergency stop accessible without the desktop secondary row', async () => {
+    const stop = vi.fn(async () => ({ success: true, stoppedAgents: 1 }))
+    const { bar, useDocumentStore, useMeshStore } = await page([LOCAL], { compact: true, local: { emergencyStop: stop } })
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    const { useAppStore } = await import('../../../src/renderer/stores/app.store')
+    useAppStore.setState({ showHome: false })
+    useDocumentStore.getState().setFilePath(PATH)
+    useDocumentStore.getState().setDirty(true)
+    useAgentStore.setState({ config: { model: { model_id: 'long-provider-name/long-model-identifier' } } as never })
+    useMeshStore.getState().setEnabled(true)
+    const { html, elements } = capture(() => renderToStaticMarkup(<bar.StatusBar />))
+    expect(html).toContain('data-compact-status="true"')
+    expect(html).toContain('aria-label="Save unsaved changes"')
+    expect(html).toContain('>Unsaved</button>')
+    expect(html).toContain('min-w-0 flex-1 truncate')
+    expect(html).toContain('long-provider-name/long-model-identifier')
+    expect(html).toContain('Open context details')
+    expect(html).not.toContain('Toggle Logs Panel')
+    expect(html).not.toContain('Toggle Tasks Panel')
+    expect(html).not.toContain('>Mesh (')
+    const more = byLabel(elements, 'More status actions')!
+    expect(more.props['aria-haspopup']).toBe('menu')
+    expect(more.props.className).toContain('min-h-11')
+    const kill = byLabel(elements, 'Stops all agents and mesh')!
+    expect(kill.props.className).toContain('min-h-11')
+    await (kill.props.onClick as () => Promise<void>)()
+    expect(stop).toHaveBeenCalledOnce()
+  })
+
+  it('More reuses the logs/tasks toggles and exposes connection and mesh information', async () => {
+    const { bar, useDocumentStore } = await page([LOCAL], { compact: true })
+    const { useAppStore } = await import('../../../src/renderer/stores/app.store')
+    const { ContextMenu } = await import('../../../src/renderer/components/common/ContextMenu')
+    useDocumentStore.getState().setFilePath(PATH)
+    useAppStore.setState({ showHome: false, showLogsPanel: false })
+    const menu = () => capture(() => renderToStaticMarkup(<bar.StatusBar />)).elements.find(e => e.type === ContextMenu && e.props.label === 'Status actions')!
+    const items = () => menu().props.items as { label: string; hint?: string; onSelect: () => void }[]
+    expect(items().map(i => i.label)).toEqual(['Logs', 'Tasks', 'Connections', 'Networking', expect.stringContaining('ADF Studio')])
+    expect(items().find(i => i.label === 'Networking')?.hint).toBe('Mesh off')
+    items().find(i => i.label === 'Tasks')!.onSelect()
+    expect(useAppStore.getState().showLogsPanel).toBe(true)
+    expect(useAppStore.getState().bottomPanelTab).toBe('tasks')
+    items().find(i => i.label === 'Tasks')!.onSelect()
+    expect(useAppStore.getState().showLogsPanel).toBe(false)
+    items().find(i => i.label === 'Logs')!.onSelect()
+    expect(useAppStore.getState().bottomPanelTab).toBe('logs')
+    expect(useAppStore.getState().showLogsPanel).toBe(true)
+  })
+
+  it('multi-runtime compact stop still targets the open agent, with touch-sized Servers access', async () => {
+    const stop = vi.fn(async () => ({ success: true, stoppedAgents: 1 }))
+    const { bar, useDocumentStore, useMeshStore, local } = await page([LOCAL, REMOTE], { compact: true, remote: { emergencyStop: stop } })
+    const { useAppStore } = await import('../../../src/renderer/stores/app.store')
+    useAppStore.setState({ showHome: false })
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    useMeshStore.getState().setEnabled(true, HOST_1)
+    const { elements } = capture(() => renderToStaticMarkup(<bar.StatusBar />))
+    expect(byLabel(elements, 'Servers')!.props.className).toContain('!size-11')
+    await (byLabel(elements, 'Stops all agents and mesh on host-1')!.props.onClick as () => Promise<void>)()
+    await flush()
+    expect(stop).toHaveBeenCalledOnce()
+    expect(local.names()).not.toContain('emergencyStop')
+    expect(renderToStaticMarkup(<bar.StatusBar />)).toContain('Stopped 1 agent · Mesh off')
+  })
+
+  it('touch menus fit the visual viewport and preserve Escape focus restoration', async () => {
+    await page([LOCAL], { compact: true })
+    Object.assign(window, { visualViewport: { width: 320, height: 210, offsetLeft: 0, offsetTop: 0 } })
+    const { ContextMenu } = await import('../../../src/renderer/components/common/ContextMenu')
+    const onClose = vi.fn()
+    const anchor = { focus: vi.fn(), isConnected: true }
+    const { html, elements } = capture(() => renderToStaticMarkup(<ContextMenu position={{ x: 350, y: 600 }} onClose={onClose} anchor={{ current: anchor as never }} items={[{ label: 'Tasks', onSelect() {} }]} />))
+    expect(html).toContain('max-width:312px')
+    expect(html).toContain('max-height:202px')
+    expect(html).toContain('overflow-y:auto')
+    const menu = elements.find(e => e.type === 'div' && e.props.role === 'menu')!
+    ;(menu.props.onKeyDown as (event: unknown) => void)({ key: 'Escape', preventDefault() {}, stopPropagation() {} })
+    expect(onClose).toHaveBeenCalledOnce()
+    expect(anchor.focus).toHaveBeenCalledOnce()
   })
 })

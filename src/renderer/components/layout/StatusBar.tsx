@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { create } from 'zustand'
 import { MAIN_LOOP, selectLoopSlice, useAgentStore, type TokenUsage } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
@@ -139,6 +140,10 @@ function MeshIcon() {
 }
 
 export function StatusBar() {
+  const compact = useCompactWebLayout()
+  const moreRef = useRef<HTMLButtonElement>(null)
+  const [moreAt, setMoreAt] = useState<{ x: number; y: number } | null>(null)
+  useEffect(() => { if (!compact) setMoreAt(null) }, [compact])
   const config = useAgentStore((s) => s.config)
   // The gauge is about ONE context window, and each loop has its own — so it
   // follows the loop tab the user is looking at. `viewedLoop` is `main` until
@@ -212,8 +217,16 @@ export function StatusBar() {
     useBackgroundAgentsStore.getState().reset()
   }
 
+  const togglePanel = (tab: 'logs' | 'tasks') => {
+    if (showLogsPanel && bottomPanelTab === tab) toggleLogsPanel()
+    else {
+      setBottomPanelTab(tab)
+      if (!showLogsPanel) toggleLogsPanel()
+    }
+  }
+
   return (
-    <div className="h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-[var(--adf-ui-text-subtle)]">
+    <div data-compact-status={compact || undefined} className={compact ? 'relative min-w-0 h-11 shrink-0 px-1 gap-1 bg-surface-0 border-t border-hairline flex items-center text-xs text-[var(--adf-ui-text-subtle)]' : 'h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-[var(--adf-ui-text-subtle)]'}>
       {/* Everything left of the version describes the open agent's session; its
           name and state live in the titlebar. Home has no agent, so the group
           is absent there rather than a row of blank labels. */}
@@ -221,15 +234,17 @@ export function StatusBar() {
         <>
       <button
         onClick={handleSave}
-        className="hover:text-[var(--adf-ui-text)]"
+        className={`${compact ? 'min-h-11 min-w-11 shrink-0 px-1 ' : ''}hover:text-[var(--adf-ui-text)]`}
+        aria-label={compact ? isDirty ? 'Save unsaved changes' : 'Save' : undefined}
         title="Save"
       >
-        {isDirty ? 'Unsaved changes' : 'Saved'}
+        {isDirty ? compact ? 'Unsaved' : 'Unsaved changes' : 'Saved'}
       </button>
-      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
+      {!compact && <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />}
       {/* The model sits beside the gauge: the percentage is of its window. */}
-      <span>{viewedModel?.model_id ?? 'No model'}</span>
+      <span className={compact ? 'min-w-0 flex-1 truncate' : undefined} title={compact ? viewedModel?.model_id : undefined}>{viewedModel?.model_id ?? 'No model'}</span>
       <ContextGauge
+        compact={compact}
         tokenUsage={tokenUsage}
         tokenEstimate={tokenEstimate}
         threshold={viewedThreshold}
@@ -243,16 +258,10 @@ export function StatusBar() {
         threshold={compactThreshold}
         initialLoop={viewedLoop}
       />
+      {!compact && <>
       <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
       <button
-        onClick={() => {
-          if (showLogsPanel && bottomPanelTab === 'logs') {
-            toggleLogsPanel()
-          } else {
-            setBottomPanelTab('logs')
-            if (!showLogsPanel) toggleLogsPanel()
-          }
-        }}
+        onClick={() => togglePanel('logs')}
         className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'logs' ? 'text-[var(--adf-ui-text)]' : ''}`}
         title="Toggle Logs Panel"
       >
@@ -263,14 +272,7 @@ export function StatusBar() {
         Logs
       </button>
       <button
-        onClick={() => {
-          if (showLogsPanel && bottomPanelTab === 'tasks') {
-            toggleLogsPanel()
-          } else {
-            setBottomPanelTab('tasks')
-            if (!showLogsPanel) toggleLogsPanel()
-          }
-        }}
+        onClick={() => togglePanel('tasks')}
         className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'tasks' ? 'text-[var(--adf-ui-text)]' : ''}`}
         title="Toggle Tasks Panel"
       >
@@ -280,9 +282,11 @@ export function StatusBar() {
         </svg>
         Tasks
       </button>
+      </>}
         </>
       )}
       <span className="ml-auto" />
+      {!compact && <>
       <UpdateBadge />
       <span
         className="flex items-center gap-1 tabular-nums"
@@ -296,9 +300,11 @@ export function StatusBar() {
           </span>
         )}
       </span>
+      </>}
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
-      {multi ? <FocusedRuntime runtimes={runtimes} /> : (
-      <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group>
+      {multi ? <FocusedRuntime runtimes={runtimes} compact={compact} /> : (
+      <div className={compact ? 'flex shrink-0 items-center' : 'flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px'} data-runtime-group>
+      {!compact && <>
       <RuntimeIndicator current={connection} showName={false} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
       <Tooltip tip={meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off'} className="flex">
@@ -316,8 +322,9 @@ export function StatusBar() {
         {meshEnabled ? `Mesh (${activeAgentCount})` : 'Mesh off'}
       </button>
       </Tooltip>
+      </>}
       {killResult && (
-        <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">
+        <span role="status" className={compact ? COMPACT_STOP_RESULT : 'whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]'}>
           {killResult}
         </span>
       )}
@@ -326,7 +333,7 @@ export function StatusBar() {
         onClick={isAnythingRunning ? handleEmergencyStop : undefined}
         disabled={!isAnythingRunning}
         aria-label={isAnythingRunning ? killTooltip(connection, false) : 'Kill: nothing running'}
-        className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+        className={`${compact ? 'min-h-11 min-w-11 justify-center ' : ''}flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           isAnythingRunning
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
             : 'cursor-default text-[var(--adf-ui-text-disabled)]'
@@ -340,9 +347,41 @@ export function StatusBar() {
       </Tooltip>
       </div>
       )}
+      {compact && <>
+        <button
+          ref={moreRef}
+          type="button"
+          aria-label="More status actions"
+          aria-haspopup="menu"
+          aria-expanded={moreAt !== null}
+          className="min-h-11 min-w-11 shrink-0 rounded px-1 hover:text-[var(--adf-ui-text)]"
+          onClick={() => {
+            const rect = moreRef.current?.getBoundingClientRect()
+            setMoreAt(moreAt ? null : { x: rect?.right ?? 0, y: rect?.top ?? 0 })
+          }}
+        >More</button>
+        <ContextMenu
+          position={moreAt}
+          onClose={() => setMoreAt(null)}
+          label="Status actions"
+          placement={{ x: 'end', y: 'above' }}
+          anchor={moreRef}
+          items={[
+            ...(filePath && !onHome ? [
+              { label: 'Logs', onSelect: () => togglePanel('logs') },
+              { label: 'Tasks', onSelect: () => togglePanel('tasks') }
+            ] : []),
+            { label: 'Connections', hint: connection ? `${connection.name}: ${CONNECTION_STATE_LABELS[connection.state]}` : undefined, onSelect: () => useAppStore.getState().openSettingsAt('connection') },
+            ...(!multi ? [{ label: 'Networking', hint: meshEnabled ? `Mesh on, ${activeAgentCount} participating agents` : 'Mesh off', onSelect: () => useAppStore.getState().openSettingsAt('networking') }] : []),
+            { label: `ADF Studio${appVersion ? ` v${appVersion}` : ''}${import.meta.env.DEV ? ' (dev)' : ''}`, disabled: true, onSelect: () => {} }
+          ]}
+        />
+      </>}
     </div>
   )
 }
+
+const COMPACT_STOP_RESULT = 'absolute bottom-full left-0 right-0 z-10 border border-hairline bg-surface-raised px-2 py-1 text-[11px] text-[var(--adf-ui-text)] break-words'
 
 /**
  * More than one runtime (multi-runtime.md §6.2): ONE group, the runtime of
@@ -354,7 +393,7 @@ export function StatusBar() {
  * all above them. An agent window reaches its own runtime only: its group,
  * no arrow.
  */
-export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
+export function FocusedRuntime({ runtimes, compact = false }: { runtimes: RuntimeView[]; compact?: boolean }) {
   // On home: the runtime the next agent is created on (home's runtime select).
   // Home is on screen: picked, or no agent open (AppShell), and not under Settings.
   const showHome = useAppStore((s) => s.showHome)
@@ -377,11 +416,11 @@ export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
   }
   return (
     <div className="flex shrink-0 items-center gap-1.5">
-      {focused && <RuntimeGroup runtime={focused} />}
+      {focused && <RuntimeGroup runtime={focused} compact={compact} />}
       {!isAgentWindow && (
         <>
           {allResult && !open && (
-            <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">{allResult}</span>
+            <span role="status" className={compact ? COMPACT_STOP_RESULT : 'whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]'}>{allResult}</span>
           )}
           <Tooltip tip="Servers" className="flex">
             <IconButton
@@ -391,7 +430,7 @@ export function FocusedRuntime({ runtimes }: { runtimes: RuntimeView[] }) {
               aria-haspopup="menu"
               aria-expanded={open !== null}
               variant={open ? 'selected' : 'neutral'}
-              className={`!size-5 ${open ? '' : '!border-transparent !bg-transparent'} ${othersDown ? '!text-[var(--adf-ui-danger)]' : ''}`}
+              className={`${compact ? '!size-11' : '!size-5'} ${open ? '' : '!border-transparent !bg-transparent'} ${othersDown ? '!text-[var(--adf-ui-danger)]' : ''}`}
               data-runtimes-arrow=""
             >
               <svg width="10" height="10" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
@@ -429,6 +468,7 @@ export function RuntimesPopover({ runtimes, position, onClose, anchor }: {
 
 /** A Kill of the popover: a menu item the arrow keys reach. */
 function PopoverKill({ armed, tip, label, onClick, children }: { armed: boolean; tip: string; label: string; onClick: () => void; children: React.ReactNode }) {
+  const compact = useCompactWebLayout()
   return (
     <Tooltip tip={tip} className="flex">
       <button
@@ -438,7 +478,7 @@ function PopoverKill({ armed, tip, label, onClick, children }: { armed: boolean;
         onClick={armed ? onClick : undefined}
         disabled={!armed}
         aria-label={label}
-        className={`flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] ${
+        className={`${compact ? 'min-h-11 min-w-11 justify-center ' : ''}flex items-center gap-1.5 whitespace-nowrap rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] ${
           armed
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
             : 'cursor-default text-[var(--adf-ui-text-disabled)]'
@@ -455,6 +495,7 @@ function PopoverKill({ armed, tip, label, onClick, children }: { armed: boolean;
 
 /** Kill all: armed while anything runs on a connected runtime (an agent, a background agent, a mesh). */
 function KillAllRow({ runtimes }: { runtimes: RuntimeView[] }) {
+  const compact = useCompactWebLayout()
   const result = useKillResult('all')
   const live = runtimes.filter((r) => r.state === 'connected')
   const meshOn = useMeshStore((s) => live.some((r) => selectMeshSlice(s, sliceOf(r)).enabled))
@@ -463,8 +504,8 @@ function KillAllRow({ runtimes }: { runtimes: RuntimeView[] }) {
   const agentState = useAgentStore((s) => s.state)
   const armed = meshOn || background || (openLive && agentState !== 'off')
   return (
-    <div role="none" className="flex items-center justify-between gap-3 px-3 py-1" data-kill-all="">
-      <span role="status" className="whitespace-nowrap text-[11px]">{result ?? ''}</span>
+    <div role="none" className={compact ? 'flex flex-wrap items-center justify-between gap-1 px-2 py-1' : 'flex items-center justify-between gap-3 px-3 py-1'} data-kill-all="">
+      <span role="status" className={compact ? 'min-w-0 break-words text-[11px]' : 'whitespace-nowrap text-[11px]'}>{result ?? ''}</span>
       <PopoverKill
         armed={armed}
         tip={armed ? KILL_ALL_TIP : 'Nothing running'}
@@ -479,10 +520,11 @@ function KillAllRow({ runtimes }: { runtimes: RuntimeView[] }) {
 
 /** One runtime in the popover: name (remote icon), state, Mesh, Kill. */
 function RuntimeRow({ runtime }: { runtime: RuntimeView }) {
+  const compact = useCompactWebLayout()
   const k = useRuntimeKill(runtime)
   return (
-    <div role="none" className="flex items-center gap-3 px-3 py-1" data-runtime-row={runtime.id}>
-      <span className="flex min-w-0 flex-1 items-center gap-1" title={runtime.url ?? undefined}>
+    <div role="none" className={compact ? 'flex w-[min(320px,calc(100vw-24px))] max-w-full flex-wrap items-center gap-2 px-2 py-1' : 'flex items-center gap-3 px-3 py-1'} data-runtime-row={runtime.id}>
+      <span className={compact ? 'flex min-w-0 basis-full items-center gap-1' : 'flex min-w-0 flex-1 items-center gap-1'} title={runtime.url ?? undefined}>
         {runtime.kind === 'remote' && <RemoteMark />}
         <span className="max-w-[180px] truncate">{runtime.name}</span>
       </span>
@@ -499,7 +541,7 @@ function RuntimeRow({ runtime }: { runtime: RuntimeView }) {
         <MeshIcon />
         {k.mesh.enabled ? `Mesh (${k.participating})` : 'Mesh off'}
       </span>
-      {k.result && <span role="status" className="whitespace-nowrap text-[11px]">{k.result}</span>}
+      {k.result && <span role="status" className={compact ? 'basis-full break-words text-[11px]' : 'whitespace-nowrap text-[11px]'}>{k.result}</span>}
       <PopoverKill armed={k.armed} tip={k.killTip} label={k.killLabel} onClick={() => void k.kill()}>Kill</PopoverKill>
     </div>
   )
@@ -549,12 +591,13 @@ function useRuntimeKill(runtime: RuntimeView) {
  * mesh and its Kill, which act on that runtime only (§12 item 4). This
  * computer's group, and an agent window's, read the window's own slices.
  */
-function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
+function RuntimeGroup({ runtime, compact = false }: { runtime: RuntimeView; compact?: boolean }) {
   const { mesh, participating, down, armed, result: killResult, kill, meshLabel, killTip, killLabel } = useRuntimeKill(runtime)
   const header = runtimeHeader(runtime)
 
   return (
-    <div className="flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px" data-runtime-group={runtime.id}>
+    <div className={compact ? 'flex shrink-0 items-center' : 'flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px'} data-runtime-group={runtime.id}>
+      {!compact && <>
       <button
         onClick={() => useAppStore.getState().openSettingsAt('connection')}
         title={runtime.url ?? undefined}
@@ -579,8 +622,9 @@ function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
         {mesh.enabled ? `Mesh (${participating})` : 'Mesh off'}
       </button>
       </Tooltip>
+      </>}
       {killResult && (
-        <span role="status" className="whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]">
+        <span role="status" className={compact ? COMPACT_STOP_RESULT : 'whitespace-nowrap text-[11px] text-[var(--adf-ui-text)]'}>
           {killResult}
         </span>
       )}
@@ -589,7 +633,7 @@ function RuntimeGroup({ runtime }: { runtime: RuntimeView }) {
         onClick={armed ? () => void kill() : undefined}
         disabled={!armed}
         aria-label={killLabel}
-        className={`flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
+        className={`${compact ? 'min-h-11 min-w-11 justify-center ' : ''}flex items-center gap-1.5 rounded px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider transition-colors ${
           armed
             ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
             : 'cursor-default text-[var(--adf-ui-text-disabled)]'
@@ -682,12 +726,14 @@ function UpdateBadge() {
 }
 
 function ContextGauge({
+  compact = false,
   tokenUsage,
   tokenEstimate,
   threshold,
   loop,
   onOpenBreakdown
 }: {
+  compact?: boolean
   tokenUsage: TokenUsage
   tokenEstimate: number | null
   threshold: number
@@ -720,17 +766,18 @@ function ContextGauge({
             onOpenBreakdown()
           }
         }}
-        className="flex cursor-pointer items-center gap-1.5"
+        aria-label={compact ? `${isMain ? '' : `${loop}: `}Context ${hasData ? `${tokenEstimate != null ? 'approximately ' : ''}${Math.round(pct)} percent` : 'usage unavailable'}. Open context details` : undefined}
+        className={compact ? 'flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center' : 'flex cursor-pointer items-center gap-1.5'}
       >
-        {!isMain && (
+        {!compact && !isMain && (
           <span className={`max-w-20 truncate text-[10px] font-medium ${loopColor(loop).label}`}>{loop}</span>
         )}
-        <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
+        {!compact && <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
           <span
             className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ${fillColor}`}
             style={{ width: `${Math.min(pct, 100)}%` }}
           />
-        </span>
+        </span>}
         <span className="tabular-nums">
           {hasData ? `${tokenEstimate != null ? '~' : ''}${Math.round(pct)}%` : '–%'}
         </span>

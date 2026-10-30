@@ -31,6 +31,9 @@ import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import { isAgentWindow } from '../../utils/window-kind'
 import { AgentWindowStatus } from './AgentWindowStatus'
 import type { AgentState } from '../../../shared/types/ipc.types'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
+import { CompactOverlay } from './CompactOverlay'
+import { useCompactNavigationStore } from '../../stores/compact-navigation.store'
 
 const RIGHT_PANEL_MIN = 260
 /** Share of the window the dock may take: wide windows get a wide dock, and a width saved on one can't crowd out a small one. */
@@ -77,6 +80,10 @@ function ViewFallback() {
 }
 
 export function AppShell() {
+  const compact = useCompactWebLayout()
+  const compactPanel = useCompactNavigationStore(s => s.panel)
+  const setCompactPanel = useCompactNavigationStore(s => s.setPanel)
+  const closeCompactPanel = useCallback(() => setCompactPanel(null), [setCompactPanel])
   const rightPanelCollapsed = useAppStore((s) => s.rightPanelCollapsed)
   // An agent window (agent-windows.md) shows its agent only: no Settings, no fleet map, no sidebar.
   const showSettings = useAppStore((s) => s.showSettings) && !isAgentWindow
@@ -85,6 +92,8 @@ export function AppShell() {
   const showHome = useAppStore((s) => s.showHome) && !isAgentWindow
   const filePath = useDocumentStore((s) => s.filePath)
   const agentOnStage = !!filePath && !showHome
+  useEffect(() => { setCompactPanel(null) }, [compact, setCompactPanel])
+  useEffect(() => { if (!filePath) setCompactPanel(null) }, [filePath, setCompactPanel])
   const [rightPanelWidth, setRightPanelWidth] = useState(() =>
     loadStoredSize(RIGHT_PANEL_WIDTH_KEY, RIGHT_PANEL_DEFAULT, RIGHT_PANEL_MIN, RIGHT_PANEL_STORED_MAX)
   )
@@ -209,6 +218,17 @@ export function AppShell() {
           app titlebar would just double up. */}
       {!showMeshGraph && <TitleBar />}
 
+      {compact && !showSettings && <nav aria-label="Workspace navigation" className="flex shrink-0 items-center justify-between border-b border-hairline bg-surface-1 px-2">
+        {!isAgentWindow && <button type="button" className="compact-web-navigation-button" aria-haspopup="dialog" aria-controls="compact-agent-list" aria-expanded={compactPanel === 'agents'} onClick={() => setCompactPanel('agents')}>
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 6h16M4 12h16M4 18h16" /></svg>
+          Agents
+        </button>}
+        {agentOnStage && <button type="button" className="compact-web-navigation-button ml-auto" aria-haspopup="dialog" aria-controls="compact-agent-details" aria-expanded={compactPanel === 'details'} onClick={() => setCompactPanel('details')}>
+          <svg aria-hidden="true" width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 4h16v16H4zM14 4v16" /></svg>
+          Agent details
+        </button>}
+      </nav>}
+
       {/* Unreviewed-agent banner — main content area, right below the title
           bar. Hidden in Settings and on the fleet map (both replace the main
           content area). */}
@@ -223,7 +243,7 @@ export function AppShell() {
         {/* Settings has its own navigation; the workspace tree stays out of
             the way. The fleet map hides it too — opening a file from the tree
             leaves the map anyway, so the tree is dead weight there. */}
-        {!showSettings && !showMeshGraph && !isAgentWindow && <SidebarFrame><Sidebar /></SidebarFrame>}
+        {!compact && !showSettings && !showMeshGraph && !isAgentWindow && <SidebarFrame><Sidebar /></SidebarFrame>}
 
         {/* Everything right of the tree, status bar included: the sidebar runs
             the full window height, and the status bar starts at the same left
@@ -264,10 +284,10 @@ export function AppShell() {
             {/* Right panel — visible in both mesh and editor views. In mesh view
                 the real titlebar is hidden, so the dock is the window's top-right
                 element and must clear the native window-controls overlay itself. */}
-            {agentOnStage && !showSettings && rightPanelCollapsed && (
+            {!compact && agentOnStage && !showSettings && rightPanelCollapsed && (
               <RightDockIconBar reserveWindowControls={dockUnderWindowControls} />
             )}
-            {agentOnStage && !showSettings && !rightPanelCollapsed && (
+            {!compact && agentOnStage && !showSettings && !rightPanelCollapsed && (
               <>
                 {/* Resize handle */}
                 <div
@@ -290,6 +310,13 @@ export function AppShell() {
           {!showSettings && <StatusBar />}
         </div>
       </div>
+
+      {compact && <CompactOverlay id="compact-agent-list" open={compactPanel === 'agents' && !showSettings && !isAgentWindow} title="Agents" onClose={closeCompactPanel}>
+        <Sidebar overlay onNavigate={closeCompactPanel} />
+      </CompactOverlay>}
+      {compact && <CompactOverlay id="compact-agent-details" open={compactPanel === 'details' && agentOnStage && !showSettings} title="Agent details" onClose={closeCompactPanel}>
+        <RightDock compact />
+      </CompactOverlay>}
 
       {/* Outside the view switch: an off-screen agent's approval must announce
           itself on the fleet map and in Settings too, not only in the editor. */}

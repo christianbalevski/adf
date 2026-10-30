@@ -21,6 +21,8 @@ import type { SaveBase } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice, ExternalUpdateNotice } from './ChangedElsewhereNotice'
 import { openApi } from '../../utils/runtime-api'
 import { captureAgentView, type AgentView } from '../../utils/agent-view'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
+import { useCompactNavigationStore } from '../../stores/compact-navigation.store'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -63,6 +65,7 @@ function useAggregateChatUnread(chatInCenter: boolean, chatVisible: boolean, age
 }
 
 export function EditorPanel() {
+  const compact = useCompactWebLayout()
   const tabs = useEditorTabsStore((s) => s.tabs)
   const activeTabPath = useEditorTabsStore((s) => s.activeTabPath)
   const setActiveTab = useEditorTabsStore((s) => s.setActiveTab)
@@ -74,9 +77,13 @@ export function EditorPanel() {
   // Chat-in-center: the Loops panel becomes a pinned first stage tab, peer to
   // the documents and the browser. Same AgentLoop component the dock mounts —
   // all its state is in stores, so the move is purely a change of mount point.
-  const chatInCenter = useAppStore(selectChatInCenter)
-  const centerChatTabActive = useAppStore((s: AppState) => s.centerChatTabActive)
-  const setCenterChatTabActive = useAppStore((s: AppState) => s.setCenterChatTabActive)
+  const storedChatInCenter = useAppStore(selectChatInCenter)
+  const chatInCenter = compact || storedChatInCenter
+  const storedChatTabActive = useAppStore((s: AppState) => s.centerChatTabActive)
+  const storedSetChatTabActive = useAppStore((s: AppState) => s.setCenterChatTabActive)
+  const compactChatTabActive = useCompactNavigationStore(s => s.chatTabActive)
+  const centerChatTabActive = compact ? compactChatTabActive : storedChatTabActive
+  const setCenterChatTabActive = storedSetChatTabActive
   const agentFilePath = useDocumentStore((s) => s.filePath)
   const viewGeneration = useDocumentStore((s) => s.viewGeneration)
   const runtimeId = useDocumentStore((s) => s.runtimeId)
@@ -97,7 +104,7 @@ export function EditorPanel() {
         active: centerChatTabActive,
         unread: chatUnread,
         onSelect: () => setCenterChatTabActive(true),
-        onClose: () => setChatPlacement('side')
+        onClose: compact ? undefined : () => setChatPlacement('side')
       }
     : undefined
 
@@ -114,10 +121,10 @@ export function EditorPanel() {
         state.tabs.length >= prev.tabs.length &&
         !isAgentSwitching()
       ) {
-        useAppStore.getState().setCenterChatTabActive(false)
+        setCenterChatTabActive(false)
       }
     })
-  }, [])
+  }, [setCenterChatTabActive])
 
   const activeTab = tabs.find((t) => t.path === activeTabPath) ?? null
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)

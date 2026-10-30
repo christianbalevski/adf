@@ -19,6 +19,7 @@ import { IS_MAC } from '../../utils/platform'
 import { openApi } from '../../utils/runtime-api'
 import { useRuntime } from '../../stores/runtimes.store'
 import { RemoteIcon } from '../common/RemoteMark'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 
 /** An icon-only nav control: its label shows as a tooltip (a native title never renders here). */
 function NavButton({
@@ -205,6 +206,7 @@ export function AgentTitleCluster({ onActivate, avatar = true }: { onActivate?: 
 }
 
 export function TitleBar() {
+  const compact = useCompactWebLayout()
   const filePath = useDocumentStore((s) => s.filePath)
   const showSettings = useAppStore((s) => s.showSettings)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
@@ -230,7 +232,7 @@ export function TitleBar() {
   // sidebar is whatever the user dragged it to. The variable is SidebarFrame's,
   // so this pane tracks a drag without subscribing to anything.
   // An agent window (agent-windows.md) has no sidebar and no app navigation.
-  const leftPaneWidth = isAgentWindow ? null : showSettings ? 240 : sidebarCollapsed ? null : `var(${SIDEBAR_WIDTH_VAR}, 240px)`
+  const leftPaneWidth = compact || isAgentWindow ? null : showSettings ? 240 : sidebarCollapsed ? null : `var(${SIDEBAR_WIDTH_VAR}, 240px)`
 
   useEffect(() => {
     let mounted = true

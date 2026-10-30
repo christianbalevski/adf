@@ -343,8 +343,9 @@ function useStableMap<V>(entries: [string, V][]): Map<string, V> {
   return mapRef.current!
 }
 
-export function Sidebar() {
-  const collapsed = useAppStore((s) => s.sidebarCollapsed)
+export function Sidebar({ overlay = false, onNavigate }: { overlay?: boolean; onNavigate?: () => void }) {
+  const storedCollapsed = useAppStore((s) => s.sidebarCollapsed)
+  const collapsed = !overlay && storedCollapsed
   const toggleSidebar = useAppStore((s) => s.toggleSidebar)
   const showSettings = useAppStore((s) => s.showSettings)
   const setShowSettings = useAppStore((s) => s.setShowSettings)
@@ -465,6 +466,8 @@ export function Sidebar() {
   )
 
   const handleOpenFile = useCallback((fp: string, runtimeId?: RowRuntime) => {
+    // Selection is navigation even when this is already the open agent.
+    onNavigate?.()
     const runtime = runtimeId ?? LOCAL_RUNTIME
     if (showSettings) setShowSettings(false)
     if (showMeshGraph) setShowMeshGraph(false)
@@ -478,7 +481,7 @@ export function Sidebar() {
         }
       })
     })
-  }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph, showHome, openPath, openRuntime, setShowHome])
+  }, [openFile, showSettings, showMeshGraph, setShowSettings, setShowMeshGraph, showHome, openPath, openRuntime, setShowHome, onNavigate])
 
   const handleCreateFile = useCallback(async () => {
     const result = await createFile('Untitled')
@@ -744,7 +747,7 @@ export function Sidebar() {
   }
 
   return (
-    <div className="w-full bg-surface-2 border-r border-hairline flex flex-col overflow-hidden">
+    <div data-compact-sidebar={overlay || undefined} className="w-full bg-surface-2 border-r border-hairline flex flex-col overflow-hidden">
       {/* Single header row: search · new · open · collapse. The search box
           doubles as the panel's title, so there is no separate label. */}
       <div className="h-9 px-2.5 flex items-center gap-1 shrink-0">
@@ -800,7 +803,7 @@ export function Sidebar() {
             </svg>
           </button>
         </Tooltip>
-        <Tooltip tip="Collapse sidebar" shortcut={formatKey(ACCELERATORS.toggleSidebar, IS_MAC)} className="flex">
+        {!overlay && <Tooltip tip="Collapse sidebar" shortcut={formatKey(ACCELERATORS.toggleSidebar, IS_MAC)} className="flex">
           <button
             onClick={toggleSidebar}
             aria-label="Collapse sidebar"
@@ -810,7 +813,7 @@ export function Sidebar() {
               <polyline points="15 18 9 12 15 6" />
             </svg>
           </button>
-        </Tooltip>
+        </Tooltip>}
       </div>
 
       {!searching && runningRows.length > 0 && (

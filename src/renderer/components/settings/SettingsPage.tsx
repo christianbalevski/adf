@@ -2,6 +2,8 @@ import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
 import { listsToWrite, rebaseSettingsLists, settingsListsOf, type SettingsLists } from '../../utils/settings-lists'
 import { sameContent } from '../../utils/list-rebase'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
+import { CompactOverlay } from '../layout/CompactOverlay'
 import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
 import { isFontInstalled } from '../../utils/fonts'
 import { PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../../shared/utils/settings-migrations'
@@ -950,6 +952,14 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
   settingsSearch: string
   setSettingsSearch: (search: string) => void
 }) {
+  const compactLayout = useCompactWebLayout()
+  const [sectionsOpen, setSectionsOpen] = useState(false)
+  useEffect(() => { setSectionsOpen(false) }, [compactLayout, activeTab])
+  const selectSection = (tab: SettingsTab) => {
+    setActiveTab(tab)
+    // Selecting the current section also dismisses the compact navigation.
+    setSectionsOpen(false)
+  }
   const api = useSettingsApi()
   const { commit, track, offerUndo } = useSettingsSave()
   const [confirmDialog, confirm] = useConfirm()
@@ -1454,9 +1464,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
     invalidateConfigCaches()
   }
 
-  return (
-    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)]">
-      <aside className="flex w-60 shrink-0 flex-col bg-[var(--adf-ui-sidebar)] border-r border-hairline">
+  const navigation = (
+      <aside className={compactLayout ? 'settings-sidebar flex min-h-0 flex-1 w-full flex-col bg-[var(--adf-ui-sidebar)]' : 'flex w-60 shrink-0 flex-col bg-[var(--adf-ui-sidebar)] border-r border-hairline'}>
         <div className="px-4 pt-4 pb-3">
           <Button
             onClick={() => setShowSettings(false)}
@@ -1478,7 +1487,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
               onChange={(event) => setSettingsSearch(event.target.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' && visibleNavGroups[0]?.items[0]) {
-                  setActiveTab(visibleNavGroups[0].items[0].id)
+                  event.preventDefault()
+                  selectSection(visibleNavGroups[0].items[0].id)
                 }
               }}
               placeholder="Search settings"
@@ -1516,7 +1526,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
                 {group.items.map((item) => (
                   <button
                     key={item.id}
-                    onClick={() => setActiveTab(item.id)}
+                    onClick={() => selectSection(item.id)}
                     aria-current={activeTab === item.id ? 'page' : undefined}
                     className={`flex h-8 w-full items-center gap-2.5 rounded-[var(--adf-ui-control-radius)] px-2.5 text-left outline-none transition-colors focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)] ${
                       activeTab === item.id
@@ -1539,9 +1549,23 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
           )}
         </nav>
       </aside>
+  )
 
-      <main ref={contentScrollRef} className="flex-1 min-w-0 overflow-y-auto settings-content">
-        <div className="mx-auto max-w-5xl px-8 py-9 lg:px-12">
+  return (
+    <div className={`${compactLayout ? 'settings-page flex-col ' : ''}flex min-h-0 min-w-0 flex-1 overflow-hidden bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)]`}>
+      {compactLayout ? <>
+        <div className="settings-compact-toolbar flex shrink-0 items-center gap-2 border-b border-hairline px-3 py-2">
+          <Button variant="ghost" onClick={() => setShowSettings(false)}>Back to app</Button>
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{activeNavItem.label}</span>
+          <Button aria-haspopup="dialog" aria-expanded={sectionsOpen} aria-controls="settings-sections" onClick={() => setSectionsOpen(true)}>Sections</Button>
+        </div>
+        <CompactOverlay id="settings-sections" open={sectionsOpen} title="Settings sections" onClose={() => setSectionsOpen(false)}>
+          {navigation}
+        </CompactOverlay>
+      </> : navigation}
+
+      <main ref={contentScrollRef} className={`${compactLayout ? 'settings-main min-h-0 ' : ''}flex-1 min-w-0 overflow-y-auto settings-content`}>
+        <div className={`${compactLayout ? 'settings-inner ' : ''}mx-auto max-w-5xl px-8 py-9 lg:px-12`}>
           <header className="mb-7 border-b border-[var(--adf-ui-separator)] pb-5">
             {/* Multi-runtime: the picked runtime, above every runtime page (§6.3). Inside the header: the siblings after it keep their place. */}
             {runtimePage && <SettingsRuntimeBanner />}
@@ -1593,7 +1617,10 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
                 ariaLabel="Agent avatars"
               />
             </SettingsRow>
-            <SettingsRow
+            {compactLayout ? <SettingsRow
+              label="Chat layout"
+              description="Chat uses the full-width center view on this screen."
+            /> : <SettingsRow
               label="Chat width"
               description="How wide the loop thread runs when the chat is in the center stage. Comfortable caps it at a reading column; Full uses the whole stage."
               help="Only applies when the chat is in the center. In the side dock the panel is already narrow."
@@ -1607,7 +1634,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
                 onChange={setChatWidth}
                 ariaLabel="Chat width"
               />
-            </SettingsRow>
+            </SettingsRow>}
             <SettingsRow
               label="Font family"
               description="Typeface for the whole interface. System and Inter Tight always work; other presets fall back to the system font if the face isn't installed."
@@ -2040,6 +2067,7 @@ function ComputeTab({
   executionTargets: ExecutionTarget[]
   setExecutionTargets: React.Dispatch<React.SetStateAction<ExecutionTarget[]>>
 }) {
+  const compactLayout = useCompactWebLayout()
   const api = useSettingsApi()
   const [availability, setAvailability] = useState<PodmanAvailability | null>(null)
   const [setupBusy, setSetupBusy] = useState(false)
@@ -2207,7 +2235,7 @@ function ComputeTab({
           </div>
         </div>
 
-        <div className="overflow-visible rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)]">
+        <div data-compact-container-table={compactLayout || undefined} className="overflow-visible rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)]">
           <div className="grid grid-cols-[minmax(180px,1.5fr)_105px_minmax(110px,1fr)_88px] gap-3 border-b border-[var(--adf-ui-separator)] px-3 py-2 text-[11px] font-medium uppercase tracking-wide text-[var(--adf-ui-text-subtle)]">
             <span>Container</span><span>Status</span><span>Assigned to</span><span className="text-right">Actions</span>
           </div>

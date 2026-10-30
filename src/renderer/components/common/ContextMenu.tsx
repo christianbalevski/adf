@@ -1,5 +1,6 @@
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import { createPortal } from 'react-dom'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 
 export interface ContextMenuItem {
   label: string
@@ -46,6 +47,12 @@ const EDGE = 4
  * Escape and Tab give the focus back to what had it when the menu opened.
  */
 export function ContextMenu({ position, items = [], children, onClose, placement, label, anchor }: ContextMenuProps) {
+  const compact = useCompactWebLayout()
+  const viewport = compact ? window.visualViewport : undefined
+  const viewportWidth = viewport?.width ?? (compact ? window.innerWidth : 0)
+  const viewportHeight = viewport?.height ?? (compact ? window.innerHeight : 0)
+  const viewportLeft = viewport?.offsetLeft ?? 0
+  const viewportTop = viewport?.offsetTop ?? 0
   const menuRef = useRef<HTMLDivElement>(null)
   // The menu's items in order: the buttons of `items`, or those of `children`.
   const menuItems = (): HTMLButtonElement[] =>
@@ -72,14 +79,18 @@ export function ContextMenu({ position, items = [], children, onClose, placement
     const r = el.getBoundingClientRect()
     const x = placement?.x === 'end' ? position.x - r.width : position.x
     const y = placement?.y === 'above' ? position.y - r.height : position.y
-    const left = Math.max(EDGE, Math.min(x, window.innerWidth - r.width - EDGE))
-    const top = Math.max(EDGE, Math.min(y, window.innerHeight - r.height - EDGE))
+    const leftEdge = compact ? viewportLeft + EDGE : EDGE
+    const topEdge = compact ? viewportTop + EDGE : EDGE
+    const rightEdge = compact ? viewportLeft + viewportWidth : window.innerWidth
+    const bottomEdge = compact ? viewportTop + viewportHeight : window.innerHeight
+    const left = Math.max(leftEdge, Math.min(x, rightEdge - r.width - EDGE))
+    const top = Math.max(topEdge, Math.min(y, bottomEdge - r.height - EDGE))
     setClamped({ x: left, y: top, right: window.innerWidth - left - r.width, bottom: window.innerHeight - top - r.height })
     // Focus moves into the menu: its first enabled item, else the menu itself
     // (so Escape and a disabled item's hint still reach a keyboard user).
     const first = menuItems().find((b) => !b.disabled)
     ;(first ?? el).focus()
-  }, [position, placement?.x, placement?.y])
+  }, [position, placement?.x, placement?.y, compact, viewportLeft, viewportTop, viewportWidth, viewportHeight])
 
   useEffect(() => {
     if (!open) return
@@ -94,19 +105,26 @@ export function ContextMenu({ position, items = [], children, onClose, placement
         closeAndReturnFocus()
       }
     }
+    const onScroll = (e: Event) => {
+      // A long touch menu must be scrollable without dismissing itself.
+      if (compact && e.target instanceof Node && menuRef.current?.contains(e.target)) return
+      onClose()
+    }
     document.addEventListener('pointerdown', onPointerDown, true)
     document.addEventListener('keydown', onKeyDown, true)
     window.addEventListener('blur', onClose)
-    window.addEventListener('scroll', onClose, true)
+    window.addEventListener('scroll', onScroll, true)
+    if (compact) viewport?.addEventListener('resize', onClose)
     window.addEventListener('resize', onClose)
     return () => {
       document.removeEventListener('pointerdown', onPointerDown, true)
       document.removeEventListener('keydown', onKeyDown, true)
       window.removeEventListener('blur', onClose)
-      window.removeEventListener('scroll', onClose, true)
+      window.removeEventListener('scroll', onScroll, true)
+      if (compact) viewport?.removeEventListener('resize', onClose)
       window.removeEventListener('resize', onClose)
     }
-  }, [open, onClose])
+  }, [open, onClose, compact, viewport])
 
   /** Close, and give the focus back to the anchor, else to what had it when the menu opened. */
   function closeAndReturnFocus() {
@@ -170,6 +188,15 @@ export function ContextMenu({ position, items = [], children, onClose, placement
       onContextMenu={(e) => e.preventDefault()}
       className="fixed z-[1000] outline-none bg-surface-raised border border-[var(--adf-ui-border)] shadow-float rounded-[var(--adf-ui-container-radius)] py-1 min-w-[180px] text-[12px] text-[var(--adf-ui-text)] select-none"
       style={{
+        ...(compact ? {
+          minWidth: Math.min(180, Math.max(0, viewportWidth - EDGE * 2)),
+          maxWidth: Math.max(0, viewportWidth - EDGE * 2),
+          maxHeight: Math.max(0, viewportHeight - EDGE * 2),
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          overscrollBehavior: 'contain',
+          overflowWrap: 'anywhere'
+        } : {}),
         ...(clamped && placement?.x === 'end' ? { right: clamped.right } : { left: at.x }),
         ...(clamped && placement?.y === 'above' ? { bottom: clamped.bottom } : { top: at.y }),
         visibility: clamped ? 'visible' : 'hidden'
@@ -191,7 +218,7 @@ export function ContextMenu({ position, items = [], children, onClose, placement
                 select(item)
               }
             }}
-            className={`block w-full px-3 py-1.5 text-left outline-none hover:bg-[var(--adf-ui-surface-hover)] focus-visible:bg-[var(--adf-ui-surface-hover)] disabled:opacity-40 disabled:hover:bg-transparent ${
+            className={`${compact ? 'min-h-11 ' : ''}block w-full px-3 py-1.5 text-left outline-none hover:bg-[var(--adf-ui-surface-hover)] focus-visible:bg-[var(--adf-ui-surface-hover)] disabled:opacity-40 disabled:hover:bg-transparent ${
               item.danger ? 'text-[var(--adf-ui-danger)]' : ''
             }`}
           >
