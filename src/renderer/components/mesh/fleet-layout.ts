@@ -486,14 +486,17 @@ function planRegion(
   }
 
   // Pin enforcement — any pinned member not already on its cell moves there;
-  // an unpinned occupant of that cell takes the mover's old hex (swap). A
-  // cell held by another PINNED member stays put (first pin wins).
+  // the occupant of that cell takes the mover's old hex (swap). Only an
+  // occupant already pinned to THIS cell holds it (first pin wins) — a
+  // pinned member merely passing through on its auto cell yields and moves
+  // on to its own pin when its turn comes.
   if (localPins) {
     for (const [fp, pin] of localPins) {
       const cur = placedOccupied.find((c) => c.filePath === fp)
       if (!cur || (cur.q === pin.q && cur.r === pin.r)) continue
       const occupant = cells.get(`${pin.q},${pin.r}`)
-      if (occupant?.filePath && localPins.has(occupant.filePath)) continue
+      const occupantPin = occupant?.filePath ? localPins.get(occupant.filePath) : undefined
+      if (occupantPin && occupantPin.q === pin.q && occupantPin.r === pin.r) continue
       cells.delete(`${cur.q},${cur.r}`)
       if (occupant) {
         occupant.q = cur.q

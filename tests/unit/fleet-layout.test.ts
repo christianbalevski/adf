@@ -223,4 +223,29 @@ describe('computeFleetLayout (hex world)', () => {
       }
     }
   })
+  it('a dropped tile lands on a cell another pinned agent is moving off of', () => {
+    // a2 sits on its auto cell X; the user drags it to Y, then drags a0 onto
+    // X. a0's pin is enforced first, while a2 still occupies X pre-move —
+    // a2 must yield instead of blocking a0 on its auto cell.
+    const agents = [0, 1, 2].map((i) => agent({ filePath: `/d/a${i}.adf`, trackedDirRoot: '/d' }))
+    const first = computeFleetLayout(agents)
+    const origin = first.regionOrigins['/d']
+    const worldCell = (r: ReturnType<typeof computeFleetLayout>, fp: string) => {
+      const c = terrainData(terrainNodes(r)[0]).cells.find((x) => x.filePath === fp)!
+      return { q: c.q + r.regionOrigins['/d'].q, r: c.r + r.regionOrigins['/d'].r }
+    }
+    const x = worldCell(first, '/d/a2.adf')
+    const y = { q: origin.q + 6, r: origin.r }
+    const placement = {
+      regionOrigins: first.regionOrigins,
+      districtAnchors: first.districtAnchors,
+      cellPins: {
+        '/d/a2.adf': { ...y, solo: true },
+        '/d/a0.adf': { ...x, solo: true }
+      }
+    }
+    const result = computeFleetLayout(agents, placement)
+    expect(worldCell(result, '/d/a2.adf')).toEqual(y)
+    expect(worldCell(result, '/d/a0.adf')).toEqual(x)
+  })
 })
