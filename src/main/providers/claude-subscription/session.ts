@@ -177,6 +177,24 @@ class MessageBuilder {
   }
 }
 
+/** The model name Claude Code gives assistant messages it makes up itself. */
+const SYNTHETIC_MODEL = '<synthetic>'
+
+type SyntheticAssistant = { id?: string; text: string; stopReason?: string }
+
+/** A Claude Code-authored assistant message, recognized by its model, not its text. */
+function syntheticAssistant(message: unknown): SyntheticAssistant | null {
+  const m = message as { id?: unknown; role?: unknown; model?: unknown; content?: unknown; stop_reason?: unknown } | undefined
+  if (!m || m.model !== SYNTHETIC_MODEL || (m.role !== undefined && m.role !== 'assistant')) return null
+  const blocks = Array.isArray(m.content) ? m.content as Array<{ type?: string; text?: string }>
+    : typeof m.content === 'string' ? [{ type: 'text', text: m.content }] : []
+  return {
+    ...(typeof m.id === 'string' && m.id ? { id: m.id } : {}),
+    text: blocks.map((b) => (b.type === 'text' ? b.text ?? '' : '')).join('\n').trim(),
+    ...(typeof m.stop_reason === 'string' ? { stopReason: m.stop_reason } : {}),
+  }
+}
+
 /** Parse streamed tool input; a broken payload is reported, not run as `{}`. */
 function parseToolInput(name: string, json: string): unknown {
   if (!json) return {}
@@ -286,6 +304,7 @@ export class ClaudeCodeSession {
   private lastCallContext: string | undefined
   private lastUsed = Date.now()
   private injections: string[] = []
+  private syntheticNoted = new Set<string>()
   private prefixNoted = false
   private readonly cwd: string
   private readonly aliases: Map<string, string>
@@ -380,6 +399,12 @@ export class ClaudeCodeSession {
    */
   private collectInjections(batch: Array<Record<string, unknown>>): void {
     for (const e of batch) {
+      if (e.type === 'assistant') {
+        // API errors are synthetic too; they are reported as errors (handle()).
+        const synthetic = e.isApiErrorMessage || e.error ? null : syntheticAssistant(e.message)
+        if (synthetic) this.noteSynthetic(synthetic, e.uuid)
+        continue
+      }
       if (e.type !== 'attachment') continue
       const attachment = e.attachment as { type?: string; cliPrefix?: string } | undefined
       if (attachment?.type === 'prompt_snapshot') {
@@ -398,6 +423,21 @@ export class ClaudeCodeSession {
         .join('\n')
       if (rendered) this.injections.push(rendered)
     }
+  }
+
+  /**
+   * An assistant message Claude Code wrote itself (e.g. "No response
+   * requested." closing an unanswered prompt on resume). It is model input,
+   * not a reply; it may arrive from both the SDK stream and the transcript.
+   */
+  private noteSynthetic(m: SyntheticAssistant, uuid: unknown): void {
+    const key = m.id ?? (typeof uuid === 'string' ? uuid : undefined)
+    if (key) {
+      if (this.syntheticNoted.has(key)) return
+      this.syntheticNoted.add(key)
+    }
+    const stop = m.stopReason ? `, stop_reason ${m.stopReason}` : ''
+    this.injections.push(`Synthetic assistant message added by Claude Code (not a model reply; model ${SYNTHETIC_MODEL}${stop}): ${m.text || '(no text)'}`)
   }
 
   /** Note input ADF itself had to add (e.g. the cold-start "Continue."). */
@@ -538,6 +578,12 @@ export class ClaudeCodeSession {
             .join(' ')
             .trim()
           this.apiError = `${msg.error}: ${text || 'request failed'}`
+          return
+        }
+        // Claude Code's own filler (no request was made): context, not a reply.
+        const synthetic = syntheticAssistant(msg.message)
+        if (synthetic) {
+          this.noteSynthetic(synthetic, msg.uuid)
           return
         }
         // A response that never streamed (Claude Code's non-streaming

@@ -65,6 +65,19 @@ describe.skipIf(!live)('claude-subscription (live)', () => {
     expect(injected.join('\n')).not.toMatch(/total_tokens/)
   }, 120_000)
 
+  it('reports Claude Code\'s synthetic reply to an unanswered prompt as context, not as the reply', async () => {
+    // A cold start whose history ends in an unanswered user message: Claude
+    // Code closes it with its own "No response requested." when resuming.
+    const messages: LLMMessage[] = [
+      { role: 'user', content: 'Remember the word: walnut.' },
+      { role: 'user', content: 'Reply with just the word OK.' },
+    ]
+    const r = await provider.createMessage({ system, messages, signal: AbortSignal.timeout(60_000) })
+    expect(text(r)).not.toMatch(/No response requested/)
+    const injected = ((r.providerMetadata?.adf as { contextInjections?: string[] }).contextInjections ?? []).join('\n')
+    expect(injected).toMatch(/Synthetic assistant message added by Claude Code .*: No response requested\./)
+  }, 90_000)
+
   it('handles several tool calls in one response', async () => {
     const messages: LLMMessage[] = [{ role: 'user', content: 'Get the weather in Oslo, Lima and Rome. Call the tool for all three cities at once, in a single response.' }]
     const first = await provider.createMessage({ system, messages, tools: [weatherTool], signal: AbortSignal.timeout(60_000) })
