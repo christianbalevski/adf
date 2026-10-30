@@ -1084,7 +1084,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             setConfigConflict({ mine: updated, theirs: outcome.conflict.theirs as AgentConfigType | null, revision: outcome.conflict.revision, writer: outcome.conflict.writer, owner })
             return
           }
-          if (res?.success !== false && owner === useDocumentStore.getState().filePath) {
+          // A refusal classified as saved (what is there now is this edit) is
+          // a save: take its revision. Treating it as refused left the panel
+          // on a stale base, so Retry was refused the same way forever.
+          const refused = !res?.conflict && res?.success === false
+          if (!refused && owner === useDocumentStore.getState().filePath) {
             if (outcome.revision !== undefined) useAgentStore.getState().setConfigRevision(outcome.revision)
             // A later edit saved over the current config: an older notice no longer applies.
             setConfigConflict(null)
@@ -1093,7 +1097,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             // Still "Saving…" while a later edit waits for its own write.
             if (!pendingSaveRef.current) setSaveStatus({ kind: 'saved' })
           }
-          if (res && (res as { success?: boolean }).success === false) failSave(res)
+          if (refused) failSave(res)
         })
         .catch((err) => failSave(err))
 
