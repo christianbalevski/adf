@@ -161,7 +161,11 @@ function readTemplateFromDb(db: Database.Database): TemplateData {
     protection: r.protection as FileProtectionLevel
   }))
 
-  // Read identity rows — exclude signing keys and KDF params
+  // Read identity rows — exclude all key material (crypto:*): signing keys,
+  // KDF params, and envelope descriptors. A descriptor is stored plain but
+  // wraps the template's DEK; copied over a child's own, it replaces the DEK
+  // the child's private key was sealed with, so the child's signing key can
+  // no longer be opened.
   const identityRows = db
     .prepare(
       'SELECT purpose, value, encryption_algo, salt, kdf_params, code_access FROM adf_identity'
@@ -177,10 +181,7 @@ function readTemplateFromDb(db: Database.Database): TemplateData {
 
   const filteredIdentity: TemplateIdentityRow[] = identityRows
     .filter(
-      (r) =>
-        !r.purpose.startsWith('crypto:signing:') &&
-        !r.purpose.startsWith('crypto:kdf:') &&
-        r.encryption_algo === 'plain'
+      (r) => !r.purpose.startsWith('crypto:') && r.encryption_algo === 'plain'
     )
     .map((r) => ({
       purpose: r.purpose,
