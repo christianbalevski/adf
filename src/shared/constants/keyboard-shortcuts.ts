@@ -97,7 +97,7 @@ export const SHORTCUT_SECTIONS: readonly ShortcutSection[] = [
   {
     title: 'Agent config',
     rows: [
-      { keys: ['/'], label: 'Jump to a section' },
+      { keys: ['/'], label: 'Search sections' },
     ],
   },
 ]
