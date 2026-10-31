@@ -308,12 +308,12 @@ MCP servers are managed on **Settings → MCP servers**. This configuration is a
 
 From **Settings → MCP servers**:
 
-- **Add MCP Server** — One button opens the configuration modal: pick a known server from the curated quick-add cards (OAuth servers labeled, prerequisites called out) or configure a custom/remote server; every option — package, args, env vars, run location, auth flow, credential files, agent availability — lives in the same form
-- **Connect** — The modal's verify button runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
+- **Add MCP Server** — One button opens the configuration modal: pick a known server from the curated quick-add cards or configure a custom/remote server, then follow its numbered steps (where it runs, add details, connect or sign in, who can attach it). Prefilled options a known server rarely needs changed are under **Advanced**
+- **Connect** — The modal's connect step runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
 - **Configure** — Reopens the same modal for any server
 - **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)
 - **Needs setup** — The server runs in a container and Podman isn't set up. Connect or Reconnect opens a sheet that sets Podman up or runs the server on the host; see [Compute](compute.md#mcp-server-execution-location)
-- **Available to agents** — Per-server toggle letting agents attach the server themselves (via `mcp_install`); defaults on for container/remote, off for host
+- **Agent access** — Per-server choice: **On** lets agents attach the server themselves (via `mcp_install`); defaults to **On** for container/remote servers, to **Off** for host
 - **Logs** — View per-server logs including tool call history
 - **Remove** — Delete the server and its installation
 - **Credentials** — Manage API keys and secrets per server (app-wide or per-agent) from the configure modal

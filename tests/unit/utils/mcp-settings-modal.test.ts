@@ -11,7 +11,7 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { availableRegistryEntries, blankDraft, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, registrationSourceLine } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, blankDraft, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -510,6 +510,47 @@ describe('registrationSourceLine (modal identity subtitle)', () => {
     expect(registrationSourceLine(reg({ type: 'uvx' }))).toBe('')
     expect(registrationSourceLine(reg({ type: 'custom', command: '' }))).toBe('')
     expect(registrationSourceLine(reg({ type: 'custom', version: '1.0.0' }))).toBe('')
+  })
+})
+
+describe('setupChecklist (Add MCP Server steps)', () => {
+  const gmail = MCP_REGISTRY.find((e) => e.name === 'gmail')!
+  const payload = { fileName: 'keys.json', size: 100, contentB64: 'AAAA' }
+
+  it('Gmail asks for its required key file only, and the details step completes once it is picked', () => {
+    const draft = registrationFromRegistryEntry(gmail, 'mcp:gmail')
+    const before = setupChecklist(draft, gmail, {})
+    expect(before.requiredFiles).toEqual(['~/.gmail-mcp/gcp-oauth.keys.json'])
+    expect(before.placeholderArgs).toEqual([])
+    expect(before.inputsDone).toBe(false)
+    expect(setupChecklist(draft, gmail, { '~/.gmail-mcp/gcp-oauth.keys.json': payload }).inputsDone).toBe(true)
+  })
+
+  it('a verified registration counts its required files as stored and itself as connected', () => {
+    const draft = { ...registrationFromRegistryEntry(gmail, 'mcp:gmail'), lastVerifiedAt: 1 }
+    const result = setupChecklist(draft, gmail, {})
+    expect(result.inputsDone).toBe(true)
+    expect(result.connected).toBe(true)
+  })
+
+  it('placeholder args stay in the step after they are filled in', () => {
+    const entry = { args: ['--flag', '{directory}'], requiredEnvKeys: [] }
+    const filled = setupChecklist(reg({ args: ['--flag', '/data'] }), entry, {})
+    expect(filled.placeholderArgs).toEqual([1])
+    expect(filled.inputsDone).toBe(true)
+    expect(setupChecklist(reg({ args: ['--flag', '{directory}'] }), entry, {}).inputsDone).toBe(false)
+  })
+
+  it('required env keys hold the step open unless they are stored per agent', () => {
+    const entry = { requiredEnvKeys: ['API_KEY'] }
+    expect(setupChecklist(reg({ env: [{ key: 'API_KEY', value: '' }] }), entry, {}).inputsDone).toBe(false)
+    expect(setupChecklist(reg({ env: [{ key: 'API_KEY', value: 'k' }] }), entry, {}).inputsDone).toBe(true)
+    expect(setupChecklist(reg({ env: [{ key: 'API_KEY', value: '' }], credentialStorage: 'agent' }), entry, {}).inputsDone).toBe(true)
+  })
+
+  it('labels a placeholder arg from its token', () => {
+    expect(placeholderLabel('{database-path}')).toBe('Database path')
+    expect(placeholderLabel('--root={directory}')).toBe('Directory')
   })
 })
 

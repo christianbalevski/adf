@@ -42,6 +42,8 @@ export const DOCS = {
   compute: guideUrl('compute'),
   mcp: guideUrl('mcp-integration'),
   mcpAttach: guideUrl('mcp-integration', 'per-agent-server-attachment'),
+  mcpRunLocation: guideUrl('mcp-integration', 'run-location'),
+  mcpAgentAccess: guideUrl('mcp-integration', 'making-settings-servers-available-to-agents'),
   channels: guideUrl('channels'),
   messaging: guideUrl('messaging'),
   visibility: guideUrl('messaging', 'visibility-tiers'),
@@ -115,3 +117,12 @@ export type DocsKey = keyof typeof DOCS
 
 /** docs/NETWORK.md, every connection Studio and the runtime make (Studio → Privacy). Not a guide, so not in DOCS. */
 export const NETWORK_DOCS = `${REPO_URL}/blob/main/docs/NETWORK.md`
+
+/**
+ * Knowledge Base setup articles (docs/knowledge/) for curated MCP servers,
+ * keyed by registry entry name. The Add MCP Server modal links the entry's
+ * article in place of its generic guide.
+ */
+export const MCP_SETUP_DOCS: Record<string, string> = {
+  gmail: `${REPO_URL}/blob/main/docs/knowledge/gmail-setup.md`,
+}

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
 import type { McpServerLogEntry, McpToolInfo } from '../../../shared/types/adf-v02.types'
 import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
@@ -7,6 +7,8 @@ import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { MCP_EXECUTABLE_IDENTITY_FIELDS, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
+import { DocsLink, InfoHint } from '../common/DocsLink'
+import { DOCS, MCP_SETUP_DOCS } from '../../../shared/constants/docs-links'
 import { McpCredentialPanel } from './McpCredentialPanel'
 import { McpServerLogs } from './McpServerLogs'
 import { McpHttpOAuthToggle } from './McpHttpOAuthToggle'
@@ -160,6 +162,43 @@ export function pendingCredentialFiles(
 }
 
 /**
+ * What the "Configuration" step of a catalog server asks for, and whether the
+ * setup steps read as done. Placeholder args are located by the ENTRY's args
+ * (not the draft's), so an arg stays in the step after the user fills it in.
+ * Required credential files count as provided once picked or once a Connect
+ * has stored them (lastVerifiedAt). Env keys stored per agent live in the
+ * .adf, so they never hold the step open.
+ */
+export function setupChecklist(
+  draft: Pick<McpServerRegistration, 'args' | 'env' | 'credentialFiles' | 'lastVerifiedAt' | 'credentialStorage'>,
+  entry: Pick<McpRegistryEntry, 'args' | 'requiredEnvKeys'> | undefined,
+  filePayloads: Record<string, unknown>,
+): { placeholderArgs: number[]; requiredEnv: string[]; requiredFiles: string[]; inputsDone: boolean; connected: boolean } {
+  const placeholderArgs = (entry?.args ?? [])
+    .map((arg, i) => (REGISTRY_ARG_PLACEHOLDER_RE.test(arg) && i < (draft.args ?? []).length ? i : -1))
+    .filter((i) => i >= 0)
+  const requiredEnv = entry?.requiredEnvKeys ?? []
+  const requiredFiles = (draft.credentialFiles ?? []).filter((f) => f.required).map((f) => f.path)
+  const envDone = draft.credentialStorage === 'agent' ||
+    requiredEnv.every((k) => (draft.env ?? []).some((e) => e.key === k && !!e.value))
+  const filesDone = !!draft.lastVerifiedAt || requiredFiles.every((p) => !!filePayloads[p])
+  return {
+    placeholderArgs,
+    requiredEnv,
+    requiredFiles,
+    inputsDone: !hasUnresolvedPlaceholderArgs(draft.args) && envDone && filesDone,
+    connected: !!draft.lastVerifiedAt,
+  }
+}
+
+/** `{allowed-directory}` → "Allowed directory": the label for a placeholder arg. */
+export function placeholderLabel(arg: string): string {
+  const token = arg.match(REGISTRY_ARG_PLACEHOLDER_RE)?.[0].slice(1, -1) ?? arg
+  const words = token.replace(/-/g, ' ')
+  return words.charAt(0).toUpperCase() + words.slice(1)
+}
+
+/**
  * Whether a registration (or the registry entry it was seeded from)
  * authenticates via interactive browser OAuth rather than a pasted
  * bearer/header token. OAuth-ness can come from the draft itself (a saved
@@ -284,9 +323,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const [test, setTest] = useState<TestState>({ phase: 'idle' })
   const [showTools, setShowTools] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
-  // Dual-mode OAuth: the paste-token inputs collapse behind a disclosure so
-  // browser sign-in stays the primary affordance.
-  const [showTokenFallback, setShowTokenFallback] = useState(false)
+  const [showAgentKeys, setShowAgentKeys] = useState(false)
   const [showLogs, setShowLogs] = useState(false)
   const [logEntries, setLogEntries] = useState<McpServerLogEntry[] | null>(null)
   // Auth-args field keeps raw text so typing a space isn't stripped by a
@@ -332,7 +369,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     setTest({ phase: 'idle' })
     setShowTools(false)
     setShowAdvanced(false)
-    setShowTokenFallback(false)
+    setShowAgentKeys(false)
     setShowLogs(false)
     setLogEntries(null)
     if (editing) {
@@ -353,8 +390,11 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
 
   // Editing any executable-identity field invalidates a prior "verified"
   // result — a stamp must never vouch for a config the user changed after.
+  // Moving the server between host and container does too: Connect tested it
+  // (and stored its credential files) where it ran.
   const patch = (p: Partial<McpServerRegistration>) => {
-    const touchesIdentity = MCP_EXECUTABLE_IDENTITY_FIELDS.some((k) => k in p)
+    const touchesIdentity = MCP_EXECUTABLE_IDENTITY_FIELDS.some((k) => k in p) ||
+      ('runLocation' in p && p.runLocation !== draftRef.current?.runLocation)
     setDraft((d) => (d ? { ...d, ...p, ...(touchesIdentity ? { lastVerifiedAt: undefined } : {}) } : d))
     if (touchesIdentity) setTest((t) => (t.phase === 'done' ? { phase: 'idle' } : t))
   }
@@ -458,7 +498,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
       })
       if (result?.success) {
         const current = draftRef.current
-        if (current && sameExecutableIdentity(current, tested)) {
+        if (current && sameExecutableIdentity(current, tested) && current.runLocation === tested.runLocation) {
           patch({ lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) })
           setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, oauthRan: result.oauthRan, location: result.location })
         } else {
@@ -503,22 +543,119 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     }
   }
 
-  // OAuth preflight is prominent only when the server is known to need it
-  // (registry declares auth, or the saved registration already has it) —
-  // everything else finds it under Advanced.
-  const authProminent = !!registryEntry?.auth || !!draft?.auth
+  // A catalog server keeps its step layout for the whole draft, even if the
+  // package is edited under Advanced (which would unmatch registryEntry).
+  const catalogRef = useRef<{ id: string; entry: McpRegistryEntry | undefined } | null>(null)
+  if (draft && catalogRef.current?.id !== draft.id) catalogRef.current = { id: draft.id, entry: isCustom ? undefined : registryEntry }
+  const catalogEntry = draft ? catalogRef.current?.entry : undefined
+  const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads) : null
+  const signsIn = isOAuth || !!draft?.auth
 
-  const authSection = draft && !(draft.type === 'http' || !!draft.url) ? (
-    <div className="space-y-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Interactive authorization (OAuth)</span>
-          <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-            {'Enable only if the server documents a login command (e.g. npx <pkg> auth) that stores tokens for later runs — most servers don’t need this.'}
-          </p>
-        </div>
-        <input type="checkbox" checked={!!draft.auth} onChange={(e) => patch({ auth: e.target.checked || undefined })} className="mt-0.5" />
+  // Env keys the catalog entry declares sit in the "Configuration" step; anything
+  // else (and an OAuth entry's paste-token fallback) lives under Advanced.
+  // A custom server shows all of its env in its first step.
+  const tokenEnvKeys = new Set([draft?.bearerTokenEnvVar, ...(draft?.headerEnv ?? []).map((h) => h.value)].filter(Boolean) as string[])
+  const declaredEnvKeys = new Set([...(catalogEntry?.requiredEnvKeys ?? []), ...(catalogEntry?.optionalEnvKeys ?? []), ...tokenEnvKeys])
+  const envInStep = (key: string) => !catalogEntry || (declaredEnvKeys.has(key) && !(isOAuth && tokenEnvKeys.has(key)))
+  const stepEnvCount = (draft?.env ?? []).filter((e) => envInStep(e.key)).length
+  const advancedEnvCount = (draft?.env ?? []).length - stepEnvCount
+  const requiredFiles = (draft?.credentialFiles ?? []).filter((f) => f.required)
+  const optionalFiles = (draft?.credentialFiles ?? []).filter((f) => !f.required)
+
+  const placeholderArgCount = checklist?.placeholderArgs.length ?? 0
+  const showDetailsStep = !catalogEntry || placeholderArgCount > 0 || stepEnvCount > 0 || (!isHttp && requiredFiles.length > 0)
+  const detailsTitle = !catalogEntry ? 'Server'
+    : placeholderArgCount === 0 && stepEnvCount === 0 ? (requiredFiles.length === 1 ? 'Credential file' : 'Credential files')
+      : placeholderArgCount === 0 && requiredFiles.length === 0 ? (stepEnvCount === 1 ? 'Environment variable' : 'Environment variables')
+        : 'Configuration'
+  const nDetails = isHttp ? 1 : 2
+  const nConnect = showDetailsStep ? nDetails + 1 : nDetails
+
+  /** Substitute a placeholder arg's value into the entry's template arg. */
+  const placeholderValue = (i: number): string => {
+    const template = catalogEntry?.args?.[i] ?? ''
+    const token = template.match(REGISTRY_ARG_PLACEHOLDER_RE)?.[0] ?? ''
+    const [prefix, suffix] = template.split(token)
+    const arg = draft?.args?.[i] ?? ''
+    if (arg === template || !arg.startsWith(prefix) || !arg.endsWith(suffix)) return ''
+    return arg.slice(prefix.length, arg.length - suffix.length)
+  }
+  const setPlaceholderValue = (i: number, value: string) => {
+    const template = catalogEntry?.args?.[i] ?? ''
+    const token = template.match(REGISTRY_ARG_PLACEHOLDER_RE)?.[0] ?? ''
+    const next = [...(draft?.args ?? [])]
+    next[i] = value ? template.replace(token, value) : template
+    patch({ args: next })
+  }
+
+  const envRows = (inStep: boolean, fixedKeys: boolean) => (draft?.env ?? []).map((entry, i) => {
+    if (envInStep(entry.key) !== inStep) return null
+    const optional = !!catalogEntry && !catalogEntry.requiredEnvKeys.includes(entry.key) && !tokenEnvKeys.has(entry.key)
+    return (
+      <div key={i} className="flex gap-1.5 items-center">
+        {fixedKeys ? (
+          <span className="w-1/2 shrink-0 text-[10px] font-mono text-neutral-600 dark:text-neutral-300 truncate">
+            {entry.key}{optional && <span className="font-sans text-[var(--adf-ui-text-subtle)]"> · optional</span>}
+          </span>
+        ) : (
+          <input
+            type="text" value={entry.key} placeholder="KEY"
+            onChange={(e) => { const next = [...(draft?.env ?? [])]; next[i] = { ...next[i], key: e.target.value }; patch({ env: next }) }}
+            className={inputCls}
+          />
+        )}
+        <input
+          type="password" value={entry.value} placeholder="value"
+          onChange={(e) => { const next = [...(draft?.env ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ env: next }) }}
+          className={inputCls}
+        />
+        {!fixedKeys && (
+          <button onClick={() => patch({ env: (draft?.env ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1" aria-label="Remove variable">x</button>
+        )}
       </div>
+    )
+  })
+  const addEnvButton = (
+    <button onClick={() => patch({ env: [...(draft?.env ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add variable</button>
+  )
+
+  const fileRow = (f: { path: string; required?: boolean }) => {
+    const payload = filePayloads[f.path]
+    const base = f.path.split('/').pop()
+    const status = payload
+      ? `${payload.fileName} · ${payload.size < 2048 ? `${payload.size} B` : `${Math.round(payload.size / 1024)} KiB`}`
+      : draft?.lastVerifiedAt ? 'Stored' : f.required ? 'Not chosen' : 'Created by the server'
+    return (
+      <div key={f.path} className="flex items-center justify-between gap-2">
+        <Tooltip tip={f.path} className="min-w-0">
+          <p className="text-[11px] font-mono text-neutral-700 dark:text-neutral-200 truncate">{base}</p>
+          <p className={`text-[9px] ${payload ? 'text-green-600 dark:text-green-400' : 'text-[var(--adf-ui-text-subtle)]'}`}>{status}</p>
+        </Tooltip>
+        <input
+          ref={(el) => { fileInputsRef.current[f.path] = el }}
+          type="file"
+          className="hidden"
+          onChange={(e) => handleFilePick(f.path, e.target.files?.[0])}
+        />
+        <button
+          onClick={() => fileInputsRef.current[f.path]?.click()}
+          className="shrink-0 text-[11px] text-blue-500 hover:text-blue-700 font-medium"
+        >
+          {payload ? 'Replace…' : 'Choose file…'}
+        </button>
+      </div>
+    )
+  }
+
+  const authSection = draft && !isHttp ? (
+    <div className="space-y-1.5">
+      <label className="flex items-center justify-between gap-3 text-xs text-neutral-700 dark:text-neutral-300">
+        <span className="inline-flex items-center">
+          Sign-in command
+          <InfoHint tip="Only for servers that document a login command (e.g. npx <pkg> auth) that stores tokens for later runs. Connect runs it first." />
+        </span>
+        <input type="checkbox" checked={!!draft.auth} onChange={(e) => patch({ auth: e.target.checked || undefined })} />
+      </label>
       {draft.auth && (
         <div className="grid grid-cols-2 gap-2">
           <div>
@@ -533,7 +670,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             />
           </div>
           <div>
-            <label className={labelCls}>Callback port <span className="text-[var(--adf-ui-text-subtle)]">(usually auto-detected)</span></label>
+            <label className={labelCls}>Callback port <span className="text-[var(--adf-ui-text-subtle)]">(auto)</span></label>
             <input
               type="number" min={1} max={65535}
               value={draft.authPort ?? ''}
@@ -546,26 +683,87 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     </div>
   ) : null
 
-  const timeoutSection = draft ? (
-    <div>
-      <label className={labelCls}>Tool timeout (seconds)</label>
-      <input
-        type="number" min={1}
-        value={draft.toolCallTimeout ?? ''}
-        onChange={(e) => { const val = e.target.value ? parseInt(e.target.value, 10) : undefined; patch({ toolCallTimeout: val && val > 0 ? val : undefined }) }}
-        placeholder="60"
-        className={inputCls}
-      />
+  const identityFields = draft ? (
+    <div className="grid grid-cols-2 gap-2">
+      <div>
+        <label className={labelCls}>Name</label>
+        <input
+          type="text"
+          value={draft.name}
+          onChange={(e) => patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') })}
+          placeholder="e.g. my_server"
+          className={inputCls}
+        />
+      </div>
+      <div>
+        <label className={labelCls}>
+          {isHttp ? 'URL' : isCustom ? 'Command' : isPython ? 'PyPI package' : 'npm package'}
+        </label>
+        {isHttp ? (
+          <input type="url" value={draft.url ?? ''} onChange={(e) => patch({ url: e.target.value })} placeholder="https://mcp.example.com/mcp" className={inputCls} />
+        ) : isCustom ? (
+          <input type="text" value={draft.command ?? ''} onChange={(e) => patch({ command: e.target.value })} placeholder="node, python, /path/to/binary" className={inputCls} />
+        ) : isPython ? (
+          <input type="text" value={draft.pypiPackage ?? ''} onChange={(e) => patch({ pypiPackage: e.target.value })} placeholder="my-mcp-package" className={inputCls} />
+        ) : (
+          <input type="text" value={draft.npmPackage ?? ''} onChange={(e) => patch({ npmPackage: e.target.value })} placeholder="@scope/mcp-package" className={inputCls} />
+        )}
+      </div>
     </div>
   ) : null
+
+  const argsEditor = draft && !isHttp ? (
+    <div>
+      <label className={labelCls}>Args {!isCustom && <span className="text-[var(--adf-ui-text-subtle)]">(after the package)</span>}</label>
+      <div className="space-y-1">
+        {(draft.args ?? []).map((arg, i) => (
+          <div key={i} className="flex items-center gap-1">
+            <input
+              type="text" value={arg}
+              onChange={(e) => { const next = [...(draft.args ?? [])]; next[i] = e.target.value; patch({ args: next }) }}
+              className={REGISTRY_ARG_PLACEHOLDER_RE.test(arg) ? inputAmberCls : inputCls}
+            />
+            <button onClick={() => patch({ args: (draft.args ?? []).filter((_, j) => j !== i) })} className="text-[var(--adf-ui-text-subtle)] hover:text-red-500 text-xs px-1" aria-label="Remove arg">x</button>
+          </div>
+        ))}
+        <button onClick={() => patch({ args: [...(draft.args ?? []), ''] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add arg</button>
+      </div>
+    </div>
+  ) : null
+
+  const keyValueRows = (field: 'headers' | 'headerEnv', valuePlaceholder: string) => (draft?.[field] ?? []).map((h, i) => {
+    const sensitive = field === 'headers' && isSensitiveMcpHeader(h.key)
+    return (
+      <div key={i} className="flex gap-1.5 items-center">
+        <input
+          type="text" value={h.key} placeholder="Header"
+          onChange={(e) => { const next = [...(draft?.[field] ?? [])]; next[i] = { ...next[i], key: e.target.value, ...(field === 'headers' && isSensitiveMcpHeader(e.target.value) ? { value: '' } : {}) }; patch({ [field]: next }) }}
+          className={inputCls}
+        />
+        <input
+          type={field === 'headers' ? 'password' : 'text'} value={h.value}
+          placeholder={sensitive ? 'Use env-backed headers' : valuePlaceholder}
+          disabled={sensitive}
+          onChange={(e) => { const next = [...(draft?.[field] ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ [field]: next }) }}
+          className={inputCls}
+        />
+        <button onClick={() => patch({ [field]: (draft?.[field] ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1" aria-label="Remove header">x</button>
+      </div>
+    )
+  })
+
+  const hostByDefault = !!draft && mcpOnHost === true && hostAccessEnabled === true && draft.runLocation === undefined
+  const onHost = draft?.runLocation === 'host' || hostByDefault
+  const connectBusyLabel = isOAuth ? 'Signing in…' : draft?.auth ? 'Authorizing…' : 'Connecting…'
+  const connectLabel = signsIn ? (catalogEntry ? `Sign in to ${catalogEntry.displayName}` : 'Sign in & connect') : 'Connect'
+  const saveTip = hasPendingRequiredCreds
+    ? 'Connect first — that’s when the chosen file is stored.'
+    : `Saves the server unverified; its row shows “Not verified” until a connect succeeds.${hasPendingOptionalCreds ? ' Chosen files are only stored when you connect.' : ''}`
 
   return (
     <Dialog lightDismiss={false} open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : externallyRemoved && draft ? `Configure — ${draft.name}` : 'Add MCP Server'} wide>
       {mode === 'choose' && (
         <div className="space-y-3">
-          <p className="text-xs text-neutral-500 dark:text-neutral-400">
-            Pick a known server, or configure your own.
-          </p>
           <input
             type="text"
             autoFocus
@@ -617,20 +815,21 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                       )}
                     </div>
                     <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 line-clamp-2">{entry.description}</p>
-                    {entry.prerequisite && (
-                      <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5 line-clamp-2">{entry.prerequisite}</p>
-                    )}
-                    {/* OAuth-only entries have nothing to paste — no "Requires:" line.
-                        Dual-mode entries surface their bearer var as an optional token. */}
-                    {!entry.prerequisite && entry.oauth && entry.bearerTokenEnvVar && (
-                      <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">Sign in, or paste {entry.bearerTokenEnvVar}</p>
-                    )}
-                    {!entry.prerequisite && !entry.oauth && requiredKeys.length > 0 && (
-                      <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">Requires: {requiredKeys.join(', ')}</p>
-                    )}
-                    {entry.advisory && (
-                      <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5 line-clamp-2">{entry.advisory}</p>
-                    )}
+                    {/* One line at most: what setup needs, with the long story in tooltips. */}
+                    <div className="flex items-center gap-2 mt-0.5 text-[9px]">
+                      {entry.prerequisite && (
+                        <InfoHint tip={entry.prerequisite}><span className="text-amber-600 dark:text-amber-400">Prerequisite</span></InfoHint>
+                      )}
+                      {!entry.prerequisite && entry.oauth && (
+                        <span className="text-[var(--adf-ui-text-subtle)]">Sign in{entry.bearerTokenEnvVar ? ` or paste ${entry.bearerTokenEnvVar}` : ''}</span>
+                      )}
+                      {!entry.prerequisite && !entry.oauth && requiredKeys.length > 0 && (
+                        <span className="text-amber-600 dark:text-amber-400 truncate">Needs {requiredKeys.join(', ')}</span>
+                      )}
+                      {entry.advisory && (
+                        <InfoHint tip={entry.advisory}><span className="text-amber-600 dark:text-amber-400">Advisory</span></InfoHint>
+                      )}
+                    </div>
                   </button>
                 )
               })}
@@ -661,8 +860,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
         </div>
       )}
 
-      {mode === 'form' && draft && (
-        <div className="space-y-3">
+      {mode === 'form' && draft && checklist && (
+        <div className="space-y-4">
           {externallyRemoved && (
             <div className="flex items-start justify-between gap-2 rounded-md border border-amber-300 dark:border-amber-800 bg-amber-50 dark:bg-amber-900/20 p-2">
               <p className="text-[10px] text-amber-700 dark:text-amber-400">
@@ -677,383 +876,263 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               </button>
             </div>
           )}
-          {/* Identity */}
-          <div className="grid grid-cols-2 gap-2">
-            <div>
-              <label className={labelCls}>Name</label>
-              <input
-                type="text"
-                value={draft.name}
-                onChange={(e) => patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') })}
-                placeholder="e.g. my_server"
-                className={inputCls}
-              />
+
+          {/* Catalog header: what this is, flags as tooltips, the setup guide one click away */}
+          {catalogEntry && (
+            <div className="flex items-start gap-2.5">
+              <BrandIcon iconKey={catalogEntry.iconKey} category={catalogEntry.category} size={30} />
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-1.5">
+                  <span className="text-sm font-medium text-neutral-800 dark:text-neutral-100">{catalogEntry.displayName}</span>
+                  {!catalogEntry.verified && (
+                    <InfoHint tip="Community server, not published by the service it connects to.">
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 font-medium">Community</span>
+                    </InfoHint>
+                  )}
+                  {catalogEntry.advisory && (
+                    <InfoHint tip={catalogEntry.advisory}>
+                      <span className="text-[9px] px-1 py-0.5 rounded bg-amber-100 dark:bg-amber-900/40 text-amber-700 dark:text-amber-300 font-medium">Advisory</span>
+                    </InfoHint>
+                  )}
+                </div>
+                <p className="text-[11px] text-neutral-500 dark:text-neutral-400">{catalogEntry.description}</p>
+              </div>
+              <DocsLink href={MCP_SETUP_DOCS[catalogEntry.name] ?? DOCS.mcp} label={MCP_SETUP_DOCS[catalogEntry.name] ? 'Setup guide' : 'Docs'} className="!text-[11px] mt-0.5" />
             </div>
-            <div>
-              <label className={labelCls}>
-                {isHttp ? 'URL' : isCustom ? 'Command' : isPython ? 'PyPI package' : 'npm package'}
-              </label>
-              {isHttp ? (
-                <input type="url" value={draft.url ?? ''} onChange={(e) => patch({ url: e.target.value })} placeholder="https://mcp.example.com/mcp" className={inputCls} />
-              ) : isCustom ? (
-                <input type="text" value={draft.command ?? ''} onChange={(e) => patch({ command: e.target.value })} placeholder="node, python, /path/to/binary" className={inputCls} />
-              ) : isPython ? (
-                <input type="text" value={draft.pypiPackage ?? ''} onChange={(e) => patch({ pypiPackage: e.target.value })} placeholder="my-mcp-package" className={inputCls} />
-              ) : (
-                <input type="text" value={draft.npmPackage ?? ''} onChange={(e) => patch({ npmPackage: e.target.value })} placeholder="@scope/mcp-package" className={inputCls} />
-              )}
-            </div>
-          </div>
-          {registrationSourceLine(draft) && (
-            <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft)}</p>
-          )}
-          {(draft.description || registryEntry?.description) && (
-            <p className="text-[10px] text-neutral-500 dark:text-neutral-400">{draft.description ?? registryEntry?.description}</p>
-          )}
-          {registryEntry?.prerequisite && (
-            <p className="text-[10px] text-amber-600 dark:text-amber-400">{registryEntry.prerequisite}</p>
-          )}
-          {registryEntry?.advisory && (
-            <p className="text-[10px] text-amber-600 dark:text-amber-400">{registryEntry.advisory}</p>
           )}
 
-          {/* Args */}
+          {/* Location comes first: it decides where the server is installed,
+              where credential files land, and what Connect tests. A catalog
+              entry already picked the location its setup works in. */}
           {!isHttp && (
-            <div>
-              <label className={labelCls}>Args {!isCustom && <span className="text-[var(--adf-ui-text-subtle)]">(appended after package)</span>}</label>
-              <div className="space-y-1">
-                {(draft.args ?? []).map((arg, i) => (
-                  <div key={i} className="flex items-center gap-1">
-                    <input
-                      type="text" value={arg}
-                      onChange={(e) => { const next = [...(draft.args ?? [])]; next[i] = e.target.value; patch({ args: next }) }}
-                      className={REGISTRY_ARG_PLACEHOLDER_RE.test(arg) ? inputAmberCls : inputCls}
-                    />
-                    <button onClick={() => patch({ args: (draft.args ?? []).filter((_, j) => j !== i) })} className="text-[var(--adf-ui-text-subtle)] hover:text-red-500 text-xs px-1">x</button>
-                  </div>
-                ))}
-                <button onClick={() => patch({ args: [...(draft.args ?? []), ''] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add arg</button>
-              </div>
-              {hasPlaceholders && (
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
-                  Replace {unresolvedPlaceholders.join(', ')} with {unresolvedPlaceholders.length === 1 ? 'a real value' : 'real values'} before connecting.
-                </p>
-              )}
-            </div>
-          )}
-
-          {/* Run location: what routing will do (container-routing.ts). With MCP servers
-              on the host accepted, a server with no chosen location runs on the host. */}
-          {!isHttp && (() => {
-            const hostByDefault = mcpOnHost === true && hostAccessEnabled === true && draft.runLocation === undefined
-            const onHost = draft.runLocation === 'host' || hostByDefault
-            return (
-            <div>
-              <label className={labelCls}>Runs on</label>
-              <div className="grid grid-cols-2 gap-1 rounded-md border border-neutral-300 dark:border-neutral-600 p-0.5">
-                <button
-                  onClick={() => patch({ runLocation: 'host' })}
-                  className={`py-1 text-[11px] rounded ${onHost ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 font-medium' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
-                >
-                  Host
-                </button>
-                <button
-                  onClick={() => patch({ runLocation: 'shared' })}
-                  className={`py-1 text-[11px] rounded ${!onHost ? 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 font-medium' : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
-                >
-                  Container
-                </button>
-              </div>
-              <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-                {onHost ? HOST_BOUNDARY_TEXT : CONTAINER_TEXT}
-              </p>
+            <SetupStep
+              n={1}
+              title="Location"
+              done={(draft.runLocation !== undefined || !!catalogEntry) && !(draft.runLocation === 'host' && hostAccessEnabled === false)}
+              hint={onHost ? HOST_BOUNDARY_TEXT : isCustom ? `${CONTAINER_TEXT} ${CONTAINER_CUSTOM_COMMAND_TEXT}` : CONTAINER_TEXT}
+              aside={
+                <span className="inline-flex items-center gap-3">
+                  <DocsLink href={DOCS.mcpRunLocation} />
+                  <Segmented
+                    tone={onHost ? 'amber' : 'blue'}
+                    options={[
+                      { label: 'Host', active: onHost, onClick: () => patch({ runLocation: 'host' }) },
+                      { label: 'Container', active: !onHost, onClick: () => patch({ runLocation: 'shared' }) },
+                    ]}
+                  />
+                </span>
+              }
+            >
               {hostByDefault && (
-                <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">
-                  MCP servers on the host is on in Settings → Compute. Choose Container to keep this one in a container.
-                </p>
-              )}
-              {!onHost && isCustom && (
-                <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-                  {CONTAINER_CUSTOM_COMMAND_TEXT}
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  Host is the default while “MCP servers on the host” is on (Settings → Compute).
                 </p>
               )}
               {draft.runLocation === 'host' && hostAccessEnabled === false && (
-                <p className="text-[9px] text-amber-600 dark:text-amber-400 mt-0.5">
-                  Host access is disabled app-wide, so this server will be containerized until it is enabled.{' '}
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  Host access is off, so this runs in a container for now.{' '}
                   {onEnableHostAccess && (
-                    <button onClick={onEnableHostAccess} className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300">Enable host access</button>
+                    <button onClick={onEnableHostAccess} className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300">Turn on host access</button>
                   )}
                 </p>
               )}
-            </div>
-            )
-          })()}
+            </SetupStep>
+          )}
 
-          {/* Available to agents */}
-          <div className="flex items-start justify-between gap-3 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
-            <div>
-              <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Available to agents</span>
-              <p className="text-[9px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-                Any agent may attach and use this server (via mcp_install).
-                {draft.agentVisible === undefined && (
-                  <> Default for {isHttp ? 'remote' : draft.runLocation === 'host' ? 'host' : 'container'} servers: {suggestedAgentVisible(draft) ? 'on' : 'off'}.</>
-                )}
-              </p>
-            </div>
-            <input
-              type="checkbox"
-              checked={isRegistrationAgentVisible(draft)}
-              onChange={(e) => patch({ agentVisible: e.target.checked })}
-              className="mt-0.5"
-            />
-          </div>
-
-          {/* Env values */}
-          <div>
-            <div className="flex items-center justify-between mb-1">
-              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Environment variables</label>
-              <button onClick={() => patch({ env: [...(draft.env ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add</button>
-            </div>
-            <div className="space-y-1.5">
-              {(draft.env ?? []).map((entry, i) => (
-                <div key={i} className="flex gap-1.5 items-center">
+          {/* What the server needs from you */}
+          {showDetailsStep && (
+            <SetupStep n={nDetails} title={detailsTitle} done={!!catalogEntry && checklist.inputsDone} hint={catalogEntry?.prerequisite}>
+              {!catalogEntry && (
+                <>
+                  {identityFields}
+                  {argsEditor}
+                  {isHttp && !registryEntry?.oauth && (
+                    <McpHttpOAuthToggle enabled={!!draft.oauth} onChange={(enabled) => patch({ oauth: enabled || undefined })} />
+                  )}
+                  {isHttp && !isOAuth && (
+                    <div>
+                      <label className={labelCls}>Bearer token env var</label>
+                      <input type="text" value={draft.bearerTokenEnvVar ?? ''} onChange={(e) => patch({ bearerTokenEnvVar: e.target.value })} placeholder="MCP_BEARER_TOKEN" className={inputCls} />
+                    </div>
+                  )}
+                  <div>
+                    <label className={labelCls}>Environment variables</label>
+                    <div className="space-y-1.5">{envRows(true, false)}</div>
+                    {addEnvButton}
+                  </div>
+                </>
+              )}
+              {catalogEntry && checklist.placeholderArgs.map((i) => (
+                <div key={i}>
+                  <label className={labelCls}>{placeholderLabel(catalogEntry.args![i])}</label>
                   <input
-                    type="text" value={entry.key} placeholder="KEY"
-                    onChange={(e) => { const next = [...(draft.env ?? [])]; next[i] = { ...next[i], key: e.target.value }; patch({ env: next }) }}
-                    className={inputCls}
+                    type="text"
+                    value={placeholderValue(i)}
+                    onChange={(e) => setPlaceholderValue(i, e.target.value)}
+                    placeholder={catalogEntry.args![i]}
+                    className={REGISTRY_ARG_PLACEHOLDER_RE.test(draft.args?.[i] ?? '') ? inputAmberCls : inputCls}
                   />
-                  <input
-                    type="password" value={entry.value} placeholder="value"
-                    onChange={(e) => { const next = [...(draft.env ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ env: next }) }}
-                    className={inputCls}
-                  />
-                  <button onClick={() => patch({ env: (draft.env ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1">x</button>
                 </div>
               ))}
-            </div>
-          </div>
+              {catalogEntry && stepEnvCount > 0 && <div className="space-y-1.5">{envRows(true, true)}</div>}
+              {catalogEntry && !isHttp && requiredFiles.map(fileRow)}
+              {!catalogEntry && hasPlaceholders && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  Replace {unresolvedPlaceholders.join(', ')} before connecting.
+                </p>
+              )}
+            </SetupStep>
+          )}
 
-          {/* HTTP header config */}
-          {isHttp && (
-            <div className="space-y-2">
-              {!registryEntry?.oauth && (
-                <McpHttpOAuthToggle enabled={!!draft.oauth} onChange={(enabled) => patch({ oauth: enabled || undefined })} />
-              )}
-              {/* OAuth: browser sign-in is the primary affordance; the bearer/
-                  header-env paste inputs are hidden (OAuth-only) or tucked
-                  behind a disclosure (dual-mode). */}
-              {isOAuth && (
-                <div className="space-y-1 rounded-md border border-violet-200 dark:border-violet-800 bg-violet-50 dark:bg-violet-900/20 p-2">
-                  <div className="flex items-center gap-1.5">
-                    <span className="text-[9px] px-1 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 rounded font-medium">Sign in</span>
-                    <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Browser sign-in</span>
-                  </div>
-                  <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
-                    Sign in with your browser — click Connect to authorize. No token to paste.
-                  </p>
-                </div>
-              )}
-              {isDualMode && (
-                <button
-                  onClick={() => setShowTokenFallback(!showTokenFallback)}
-                  className="flex items-center gap-1 text-[11px] text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
-                >
-                  <span className={`inline-block transition-transform text-[9px] ${showTokenFallback ? 'rotate-90' : ''}`}>▶</span>
-                  Use an API token instead
-                </button>
-              )}
-              {(!isOAuth || (isDualMode && showTokenFallback)) && (
-                <div className="space-y-2">
-                  <div>
-                    <label className={labelCls}>Bearer token env var</label>
-                    <input type="text" value={draft.bearerTokenEnvVar ?? ''} onChange={(e) => patch({ bearerTokenEnvVar: e.target.value })} placeholder="MCP_BEARER_TOKEN" className={inputCls} />
-                  </div>
-                  <div>
-                    <div className="flex items-center justify-between mb-1">
-                      <label className="block text-xs text-neutral-500 dark:text-neutral-400">Headers from environment variables</label>
-                      <button onClick={() => patch({ headerEnv: [...(draft.headerEnv ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add</button>
-                    </div>
-                    <div className="space-y-1.5">
-                      {(draft.headerEnv ?? []).map((h, i) => (
-                        <div key={i} className="flex gap-1.5 items-center">
-                          <input type="text" value={h.key} placeholder="Header" onChange={(e) => { const next = [...(draft.headerEnv ?? [])]; next[i] = { ...next[i], key: e.target.value }; patch({ headerEnv: next }) }} className={inputCls} />
-                          <input type="text" value={h.value} placeholder="ENV_VAR" onChange={(e) => { const next = [...(draft.headerEnv ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ headerEnv: next }) }} className={inputCls} />
-                          <button onClick={() => patch({ headerEnv: (draft.headerEnv ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1">x</button>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
+          {/* ② Prove it runs (and sign in, when it needs that) */}
+          <SetupStep
+            n={nConnect}
+            title={signsIn ? 'Sign in' : 'Connect'}
+            done={checklist.connected}
+            hint={`${isOAuth ? 'Opens the provider’s sign-in page in your browser.' : draft.auth ? 'Runs the server’s sign-in command, which opens your browser. The tokens it stores are reused on later runs.' : 'Starts the server once and lists its tools.'}${requiredFiles.length > 0 ? ' Chosen credential files are stored now.' : ''}`}
+          >
+            {test.phase === 'done' && test.success ? (
+              <div className="flex items-center gap-3 text-[11px]">
+                <span className="text-green-600 dark:text-green-400 font-medium">
+                  {test.oauthRan ? 'Signed in' : 'Connected'} · {test.tools?.length ?? 0} tools{test.location ? ` · ${test.location}` : ''}
+                </span>
+                {(test.tools?.length ?? 0) > 0 && (
+                  <button onClick={() => setShowTools(!showTools)} className="text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200">
+                    {showTools ? 'Hide tools' : 'Show tools'}
+                  </button>
+                )}
+                <button onClick={handleConnect} className="text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200">Reconnect</button>
+              </div>
+            ) : draft.lastVerifiedAt && test.phase === 'idle' ? (
+              <div className="flex items-center gap-3 text-[11px]">
+                <span className="text-green-600 dark:text-green-400 font-medium">Verified {new Date(draft.lastVerifiedAt).toLocaleDateString()}</span>
+                <button onClick={handleConnect} disabled={!canLaunch || hasPlaceholders} className="text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 disabled:opacity-40">Reconnect</button>
+              </div>
+            ) : (
+              <button
+                onClick={handleConnect}
+                disabled={!canLaunch || hasPlaceholders || test.phase === 'running'}
+                className="px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-40"
+              >
+                {test.phase === 'running' ? connectBusyLabel : connectLabel}
+              </button>
+            )}
+            {showTools && test.success && (
+              <p className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 max-h-32 overflow-y-auto">
+                {test.tools?.map((t) => t.name).join(', ')}
+              </p>
+            )}
+            {test.phase === 'done' && !test.success && (
               <div>
-                <div className="flex items-center justify-between mb-1">
-                  <label className="block text-xs text-neutral-500 dark:text-neutral-400">Static headers</label>
-                  <button onClick={() => patch({ headers: [...(draft.headers ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add</button>
-                </div>
-                <div className="space-y-1.5">
-                  {(draft.headers ?? []).map((h, i) => (
-                    <div key={i} className="flex gap-1.5 items-center">
-                      <input
-                        type="text" value={h.key} placeholder="Header"
-                        onChange={(e) => { const next = [...(draft.headers ?? [])]; next[i] = { ...next[i], key: e.target.value, value: isSensitiveMcpHeader(e.target.value) ? '' : next[i].value }; patch({ headers: next }) }}
-                        className={inputCls}
-                      />
-                      <input
-                        type="password" value={h.value}
-                        placeholder={isSensitiveMcpHeader(h.key) ? 'Use env-backed headers' : 'Value'}
-                        disabled={isSensitiveMcpHeader(h.key)}
-                        onChange={(e) => { const next = [...(draft.headers ?? [])]; next[i] = { ...next[i], value: e.target.value }; patch({ headers: next }) }}
-                        className={inputCls}
-                      />
-                      <button onClick={() => patch({ headers: (draft.headers ?? []).filter((_, j) => j !== i) })} className="text-xs text-red-400 hover:text-red-600 px-1">x</button>
-                    </div>
-                  ))}
-                </div>
+                <p className="text-[11px] text-red-500 font-medium">Couldn’t connect{test.location ? ` (${test.location})` : ''}</p>
+                {test.error && (
+                  <pre className="text-[10px] font-mono text-red-500/90 whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto">{test.error}</pre>
+                )}
+                {test.stderrTail && test.stderrTail.length > 0 && (
+                  <pre className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto">{test.stderrTail.join('\n')}</pre>
+                )}
               </div>
-            </div>
-          )}
+            )}
+            {test.phase === 'done' && (test.notes?.length ?? 0) > 0 && (
+              <ul className="space-y-0.5">
+                {test.notes!.map((n, i) => (
+                  <li key={i} className="text-[9px] text-[var(--adf-ui-text-subtle)]">• {n}</li>
+                ))}
+              </ul>
+            )}
+          </SetupStep>
 
-          {/* Auth preflight — prominent only when the server declares it */}
-          {authProminent && authSection}
+          {/* Agent access */}
+          <SetupStep
+            n={nConnect + 1}
+            title="Agent access"
+            done={draft.agentVisible !== undefined}
+            hint={`On: any agent can find this server and attach it itself. Off: only you can attach it, from an agent’s MCP settings.${draft.agentVisible === undefined ? ` Default for ${isHttp ? 'remote' : onHost ? 'host' : 'container'} servers: ${suggestedAgentVisible(draft) ? 'on' : 'off'}.` : ''}`}
+            aside={
+              <Segmented
+                options={[{ label: 'Off', active: !isRegistrationAgentVisible(draft), onClick: () => patch({ agentVisible: false }) }, { label: 'On', active: isRegistrationAgentVisible(draft), onClick: () => patch({ agentVisible: true }) }]}
+              />
+            }
+          />
 
-          {/* Credential files */}
-          {!isHttp && (draft.credentialFiles ?? []).length > 0 && (
-            <div className="space-y-1.5">
-              <label className="block text-xs text-neutral-500 dark:text-neutral-400">Credential files</label>
-              {(draft.credentialFiles ?? []).map((f) => {
-                const payload = filePayloads[f.path]
-                const base = f.path.split('/').pop()
-                return (
-                  <div key={f.path} className="flex items-center justify-between gap-2 rounded-md border border-neutral-200 dark:border-neutral-700 p-2">
-                    <div className="min-w-0">
-                      <p className="text-[10px] font-mono text-neutral-600 dark:text-neutral-300 truncate">{f.path}</p>
-                      <p className="text-[9px] text-[var(--adf-ui-text-subtle)]">
-                        {payload
-                          ? `${payload.fileName} (${payload.size < 2048 ? `${payload.size} B` : `${Math.round(payload.size / 1024)} KiB`}) selected`
-                          : f.required
-                            ? `This server needs ${base} — choose the file to provide it.`
-                            : `${base} — created by the server (e.g. tokens) or provide your own.`}
-                      </p>
-                    </div>
-                    <div className="shrink-0">
-                      <input
-                        ref={(el) => { fileInputsRef.current[f.path] = el }}
-                        type="file"
-                        className="hidden"
-                        onChange={(e) => handleFilePick(f.path, e.target.files?.[0])}
-                      />
-                      <button
-                        onClick={() => fileInputsRef.current[f.path]?.click()}
-                        className="text-[11px] text-blue-500 hover:text-blue-700 font-medium"
-                      >
-                        {payload ? 'Replace…' : 'Choose file…'}
-                      </button>
-                    </div>
+          {/* Everything a catalog server already has right */}
+          <div className="space-y-2">
+            <Disclosure label="Advanced" open={showAdvanced} onToggle={() => setShowAdvanced(!showAdvanced)}>
+              {catalogEntry && (
+                <>
+                  {identityFields}
+                  {registrationSourceLine(draft) && (
+                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft)}</p>
+                  )}
+                  {argsEditor}
+                  <div>
+                    <label className={labelCls}>{isOAuth && tokenEnvKeys.size > 0 ? 'Environment variables (an API token here replaces sign-in)' : 'Environment variables'}</label>
+                    {advancedEnvCount > 0 && <div className="space-y-1.5">{envRows(false, false)}</div>}
+                    {addEnvButton}
                   </div>
-                )
-              })}
-              {hasPendingRequiredCreds && (
-                <p className="text-[10px] text-amber-600 dark:text-amber-400 mt-1">
-                  Connect once to store the selected credential file before saving.
-                </p>
+                </>
               )}
-              {!hasPendingRequiredCreds && hasPendingOptionalCreds && (
-                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
-                  {'Selected files are stored when you Connect — Save alone won’t store them.'}
-                </p>
+              {isHttp && (catalogEntry || isOAuth) && (
+                <div>
+                  <label className={labelCls}>Bearer token env var</label>
+                  <input type="text" value={draft.bearerTokenEnvVar ?? ''} onChange={(e) => patch({ bearerTokenEnvVar: e.target.value })} placeholder="MCP_BEARER_TOKEN" className={inputCls} />
+                </div>
               )}
-            </div>
-          )}
-
-          {/* Advanced: niche knobs — tool timeout, plus OAuth when undeclared */}
-          <div>
-            <button
-              onClick={() => setShowAdvanced(!showAdvanced)}
-              className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
-            >
-              <span className={`inline-block transition-transform text-[9px] ${showAdvanced ? 'rotate-90' : ''}`}>▶</span>
-              Advanced
-            </button>
-            {showAdvanced && (
-              <div className="mt-2 space-y-3">
-                {!authProminent && authSection}
-                {timeoutSection}
+              {isHttp && (
+                <>
+                  <div>
+                    <label className={labelCls}>Headers from environment variables</label>
+                    <div className="space-y-1.5">{keyValueRows('headerEnv', 'ENV_VAR')}</div>
+                    <button onClick={() => patch({ headerEnv: [...(draft.headerEnv ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add header</button>
+                  </div>
+                  <div>
+                    <label className={labelCls}>Static headers</label>
+                    <div className="space-y-1.5">{keyValueRows('headers', 'Value')}</div>
+                    <button onClick={() => patch({ headers: [...(draft.headers ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add header</button>
+                  </div>
+                </>
+              )}
+              {!isHttp && optionalFiles.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className={labelCls}>Other credential files</label>
+                  {optionalFiles.map(fileRow)}
+                </div>
+              )}
+              {authSection}
+              <div>
+                <label className={labelCls}>Tool timeout (seconds)</label>
+                <input
+                  type="number" min={1}
+                  value={draft.toolCallTimeout ?? ''}
+                  onChange={(e) => { const val = e.target.value ? parseInt(e.target.value, 10) : undefined; patch({ toolCallTimeout: val && val > 0 ? val : undefined }) }}
+                  placeholder="60"
+                  className={inputCls}
+                />
               </div>
+              {catalogEntry?.repo && <DocsLink href={catalogEntry.repo} label="Source" className="!text-[11px]" />}
+            </Disclosure>
+
+            {/* Per-agent credential storage (edit mode: the registration exists).
+                OAuth-only servers have no per-agent keys to fill. */}
+            {editing && !(isOAuth && !isDualMode) && (
+              <Disclosure label="Per-agent keys" open={showAgentKeys} onToggle={() => setShowAgentKeys(!showAgentKeys)}>
+                <McpCredentialPanel server={draft} registryEntry={registryEntry} onServerUpdate={patch} showOAuthNote={false} />
+              </Disclosure>
+            )}
+
+            {/* Logs (edit mode: the server has a run history worth showing) */}
+            {editing && (
+              <Disclosure label="Logs" open={showLogs} onToggle={handleToggleLogs}>
+                <McpServerLogs
+                  logs={logEntries ?? []}
+                  serverName={draft.name}
+                  onClose={() => setShowLogs(false)}
+                />
+              </Disclosure>
             )}
           </div>
 
-          {/* Per-agent credential storage panel (edit mode: the registration exists).
-              OAuth-only servers have no per-agent keys to fill, and the sign-in
-              note already sits in the HTTP section above, so the panel is
-              skipped for them; dual-mode servers keep it for the token fallback
-              but without a second copy of the note. */}
-          {editing && !(isOAuth && !isDualMode) && (
-            <McpCredentialPanel server={draft} registryEntry={registryEntry} onServerUpdate={patch} showOAuthNote={false} />
-          )}
-
-          {/* Logs (edit mode: the server has a run history worth showing) */}
-          {editing && (
-            <div>
-              <button
-                onClick={handleToggleLogs}
-                className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
-              >
-                <span className={`inline-block transition-transform text-[9px] ${showLogs ? 'rotate-90' : ''}`}>▶</span>
-                Logs
-              </button>
-              {showLogs && (
-                <div className="mt-2">
-                  <McpServerLogs
-                    logs={logEntries ?? []}
-                    serverName={draft.name}
-                    onClose={() => setShowLogs(false)}
-                  />
-                </div>
-              )}
-            </div>
-          )}
-
-          {/* Connect result */}
-          {test.phase === 'done' && (
-            <div className={`rounded-md border p-2 ${test.success ? 'border-green-300 dark:border-green-800' : 'border-red-300 dark:border-red-800'}`}>
-              {test.success ? (
-                <div>
-                  <p className="text-xs text-green-600 dark:text-green-400 font-medium">
-                    {test.oauthRan ? 'Signed in and connected' : 'Connected'} ({test.location}) — {test.tools?.length ?? 0} tools discovered{test.authRan ? ', authorization completed' : ''}
-                  </p>
-                  {(test.tools?.length ?? 0) > 0 && (
-                    <button onClick={() => setShowTools(!showTools)} className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 mt-0.5">
-                      {showTools ? 'Hide tools' : 'Show tools'}
-                    </button>
-                  )}
-                  {showTools && (
-                    <p className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 mt-1 max-h-32 overflow-y-auto">
-                      {test.tools?.map((t) => t.name).join(', ')}
-                    </p>
-                  )}
-                </div>
-              ) : (
-                <div>
-                  <p className="text-xs text-red-500 font-medium">Connect failed{test.location ? ` (${test.location})` : ''}</p>
-                  {test.error && (
-                    <pre className="text-[10px] font-mono text-red-500/90 whitespace-pre-wrap mt-1 max-h-40 overflow-y-auto">{test.error}</pre>
-                  )}
-                  {test.stderrTail && test.stderrTail.length > 0 && (
-                    <pre className="text-[10px] font-mono text-neutral-500 dark:text-neutral-400 whitespace-pre-wrap mt-1 max-h-32 overflow-y-auto">{test.stderrTail.join('\n')}</pre>
-                  )}
-                </div>
-              )}
-              {(test.notes?.length ?? 0) > 0 && (
-                <ul className="mt-1 space-y-0.5">
-                  {test.notes!.map((n, i) => (
-                    <li key={i} className="text-[9px] text-[var(--adf-ui-text-subtle)]">• {n}</li>
-                  ))}
-                </ul>
-              )}
-            </div>
-          )}
-
-          {/* Footer */}
+          {/* Footer: Done once verified; saving unverified stays possible but quiet */}
           <div className="flex items-center justify-between pt-1">
             <div>
               {!editing && !externallyRemoved && (
@@ -1070,32 +1149,102 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 </button>
               )}
             </div>
-            <div className="flex items-center gap-2">
-              {!draft.lastVerifiedAt && test.phase !== 'done' && (
-                <Tooltip tip="You can save without connecting; the server row will show “Not verified” until a connect succeeds.">
-                  <span className="text-[9px] text-[var(--adf-ui-text-subtle)]">Not verified yet</span>
-                </Tooltip>
-              )}
-              <button
-                onClick={handleConnect}
-                disabled={!canLaunch || hasPlaceholders || test.phase === 'running'}
-                className="px-3 py-1.5 text-xs font-medium rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-40"
-              >
-                {test.phase === 'running'
-                  ? (isOAuth ? 'Signing in…' : draft.auth ? 'Authorizing…' : 'Connecting…')
-                  : (isOAuth ? 'Sign in & Connect' : 'Connect')}
-              </button>
+            {draft.lastVerifiedAt ? (
               <button
                 onClick={handleSave}
-                disabled={!canLaunch || hasPlaceholders || hasPendingRequiredCreds}
-                className="px-3 py-1.5 text-xs font-medium rounded-md bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-40"
+                disabled={!canLaunch || hasPlaceholders}
+                className="px-4 py-1.5 text-xs font-medium rounded-md bg-[var(--adf-ui-accent)] text-[var(--adf-ui-on-accent)] hover:bg-[var(--adf-ui-accent-hover)] disabled:opacity-40"
               >
-                Save
+                Done
               </button>
-            </div>
+            ) : (
+              <Tooltip tip={saveTip}>
+                <button
+                  onClick={handleSave}
+                  disabled={!canLaunch || hasPlaceholders || hasPendingRequiredCreds}
+                  className="px-3 py-1.5 text-xs rounded-md border border-[var(--adf-ui-border)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] disabled:opacity-40"
+                >
+                  Save without connecting
+                </button>
+              </Tooltip>
+            )}
           </div>
         </div>
       )}
     </Dialog>
+  )
+}
+
+/** One numbered setup step: a ✓ replaces the number once it's done. */
+function SetupStep({ n, title, done, hint, aside, children }: {
+  n: number
+  title: string
+  done: boolean
+  hint?: string
+  aside?: ReactNode
+  children?: ReactNode
+}) {
+  return (
+    <section className="space-y-2">
+      <div className="flex items-center gap-2">
+        <span
+          className={`w-[18px] h-[18px] shrink-0 rounded-full text-[10px] font-semibold flex items-center justify-center ${done
+            ? 'bg-green-500 text-white'
+            : 'border border-[var(--adf-ui-border)] text-[var(--adf-ui-text-subtle)]'}`}
+          aria-label={done ? `Step ${n} done` : `Step ${n}`}
+        >
+          {done ? '✓' : n}
+        </span>
+        <span className="text-xs font-medium text-neutral-800 dark:text-neutral-100 inline-flex items-center">
+          {title}
+          {hint && <InfoHint tip={hint} />}
+        </span>
+        {aside && <span className="ml-auto">{aside}</span>}
+      </div>
+      {children && <div className="pl-[26px] space-y-2">{children}</div>}
+    </section>
+  )
+}
+
+/** A small two-way switch. */
+function Segmented({ options, tone = 'blue' }: {
+  options: { label: string; active: boolean; onClick: () => void }[]
+  tone?: 'blue' | 'amber'
+}) {
+  const activeCls = tone === 'amber'
+    ? 'bg-amber-100 dark:bg-amber-900/40 text-amber-800 dark:text-amber-300 font-medium'
+    : 'bg-blue-100 dark:bg-blue-900/30 text-blue-800 dark:text-blue-300 font-medium'
+  return (
+    <div className="inline-flex gap-0.5 rounded-md border border-neutral-300 dark:border-neutral-600 p-0.5">
+      {options.map((o) => (
+        <button
+          key={o.label}
+          onClick={o.onClick}
+          className={`px-2 py-0.5 text-[11px] rounded ${o.active ? activeCls : 'text-neutral-500 dark:text-neutral-400 hover:bg-neutral-100 dark:hover:bg-neutral-700'}`}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
+function Disclosure({ label, open, onToggle, children }: {
+  label: string
+  open: boolean
+  onToggle: () => void
+  children: ReactNode
+}) {
+  return (
+    <div>
+      <button
+        onClick={onToggle}
+        className="flex items-center gap-1 text-xs text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200 font-medium"
+      >
+        <span className={`inline-block transition-transform text-[9px] ${open ? 'rotate-90' : ''}`}>▶</span>
+        {label}
+      </button>
+      {open && <div className="mt-2 space-y-3">{children}</div>}
+    </div>
   )
 }
