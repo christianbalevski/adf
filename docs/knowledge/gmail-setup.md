@@ -43,7 +43,7 @@ ADF Gmail server.
    **Host** for this Settings flow: the server runs with your host user's access.
    If host access is blocked, resolve that deliberately in Compute settings;
    switching this form to a container is not an equivalent file-upload flow.
-5. In step 2, **Add credential file**, use **Choose file…** next to
+5. In step 2, **Credential file**, use **Choose file…** next to
    `gcp-oauth.keys.json` to select the downloaded JSON. Its original download
    filename is fine. Leave the optional `credentials.json` slot under **Advanced**
    empty for the server to create tokens.
@@ -53,8 +53,8 @@ ADF Gmail server.
    the account and requested permissions, and confirm completion in ADF's
    authorization dialog. Wait for successful connection and tool discovery.
    Saving without connecting does not store a selected credential file.
-7. In step 4, **Who can attach it**, choose **You and agents** when you want agents
-   to attach it themselves (host registrations default to **You**), then click **Done**. Attach it in the agent's MCP
+7. In step 4, **Agent access**, choose **On** when you want agents
+   to attach it themselves (host registrations default to **Off**), then click **Done**. Attach it in the agent's MCP
    configuration, or let an agent with `mcp_install` attach by the saved name:
 
    ```js

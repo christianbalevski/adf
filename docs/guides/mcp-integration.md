@@ -68,8 +68,8 @@ The app bundles the same document as its offline fallback, so what you fetch is 
 ### Installing a Server
 
 1. Open **Settings → MCP servers** and click **Add MCP Server**
-2. Pick a known server from the quick-add cards (sign-in servers are labeled; **Setup needed** marks servers that need something from your own account first, with the details in its tooltip), or choose **Custom server** / **Remote HTTP server**
-3. Follow the numbered steps. A local server starts with **Where it runs** (Host or Container): it decides where the server is installed, where its credential files land, and what Connect tests, and moving it later clears a prior verification. Known servers come with the location their setup works in already chosen. Then a known server asks only for what it needs: **Add details** (keys, required credential files, or values for its arguments, skipped when there are none), **Connect** or **Sign in**, then **Who can attach it**. A custom server's first step is **Server**: name, command or URL, args, and environment variables
+2. Pick a known server from the quick-add cards (sign-in servers are labeled; **Prerequisite** marks servers that need something from your own account first, with the details in its tooltip), or choose **Custom server** / **Remote HTTP server**
+3. Follow the numbered steps. A local server starts with **Location** (Host or Container): it decides where the server is installed, where its credential files land, and what Connect tests, and moving it later clears a prior verification. Known servers come with the location their setup works in already chosen. Then a known server asks only for what it needs: **Configuration** (keys, required credential files, or values for its arguments, skipped when there are none), **Connect** or **Sign in**, then **Agent access**. A custom server's first step is **Server**: name, command or URL, args, and environment variables
 4. **Connect** (or **Sign in**) runs the real pipeline: credential files land where the server runs, the OAuth browser flow runs when declared, and the step shows the discovered tool count (or the server's own error output, verbatim)
 5. **Done** saves the server. Before a connect succeeds the button reads **Save without connecting**, and the row shows **Not verified** until one does. Managed npm/pypi packages download in the background into `~/.adf-studio/mcp-servers/<package>/`
 
@@ -97,13 +97,13 @@ Everything else in the registry — the browser MCPs included, whose managed Chr
 
 A **Custom server** you configure yourself is containerized too, so its command has to exist inside the container — `npx`, `uvx`, `node` and `python` do; a program installed on your own machine does not. The **Runs on** tooltip says so. Point it at Host to run a command from your machine.
 
-Because the run location also drives the suggested **Who can attach it** default (below), a container-located server is suggested **on** while a host-located one is suggested **off**.
+Because the run location also drives the suggested **Agent access** default (below), a container-located server is suggested **on** while a host-located one is suggested **off**.
 
 Servers you have **already installed keep the run location they were saved with**: nothing is migrated, and a server you previously added on the host stays on the host (with its host approval intact) until you change its **Runs on** control yourself. Only servers added from now on get the container default.
 
 ### Making Settings Servers Available to Agents
 
-Every registration has a **Who can attach it** choice. With **You and agents**, agents can attach the server by calling `mcp_install` with its name or package — no fresh install, no separate copy: your configuration, credentials, run location, and (for host servers) completed authorization come along, and the attached tools arrive HIL-protected like any new capability. With **You**, `mcp_install` refuses with a plain error telling the agent to ask you to allow it.
+Every registration has an **Agent access** choice. With **On**, agents can attach the server by calling `mcp_install` with its name or package — no fresh install, no separate copy: your configuration, credentials, run location, and (for host servers) completed authorization come along, and the attached tools arrive HIL-protected like any new capability. With **Off**, `mcp_install` refuses with a plain error telling the agent to ask you to allow it.
 
 The suggested default follows the run location: **on** for container and remote servers, **off** for host servers — a host server usable by any autonomous agent is the bigger grant, so enabling it is a deliberate act. Your explicit choice always wins over the suggestion.
 

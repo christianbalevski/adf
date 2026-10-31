@@ -162,7 +162,7 @@ export function pendingCredentialFiles(
 }
 
 /**
- * What the "Add details" step of a catalog server asks for, and whether the
+ * What the "Configuration" step of a catalog server asks for, and whether the
  * setup steps read as done. Placeholder args are located by the ENTRY's args
  * (not the draft's), so an arg stays in the step after the user fills it in.
  * Required credential files count as provided once picked or once a Connect
@@ -551,7 +551,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads) : null
   const signsIn = isOAuth || !!draft?.auth
 
-  // Env keys the catalog entry declares sit in the "Add details" step; anything
+  // Env keys the catalog entry declares sit in the "Configuration" step; anything
   // else (and an OAuth entry's paste-token fallback) lives under Advanced.
   // A custom server shows all of its env in its first step.
   const tokenEnvKeys = new Set([draft?.bearerTokenEnvVar, ...(draft?.headerEnv ?? []).map((h) => h.value)].filter(Boolean) as string[])
@@ -565,9 +565,9 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const placeholderArgCount = checklist?.placeholderArgs.length ?? 0
   const showDetailsStep = !catalogEntry || placeholderArgCount > 0 || stepEnvCount > 0 || (!isHttp && requiredFiles.length > 0)
   const detailsTitle = !catalogEntry ? 'Server'
-    : placeholderArgCount === 0 && stepEnvCount === 0 ? (requiredFiles.length === 1 ? 'Add credential file' : 'Add credential files')
-      : placeholderArgCount === 0 && requiredFiles.length === 0 ? (stepEnvCount === 1 ? 'Add key' : 'Add keys')
-        : 'Add details'
+    : placeholderArgCount === 0 && stepEnvCount === 0 ? (requiredFiles.length === 1 ? 'Credential file' : 'Credential files')
+      : placeholderArgCount === 0 && requiredFiles.length === 0 ? (stepEnvCount === 1 ? 'Environment variable' : 'Environment variables')
+        : 'Configuration'
   const nDetails = isHttp ? 1 : 2
   const nConnect = showDetailsStep ? nDetails + 1 : nDetails
 
@@ -818,7 +818,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                     {/* One line at most: what setup needs, with the long story in tooltips. */}
                     <div className="flex items-center gap-2 mt-0.5 text-[9px]">
                       {entry.prerequisite && (
-                        <InfoHint tip={entry.prerequisite}><span className="text-amber-600 dark:text-amber-400">Setup needed</span></InfoHint>
+                        <InfoHint tip={entry.prerequisite}><span className="text-amber-600 dark:text-amber-400">Prerequisite</span></InfoHint>
                       )}
                       {!entry.prerequisite && entry.oauth && (
                         <span className="text-[var(--adf-ui-text-subtle)]">Sign in{entry.bearerTokenEnvVar ? ` or paste ${entry.bearerTokenEnvVar}` : ''}</span>
@@ -901,13 +901,13 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             </div>
           )}
 
-          {/* Where it runs comes first: it decides where the server is installed,
+          {/* Location comes first: it decides where the server is installed,
               where credential files land, and what Connect tests. A catalog
               entry already picked the location its setup works in. */}
           {!isHttp && (
             <SetupStep
               n={1}
-              title="Where it runs"
+              title="Location"
               done={(draft.runLocation !== undefined || !!catalogEntry) && !(draft.runLocation === 'host' && hostAccessEnabled === false)}
               hint={onHost ? HOST_BOUNDARY_TEXT : isCustom ? `${CONTAINER_TEXT} ${CONTAINER_CUSTOM_COMMAND_TEXT}` : CONTAINER_TEXT}
               aside={
@@ -1042,15 +1042,15 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             )}
           </SetupStep>
 
-          {/* ③ Who attaches it */}
+          {/* Agent access */}
           <SetupStep
             n={nConnect + 1}
-            title="Who can attach it"
+            title="Agent access"
             done={draft.agentVisible !== undefined}
-            hint={`With “You and agents”, any agent can find this server and attach it itself. Otherwise you attach it from an agent’s MCP settings.${draft.agentVisible === undefined ? ` Default for ${isHttp ? 'remote' : onHost ? 'host' : 'container'} servers: ${suggestedAgentVisible(draft) ? 'you and agents' : 'you'}.` : ''}`}
+            hint={`On: any agent can find this server and attach it itself. Off: only you can attach it, from an agent’s MCP settings.${draft.agentVisible === undefined ? ` Default for ${isHttp ? 'remote' : onHost ? 'host' : 'container'} servers: ${suggestedAgentVisible(draft) ? 'on' : 'off'}.` : ''}`}
             aside={
               <Segmented
-                options={[{ label: 'You', active: !isRegistrationAgentVisible(draft), onClick: () => patch({ agentVisible: false }) }, { label: 'You and agents', active: isRegistrationAgentVisible(draft), onClick: () => patch({ agentVisible: true }) }]}
+                options={[{ label: 'Off', active: !isRegistrationAgentVisible(draft), onClick: () => patch({ agentVisible: false }) }, { label: 'On', active: isRegistrationAgentVisible(draft), onClick: () => patch({ agentVisible: true }) }]}
               />
             }
           />

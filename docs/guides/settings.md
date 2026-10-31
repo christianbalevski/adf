@@ -313,7 +313,7 @@ From **Settings → MCP servers**:
 - **Configure** — Reopens the same modal for any server
 - **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)
 - **Needs setup** — The server runs in a container and Podman isn't set up. Connect or Reconnect opens a sheet that sets Podman up or runs the server on the host; see [Compute](compute.md#mcp-server-execution-location)
-- **Who can attach it** — Per-server choice: **You and agents** lets agents attach the server themselves (via `mcp_install`); defaults to that for container/remote servers, to **You** for host
+- **Agent access** — Per-server choice: **On** lets agents attach the server themselves (via `mcp_install`); defaults to **On** for container/remote servers, to **Off** for host
 - **Logs** — View per-server logs including tool call history
 - **Remove** — Delete the server and its installation
 - **Credentials** — Manage API keys and secrets per server (app-wide or per-agent) from the configure modal
