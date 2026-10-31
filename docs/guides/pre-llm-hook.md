@@ -42,7 +42,7 @@ Target named inner loops without requiring that they already exist:
 }
 ```
 
-Studio presents targets as rows: a new hook starts with **Main**, and **Add target** adds a declared or future inner-loop name. The **All streams (including future loops)** option is exclusive with specific target rows and remains an explicit `scope: "all"` configuration; opening an existing `all` hook never narrows it to a finite list. Main plus named loops is stored as `scope: "loops"`, `include_main: true`, and a `loops` array.
+Studio presents targets as rows: a new hook starts with **Main**, and **Add target** adds a declared or future inner-loop name. The **All loops (including future loops)** option is exclusive with specific target rows and remains an explicit `scope: "all"` configuration; opening an existing `all` hook never narrows it to a finite list. Main plus named loops is stored as `scope: "loops"`, `include_main: true`, and a `loops` array.
 
 The hook is an explicit runtime lambda entry point. It does **not** require—or expose—`sys_lambda` as a conversational tool. Its private execution bridge may call nested `adf.sys_lambda` only when the independent `code_execution.sys_lambda` gate and normal source-authorization rules allow it. That private backend does not register `sys_lambda` for ordinary LLM calls or for unrelated `sys_code` executions; those remain declaration- and enabled-state dependent.
 

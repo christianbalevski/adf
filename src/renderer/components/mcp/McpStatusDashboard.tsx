@@ -28,7 +28,7 @@ export const STATUS_LABELS: Record<string, string> = {
   stopped: 'Stopped',
   installing: 'Installing...',
   needs_sign_in: 'Sign in needed',
-  needs_compute: 'Needs setup'
+  needs_compute: 'Compute unavailable'
 }
 
 interface McpStatusDashboardProps {

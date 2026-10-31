@@ -1533,7 +1533,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 }}
               />
               <span className="text-neutral-700 dark:text-neutral-300">
-                Start as background agent on boot
+                Start on app launch
                 <InfoHint tip="Automatically start this agent when the app launches. Password-protected agents are skipped." />
               </span>
             </label>
@@ -1547,7 +1547,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   save({ ...local, autonomous: e.target.checked })
                 }}
               />
-              <span className="text-neutral-700 dark:text-neutral-300">Operate continuously without stopping after each response</span>
+              <span className="text-neutral-700 dark:text-neutral-300">
+                Enabled
+                <InfoHint tip="On: the agent keeps taking turns without waiting for input until it calls sys_set_state. Off: the agent stops after each response." />
+              </span>
             </label>
           </Field>
           {local.autonomous && (
@@ -1675,7 +1678,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <Field label="Model ID">
             {/* Runtime default: new agents get that provider's default model, so there is nothing to pick here. */}
             {template && !local.model.provider ? (
-              <span className="text-xs text-[var(--adf-ui-text-subtle)]">The server default's model</span>
+              <span className="text-xs text-[var(--adf-ui-text-subtle)]">Default model</span>
             ) : (
               <ModelIdField
                 providerId={local.model.provider}
@@ -1685,7 +1688,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               />
             )}
           </Field>
-          <Field label="Providers on this agent" hint="Stored on the agent, so they go with the file. A key is only stored when you set one.">
+          <Field label="Agent providers" hint="Stored on the agent, so they go with the file. A key is only stored when you set one.">
             <AgentProvidersList filePath={filePath} config={local} appProviders={providers} save={save} />
           </Field>
           <Field
@@ -2526,7 +2529,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {/* Loops — `main` is implicit and uneditable; side loops are attenuated
             children that run concurrently against the same .adf body. */}
         <Section
+          docs={DOCS.loops}
           title="Loops"
+          hint="Inner loops share this agent's file and identity, with their own history, model and tool allow-list. Each loop has a tab in the loop panel; right-click the tab to enable, disable or delete it."
           locked={isSectionLocked('loops')}
           onToggleLock={() => toggleSectionLock('loops')}
           summary={`main + ${(local.loops ?? []).length} inner`}
@@ -2548,11 +2553,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
             return (
               <>
-                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
-                  Inner loops share this agent&apos;s body and identity but run their own stream,
-                  model and tool allow-list. Each loop gets its own tab in the loop panel; right-click a tab to enable, disable or delete it.
-                </p>
-
                 {/* Row 0 — the implicit host loop. Never editable, never deletable. */}
                 <div className="mb-2 p-2 rounded border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50">
                   <div className="flex items-center gap-2">
@@ -2589,7 +2589,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                 {loops.length === 0 && (
                   <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                    No inner loops. The agent runs a single <span className="font-mono">main</span> stream.
+                    No inner loops.
                   </p>
                 )}
 
@@ -2860,10 +2860,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
               return (
                 <div className="mt-2">
-                  <h4 className="text-[11px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">MCP servers run on</h4>
-                  <p className="text-[11px] text-[var(--adf-ui-text-subtle)] mb-1">
-                    Click a location to change this agent&apos;s choice. Restart the agent to apply.
-                  </p>
+                  <h4 className="text-[11px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">MCP server location<InfoHint tip="Where each MCP server runs: Isolated (this agent's own container, when it has one), Shared (the shared container) or Host. Click a location to cycle this agent's choice. Restart the agent to apply." /></h4>
                   <div className="space-y-1">
                     {(local.mcp?.servers ?? []).map((s) => {
                       const placement = agentServerPlacement(s, local, runtimeApproval)
@@ -2920,13 +2917,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
                 {/* Packages */}
                 <div className="mt-2">
-                  <h4 className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">Container Python packages</h4>
+                  <h4 className="text-[10px] font-medium text-neutral-600 dark:text-neutral-400 mb-1">Container Python packages<InfoHint tip="JavaScript packages are configured under Code Execution." /></h4>
                   <div className="text-xs text-neutral-600 dark:text-neutral-400 font-mono">
                     {(local.compute?.packages?.pip ?? []).length > 0
                       ? (local.compute!.packages!.pip!).join(', ')
                       : <span className="italic text-[var(--adf-ui-text-subtle)]">none</span>}
                   </div>
-                  <p className="mt-1 text-[10px] text-[var(--adf-ui-text-subtle)]">JavaScript packages are configured separately under Code execution.</p>
                 </div>
 
                 {/* Container desktop (Computer tab) */}
@@ -3333,7 +3329,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
         {/* Channels */}
         {adapterRegistrations.length > 0 && (
-          <Section docs={DOCS.channels} hint="Connect channels under Settings → Channels. Switch them on here to bring outside messages into this agent." title="Channels">
+          <Section docs={DOCS.channels} hint="Channels are connected under Settings → Channels. Enable a channel here to deliver its messages to this agent." title="Channels">
             <div className="space-y-3">
               {template && (
                 <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>
@@ -4278,7 +4274,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                 className="field-input text-[10px] w-32"
                                 value={target.loop ?? 'main'}
                                 onChange={(e) => updateTarget(ti, { loop: e.target.value === 'main' ? undefined : e.target.value })}
-                                title="Cognition stream this target wakes. Main is the membrane-facing loop."
+                                title="Loop this target wakes. main is the agent's primary loop."
                               >
                                 <option value="main">main</option>
                                 {sideLoops.map((l) => (
@@ -4541,12 +4537,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         <Section
           docs={DOCS.preLlmHook}
           title="Hooks"
-          hint="Triggers react to events and start work. Hooks run inside work already underway; the pre-LLM hook transforms the request before the model call continues."
+          hint="Lambdas that run during a turn; triggers start turns from events. The pre-LLM hook can modify each model request before it is sent."
           locked={isSectionLocked('pre_llm_hook')}
           onToggleLock={() => toggleSectionLock('pre_llm_hook')}
           summary={local.pre_llm_hook
             ? local.pre_llm_hook.scope === 'all'
-              ? 'all streams'
+              ? 'all loops'
               : local.pre_llm_hook.scope === 'main'
                 ? 'Main'
                 : `${(local.pre_llm_hook.include_main ? 1 : 0) + (local.pre_llm_hook.loops?.length ?? 0)} targets`
@@ -4560,9 +4556,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               <InfoHint tip="Runs immediately before each normal conversational provider request, including tool rounds. It does not run for compaction or direct model_invoke calls." />
               <DocsLink href={DOCS.preLlmHook} label="Guide" className="ml-auto" />
             </div>
-            <p className="text-[10px] text-neutral-500 dark:text-neutral-400">
-              Modify LLM calls before they are sent.
-            </p>
             <Field label="Lambda source" hint="Use a workspace .js or .ts path, optionally followed by :functionName. Without a function name, main is used.">
               <input
                 data-testid="pre-llm-hook-source"
@@ -4575,7 +4568,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               />
             </Field>
 
-            <Field label="Targets" hint="New hooks start on Main. Add specific inner loops as rows, or choose All streams (including future loops); All streams cannot be combined with specific targets.">
+            <Field label="Targets" hint="New hooks start on Main. Add specific inner loops as rows, or choose All loops (including future loops); All loops cannot be combined with specific targets.">
               <div data-testid="pre-llm-hook-targets" className="rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-2 space-y-1.5">
                 <div className="flex items-center justify-between">
                   <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Runs before the selected model calls</span>
@@ -4610,7 +4603,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       className="field-input text-[10px] flex-1"
                       aria-label="Hook target"
                     >
-                      <option value="__all_streams__">All streams (including future loops)</option>
+                      <option value="__all_streams__">All loops (including future loops)</option>
                       <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
                       {(local.loops ?? []).map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
                       <option value="__future__">Future or other loop…</option>
@@ -4645,7 +4638,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             aria-label={`Hook target ${index + 1}`}
                           >
                             <option value="">Choose a loop…</option>
-                            <option value="__all_streams__">All streams (including future loops)</option>
+                            <option value="__all_streams__">All loops (including future loops)</option>
                             <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
                             {declaredLoops.map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
                             {isCustom && target && <option value={target}>{target} (not declared)</option>}
@@ -5065,7 +5058,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </Section>
 
         {/* WebSocket Connections (outbound) */}
-        <Section docs={DOCS.websocket} hint="Outbound WebSocket connections to remote agents. Useful for NAT traversal and persistent messaging." title="WebSocket Connections" summary={`${(local.ws_connections ?? []).length} connections`} defaultCollapsed>
+        <Section docs={DOCS.websocket} hint="Outbound WebSocket connections to remote agents, for NAT traversal and persistent messaging." title="WebSocket Connections" summary={`${(local.ws_connections ?? []).length} connections`} defaultCollapsed>
           <div className="flex items-center justify-between mb-1">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Connections</label>
             <button
@@ -5420,7 +5413,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         </Section>
 
         {/* Umbilical Taps */}
-        <Section docs={DOCS.umbilical} hint="Warm lambdas that subscribe to this agent’s runtime events — tool calls, DB writes, turns, messages. The guide has the filter syntax and the durable-tap recipe."
+        <Section docs={DOCS.umbilical} hint="Warm lambdas that subscribe to this agent’s runtime events: tool calls, DB writes, turns, messages. Filter syntax is in the guide."
           title="Umbilical Taps"
           locked={isSectionLocked('umbilical_taps')}
           onToggleLock={() => toggleSectionLock('umbilical_taps')}
@@ -5529,7 +5522,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   />
                   <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">exclude own origin</span>
                 </label>
-                <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Required if event_types uses '*' or bare-prefix (tool.*). Code-review signal.">
+                <label className="flex items-center gap-1 cursor-pointer shrink-0" title="Required if event_types uses '*' or a bare prefix (tool.*).">
                   <input
                     type="checkbox"
                     checked={tap.filter?.allow_wildcard ?? false}
@@ -5585,7 +5578,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               ))}
             </select>
           </Field>
-          <Field label="Max rows">
+          <Field label="Max rows" hint="Oldest log rows are trimmed past this count. 0 = unlimited.">
             <input
               type="number"
               min={0}
@@ -5603,9 +5596,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               }}
               className="field-input w-24"
             />
-            <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-              Ring buffer size. Set to 0 for unlimited.
-            </p>
           </Field>
 
           {/* Per-origin rules */}
