@@ -356,7 +356,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
           {/* Guidance */}
           {(entry?.setupSteps?.length ?? 0) > 0 && (
             <aside className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] p-3">
-              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-muted)]">{entry?.pairing === 'qr' ? 'How to connect' : 'Where to get this'}</div>
+              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-muted)]">Setup steps</div>
               <ol className="space-y-1.5 text-[11.5px] leading-4 text-[var(--adf-ui-text)]">
                 {entry!.setupSteps!.map((s, i) => (
                   <li key={i} className="flex gap-2">

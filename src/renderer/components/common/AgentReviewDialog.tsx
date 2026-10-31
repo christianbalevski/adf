@@ -220,7 +220,7 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
       {identity.scenario === 'unclaimed' && (
         <p className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] px-3 py-2 text-[11px] text-[var(--adf-ui-warning)]">
           This agent has no identity, so its origin can't be verified — anyone could have
-          made it. Give its capabilities a careful look before accepting.
+          made it. Review its capabilities before accepting.
         </p>
       )}
       {identity.seedUnavailable && (
@@ -448,7 +448,7 @@ function ClaimContent({
       <div className="flex flex-col items-center text-center pt-2 pb-1">
         <Monogram name={summary.name} icon={summary.icon} seed={identity.agentDid} scenario={identity.scenario} size="lg" />
         <h3 className="text-sm font-medium text-neutral-800 dark:text-neutral-200 mt-3">
-          Make {summary.name} yours
+          Claim {summary.name}
         </h3>
         <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 max-w-sm">
           {templateMode
@@ -469,7 +469,7 @@ function ClaimContent({
           {skipPassword ? (
             <>
               <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                Claim without the password
+                Claim without password
               </p>
               <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
                 Its stored credentials stay locked until you enter the sender's password
@@ -480,13 +480,13 @@ function ClaimContent({
                 onClick={() => onToggleSkipPassword(false)}
                 className="text-[11px] text-[var(--adf-ui-text-muted)] underline hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
               >
-                I have the password
+                Enter password
               </button>
             </>
           ) : (
             <>
               <p className="text-[11px] font-medium text-neutral-700 dark:text-neutral-300 mb-1">
-                Enter the password to claim this agent
+                Share password
               </p>
               <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mb-2">
                 The password stays with the agent — change or remove it in the Identity panel.
@@ -518,7 +518,7 @@ function ClaimContent({
                 onClick={() => onToggleSkipPassword(true)}
                 className="mt-1.5 text-[11px] text-[var(--adf-ui-text-muted)] underline hover:text-[var(--adf-ui-text)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
               >
-                Lost the password?
+                Claim without password
               </button>
             </>
           )}
@@ -589,7 +589,7 @@ export function AgentReviewDialog() {
   // A template is always claimed: accepting it is what makes it usable.
   const needsClaim = templateMode || (summary?.identity.needsClaim ?? false)
   // Share password is required when shown — unless the user takes the explicit
-  // "Lost the password?" path, which claims with credentials left locked
+  // "Claim without password" path, which claims with credentials left locked
   // (main keeps the recoverable password slot for later unlock).
   const requiresPassword = (summary?.identity.sharePasswordSet ?? false) && (summary?.identity.credentialsLocked ?? false)
 
@@ -795,7 +795,7 @@ export function AgentReviewDialog() {
 
   const title = templateMode
     ? `${summary?.name ?? 'This'} template`
-    : needsClaim ? `${summary?.name ?? 'An agent'} has arrived` : 'Review Agent'
+    : needsClaim ? `Review ${summary?.name ?? 'agent'}` : 'Review Agent'
 
   return (
     <Dialog lightDismiss={false} open={open} onClose={handleDialogClose} title={title} preventClose={loading} wide>

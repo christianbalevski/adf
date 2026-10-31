@@ -221,7 +221,7 @@ daemon while Studio runs (DMN-17).
 | HIL-15 | Settings → Notifications off. | No toasts; bell still updates. | [ ] | [ ] | [ ] |
 | HIL-16 | Approval whose args contain headers/body/token. | Toast and bell preview redact them. | [ ] | [ ] | [ ] |
 | HIL-17 | Pending approvals (macOS/Linux). | Dock badge = bell count; 0 clears. Windows: N/A (nothing shown). | [ ] | [ ] | [ ] |
-| HIL-18 | Tray menu with pending items. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). "Waiting on you" lists them; click reveals. | [ ] | [ ] | [ ] |
+| HIL-18 | Tray menu with pending items. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). "Pending" lists them; click reveals. | [ ] | [ ] | [ ] |
 | HIL-19 | agent-3 routes approval to Telegram (on_task_create); approve on phone. | Studio card and bell clear. | [ ] | [ ] | [ ] |
 | HIL-20 | Agent requests change of a locked field. | One-time protection override card; no "Always approve". | [ ] | [ ] | [ ] |
 | HIL-21 | L/R: approve the same request in `adf` TUI (`y`). | Studio card and bell clear within 1 s. E: N/A (CLI cannot attach). | N/A | [ ] | [ ] |
@@ -423,7 +423,7 @@ daemon while Studio runs (DMN-17).
 
 | ID | Steps | Expected | E | L | R |
 |---|---|---|---|---|---|
-| APP-01 | Tray click. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Summary, Waiting on you, Running (click opens agent), Open, Settings…, Quit. | [ ] | [ ] | [ ] |
+| APP-01 | Tray click. | **Windows: N/A** (the tray and menu bar are macOS-only; mark N/A in every column on Windows). Summary, Pending, Running (click opens agent), Open, Settings…, Quit. | [ ] | [ ] | [ ] |
 | APP-02 | Menus: File, Edit, View, Window, Help (docs link). | Every item works; accelerators shown. | [ ] | [ ] | [ ] |
 | APP-03 | Shortcuts `Ctrl+,` `Ctrl+N` `Ctrl+O` `Ctrl+Shift+O` `Ctrl+S` `Ctrl+W` `Ctrl+Shift+W`. | Each performs its action. | [ ] | [ ] | [ ] |
 | APP-04 | Zoom in/out/reset with UI scale set. | Combine; persist. | [ ] | [ ] | [ ] |

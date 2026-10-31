@@ -218,7 +218,7 @@ Two kinds of command, and the difference is the whole point:
 | `/compact` | Compacts the loop now — summarize, clear, restore from the summary. Refused while the agent is mid-turn. |
 | `/clear` | Clears the conversation loop (the same clear the agent's `loop_clear` tool performs). |
 | `/skills` | Opens the Skills panel, where muting lives. |
-| `/idle` | Ends the turn and parks the agent in the `idle` state. |
+| `/idle` | Ends the turn and sets the agent to `idle`. |
 | `/hibernate` | Ends the turn and hibernates the agent. |
 | `/stop` | Stops the running turn — the same as **Stop** in the composer. The agent stays on. |
 | `/off` | Turns the agent off — the same teardown as **Off** in the title bar. |

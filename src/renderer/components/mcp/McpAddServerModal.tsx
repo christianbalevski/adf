@@ -16,8 +16,8 @@ import { BrandIcon } from './BrandIcon'
 import { useSettingsApi } from '../settings/settings-runtime'
 
 /** One-line boundary statement shown on host-located servers. */
-export const HOST_BOUNDARY_TEXT = 'Runs on the host with your user account’s access — your agents drive it.'
-const CONTAINER_TEXT = 'Default — isolated in the shared compute container, with no access to your files. Requires Podman (a one-time setup).'
+export const HOST_BOUNDARY_TEXT = 'Runs on the host as your user account, with its file and network access.'
+const CONTAINER_TEXT = 'Default. Runs in the shared compute container, with no access to host files. Requires Podman.'
 /** Container caveat for a custom command: the container has its own filesystem. */
 const CONTAINER_CUSTOM_COMMAND_TEXT = 'The command must exist inside the container (npx, uvx, node and python do). Switch to Host to run a command installed on your machine.'
 
@@ -757,7 +757,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const connectBusyLabel = isOAuth ? 'Signing in…' : draft?.auth ? 'Authorizing…' : 'Connecting…'
   const connectLabel = signsIn ? (catalogEntry ? `Sign in to ${catalogEntry.displayName}` : 'Sign in & connect') : 'Connect'
   const saveTip = hasPendingRequiredCreds
-    ? 'Connect first — that’s when the chosen file is stored.'
+    ? 'Unavailable: chosen files are stored only on Connect.'
     : `Saves the server unverified; its row shows “Not verified” until a connect succeeds.${hasPendingOptionalCreds ? ' Chosen files are only stored when you connect.' : ''}`
 
   return (
@@ -835,7 +835,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               })}
             </div>
             {visibleEntries.length === 0 && (
-              <p className="text-[10px] text-[var(--adf-ui-text-subtle)] py-4 text-center">No servers match — try a different search, or add a custom one below.</p>
+              <p className="text-[10px] text-[var(--adf-ui-text-subtle)] py-4 text-center">No matching servers. Add a custom server below.</p>
             )}
           </div>
           <div className="grid grid-cols-2 gap-2">

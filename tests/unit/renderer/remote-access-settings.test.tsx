@@ -227,12 +227,13 @@ describe('Add → Share (owner decision 2026-10-21): consent inline, the address
       ['Other', ['mdns-name']],
     ])
     const html = render(view(s))
-    // "Share this server as": the name devices see (the hello carries it), then the code, then the addresses.
-    expect(SHARE_AS_LABEL).toBe('Share this server as')
+    // "Name": the name devices see (the hello carries it), then the code, then the addresses.
+    expect(SHARE_AS_LABEL).toBe('Name')
     expect(html).toContain(`aria-label="${SHARE_AS_LABEL}"`)
     expect(html).toContain('value="agent-1-pc"')
     expect(html).toContain(SHARE_AS_HELP)
-    expect(html.indexOf(SHARE_AS_LABEL)).toBeLessThan(html.indexOf('012 345'))
+    expect(html.indexOf(`>${SHARE_AS_LABEL}<`)).toBeGreaterThan(-1)
+    expect(html.indexOf(`>${SHARE_AS_LABEL}<`)).toBeLessThan(html.indexOf('012 345'))
     expect(html.indexOf('012 345')).toBeLessThan(html.indexOf('>Addresses<'))
     expect(html).toContain('>2:00<')
     expect(html.indexOf('>Tailscale<')).toBeLessThan(html.indexOf('>Home (192.168.1.0/24)<'))

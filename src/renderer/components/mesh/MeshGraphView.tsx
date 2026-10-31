@@ -932,7 +932,7 @@ function FoundingOverlay({
             : preview
               ? `→ ${pathBasename(preview.dir)}/${preview.agent}.adf${site.newRoot ? ' · new tracked folder' : ''} · Enter to create`
               : site.newRoot
-                ? `New folder beside ${rootName} — it becomes its own territory`
+                ? `New tracked folder beside ${rootName}`
                 : 'Enter creates the agent and opens its chat'}
         </div>
         {busy && <div className="text-[10px] text-violet-500">Creating…</div>}

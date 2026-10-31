@@ -269,7 +269,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
         if (t.path !== path) return t
         // Unsaved text over a change from elsewhere: keep both (W3-F). The
         // save layer drops its queued write (lastExternalWrite below), so
-        // nothing reaches the file until the user picks Reload or Keep mine.
+        // nothing reaches the file until the user picks Reload or Overwrite.
         if (t.isDirty && t.content !== content) {
           // A repeat of the change already shown (the README path hears it
           // twice: the event, then the document store) keeps what it knew.
@@ -317,7 +317,7 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
           const content = theirs?.content ?? t.conflict.content ?? t.savedContent
           return { ...t, content, savedContent: content, isDirty: false, revision: theirs ? theirs.revision : t.conflict.revision, conflict: undefined, replaced: undefined }
         }
-        // Keep mine: based on their revision now; dirty until the save lands.
+        // Overwrite: based on their revision now; dirty until the save lands.
         return { ...t, isDirty: true, revision: t.conflict.revision, conflict: undefined }
       })
     }))

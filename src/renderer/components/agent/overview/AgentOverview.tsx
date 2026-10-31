@@ -16,7 +16,7 @@
  * Height budget, measured in the dev build over CDP (CSS px, dock 307 px
  * wide). The dock's scroll area is window height - 108: 660 in a 1366x768
  * window at zoom 1.0, 590 at zoom 1.1. A real agent with every section
- * (2-line status bubble and description, both badges, 2 Coming up rows +
+ * (2-line status bubble and description, both badges, 2 Upcoming rows +
  * "+N", chart, contents with tables) measured 541 back when the card had the
  * status bubble (46-62 px, since removed; everything below is that much
  * shorter now):
@@ -25,7 +25,7 @@
  *     description 2+32, badges 4+18, state 2+19 (surfaces line, added
  *     since: 2+18, only for agents serving a site or running a computer)
  *   gap 6, stats 109: grid 85, facts 6+18 (metrics: 6 + 3x18+2x2 + 2+18 = 84)
- *   gap 6, Coming up 75: rule+pad 7 + title 18 + 4 + 2 rows x 23
+ *   gap 6, Upcoming 75: rule+pad 7 + title 18 + 4 + 2 rows x 23
  *   gap 6, Activity 55: 31 + spark 24
  *   gap 6, Contents 47: 29 + one meter/legend line 18 (as measured)
  * Contents is now one 18 px row per non-empty group (Memory, Skills,
@@ -318,8 +318,8 @@ export function AgentOverview() {
           )}
           {(isPublic || vitals?.ownerVerified) && (
             <div className="mt-1 flex flex-wrap justify-center gap-1.5">
-              {isPublic && <Badge tip="Its website is open to anyone who can reach it.">Public</Badge>}
-              {vitals?.ownerVerified && <Badge tip="Its owner signed this agent, and the signature checks out.">Verified owner</Badge>}
+              {isPublic && <Badge tip="Website is open to anyone who can reach it.">Public</Badge>}
+              {vitals?.ownerVerified && <Badge tip="Owner signature verified.">Verified owner</Badge>}
             </div>
           )}
           {hasSurfaces && (
@@ -632,9 +632,9 @@ function PowerDetail({ stat, onNavigate }: { stat: PowerStat; onNavigate: (confi
       {stat.high && (
         <p className="text-[12px] text-[var(--status-draft)]">{HIGH_POWER_LABEL}.</p>
       )}
-      {empty && <p className="text-[12px] text-[var(--ink-muted)]">No settings add to this yet.</p>}
-      <PowerSection title="Runs without asking" marker="open" items={sections.open} onNavigate={onNavigate} />
-      <PowerSection title="Asks you first" marker="gated" items={sections.gated} onNavigate={onNavigate} />
+      {empty && <p className="text-[12px] text-[var(--ink-muted)]">No contributing settings.</p>}
+      <PowerSection title="Without approval" marker="open" items={sections.open} onNavigate={onNavigate} />
+      <PowerSection title="Requires approval" marker="gated" items={sections.gated} onNavigate={onNavigate} />
       <PowerSection title="Limits" marker="mitigation" items={sections.limits} onNavigate={onNavigate} />
     </>
   )
@@ -705,7 +705,7 @@ function ExperienceDetail({ stat }: { stat: ExperienceStat }) {
         </ul>
       )}
       <details className="text-[12px]">
-        <summary className="cursor-pointer text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)]">How XP adds up</summary>
+        <summary className="cursor-pointer text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)]">XP breakdown</summary>
         <div className="pt-1.5 space-y-1.5">
           <p className="text-[var(--ink-muted)] tabular-nums">
             {compactCount(Math.floor(stat.score))} XP · Lv {stat.level + 1} at {compactCount(Math.ceil(stat.nextLevelAt))} XP

@@ -75,7 +75,7 @@ export function AgentReviewBanner() {
         onClick={handleClick}
         className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border-b border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] text-[11px] text-[var(--adf-ui-warning)] cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
       >
-        <span>This agent hasn't been reviewed yet — it can't run.</span>
+        <span>Not reviewed. The agent cannot run until it is reviewed.</span>
         <span className="font-medium underline">Review</span>
       </button>
       {checkError && (

@@ -422,7 +422,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
         className="px-2.5 py-0.5 text-[11px] rounded-full whitespace-nowrap bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-200 dark:hover:bg-neutral-700"
         title="Center the map on the selection"
       >
-        Fly to
+        Center
       </button>
       <button
         onClick={() => runBatch('start')}
@@ -486,14 +486,14 @@ If you are later relieved of stewardship, delete that timer and return your stat
             />
             <div className="my-1 h-px bg-neutral-100 dark:bg-neutral-800" />
             {stewardDirs.length > 0 ? (
-              <MoreSubmenu label="Steward of" hint="its status speaks for a folder" disabled={!single?.did}>
+              <MoreSubmenu label="Steward of" hint="its status line is the folder's status" disabled={!single?.did}>
                 {stewardDirs.map(({ dir, label }) => {
                   const mine = !!single?.did && stewards[dir] === single.did
                   return (
                     <MoreItem
                       key={dir}
                       label={mine ? `✓ ${label}` : label}
-                      hint={mine ? 'remove — folder loses its voice' : 'appoint'}
+                      hint={mine ? 'remove' : 'appoint'}
                       disabled={!single?.did}
                       onClick={() => appointSteward(dir, !mine)}
                     />
@@ -505,7 +505,7 @@ If you are later relieved of stewardship, delete that timer and return your stat
             )}
             <MoreItem
               label="Save as group…"
-              hint="persisted, recall from top bar"
+              hint="saved, listed in the top bar"
               disabled={selection.length === 0}
               onClick={() => { setMoreOpen(false); setGroupNameOpen(true) }}
             />
@@ -531,10 +531,10 @@ If you are later relieved of stewardship, delete that timer and return your stat
             </MoreSubmenu>
             <MoreItem
               label="Reset layout"
-              hint="forget every move — re-pack automatically"
+              hint="clear all manual positions"
               onClick={() => {
                 setMoreOpen(false)
-                if (!window.confirm('Reset the layout? Every move you made is forgotten.')) return
+                if (!window.confirm('Reset the layout? All manual positions are cleared.')) return
                 // Blank placement = first-run semantics: the world shelf-packs
                 // fresh and the new (automatic) geography freezes again.
                 useFleetStore.getState().setPlacement({ regionOrigins: {}, cellPins: {}, districtAnchors: {}, stationPins: {} })

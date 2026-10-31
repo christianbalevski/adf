@@ -525,7 +525,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
             <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
               {isEdit
                 ? 'A timer’s target loop is fixed at creation.'
-                : 'Which cognition stream this timer wakes.'}
+                : 'The loop this timer wakes.'}
             </p>
           </div>
         )}

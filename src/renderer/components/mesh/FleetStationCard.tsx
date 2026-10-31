@@ -176,8 +176,8 @@ export const FleetStationCard = memo(function FleetStationCard({
       {/* Traffic */}
       <div className="px-3.5 pb-2.5 border-t border-neutral-100 dark:border-neutral-800 pt-2">
         <div className="flex items-center gap-3 text-[11px] text-neutral-600 dark:text-neutral-300 tabular-nums">
-          <span title="Messages from the outside world into the fleet">↓ {stats.inbound} in</span>
-          <span title="Messages from the fleet out through this station">↑ {stats.outbound} out</span>
+          <span title="Inbound messages from outside the fleet">↓ {stats.inbound} in</span>
+          <span title="Outbound messages sent through this station">↑ {stats.outbound} out</span>
           {stats.lastAt > 0 && (
             <span className="text-[var(--adf-ui-text-subtle)] ml-auto">{ago(Date.now() - stats.lastAt)}</span>
           )}

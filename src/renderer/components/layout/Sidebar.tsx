@@ -1917,7 +1917,7 @@ const RailAvatar = memo(function RailAvatar({
 
 /** What an amber ring means, on the rail and on a row. */
 function waitingLabel(kind: 'approval' | 'ask' | null): string | null {
-  return kind === 'approval' ? 'Waiting for your approval' : kind === 'ask' ? 'Has a question for you' : null
+  return kind === 'approval' ? 'Approval required' : kind === 'ask' ? 'Question pending' : null
 }
 
 const AgentAvatar = memo(function AgentAvatar({

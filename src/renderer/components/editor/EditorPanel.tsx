@@ -223,7 +223,7 @@ export function EditorPanel() {
   }, [closeTab, performSave])
 
   // The notice's answers. Reload: their text (read again when the refusal did
-  // not carry it). Keep mine: save this text over their revision now.
+  // not carry it). Overwrite: save this text over their revision now.
   const reloadTheirs = useCallback(async (path: string) => {
     const tab = useEditorTabsStore.getState().tabs.find((t) => t.path === path)
     if (!tab?.conflict) return
