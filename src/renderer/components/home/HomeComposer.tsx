@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { useAdfFile } from '../../hooks/useAdfFile'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { useAppStore } from '../../stores/app.store'
 import { selectTrackedSlice, useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { runtimeName } from '../../stores/runtimes.store'
@@ -53,6 +54,7 @@ export function HomeComposer({ runtime, identity, nameSlot, onReroll, onCreated,
   /** A create started (true) or ended (false), for the orbital to react. */
   onSending?: (on: boolean) => void
 }) {
+  const compact = useCompactWebLayout()
   const { createQuickAgent } = useAdfFile()
   const setShowMeshGraph = useAppStore((s) => s.setShowMeshGraph)
   const setChatPlacement = useAppStore((s) => s.setChatPlacement)
@@ -257,6 +259,11 @@ export function HomeComposer({ runtime, identity, nameSlot, onReroll, onCreated,
   }
 
   const canSend = text.trim().length > 0 && !busy
+  const pickers = <>
+    <TemplatePickerChip runtime={runtime} />
+    <ProviderPickerChip runtime={runtime} />
+    <FolderPickerChip runtime={runtime} />
+  </>
 
   return (
     <div className="space-y-4">
@@ -300,8 +307,8 @@ export function HomeComposer({ runtime, identity, nameSlot, onReroll, onCreated,
         />
         {/* Its own row, not an overlay: long text scrolls inside the textarea
             above and can never run underneath the chips. */}
-        <div className="flex items-center justify-between gap-3 px-2.5 pb-2 pt-1">
-          <div className="flex min-w-0 items-center gap-1.5">
+        <div className={compact ? 'home-composer-actions' : 'flex items-center justify-between gap-3 px-2.5 pb-2 pt-1'}>
+          <div className={compact ? 'contents' : 'flex min-w-0 items-center gap-1.5'}>
             <input
               ref={fileInputRef}
               type="file"
@@ -323,9 +330,7 @@ export function HomeComposer({ runtime, identity, nameSlot, onReroll, onCreated,
             {/* Bad characters: the chip shakes on its own and keeps the old
                 name; only the reason goes red below. Taken names go red too. */}
             {name && nameSlot && createPortal(<NameChip name={name} onChange={onNameChange} onSpin={reroll} onInvalid={setError} refused={refused} />, nameSlot)}
-            <TemplatePickerChip runtime={runtime} />
-            <ProviderPickerChip runtime={runtime} />
-            <FolderPickerChip runtime={runtime} />
+            {compact ? <div className="home-composer-pickers">{pickers}</div> : pickers}
           </div>
           <button
             type="button"

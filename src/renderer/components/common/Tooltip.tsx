@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useLayoutEffect, useId, type CSSProperties, type FocusEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { arrow, autoUpdate, computePosition, flip, hide as hideClipped, offset, shift, type Placement } from '@floating-ui/dom'
+import { isCompactWebLayout } from '../../hooks/useCompactWebLayout'
 
 /** The control a tooltip describes: the first focusable element in its anchor. */
 const FOCUSABLE = 'button, a[href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
@@ -111,8 +112,13 @@ export function Tooltip({ tip, shortcut, children, className, style, delay = 500
   return (
     <span
       ref={anchorRef}
-      onMouseEnter={() => show()}
+      // Touch browsers synthesize mouseenter after a tap, often without a
+      // matching mouseleave. Only a real mouse should start hover hints there.
+      onMouseEnter={() => { if (!isCompactWebLayout()) show() }}
       onMouseLeave={hide}
+      onPointerEnter={(e) => { if (isCompactWebLayout() && e.pointerType === 'mouse') show() }}
+      onPointerLeave={(e) => { if (isCompactWebLayout() && e.pointerType === 'mouse') hide() }}
+      onPointerDown={(e) => { if (isCompactWebLayout() && e.pointerType === 'touch') hide() }}
       onFocus={onFocus}
       onBlur={hide}
       className={className}

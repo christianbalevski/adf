@@ -142,7 +142,12 @@ change the saved desktop sidebar widths, collapsed state or chat placement.
 Electron and desktop browsers keep their existing layout. The compact footer
 keeps save status and context usage visible, with secondary actions under
 **More**. Inputs use a larger font and the app follows the visible viewport
-when the software keyboard opens; pinch zoom remains available.
+when the software keyboard opens; pinch zoom remains available. Home composer
+options wrap above the attachment and send buttons, and picker menus stay within
+the composer width. Suggestions automatically hide when the available height is
+limited, including while the keyboard is open. Touch taps do not leave hover
+tooltips covering the workspace; mouse hover and keyboard focus hints remain
+available.
 
 In all browser layouts, sign out through **Settings → Connections → Browser
 session → Sign out**. The connection banner appears only while reconnecting

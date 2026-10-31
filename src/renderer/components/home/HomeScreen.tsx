@@ -13,6 +13,7 @@ import { HomeStatusLine } from './HomeStatusLine'
 import { ConnectProviderCard, HomeProvidersProvider } from './HomeProviders'
 import { HomeExplainer, useRerollQuips } from './HomeExplainer'
 import { useHomeCreature, useIdentityDraft } from './NextAgentIdentity'
+import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 
 /**
  * Home, shown when no .adf is open. One face, first run or not: the status
@@ -44,6 +45,7 @@ export function HomeScreen() {
 }
 
 function HomeBody({ runtime }: { runtime: RuntimeId }) {
+  const compact = useCompactWebLayout()
   const data = useDashboardData()
   // The next agent's DID, minted ahead so its orbital shows in the middle
   // while it is being named. The composer's create adopts exactly this one.
@@ -77,7 +79,7 @@ function HomeBody({ runtime }: { runtime: RuntimeId }) {
 
   return (
     <HomeProvidersProvider>
-    <div className="relative flex flex-1 flex-col overflow-hidden">
+    <div data-compact-home={compact ? '' : undefined} className="relative flex flex-1 flex-col overflow-hidden">
       <div className="relative flex-1 overflow-y-auto">
         <div className="relative mx-auto flex min-h-full w-full max-w-3xl flex-col px-4 pb-6 pt-8">
           {hasAgents && <HomeStatusLine data={data} />}

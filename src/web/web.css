@@ -58,6 +58,56 @@ body { display: flex; flex-direction: column; min-width: 360px; }
   min-height: 44px;
 }
 
+/* Keep options above the actions: even a configured provider/model plus a
+   long folder name must never cover Send or push a control off the phone. */
+.adf-web[data-compact-web] .home-composer-actions {
+  display: grid;
+  grid-template-columns: 44px minmax(0, 1fr) 44px;
+  gap: 6px;
+  padding: 8px 10px;
+}
+.adf-web[data-compact-web] .home-composer-actions button[aria-label="Attach files"] { grid-area: 2 / 1; }
+.adf-web[data-compact-web] .home-composer-actions button[aria-label="Send"] { grid-area: 2 / 3; }
+.adf-web[data-compact-web] .home-composer-pickers {
+  position: relative;
+  grid-area: 1 / 1 / 2 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+.adf-web[data-compact-web] .home-composer-pickers > div { position: static; min-width: 0; max-width: min(200px, 100%); }
+.adf-web[data-compact-web] .home-composer-pickers button { min-height: 44px; max-width: min(200px, 100%); }
+/* Anchor shared picker menus to the whole options row, including a folder
+   chip at its right edge, instead of letting their desktop minimum overflow. */
+.adf-web[data-compact-web] .home-composer-pickers [role="menu"] {
+  left: 0;
+  right: 0;
+  min-width: 0;
+  max-width: 100%;
+  max-height: min(520px, calc(var(--web-viewport-height, 100dvh) * .55));
+  overflow-wrap: anywhere;
+}
+/* The visual viewport can shrink without changing media-query height (iOS
+   keyboard). Query the space the home screen actually has instead. */
+.adf-web[data-compact-web] [data-compact-home] {
+  container-type: size;
+  container-name: compact-home;
+  min-height: 0;
+  overflow-y: auto;
+}
+@container compact-home (max-height: 500px) {
+  .adf-web[data-compact-web] [aria-label="Suggestions"] { display: none; }
+  .adf-web[data-compact-web] .home-composer-pickers [role="menu"] {
+    position: fixed;
+    top: calc(var(--web-viewport-top, 0px) + env(safe-area-inset-top) + 90px);
+    bottom: auto;
+    left: max(16px, env(safe-area-inset-left));
+    right: max(16px, env(safe-area-inset-right));
+    max-height: calc(var(--web-viewport-height, 100dvh) - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 150px);
+  }
+}
+
 /* Shared settings controls already stack; constrain fixed desktop field widths
    and the few multi-column groups to the available mobile content width. */
 .adf-web[data-compact-web] [data-settings-row] { padding: 12px; }
