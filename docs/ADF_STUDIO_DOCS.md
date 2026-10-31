@@ -90,7 +90,7 @@ With only the local server, the tracked folders are listed with a divider betwee
 
 An agent row shows, left to right:
 
-- the avatar with its state dot. An amber ring means the agent is waiting on you; the tooltip says **Waiting for your approval** or **Has a question for you**. An agent that has not been reviewed yet, for example a file someone sent you, shows an amber shield with `!` in place of the avatar, with the tooltip **Not reviewed**; Studio shows the review before it starts;
+- the avatar with its state dot. An amber ring means the agent is waiting on you; the tooltip says **Approval required** or **Question pending**. An agent that has not been reviewed yet, for example a file someone sent you, shows an amber shield with `!` in place of the avatar, with the tooltip **Not reviewed**; Studio shows the review before it starts;
 - the agent's file name, with a small count when inner loops are working;
 - **Open in its own window** (a window glyph): the agent has a window of its own;
 - a bolt for an autonomous agent;

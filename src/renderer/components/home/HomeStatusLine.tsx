@@ -175,7 +175,7 @@ export function AgentList({ rows, kind }: { rows: RunningAgentRow[]; kind: Detai
   return (
     <ul className="mt-2 divide-y divide-[var(--adf-ui-separator)] rounded-lg border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] text-[12.5px]">
       {rows.length === 0 && (
-        <li className="px-3 py-2 text-[var(--adf-ui-text-subtle)]">Nothing {kind === 'failing' ? 'failing' : 'running'} right now.</li>
+        <li className="px-3 py-2 text-[var(--adf-ui-text-subtle)]">No {kind === 'failing' ? 'failing' : 'running'} agents</li>
       )}
       {rows.map(({ file, folderHint }) => {
         const name = file.agentName ?? file.fileName.replace(/\.adf$/i, '')

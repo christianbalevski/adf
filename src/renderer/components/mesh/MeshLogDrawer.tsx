@@ -181,17 +181,14 @@ function MessageFeed({ messages }: { messages: MessageBusLogEntry[] }) {
             </svg>
             {messages.length === 0 ? (
               <>
-                <p className="text-xs text-[var(--adf-ui-text-subtle)]">No messages yet</p>
+                <p className="text-xs text-[var(--adf-ui-text-subtle)]">No messages</p>
                 <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
-                  Agent-to-agent traffic will show up here
+                  Agent-to-agent messages are listed here
                 </p>
               </>
             ) : (
               <>
-                <p className="text-xs text-[var(--adf-ui-text-subtle)]">Nothing matches</p>
-                <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-1">
-                  Try a different filter
-                </p>
+                <p className="text-xs text-[var(--adf-ui-text-subtle)]">No matches</p>
               </>
             )}
           </div>

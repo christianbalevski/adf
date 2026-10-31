@@ -358,7 +358,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
               {count > 0 && (
                 <>
                   <div className="px-3 py-1.5 border-b border-hairline text-[11px] font-medium text-neutral-500 dark:text-neutral-400">
-                    Waiting on you
+                    Pending
                   </div>
                   {approvals.map((approval) => (
                     <ApprovalRow key={noticeKey(approval.runtimeId, approval.id)} approval={approval} now={now} onJump={handleJump} onInspect={setInspectingId} />
