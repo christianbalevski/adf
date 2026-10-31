@@ -775,7 +775,7 @@ The built-in Email adapter connects agents to standard email accounts via IMAP (
 
 **How it works:**
 
-- **Inbound:** Connects to the IMAP server and fetches unseen messages. On startup, unseen emails are ingested oldest-first, bounded by the [catch-up caps](#offline-catch-up) (default 200 per cycle; the rest stay unread and follow in later cycles). While running, the adapter polls every 60 seconds for new messages. Messages are marked as `\Seen` after processing so they won't be re-fetched.
+- **Inbound:** Connects to the IMAP server and fetches unseen messages. On startup, unseen emails are ingested oldest-first, bounded by the [catch-up caps](#offline-catch-up) (default 200 per cycle; the rest stay unread and follow in later cycles). While running, the default mode (`idle: true`) uses IMAP IDLE to fetch unseen messages when the server reports new mail, plus a fixed 60-second safety poll in case the server misses an IDLE notification. In poll-only mode (`idle: false`), the adapter instead polls every `poll_interval` milliseconds (default 30000, i.e. 30 seconds). Messages are marked as `\Seen` after processing so they won't be re-fetched.
 - **Outbound:** Sends email via SMTP. Message bodies are sent as multipart (plain text + Markdown→HTML). Reply threading uses `In-Reply-To` and `References` headers from the parent inbox message.
 
 **Supported providers:**
@@ -836,7 +836,7 @@ The adapter can be configured per-agent. The `config` object is optional — wit
 | `config.imap` | Auto-detected | IMAP host and port |
 | `config.smtp` | Auto-detected | SMTP host and port |
 | `config.poll_interval` | `30000` | Polling interval in ms (used in poll-only mode) |
-| `config.idle` | `true` | Use IMAP IDLE with polling fallback; set `false` for poll-only mode |
+| `config.idle` | `true` | Use IMAP IDLE with a fixed 60-second polling fallback; set `false` for poll-only mode |
 
 **Inbound features:**
 
