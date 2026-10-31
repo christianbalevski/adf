@@ -84,6 +84,8 @@ export class WhatsAppAdapter implements ChannelAdapter {
   /** Rich explanation of a terminal close (logged out / banned / replaced) —
    * returned verbatim to the agent on subsequent send attempts */
   private terminalError: string | null = null
+  /** Latest unscanned pairing QR payload — shown live in the channel settings */
+  private pendingQr: string | null = null
 
   async start(ctx: AdapterContext): Promise<void> {
     // Re-entrant: the manager calls stop() before restarting, but guard anyway
@@ -124,6 +126,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       const { connection, lastDisconnect, qr } = update
 
       if (qr) {
+        this.pendingQr = qr
         this.writePairingQr(qr)
       }
 
@@ -134,6 +137,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       }
 
       if (connection === 'open') {
+        this.pendingQr = null
         this.currentStatus = 'connected'
         this.reconnectAttempts = 0
         this.terminalError = null
@@ -143,6 +147,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       }
 
       if (connection === 'close') {
+        this.pendingQr = null
         const statusCode = (lastDisconnect?.error as Boom | undefined)?.output?.statusCode
         if (this.currentStatus === 'disconnected') {
           return // deliberate stop
@@ -377,6 +382,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     }
     this.reconnectAttempts = 0
     this.terminalError = null
+    this.pendingQr = null
     if (this.sock) {
       try { this.sock.end(undefined) } catch { /* ignore */ }
       this.sock = null
@@ -463,6 +469,14 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     const isGroup = remoteJid.endsWith('@g.us')
     const senderJid = isGroup ? (msg.key.participant ?? remoteJid) : remoteJid
+    // WhatsApp increasingly addresses people by a privacy id (<id>@lid) instead
+    // of their phone number. Baileys passes the phone number alongside when
+    // WhatsApp shares it (senderPn for DMs, participantPn in groups) — prefer it
+    // so allowlists and outbound addressing keep working with phone numbers.
+    const phoneJid = senderJid.endsWith('@lid')
+      ? (isGroup ? msg.key.participantPn : msg.key.senderPn) ?? null
+      : senderJid
+    const phoneNumber = phoneJid ? phoneJid.split('@')[0].split(':')[0] : null
     const config = this.ctx.getConfig()
     const policy = config.policy ?? {}
 
@@ -487,9 +501,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
       const dmPolicy = policy.dm ?? 'all'
       if (dmPolicy === 'none') return
       if (dmPolicy === 'allowlist') {
-        const allowFrom = policy.allow_from ?? []
-        const bareNumber = senderJid.split('@')[0].split(':')[0]
-        if (!allowFrom.includes(senderJid) && !allowFrom.includes(bareNumber)) return
+        const allowFrom = (policy.allow_from ?? []).map((e) => e.trim().replace(/^\+/, ''))
+        const candidates = [senderJid, senderJid.split('@')[0].split(':')[0]]
+        if (phoneJid) candidates.push(phoneJid)
+        if (phoneNumber) candidates.push(phoneNumber)
+        if (!candidates.some((c) => allowFrom.includes(c))) return
       }
     }
 
@@ -543,7 +559,10 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
     if (!text && attachments.length === 0) return
 
-    const senderName = msg.pushName ?? senderJid.split('@')[0]
+    // Sender id the agent can address back: the phone number when known, else
+    // the full LID jid (a bare LID number would be misread as a phone number).
+    const senderId = phoneNumber ?? jidNormalizedUser(senderJid)
+    const senderName = msg.pushName ?? senderId.split('@')[0]
     const sourceMeta: Record<string, unknown> = {
       chat_id: remoteJid,
       chat_type: isGroup ? 'group' : 'dm',
@@ -551,6 +570,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
       username: senderName,
       sender_jid: senderJid
     }
+    if (phoneJid && phoneJid !== senderJid) sourceMeta.sender_phone_jid = phoneJid
     if (contextInfo?.stanzaId) {
       sourceMeta.reply_to_message_id = contextInfo.stanzaId
     }
@@ -574,7 +594,7 @@ export class WhatsAppAdapter implements ChannelAdapter {
     const timestamp = this.messageMillis(msg.messageTimestamp)
 
     const inbound: InboundMessage = {
-      sender: senderJid.split('@')[0].split(':')[0],
+      sender: senderId,
       senderName,
       // Stable per-message id so replayed offline batches dedup against rows
       // already ingested live (WA ids are only unique per chat — scope by jid)
@@ -758,7 +778,11 @@ export class WhatsAppAdapter implements ChannelAdapter {
 
   canDeliver(id: string): boolean {
     if (this.currentStatus !== 'connected') return false
-    return /^\+?\d{5,}$/.test(id) || /@s\.whatsapp\.net$/.test(id) || /@g\.us$/.test(id)
+    return /^\+?\d{5,}$/.test(id) || /@s\.whatsapp\.net$/.test(id) || /@g\.us$/.test(id) || /@lid$/.test(id)
+  }
+
+  pairingCode(): string | null {
+    return this.currentStatus === 'connected' ? null : this.pendingQr
   }
 
   status(): AdapterStatus {

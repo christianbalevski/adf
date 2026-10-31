@@ -42,7 +42,8 @@ Browser Studio requires a build containing browser support; published npm v0.8.3
 - **Telegram** — connect a bot; the agent receives texts, photos, and documents, replies with formatting, and can send real polls and button-based forms.
 - **Discord** — DMs and server channels, slash command, threaded replies, attachments.
 - **Slack** — threads, file upload/download, DMs, no public URL needed.
-- **WhatsApp** — pair a personal number by QR code; quoted replies, voice notes, group chats.
+- **WhatsApp · Linked number** — give the agent its own number by QR code; quoted replies, voice notes, group chats.
+- **WhatsApp · Official agent** — chat with your agent from your own WhatsApp via WhatsApp's Agents feature; one API key, private 1:1.
 - **Email** — IMAP/SMTP with auto-detection for Gmail, iCloud, Outlook, Fastmail, Yahoo; proper reply threading, CC/BCC, reply-all.
 - **Catches up when it was offline** — messages that arrived while the agent was stopped are delivered when it starts, and it wakes once rather than once per message.
 - **Interactive forms** — the agent can send a questionnaire (single choice, multi-choice, free text) that renders as native buttons on Telegram and as a numbered list elsewhere.

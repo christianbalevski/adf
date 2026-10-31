@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import QRCode from 'qrcode'
 import type { AdapterRegistryEntry, AdapterCredentialField } from '../../../shared/constants/adapter-registry'
 import type { AdapterLogEntry } from '../../../shared/types/channel-adapter.types'
 import { adfDisplayNameForPath, type TrackedAdfFile } from '../../utils/tracked-adf-files'
@@ -253,10 +254,15 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
               {!connected && <p className="mt-0.5 text-[10.5px] text-[var(--adf-ui-text-subtle)]">Stored in this agent's file.</p>}
             </div>
 
-            {fields.length === 0 && !freeForm && (
+            {fields.length === 0 && !freeForm && !(entry?.pairing === 'qr' && connected) && (
               <p className="rounded-[var(--adf-ui-control-radius)] border border-dashed border-[var(--adf-ui-border)] px-3 py-2.5 text-[12px] text-[var(--adf-ui-text-muted)]">
-                No credentials needed. Save to switch {label} on for the agent; pairing happens when it starts.
+                {entry?.pairing === 'qr'
+                  ? 'Nothing to paste for this channel. Click Connect, and a QR code to scan with the phone appears here.'
+                  : `No credentials needed. Save to switch ${label} on for the agent.`}
               </p>
+            )}
+            {entry?.pairing === 'qr' && connected && (filePath ?? agent) && (
+              <QrPairingPanel type={type} filePath={(filePath ?? agent)!} />
             )}
             {fields.map((f) => {
               const custom = customFields.some((c) => c.key === f.key)
@@ -330,7 +336,9 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
                   ? 'Nothing changed.'
                   : done.changed && done.alreadyOn
                     ? `Credentials saved. Restart ${label} below so the agent picks them up.`
-                    : `${label} is on for this agent. It starts now if the agent is running, otherwise the next time the agent starts.`}
+                    : entry?.pairing === 'qr'
+                      ? `${label} is on for this agent. Scan the QR code above when it appears.`
+                      : `${label} is on for this agent. It starts now if the agent is running, otherwise the next time the agent starts.`}
               </p>
             )}
 
@@ -348,7 +356,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
           {/* Guidance */}
           {(entry?.setupSteps?.length ?? 0) > 0 && (
             <aside className="rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] p-3">
-              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-muted)]">Where to get this</div>
+              <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-[var(--adf-ui-text-muted)]">{entry?.pairing === 'qr' ? 'How to connect' : 'Where to get this'}</div>
               <ol className="space-y-1.5 text-[11.5px] leading-4 text-[var(--adf-ui-text)]">
                 {entry!.setupSteps!.map((s, i) => (
                   <li key={i} className="flex gap-2">
@@ -383,4 +391,72 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
       </div>
     </Dialog>
   )
+}
+
+/**
+ * Live pairing for QR channels: polls the agent's adapter for its current
+ * pairing payload and draws it, so the person scans it right here instead of
+ * hunting for the PNG in the agent's files.
+ */
+function QrPairingPanel({ type, filePath }: { type: string; filePath: string }) {
+  const api = useSettingsApi()
+  const [state, setState] = useState<{ running: boolean; status?: string; code?: string } | null>(null)
+  const [image, setImage] = useState<string | null>(null)
+
+  useEffect(() => {
+    let cancelled = false
+    const tick = async () => {
+      try {
+        const r = await api?.getAdapterLogs({ type, filePath })
+        if (!cancelled && r) setState({ running: r.running !== false, status: r.status, code: r.pairingCode })
+      } catch { /* keep the last state; the next tick retries */ }
+    }
+    void tick()
+    const timer = setInterval(() => void tick(), 2000)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [api, type, filePath])
+
+  const code = state?.code
+  useEffect(() => {
+    if (!code) { setImage(null); return }
+    let cancelled = false
+    QRCode.toDataURL(code, { width: 220, margin: 1 })
+      .then((url) => { if (!cancelled) setImage(url) })
+      .catch(() => { if (!cancelled) setImage(null) })
+    return () => { cancelled = true }
+  }, [code])
+
+  const box = 'rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] px-3 py-2.5 text-[12px]'
+  if (!state) return <p className={`${box} text-[var(--adf-ui-text-muted)]`}>Checking the channel…</p>
+  if (!state.running) {
+    return <p className={`${box} text-[var(--adf-ui-text-muted)]`}>Start the agent to get a QR code. It appears here.</p>
+  }
+  if (state.status === 'connected') {
+    return (
+      <p className={`${box} text-[var(--adf-ui-success)]`}>
+        Linked. Message the agent's number from another WhatsApp account to reach it.
+      </p>
+    )
+  }
+  if (code && image) {
+    return (
+      <div className={`${box} flex flex-wrap items-center gap-3`}>
+        {/* White backing keeps the code scannable in dark mode */}
+        <img src={image} alt="WhatsApp pairing QR code" width={160} height={160} className="rounded bg-white p-1" />
+        <ol className="min-w-[10rem] flex-1 list-decimal space-y-1 pl-4 text-[11.5px] leading-4 text-[var(--adf-ui-text)]">
+          <li>On the agent's phone, open WhatsApp.</li>
+          <li>Settings → Linked Devices → Link a device.</li>
+          <li>Scan this code. It refreshes about every minute.</li>
+        </ol>
+      </div>
+    )
+  }
+  if (state.status === 'error') {
+    return (
+      <p className={`${box} text-[var(--adf-ui-danger)]`}>
+        Not linked. Open Logs for the reason, then Restart for a fresh QR code.
+      </p>
+    )
+  }
+  return <p className={`${box} text-[var(--adf-ui-text-muted)]`}>Waiting for a QR code from WhatsApp…</p>
 }

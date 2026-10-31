@@ -7506,7 +7506,13 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const args = AdapterTypeArgs.parse(rawArgs)
     const manager = resolveAdapterManager(args.filePath)
     if (!manager) return { logs: [], running: false }
-    return { logs: manager.getLogs(args.type), running: true }
+    const state = manager.getState(args.type)
+    return {
+      logs: manager.getLogs(args.type),
+      running: true,
+      ...(state ? { status: state.status } : {}),
+      ...(state?.pairingCode ? { pairingCode: state.pairingCode } : {})
+    }
   })
 
   ipcMain.handle(IPC.ADAPTER_CREDENTIAL_SET, async (_event, rawArgs: unknown) => {

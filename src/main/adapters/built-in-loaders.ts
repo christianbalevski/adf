@@ -20,7 +20,8 @@ export const BUILT_IN_ADAPTER_LOADERS: Record<string, () => Promise<CreateAdapte
   email: async () => (await import('./email/index')).createAdapter,
   discord: async () => (await import('./discord/index')).createAdapter,
   slack: async () => (await import('./slack/index')).createAdapter,
-  whatsapp: async () => (await import('./whatsapp/index')).createAdapter
+  whatsapp: async () => (await import('./whatsapp/index')).createAdapter,
+  whatsapp_agent: async () => (await import('./whatsapp-agent/index')).createAdapter
 }
 
 /**

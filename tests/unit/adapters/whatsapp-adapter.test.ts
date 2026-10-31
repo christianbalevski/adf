@@ -73,7 +73,7 @@ import { WhatsAppAdapter } from '../../../src/main/adapters/whatsapp/whatsapp-ad
 const SELF_RAW_ID = '15551234567:12@s.whatsapp.net'
 const SELF_JID = '15551234567@s.whatsapp.net'
 const SETUP_GUIDE_URL =
-  'Setup guide: https://github.com/christianbalevski/adf/blob/main/docs/guides/messaging.md#whatsapp-adapter'
+  'Setup guide: https://github.com/christianbalevski/adf/blob/main/docs/guides/messaging.md#whatsapp-linked-number-adapter'
 
 function makeFakeSock(): FakeSock {
   const handlers = new Map<string, (arg: never) => unknown>()
@@ -243,6 +243,23 @@ describe('WhatsAppAdapter', () => {
       expect(adapter.status()).toBe('connecting')
     })
 
+    it('exposes the live QR payload for the settings dialog until paired', async () => {
+      const adapter = new WhatsAppAdapter()
+      await adapter.start(makeCtx())
+      const sock = globalThis.__waMocks.lastSock!
+      expect(adapter.pairingCode()).toBeNull()
+
+      sock.ev.handlers.get('connection.update')!({ qr: 'qr-1' } as never)
+      expect(adapter.pairingCode()).toBe('qr-1')
+      sock.ev.handlers.get('connection.update')!({ qr: 'qr-2' } as never)
+      expect(adapter.pairingCode()).toBe('qr-2')
+
+      sock.user = { id: SELF_RAW_ID }
+      sock.ev.handlers.get('connection.update')!({ connection: 'open' } as never)
+      expect(adapter.pairingCode()).toBeNull()
+      await flush()
+    })
+
     it('flips to connected on open', async () => {
       const adapter = new WhatsAppAdapter()
       await startConnected(adapter, makeCtx())
@@ -359,6 +376,60 @@ describe('WhatsAppAdapter', () => {
         sender_jid: '15550001111@s.whatsapp.net'
       })
       expect(inbound.sourceMeta?.reply_to_message_id).toBeUndefined()
+    })
+
+    it('uses the phone number WhatsApp sends alongside a LID-addressed DM', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest }))
+      const msg = dmMessage({ remoteJid: '98765432109876@lid', id: 'LID-1' }) as { key: Record<string, unknown> }
+      msg.key.senderPn = '15550001111@s.whatsapp.net'
+
+      await emitUpsert(sock, [msg])
+      const inbound = onIngest.mock.calls[0][0] as InboundMessage
+      expect(inbound.sender).toBe('15550001111')
+      expect(inbound.sourceMeta).toMatchObject({
+        chat_id: '98765432109876@lid',
+        sender_jid: '98765432109876@lid',
+        sender_phone_jid: '15550001111@s.whatsapp.net'
+      })
+    })
+
+    it('keeps the full LID jid as sender when no phone number is shared', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest }))
+
+      await emitUpsert(sock, [dmMessage({ remoteJid: '98765432109876@lid' })])
+      const inbound = onIngest.mock.calls[0][0] as InboundMessage
+      // A bare LID number would later be misread as a phone number on send
+      expect(inbound.sender).toBe('98765432109876@lid')
+    })
+
+    it('matches a phone-number allowlist against LID-addressed senders', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const config = { enabled: true, policy: { dm: 'allowlist' as const, allow_from: ['+15550001111'] } }
+      const sock = await startConnected(adapter, makeCtx({ onIngest, config }))
+      const allowed = dmMessage({ remoteJid: '98765432109876@lid', id: 'A' }) as { key: Record<string, unknown> }
+      allowed.key.senderPn = '15550001111@s.whatsapp.net'
+      const other = dmMessage({ remoteJid: '11111111111111@lid', id: 'B' }) as { key: Record<string, unknown> }
+      other.key.senderPn = '15559999999@s.whatsapp.net'
+
+      await emitUpsert(sock, [allowed, other])
+      expect(onIngest).toHaveBeenCalledTimes(1)
+      expect((onIngest.mock.calls[0][0] as InboundMessage).sender).toBe('15550001111')
+    })
+
+    it('uses participantPn for LID-addressed group members', async () => {
+      const onIngest = vi.fn()
+      const adapter = new WhatsAppAdapter()
+      const sock = await startConnected(adapter, makeCtx({ onIngest }))
+      const msg = groupMessage({ participant: '22222222222222@lid' }) as { key: Record<string, unknown> }
+      msg.key.participantPn = '15550002222@s.whatsapp.net'
+
+      await emitUpsert(sock, [msg])
+      expect((onIngest.mock.calls[0][0] as InboundMessage).sender).toBe('15550002222')
     })
 
     it('sets a chat-scoped dedup messageId on every ingested message', async () => {
@@ -782,6 +853,7 @@ describe('WhatsAppAdapter', () => {
       expect(adapter.canDeliver('+15551234567')).toBe(true)
       expect(adapter.canDeliver('15550001111@s.whatsapp.net')).toBe(true)
       expect(adapter.canDeliver('12036304@g.us')).toBe(true)
+      expect(adapter.canDeliver('98765432109876@lid')).toBe(true)
       expect(adapter.canDeliver('not-a-number')).toBe(false)
       expect(adapter.canDeliver('123')).toBe(false)
     })

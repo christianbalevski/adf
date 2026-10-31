@@ -7,7 +7,7 @@ import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, Spellche
   ShippedTemplateId
 } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
-import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress } from '../shared/types/channel-adapter.types'
+import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress, AdapterStatus } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { ResourceConflict, ResourceWriter } from '../shared/types/resource-revision.types'
@@ -574,7 +574,7 @@ export interface AdfApi {
     Promise<{ success: boolean; error?: string }>
   /** `running` is false when that agent has no adapter manager (it is not running). */
   getAdapterLogs: (args: { type: string; filePath?: string }) =>
-    Promise<{ logs: AdapterLogEntry[]; running?: boolean }>
+    Promise<{ logs: AdapterLogEntry[]; running?: boolean; status?: AdapterStatus; pairingCode?: string }>
   onAdapterInstallProgress: (callback: (event: AdapterInstallProgress) => void) => () => void
   onAdapterStatusChanged: (callback: (event: AdapterStatusEvent) => void) => () => void
   setAdapterCredential: (args: { filePath: string; adapterType: string; envKey: string; value: string }) =>

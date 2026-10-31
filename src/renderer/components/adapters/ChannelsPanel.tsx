@@ -131,7 +131,7 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
         <div className="rounded-[var(--adf-ui-container-radius)] bg-[var(--adf-ui-surface)] p-4 shadow-subtle">
           <p className="text-[13px] font-medium text-[var(--adf-ui-text)]">Give an agent a place to talk</p>
           <p className="mt-0.5 max-w-xl text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
-            Pick a channel, choose the agent, paste the token.
+            Pick a channel and an agent, then follow that channel's steps.
           </p>
           <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
             {ADAPTER_REGISTRY.map((e) => (

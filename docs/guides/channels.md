@@ -8,7 +8,7 @@ see_also:
 # Channels — Agent Reference
 
 The contract reference for sending and receiving over channel adapters
-(telegram, slack, whatsapp, discord, email). Dense by design — this is the
+(telegram, slack, whatsapp, whatsapp_agent, discord, email). Dense by design — this is the
 doc `msg_send` links to. Human setup instructions (credentials, app
 manifests, pairing) live in [messaging.md](messaging.md#channel-adapters).
 
@@ -20,7 +20,8 @@ First contact uses `{adapter}:{platform-id}` as `recipient` (no `address`):
 |---------|------------------|-------|
 | telegram | `telegram:123456789` | User or chat id (groups are negative ids) |
 | slack | `slack:C0123ABC` / `slack:U0123ABC` | Channel id, or user id (DM conversation opened automatically) |
-| whatsapp | `whatsapp:15551234567` / `whatsapp:<id>@g.us` | Bare number (digits) or full JID; groups end `@g.us` |
+| whatsapp | `whatsapp:15551234567` / `whatsapp:<id>@g.us` | Linked number. Bare number (digits) or full JID; groups end `@g.us`; privacy-addressed people may appear as `<id>@lid` — send to that as-is |
+| whatsapp_agent | `whatsapp_agent:user:50972923564215` | Official agent. Reaches **only the person who created the agent**; copy the id from their message's `chat_id`. No phone numbers, no groups |
 | discord | `discord:<channel_id>` | Channel id for both DMs and guild channels |
 | email | `email:person@example.com` | |
 
@@ -33,7 +34,7 @@ needed, no threading knowledge required.
 
 `content` + optional `content_type` on `msg_send`. Three modes:
 
-| Mode | `content_type` | telegram | slack | whatsapp | discord | email | mesh (agent) |
+| Mode | `content_type` | telegram | slack | whatsapp / whatsapp_agent | discord | email | mesh (agent) |
 |------|----------------|----------|-------|----------|---------|-------|--------------|
 | Markdown (default) | *(omit)* | native (HTML) | native (mrkdwn) | native | native | text + HTML body | as-is |
 | HTML | `text/html` | tag subset (sanitized) | → plain text | → plain text | → plain text | **full HTML body** | as-is |
@@ -117,6 +118,7 @@ names — do not invent your own:
 | discord | `adapter:discord:DISCORD_BOT_TOKEN` | `adapter:discord:DISCORD_APPLICATION_ID` (registers the slash command) |
 | email | `adapter:email:EMAIL_USERNAME`, `adapter:email:EMAIL_PASSWORD` | |
 | whatsapp | *(none — QR pairing, no stored credential)* | |
+| whatsapp_agent | `adapter:whatsapp_agent:WHATSAPP_AGENT_API_KEY` | |
 
 Your `adf_identity` row is the only store: there is no app-wide value to
 fall back to. It is written by `set_identity`, or by your principal
@@ -205,6 +207,7 @@ Messages sent while your host was offline (laptop shut, no network) are recovere
 |---------|----------|--------|
 | telegram | server queue drained on start | 24h (Telegram's retention — older is gone) |
 | whatsapp | server queue replayed on reconnect | ~30 days; the link itself dies if the paired phone is unused 14+ days |
+| whatsapp_agent | saved poll offset resumed on start | 30 days (server retention) |
 | slack | history backfill of conversations with prior traffic | `max_age_hours` (default 24) |
 | discord | history backfill of channels with prior traffic | `max_age_hours` (default 24) |
 | email | natural — unread mail waits in the mailbox | unbounded |
@@ -232,7 +235,9 @@ Channel messages carry:
   replies). Per platform: telegram `{chat_id, message_id, chat_type,
   reply_to_message_id}`; slack `{chat_id, channel_type, team_id, message_id
   (ts), thread_ts, reply_to_message_id}`; whatsapp `{chat_id (JID),
-  chat_type, message_id, sender_jid, reply_to_message_id}`; discord
+  chat_type, message_id, sender_jid, sender_phone_jid?, reply_to_message_id}`;
+  whatsapp_agent `{chat_id (user:<id>), chat_type: dm, message_id (wamid),
+  username?, reply_to_message_id}`; discord
   `{channel_id, guild_id, message_id, channel_type, reply_to_message_id}`;
   email `{message_id, to[], cc[], in_reply_to, references[]}`.
 - `meta.group` — descriptive group context when in a group chat: `{platform,

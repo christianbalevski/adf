@@ -104,7 +104,7 @@ describe('welcome model', () => {
 
 describe('channels + provider models', () => {
   it('uses Studio’s channel registry and checks obvious mistakes', () => {
-    expect(channelEntries().map(e => e.type)).toEqual(['telegram', 'discord', 'slack', 'email', 'whatsapp'])
+    expect(channelEntries().map(e => e.type)).toEqual(['telegram', 'discord', 'slack', 'email', 'whatsapp', 'whatsapp_agent'])
     const telegram = findChannel('Telegram')!
     expect(credentialFields(telegram).map(f => f.key)).toEqual(['TELEGRAM_BOT_TOKEN'])
     expect(credentialFields(telegram)[0].hint).toContain('BotFather')

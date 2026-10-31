@@ -2014,6 +2014,10 @@ adf-settings.json:
       id: "whatsapp"
       managed: false
       type: "whatsapp"
+    -
+      id: "whatsapp_agent"
+      managed: false
+      type: "whatsapp_agent"
   agentAvatars: "orbital"
   agentTemplate: {}
   agentsFolder: "<ROOT>/agents"
