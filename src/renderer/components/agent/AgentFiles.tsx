@@ -163,7 +163,8 @@ export function AgentFiles() {
   const [tableData, setTableData] = useState<{ columns: string[]; rows: Record<string, unknown>[] }>({ columns: [], rows: [] })
   const [viewingFile, setViewingFile] = useState<{ path: string; content: string; binary: boolean; meta: FileEntry } | null>(null)
   // Per agent, kept across tab switches (the dock unmounts this panel).
-  const [collapsedDirs, setCollapsedDirs] = useDockPanelState<Set<string>>('files', 'collapsed', new Set())
+  // Folders start collapsed; this holds the ones the user opened.
+  const [expandedDirs, setExpandedDirs] = useDockPanelState<Set<string>>('files', 'expanded', new Set())
   const [creatingFile, setCreatingFile] = useState(false)
   const [newFilePath, setNewFilePath] = useState('')
   const [fileFilter, setFileFilter] = useDockPanelState('files', 'filter', '')
@@ -181,13 +182,13 @@ export function AgentFiles() {
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   const toggleDir = useCallback((dirPath: string) => {
-    setCollapsedDirs((prev) => {
+    setExpandedDirs((prev) => {
       const next = new Set(prev)
       if (next.has(dirPath)) next.delete(dirPath)
       else next.add(dirPath)
       return next
     })
-  }, [setCollapsedDirs])
+  }, [setExpandedDirs])
 
   const countFiles = useCallback((node: FileTreeNode): number => {
     if (!node.isDir) return 1
@@ -532,6 +533,19 @@ export function AgentFiles() {
           >
             {sort === 'name' ? 'Name' : 'Recent'}
           </button>
+          {sort === 'name' && !filtering && expandedDirs.size > 0 && (
+            <button
+              onClick={() => setExpandedDirs(new Set())}
+              title="Collapse all folders"
+              aria-label="Collapse all folders"
+              className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
+            >
+              <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <polyline points="7 20 12 15 17 20" />
+                <polyline points="7 4 12 9 17 4" />
+              </svg>
+            </button>
+          )}
           <button
             onClick={async () => {
               const result = await openApi()?.pickAndImport()
@@ -646,7 +660,7 @@ export function AgentFiles() {
               return renderFileRow(node.file!, node.name, depth)
             }
 
-            const isCollapsed = !filtering && collapsedDirs.has(node.path)
+            const isCollapsed = !filtering && !expandedDirs.has(node.path)
             const fileCount = countFiles(node)
 
             return (
