@@ -39,21 +39,22 @@ ADF Gmail server.
    an OAuth client configuration, not a Google API key or service-account key.
    See [Google's desktop OAuth guide](https://developers.google.com/identity/protocols/oauth2/native-app).
 4. In **ADF Studio → Settings → MCP servers → Add MCP Server**, choose **Gmail**.
-   Keep its prefilled auth command and credential paths. The catalog selects
+   Keep its prefilled auth command and credential paths (under **Advanced**). The catalog selects
    **Host** for this Settings flow: the server runs with your host user's access.
    If host access is blocked, resolve that deliberately in Compute settings;
    switching this form to a container is not an equivalent file-upload flow.
-5. Use **Choose file…** next to `~/.gmail-mcp/gcp-oauth.keys.json` to select the
-   downloaded JSON. Its original download filename is fine. Leave the optional
-   `~/.gmail-mcp/credentials.json` slot empty for the server to create tokens.
+5. In step 1, **Add credential file**, use **Choose file…** next to
+   `gcp-oauth.keys.json` to select the downloaded JSON. Its original download
+   filename is fine. Leave the optional `credentials.json` slot under **Advanced**
+   empty for the server to create tokens.
    Do not paste either file into chat. Existing host files are preserved; a newly
    selected file does not overwrite an existing account's credentials.
-6. Click **Connect**, complete Google sign-in yourself, check the account and
-   requested permissions, and confirm completion in ADF's authorization dialog.
-   Wait for successful connection and tool discovery, then save. **Save** alone
-   does not store a selected credential file.
-7. Enable **Available to agents** for this registration when you want it attachable
-   (host registrations default to unavailable). Attach it in the agent's MCP
+6. In step 2, click **Sign in to Gmail**, complete Google sign-in yourself, check
+   the account and requested permissions, and confirm completion in ADF's
+   authorization dialog. Wait for successful connection and tool discovery.
+   Saving without connecting does not store a selected credential file.
+7. In step 3, **Who can attach it**, choose **You and agents** when you want agents
+   to attach it themselves (host registrations default to **You**), then click **Done**. Attach it in the agent's MCP
    configuration, or let an agent with `mcp_install` attach by the saved name:
 
    ```js
