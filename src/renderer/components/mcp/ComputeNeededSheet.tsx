@@ -145,7 +145,7 @@ export function ComputeNeededSheet({ open, servers, api, onClose, onResolved, ru
           )}
           {(plan?.kind === 'step' || plan?.kind === 'ready') && (
             <Button variant="primary" className="w-full" onClick={() => void (plan.kind === 'ready' ? onResolved() : setUp())} disabled={!!busy} loading={!!busy && busy !== 'Saving…'}>
-              {busy && busy !== 'Saving…' ? busy : plan.kind === 'ready' ? 'Podman is ready: connect' : 'Set up Podman (recommended)'}
+              {busy && busy !== 'Saving…' ? busy : plan.kind === 'ready' ? 'Connect' : 'Set up Podman (recommended)'}
             </Button>
           )}
           {busy && busy !== 'Saving…' && <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">This can take a few minutes.{remote ? '' : ' Your system may ask for your password.'}</p>}

@@ -43,7 +43,7 @@ export function environmentStatus(id: string, allowed: boolean, agentId: string,
   if (id !== 'shared' && id !== 'isolated') return { text: 'User-managed', action: 'settings', actionLabel: 'Check in Settings' }
   const a = snapshot.availability
   if (!a.available) return { text: 'Podman unavailable', detail: a.error, action: 'settings', actionLabel: 'Set up Podman' }
-  if (a.machineRequired && !a.machineRunning) return { text: a.machineExists ? 'Podman machine stopped' : 'Podman setup needed', action: 'settings', actionLabel: 'Open setup' }
+  if (a.machineRequired && !a.machineRunning) return { text: a.machineExists ? 'Podman machine stopped' : 'Podman not set up', action: 'settings', actionLabel: 'Open setup' }
   const container = snapshot.containers.find((c) => c.managed && (id === 'shared' ? c.scope === 'shared' : c.scope === 'dedicated' && c.agentId === agentId))
   if (phase?.phase === 'provisioning' || phase?.phase === 'starting') return { text: phase.phase === 'provisioning' ? 'Setting up' : 'Starting', detail: phase.detail }
   if (phase?.phase === 'failed' || container?.state === 'failed') return { text: 'Setup failed', detail: phase?.detail ?? container?.error, action: 'settings', actionLabel: 'Review in Settings' }
