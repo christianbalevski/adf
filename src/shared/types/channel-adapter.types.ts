@@ -182,6 +182,8 @@ export interface ChannelAdapter {
   status(): AdapterStatus
   /** Optional read-only chat metadata lookup (title, roster, counts). Adapters without live query surfaces omit it. */
   getChatInfo?(chatId: string, opts?: { limit?: number }): Promise<ChatInfoResult>
+  /** Current pairing payload (e.g. the WhatsApp QR string) while waiting to be linked, else null */
+  pairingCode?(): string | null
 }
 
 /** Factory function exported by adapter npm packages */
@@ -257,6 +259,8 @@ export interface AdapterState {
   connectedAt?: number
   restartCount: number
   logs: AdapterLogEntry[]
+  /** Live device-pairing payload while the adapter waits to be linked (WhatsApp QR); absent otherwise */
+  pairingCode?: string
 }
 
 /** One agent's live adapter instances (Settings → Channels per-agent chips). */

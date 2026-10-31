@@ -333,7 +333,7 @@ From **Settings → MCP servers**:
 ## Channel Adapters
 
 Channel adapters connect external messaging platforms to ADF agents. Manage them from **Settings > Channels** — that is the tab name; "adapter" is the runtime term for the code behind each channel.
-Telegram, email, Discord, Slack, and WhatsApp are built in and always available; each is connected **per agent**.
+Telegram, email, Discord, Slack, and both WhatsApp channels (linked number, official agent) are built in and always available; each is connected **per agent**.
 
 ### The Channels page
 
@@ -355,7 +355,8 @@ There is no app-wide credential store for channels. Adapters run inside each age
 | **Email** | Yes | `EMAIL_USERNAME`, `EMAIL_PASSWORD` | IMAP/SMTP; use app-specific password |
 | **Discord** | Yes | `DISCORD_BOT_TOKEN` (+ optional `DISCORD_APPLICATION_ID`) | Bot token from the Discord developer portal |
 | **Slack** | Yes | `SLACK_APP_TOKEN`, `SLACK_BOT_TOKEN` | Socket Mode — no public endpoint needed |
-| **WhatsApp** | Yes | *(none — QR pairing)* | Personal account via Baileys; scan QR from the agent's files. Unofficial protocol — use a non-critical account |
+| **WhatsApp · Linked number** | Yes | *(none — QR pairing)* | The agent gets its own number; scan the QR shown in the setup dialog. Unofficial protocol (Baileys) — use a spare number |
+| **WhatsApp · Official agent** | Yes | `WHATSAPP_AGENT_API_KEY` | Chat with the agent from your own WhatsApp (Settings → Agents in WhatsApp). Only you can message it; not end-to-end encrypted |
 
 Every connection is per-agent config under `adapters` plus credentials in that agent's `adf_identity`. Connecting an agent from the Channels page writes both; the agent's config panel edits the same `adapters` block. See [Messaging > Channel Adapters](messaging.md#channel-adapters) for full details.
 

@@ -33,6 +33,16 @@ function adapterConfigEqual(a: AdapterInstanceConfig, b: AdapterInstanceConfig):
   return JSON.stringify(a) === JSON.stringify(b)
 }
 
+/** The adapter's live pairing payload, when it is waiting to be linked. */
+function pairingOf(adapter: ChannelAdapter): { pairingCode?: string } {
+  try {
+    const code = adapter.pairingCode?.()
+    return code ? { pairingCode: code } : {}
+  } catch {
+    return {}
+  }
+}
+
 interface ManagedAdapter {
   type: string
   adapter: ChannelAdapter
@@ -421,7 +431,8 @@ export class ChannelAdapterManager extends EventEmitter {
       error: m.error,
       connectedAt: m.connectedAt,
       restartCount: m.restartCount,
-      logs: [...m.logs]
+      logs: [...m.logs],
+      ...pairingOf(m.adapter)
     }))
   }
 
@@ -437,7 +448,8 @@ export class ChannelAdapterManager extends EventEmitter {
       error: managed.error,
       connectedAt: managed.connectedAt,
       restartCount: managed.restartCount,
-      logs: [...managed.logs]
+      logs: [...managed.logs],
+      ...pairingOf(managed.adapter)
     }
   }
 

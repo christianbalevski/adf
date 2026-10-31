@@ -9,7 +9,7 @@ const InputSchema = z.object({
   adapter: z
     .string()
     .min(1)
-    .describe('Channel adapter type to query: "telegram", "discord", "slack", "whatsapp", ... Must be enabled and connected for this agent.'),
+    .describe('Channel adapter type to query: "telegram", "discord", "slack", "whatsapp", "whatsapp_agent", ... Must be enabled and connected for this agent.'),
   chat_id: z
     .string()
     .min(1)

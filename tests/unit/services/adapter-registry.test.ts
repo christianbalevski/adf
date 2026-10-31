@@ -45,4 +45,16 @@ describe('adapter registry helpers', () => {
     expect(entry?.requiredEnvKeys).toEqual([])
     expect(ADAPTER_REGISTRY.map((e) => e.type)).toEqual(expect.arrayContaining(['slack', 'whatsapp']))
   })
+
+  it('labels the two WhatsApp channels distinctly and only the linked number pairs by QR', () => {
+    const linked = findAdapterRegistryEntry('whatsapp')
+    const official = findAdapterRegistryEntry('whatsapp_agent')
+    expect(official?.builtIn).toBe(true)
+    expect(official?.requiredEnvKeys).toEqual(['WHATSAPP_AGENT_API_KEY'])
+    expect(linked?.pairing).toBe('qr')
+    expect(official?.pairing).toBeUndefined()
+    expect(linked?.displayName).not.toBe(official?.displayName)
+    expect(linked?.displayName).toMatch(/^WhatsApp/)
+    expect(official?.displayName).toMatch(/^WhatsApp/)
+  })
 })

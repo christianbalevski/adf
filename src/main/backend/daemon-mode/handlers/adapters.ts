@@ -82,8 +82,14 @@ export const ADAPTER_HANDLERS: DaemonHandlerTable = {
     const agentId = await ctx.runningAgentAt(filePath)
     if (!agentId) return { logs: [], running: false }
     try {
-      const diagnostics = await (await ctx.ready()).request<{ states: Array<{ type: string; logs?: unknown[] }> }>('GET', `/agents/${enc(agentId)}/runtime/adapters`)
-      return { logs: diagnostics.states.find((s) => s.type === args.type)?.logs ?? [], running: true }
+      const diagnostics = await (await ctx.ready()).request<{ states: Array<{ type: string; status?: string; logs?: unknown[]; pairingCode?: string }> }>('GET', `/agents/${enc(agentId)}/runtime/adapters`)
+      const state = diagnostics.states.find((s) => s.type === args.type)
+      return {
+        logs: state?.logs ?? [],
+        running: true,
+        ...(state?.status ? { status: state.status } : {}),
+        ...(state?.pairingCode ? { pairingCode: state.pairingCode } : {}),
+      }
     } catch (err) {
       if (isNotFound(err)) return { logs: [], running: false }
       throw err

@@ -295,7 +295,7 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
         {live.status === 'not running' || (running === 'stopped' || running === 'error')
           ? <Text wrap="wrap" color={theme.color.muted}>{who} is not running: /start {who} brings {entry.displayName} up.</Text>
           : null}
-        {entry.type === 'whatsapp' ? <Text wrap="wrap" color={theme.color.muted}>{WHATSAPP_PAIRING}</Text> : null}
+        {entry.pairing === 'qr' ? <Text wrap="wrap" color={theme.color.muted}>{WHATSAPP_PAIRING}</Text> : null}
         {entry.type === 'telegram' && live.status === 'connected' ? <Text wrap="wrap" color={theme.color.muted}>Message your bot once in Telegram so it can see you.</Text> : null}
       </Modal>
     )
@@ -353,7 +353,7 @@ export function ChannelsDialog({ overlay, close, width, height }: OverlayProps) 
 }
 
 /** The QR is an image: Studio shows it; the terminal points at the file. */
-export const WHATSAPP_PAIRING = 'Pair a phone: with the agent running, open imported/whatsapp/pairing-qr.png from its files (or ADF Studio, which shows the QR) and scan it in WhatsApp → Linked Devices → Link a device. The QR refreshes every minute until paired.'
+export const WHATSAPP_PAIRING = 'No token: this links a spare phone number to the agent. With the agent running, open imported/whatsapp/pairing-qr.png from its files (or the channel in ADF Studio, which shows the QR live) and scan it on that phone in WhatsApp → Settings → Linked Devices → Link a device. The QR refreshes every minute until scanned. To chat with an agent from your own WhatsApp instead, use WhatsApp · Official agent.'
 
 function NoCredentials({ onSubmit, active, name }: { onSubmit: () => void; active: boolean; name: string }) {
   const theme = useTheme()

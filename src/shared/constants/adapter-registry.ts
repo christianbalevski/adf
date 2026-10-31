@@ -32,8 +32,10 @@ export interface AdapterRegistryEntry {
   tagline?: string
   /** Human labels + hints for each credential key, in display order */
   credentials?: AdapterCredentialField[]
-  /** Short, numbered "where do I get this" steps shown next to the form */
+  /** Short, numbered setup steps shown next to the form */
   setupSteps?: AdapterSetupStep[]
+  /** Connects by scanning a code instead of pasting a token: the setup dialog shows the live QR */
+  pairing?: 'qr'
 }
 
 export interface AdapterCredentialField {
@@ -138,19 +140,41 @@ export const ADAPTER_REGISTRY: AdapterRegistryEntry[] = [
   },
   {
     type: 'whatsapp',
-    displayName: 'WhatsApp',
+    displayName: 'WhatsApp · Linked number',
     builtIn: true,
-    description: 'Personal WhatsApp account via multi-device pairing — scan a QR code, no tokens. Unofficial protocol; use a non-critical account.',
-    tagline: 'Pair a personal account by QR. Unofficial protocol, use a spare number.',
+    description: 'Give the agent its own WhatsApp number by linking it as a device (QR code, like WhatsApp Web). Anyone can message that number, including in groups. Unofficial protocol — WhatsApp may ban the number, so use a spare one.',
+    tagline: 'The agent gets its own number that anyone can message. Scan a QR; use a spare number.',
     iconKey: 'whatsapp',
     requiredEnvKeys: [],
     credentials: [],
+    pairing: 'qr',
     setupSteps: [
-      { text: 'Connect an agent below. No credentials are needed.' },
-      { text: 'Start the agent. The adapter writes a pairing QR to imported/whatsapp/pairing-qr.png in the agent\'s files and notes it in the channel log.' },
-      { text: 'On the phone open WhatsApp → Linked Devices → Link a device and scan it. The QR refreshes every minute until paired.' },
+      { text: 'Get a spare WhatsApp number for the agent. It becomes the agent: people message that number to reach it. Unofficial client, so the number can be banned — never use your main one.' },
+      { text: 'Pick the agent and click Connect. Start the agent if it is not running.' },
+      { text: 'A QR code appears here. On the agent\'s phone open WhatsApp → Settings → Linked Devices → Link a device and scan it. It refreshes every minute until scanned.' },
+      { text: 'Message the agent\'s number from a different WhatsApp account. Messages the linked number sends itself, including "Message yourself", are ignored.' },
     ],
-    docsUrl: `${MESSAGING_GUIDE_URL}#whatsapp-adapter`,
+    docsUrl: `${MESSAGING_GUIDE_URL}#whatsapp-linked-number-adapter`,
+    verified: true
+  },
+  {
+    type: 'whatsapp_agent',
+    displayName: 'WhatsApp · Official agent',
+    builtIn: true,
+    description: 'Chat with the agent from your own WhatsApp through WhatsApp\'s official Agents feature (Settings → Agents). Only you can message it, 1:1 only. Not end-to-end encrypted. The Agents feature is still rolling out.',
+    tagline: 'Chat with your agent from your own WhatsApp. Official, private 1:1. Paste the agent\'s API key.',
+    iconKey: 'whatsapp',
+    requiredEnvKeys: ['WHATSAPP_AGENT_API_KEY'],
+    credentials: [
+      { key: 'WHATSAPP_AGENT_API_KEY', label: 'Agent API key', required: true, placeholder: 'Paste the key from WhatsApp', hint: 'Agent\'s chat → Chat info → API key. Re-creating the agent issues a new key.' },
+    ],
+    setupSteps: [
+      { text: 'In WhatsApp open Settings → Agents → Create an agent and give it a name. No Agents entry yet? The feature is still rolling out to accounts.' },
+      { text: 'Open the new agent\'s chat → Chat info → API key, and copy it.' },
+      { text: 'Pick the ADF agent here, paste the key, and click Connect.' },
+      { text: 'Message the agent from that chat. Only you can reach it, and messages pass through Meta unencrypted.' },
+    ],
+    docsUrl: `${MESSAGING_GUIDE_URL}#whatsapp-official-agent-adapter`,
     verified: true
   }
 ]

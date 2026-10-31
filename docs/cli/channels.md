@@ -1,7 +1,7 @@
 # Channels
 
 Channels bring outside messages into an agent and let it answer there:
-**Telegram, Discord, Slack, email and WhatsApp** ("channel adapters" in the
+**Telegram, Discord, Slack, email and WhatsApp (linked number or official agent)** ("channel adapters" in the
 daemon API). As in ADF Studio (Settings → Channels), the channel types are
 built in and everything else is per agent: the credentials live in that
 agent's identity store, sealed under your owner identity, and switching a
@@ -12,7 +12,7 @@ channel on writes the agent's config.
 Select the agent, then:
 
 ```text
-/channels add telegram      # or discord, slack, email, whatsapp
+/channels add telegram      # or discord, slack, email, whatsapp, whatsapp_agent
 ```
 
 (`/channels add` alone lets you pick; the palette has "Add Telegram
@@ -31,10 +31,15 @@ Without a ready owner identity the identity dialog opens first; the channel
 setup continues once it is ready. A stopped agent connects the channel when
 it starts (`/start <agent>`).
 
-**WhatsApp** needs no credentials: `Enter` switches it on and the phone pairs
-by QR code. The terminal app cannot draw the QR: open
-`imported/whatsapp/pairing-qr.png` from the agent's files (Files view), or
-use ADF Studio, and scan it in WhatsApp → Linked Devices.
+**WhatsApp · Linked number** (`whatsapp`) needs no credentials: `Enter`
+switches it on, and a spare phone number pairs by QR code. The terminal app
+cannot draw the QR: open `imported/whatsapp/pairing-qr.png` from the agent's
+files (Files view), or use ADF Studio, which shows it live in the channel's
+dialog, and scan it in WhatsApp → Settings → Linked Devices → Link a device.
+
+**WhatsApp · Official agent** (`whatsapp_agent`) takes one API key: in
+WhatsApp create an agent under Settings → Agents, then copy the key from the
+agent's chat → Chat info → API key. Only you can message that agent.
 
 ## Manage channels
 

@@ -18,7 +18,7 @@ const { ADAPTER_REGISTRY } = cjs(registryNs)
 export const CHANNELS_OVERLAY = 'channels'
 
 /** Built-in channels, in the order the welcome names them. */
-export const CHANNEL_ORDER = ['telegram', 'discord', 'slack', 'email', 'whatsapp'] as const
+export const CHANNEL_ORDER = ['telegram', 'discord', 'slack', 'email', 'whatsapp', 'whatsapp_agent'] as const
 
 export interface ChannelsOverlayProps {
   agentId?: string

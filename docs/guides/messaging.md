@@ -29,7 +29,8 @@ Every message has a `source` field indicating its transport origin:
 | `discord` | Delivered via the Discord channel adapter |
 | `email` | Delivered via the Email channel adapter (IMAP) |
 | `slack` | Delivered via the Slack channel adapter (Socket Mode) |
-| `whatsapp` | Delivered via the WhatsApp channel adapter (Baileys) |
+| `whatsapp` | Delivered via the WhatsApp linked-number adapter (Baileys) |
+| `whatsapp_agent` | Delivered via the official WhatsApp agent adapter |
 
 The `source_context` field stores platform-specific metadata from the originating platform. This enables reply threading and multi-recipient handling:
 
@@ -37,7 +38,8 @@ The `source_context` field stores platform-specific metadata from the originatin
 - **Discord:** `channel_id`, `guild_id`, `message_id`, `channel_type` (`dm` or `guild`), `username`, `reply_to_message_id`
 - **Email:** `message_id`, `to` (all recipients), `cc` (CC recipients), `in_reply_to`, `references`
 - **Slack:** `chat_id` (channel id), `channel_type` (`im`/`mpim`/`channel`/`group`), `team_id`, `message_id` (the Slack `ts`), `thread_ts`, `username`, `reply_to_message_id` (set to `thread_ts` for thread replies)
-- **WhatsApp:** `chat_id` (JID), `chat_type` (`dm`/`group`), `message_id`, `username` (push name), `sender_jid` (author inside a group), `reply_to_message_id` (quoted message stanza id)
+- **WhatsApp (linked number):** `chat_id` (JID), `chat_type` (`dm`/`group`), `message_id`, `username` (push name), `sender_jid` (author inside a group), `sender_phone_jid` (phone JID when the sender is addressed by a privacy id), `reply_to_message_id` (quoted message stanza id)
+- **WhatsApp (official agent):** `chat_id` (`user:<id>`), `chat_type` (`dm`), `message_id` (wamid), `username` (profile name), `reply_to_message_id`
 
 The `original_message` field stores the raw platform message before ADF normalization (the full RFC 822 email source, the Telegram/Slack/Discord/WhatsApp message JSON). It is stripped from `msg_read` results by default; pass `include_original: true` to read it when the normalized fields aren't enough.
 
@@ -943,19 +945,63 @@ Connects via **Socket Mode** — events arrive over an outbound WebSocket, so no
 
 **Inbound files** are downloaded with the bot token into `imported/slack/`. Outbound attachments upload via `files.uploadV2`.
 
-### WhatsApp Adapter
+### WhatsApp: two channels
 
-Connects a **personal WhatsApp account** via the multi-device protocol ([Baileys](https://github.com/WhiskeySockets/Baileys)) — no tokens, no business account, no public endpoint.
+ADF has two WhatsApp channels for two different jobs. They can run side by side.
 
-> **Warning**: Baileys is an unofficial client. WhatsApp may ban accounts that look automated. Use a non-critical account, and expect occasional breakage when WhatsApp changes its protocol.
+| | **WhatsApp · Linked number** (`whatsapp`) | **WhatsApp · Official agent** (`whatsapp_agent`) |
+|---|---|---|
+| What you get | The agent runs its own WhatsApp number | A private chat with your agent inside your own WhatsApp |
+| Who can message it | Anyone, including in groups | Only you (the person who created the agent in WhatsApp) |
+| Setup | A spare number, scan a QR code | Paste one API key |
+| Protocol | Unofficial (Baileys); the number can be banned | Official WhatsApp Agent Platform API |
+| Encryption | End-to-end; the session keys sit on disk | Not end-to-end encrypted: messages pass through Meta |
+| Availability | Everyone | WhatsApp's Agents feature is still rolling out |
 
-**Pairing**: no credentials to configure. On first start the adapter writes a pairing QR code to the agent's file store at `imported/whatsapp/pairing-qr.png` (also announced in the adapter log). Open WhatsApp → Linked Devices → scan (see WhatsApp's official [linked devices help](https://faq.whatsapp.com/378279804439436)). The QR expires every ~60 seconds and regenerates automatically; after the manager's retry cap, restart the adapter for a fresh one.
+Pick **Official agent** to talk to your own agent from your phone. Pick **Linked number** when other people, or groups, should reach the agent.
 
-**Session state** lives on disk next to the agent's `.adf` file (`<agent>.adf.adapters/whatsapp/`). To unpair, delete that directory and restart the adapter. Treat the directory like the workspace DB — it contains the account's signal keys.
+### WhatsApp Linked Number Adapter
 
-**Addressing**: `whatsapp:15551234567` (bare number), `whatsapp:15551234567@s.whatsapp.net`, or `whatsapp:<groupid>@g.us`.
+Gives the agent **its own WhatsApp number** by linking it as a device, the same way WhatsApp Web links ([Baileys](https://github.com/WhiskeySockets/Baileys)). No tokens, no business account, no public endpoint.
+
+> **Warning**: Baileys is an unofficial client. WhatsApp may ban accounts that look automated. Use a spare number, never your main one, and expect occasional breakage when WhatsApp changes its protocol.
+
+**Connecting**:
+
+1. Get a spare WhatsApp number on a phone. That number *becomes the agent*: people message it to reach the agent.
+2. In **Settings → Channels** choose **WhatsApp · Linked number**, pick the agent, and click **Connect**. There is nothing to paste.
+3. With the agent running, a QR code appears in that same dialog. It is also written to `imported/whatsapp/pairing-qr.png` in the agent's files. On the agent's phone open WhatsApp → Settings → Linked Devices → Link a device and scan it ([WhatsApp's linked devices help](https://faq.whatsapp.com/378279804439436)). The code refreshes about every minute; if it stops refreshing, click **Restart**.
+4. Once the dialog says **Linked**, message the agent's number **from a different WhatsApp account**. The adapter ignores everything the linked number sends itself, including "Message yourself", so the agent never hears its own replies. To chat with an agent from your own number, use the official agent channel instead.
+
+**Who wakes the agent**: by default every direct message and every group message that @mentions the number. Set `policy.dm: allowlist` with `policy.allow_from: ["15551234567"]` to restrict DMs. Phone numbers match even when WhatsApp addresses the sender by a privacy id (`<id>@lid`).
+
+**Session state** lives on disk next to the agent's `.adf` file (`<agent>.adf.adapters/whatsapp/`). It holds the live session **in plaintext**: anyone with the folder can act as the number. Keep it out of backups and sync. To unlink, delete the folder (or remove the device under Linked Devices on the phone) and restart the channel.
+
+**Addressing**: `whatsapp:15551234567` (bare number), `whatsapp:15551234567@s.whatsapp.net`, `whatsapp:<id>@lid`, or `whatsapp:<groupid>@g.us`.
 
 **Replies** quote the original message (WhatsApp-native threading) when sent with `parent_id` — quoting works for messages received since the adapter last started (most recent 500, held in memory); replying to an older parent silently sends a normal, unquoted message. Voice attachments (WAV) are converted to OGG/Opus voice notes via ffmpeg when available.
+
+### WhatsApp Official Agent Adapter
+
+Uses WhatsApp's official **Agents** feature: you create an agent inside your own WhatsApp, and it gets its own 1:1 chat in your chat list. ADF connects to it with the agent's API key over the [WhatsApp Agent Platform API](https://www.whatsapp.com/developer/WhatsApp-Agent-Platform-Developer-Manual.pdf) (outbound HTTPS long polling, so no public URL).
+
+**Connecting**:
+
+1. In WhatsApp open Settings → Agents → Create an agent, and give it a name (and a photo, if you like). No **Agents** entry yet? WhatsApp is still rolling the feature out to accounts.
+2. Open the new agent's chat → Chat info → API key, and copy it.
+3. In **Settings → Channels** choose **WhatsApp · Official agent**, pick the ADF agent, paste the key, and click **Connect**.
+4. Message the agent in that WhatsApp chat.
+
+**What to expect**:
+
+- **Only you can reach it.** WhatsApp lets an agent message only the account that created it; there are no groups. Up to five agents per WhatsApp account.
+- **Not end-to-end encrypted.** Messages pass through Meta, which keeps them for 30 days ([Third-Party Agents Terms](https://www.whatsapp.com/legal/third-party-agents-terms)).
+- **Offline messages arrive on restart.** The channel saves its read position, so messages sent while the agent was stopped (up to 30 days) are delivered through the normal catch-up path (`catch_up` caps apply). The first start skips the chat's earlier history.
+- **One copy per key.** Two programs polling the same key knock each other off; the channel stops with an error naming the cause.
+- **New key, new start.** Re-creating the agent or reinstalling WhatsApp issues a new key: paste it in the channel settings.
+- **Limits**: 12 sends a minute, text up to 4096 characters (longer replies are split), images 5 MB (JPEG/PNG), video/audio/documents 16 MB. Other file types go as documents. WAV audio is converted with ffmpeg.
+
+**Addressing**: `whatsapp_agent:user:<id>`, the `chat_id` from your messages. Replying with `parent_id` quotes the original message (any message within 30 days).
 
 ### Interactive Forms (`content_type: application/vnd.adf.form+json`)
 
