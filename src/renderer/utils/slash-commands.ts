@@ -58,19 +58,19 @@ export const BUILTIN_COMMANDS: readonly SlashCommand[] = [
     key: 'clear',
     label: '/clear',
     kind: 'builtin',
-    description: 'Clear the conversation loop and start fresh.'
+    description: 'Clear the conversation loop.'
   },
   {
     key: 'skills',
     label: '/skills',
     kind: 'builtin',
-    description: 'Open the Skills panel — mute and unmute live there.'
+    description: 'Open the Skills panel to mute and unmute skills.'
   },
   {
     key: 'idle',
     label: '/idle',
     kind: 'builtin',
-    description: 'End the turn and park the agent in the idle state.'
+    description: 'End the turn and set the agent to idle.'
   },
   {
     key: 'hibernate',

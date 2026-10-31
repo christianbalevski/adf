@@ -629,7 +629,7 @@ terminal app", "another Studio window", "the CLI or another API client" (an
 | Button | What happens |
 |---|---|
 | **Reload** | Shows their version; your unsaved text is discarded |
-| **Keep mine** | Saves your version over theirs |
+| **Overwrite** | Saves your version over theirs |
 
 While the strip is up, Ctrl+S saves nothing and moves focus to Reload.
 Closing the tab, closing the agent or switching agents asks first: "Discard
@@ -1202,7 +1202,7 @@ Every message the backend features show, and where it is explained. Text in
 | Keep running after Studio quits / "When you quit Studio, …" | [Quit Studio](#quit-studio) |
 | "The ADF daemon keeps running while *N* other client(s) are connected …" | [Quit Studio](#quit-studio) |
 | "The daemon stays up because this app is connected: …" (terminal app) | [Quit Studio](#quit-studio) |
-| "*File* was changed by … while you were editing." / Reload / Keep mine | [Changed elsewhere](#changed-elsewhere) |
+| "*File* was changed by … while you were editing." / Reload / Overwrite | [Changed elsewhere](#changed-elsewhere) |
 | "Discard your unsaved changes to …?" | [Changed elsewhere](#changed-elsewhere) |
 | "Studio kept your unsaved version of …" / Show folder / Dismiss | [Changed elsewhere](#changed-elsewhere) |
 | "… was changed by … after you opened it." / Overwrite / Reload theirs (terminal app) | [Changed elsewhere](#changed-elsewhere) |

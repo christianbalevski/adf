@@ -815,7 +815,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const pendingSaveRef = useRef<{ config: AgentConfigType; owner: string | null; baseRevision?: number; baseConfig: AgentConfigType | null } | null>(null)
   /**
    * W3-F: a save refused because the config changed elsewhere; the notice
-   * offers Reload or Keep mine. In the agent store, so an agent switch or a
+   * offers Reload or Overwrite. In the agent store, so an agent switch or a
    * quit can ask about it / keep a copy (edit-conflict.ts, edit-recovery.ts).
    */
   const configConflict = useAgentStore((s) => s.configConflict)

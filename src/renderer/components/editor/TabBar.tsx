@@ -69,7 +69,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
           <button
             type="button"
             onClick={chatTab.onSelect}
-            title="Loops — the agent's chat"
+            title="Agent loops"
             className={`${TAB_BASE} shrink-0 ${chatTab.active ? TAB_ACTIVE : TAB_IDLE}`}
           >
             <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden>
@@ -93,7 +93,7 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
                 e.stopPropagation()
                 chatTab.onClose?.()
               }}
-              title="Close — put the chat back in the side panel"
+              title="Close tab and show loops in the side panel"
               className={`ml-1 ${TAB_ICON_BUTTON} ${
                 chatTab.active ? 'opacity-60 hover:opacity-100' : 'opacity-0 group-hover:opacity-60 hover:!opacity-100'
               }`}

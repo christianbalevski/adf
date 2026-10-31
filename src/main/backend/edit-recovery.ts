@@ -5,7 +5,7 @@
  * `<userData>/recovered/<agent>-<hash>/<path>` (the agent's file name, and
  * a hash of its full path so two `agent-1.adf` in different folders never
  * share one); resolving the conflict (Reload,
- * Keep mine, or discarding it on close or agent switch) removes it. So a
+ * Overwrite, or discarding it on close or agent switch) removes it. So a
  * quit or a crash with the notice still up leaves the copy behind, and the
  * next launch lists it (a notice with Show folder and Dismiss; Dismiss moves
  * the copies under `recovered/archive/<time>/`). The archive keeps 30 days
