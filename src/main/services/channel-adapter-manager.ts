@@ -418,14 +418,32 @@ export class ChannelAdapterManager extends EventEmitter {
    */
   getStatus(type: string): AdapterStatus | null {
     const managed = this.adapters.get(type)
+    if (managed) this.syncConnected(managed)
     return managed?.status ?? null
+  }
+
+  /**
+   * Adapters whose start() returns before the connection is up (a poll loop
+   * that connects on its first answer) report it only through status(); the
+   * health check would pick that up 30s later. Take it as soon as anyone
+   * asks, so a reply right after start is not refused as "connecting".
+   */
+  private syncConnected(managed: ManagedAdapter): void {
+    if (managed.status === 'connected') return
+    let live: AdapterStatus
+    try { live = managed.adapter.status() } catch { return }
+    if (live !== 'connected') return
+    managed.status = 'connected'
+    managed.error = undefined
+    managed.connectedAt ??= Date.now()
+    this.emitStatusChange(managed)
   }
 
   /**
    * Get states of all running adapters.
    */
   getStates(): AdapterState[] {
-    return Array.from(this.adapters.values()).map(m => ({
+    return Array.from(this.adapters.values()).map(m => (this.syncConnected(m), {
       type: m.type,
       status: m.status,
       error: m.error,
@@ -442,6 +460,7 @@ export class ChannelAdapterManager extends EventEmitter {
   getState(type: string): AdapterState | null {
     const managed = this.adapters.get(type)
     if (!managed) return null
+    this.syncConnected(managed)
     return {
       type: managed.type,
       status: managed.status,
@@ -571,6 +590,7 @@ export class ChannelAdapterManager extends EventEmitter {
    */
   isConnected(type: string): boolean {
     const managed = this.adapters.get(type)
+    if (managed) this.syncConnected(managed)
     return managed?.status === 'connected'
   }
 
