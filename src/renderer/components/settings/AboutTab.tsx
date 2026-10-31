@@ -128,14 +128,14 @@ export function AboutTab() {
         </p>
       </div>
 
-      {/* The core idea */}
+      {/* Overview */}
       <section>
-        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">The core idea</h4>
+        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">Overview</h4>
         <p>
           ADF is an open standard for portable AI agents. A single SQLite file
           (<strong>.adf</strong>) contains a complete agent: identity, memory,
-          instructions, tools, and execution state. Move the file, you move
-          the agent.
+          instructions, tools, and execution state. Moving the file moves the
+          agent.
         </p>
         <p className="mt-2">
           ADF is less about what an agent can <em>do</em> and more about what an
@@ -148,7 +148,7 @@ export function AboutTab() {
 
       {/* What's inside */}
       <section>
-        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">What's inside an .adf file?</h4>
+        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">File contents</h4>
         <ul className="space-y-1.5 ml-1 text-xs text-neutral-600 dark:text-neutral-400">
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">README</strong> — the agent's public-facing description (markdown). Editable by you and the agent.
@@ -179,13 +179,13 @@ export function AboutTab() {
           </li>
         </ul>
         <p className="mt-2 text-xs text-neutral-500 dark:text-neutral-400">
-          Share the file, share the agent — work, memory, history, and identity all in one place.
+          Copying the file copies the agent, with its work, memory, history, and identity.
         </p>
       </section>
 
       {/* How to use */}
       <section>
-        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">How to use ADF</h4>
+        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">Getting started</h4>
         <ol className="space-y-2 list-decimal list-inside text-neutral-600 dark:text-neutral-400 text-xs">
           <li>
             <strong>Connect a provider</strong> — In Settings → Providers, add an
@@ -200,7 +200,7 @@ export function AboutTab() {
             tools in the Config tab.
           </li>
           <li>
-            <strong>Run it</strong> — Chat with the agent directly, or enable
+            <strong>Run the agent</strong> — Chat with the agent directly, or enable
             auto-start / autonomous mode to let it run on its own.
           </li>
           <li>
@@ -212,7 +212,7 @@ export function AboutTab() {
 
       {/* Capabilities */}
       <section>
-        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">What agents can do</h4>
+        <h4 className="font-semibold text-neutral-800 dark:text-neutral-100 mb-1.5">Capabilities</h4>
         <ul className="space-y-1.5 ml-1 text-xs text-neutral-600 dark:text-neutral-400">
           <li>
             <strong className="text-neutral-800 dark:text-neutral-100">Code execution</strong> — sandboxed JavaScript and TypeScript via <code>sys_code</code> and <code>sys_lambda</code>, with optional npm packages.
