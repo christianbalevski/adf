@@ -17,7 +17,7 @@ import type {
   AdaptersConfig
 } from '../../shared/types/channel-adapter.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
-import { getEnabledAgentAdapterConfig } from '../../shared/constants/adapter-registry'
+import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations } from '../../shared/constants/adapter-registry'
 
 const MAX_LOG_ENTRIES = 500
 /** Deadline for adapter.start() — a hung network connect must not block agent startup */
@@ -544,7 +544,7 @@ export class ChannelAdapterManager extends EventEmitter {
 
     // Build the desired set: type → { config, registration }
     const desired = new Map<string, { config: AdapterInstanceConfig; registration: AdapterRegistration }>()
-    for (const registration of registrations) {
+    for (const registration of withAgentEnabledAdapterRegistrations(registrations, adaptersConfig)) {
       const config = getEnabledAgentAdapterConfig(adaptersConfig, registration.type)
       if (config) desired.set(registration.type, { config, registration })
     }
@@ -560,8 +560,7 @@ export class ChannelAdapterManager extends EventEmitter {
       if (managed && adapterConfigEqual(managed.config, config)) continue // unchanged — leave connected
       if (managed) await this.stopAdapter(type) // changed — tear down before restart
 
-      const createFn = await resolveFactory(type, registration)
-      if (!createFn) continue
+      const createFn = (await resolveFactory(type, registration)) ?? (() => createUnavailableAdapter(type))
       await this.startAdapter(type, createFn, config, workspace, derivedKey ?? null)
     }
   }
@@ -869,5 +868,21 @@ export class ChannelAdapterManager extends EventEmitter {
 
   private emitStatusChange(managed: ManagedAdapter): void {
     this.emit('status-changed', managed.type, managed.status, managed.error)
+  }
+}
+
+/**
+ * Stand-in for an enabled channel this runtime cannot load: it fails to start
+ * with a reason the owner can act on, so the channel shows as an error in its
+ * status and logs rather than silently never starting.
+ */
+export function createUnavailableAdapter(type: string): ChannelAdapter {
+  const error = `This ADF runtime has no "${type}" channel, so it cannot start. It may come from a newer ADF version than the one running this agent: update ADF where the agent runs (on a remote daemon, update that host), then restart the agent.`
+  return {
+    start: async () => { throw new Error(error) },
+    stop: async () => {},
+    send: async () => ({ success: false, error }),
+    canDeliver: () => false,
+    status: () => 'error',
   }
 }

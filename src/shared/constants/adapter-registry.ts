@@ -216,6 +216,23 @@ export function withBuiltInAdapterRegistrations(
 }
 
 /**
+ * The registrations an agent's runtime must try to start: every known one,
+ * plus a bare registration for each channel the agent enables that this
+ * runtime does not know (it then fails to start with a reason instead of
+ * being skipped silently).
+ */
+export function withAgentEnabledAdapterRegistrations(
+  registrations: AdapterRegistration[],
+  adapters: AdaptersConfig | undefined,
+): AdapterRegistration[] {
+  const known = new Set(registrations.map((r) => r.type))
+  const extra = Object.keys(adapters ?? {})
+    .filter((type) => !known.has(type) && getEnabledAgentAdapterConfig(adapters, type))
+    .map((type): AdapterRegistration => ({ id: type, type, managed: false }))
+  return extra.length ? [...registrations, ...extra] : registrations
+}
+
+/**
  * Look up a registry entry by adapter type.
  */
 export function findAdapterRegistryEntry(type: string): AdapterRegistryEntry | undefined {

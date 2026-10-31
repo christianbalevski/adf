@@ -51,9 +51,9 @@ import { resolveContainerCommand } from '../services/container-command-resolver'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
 import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
-import { ChannelAdapterManager } from '../services/channel-adapter-manager'
+import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import type { AdapterRegistration, ChannelAdapter, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
-import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { withDeadline } from '../utils/concurrency'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
@@ -1321,7 +1321,7 @@ export class AgentRuntimeBuilder {
     // Failures degrade to adapter-error status; the agent still starts.
     const configuredAdapters = config.adapters ?? {}
     const envelopesLocked = detectLockedEnvelopes(workspace).length > 0
-    await Promise.allSettled(registrations.map(async (registration) => {
+    await Promise.allSettled(withAgentEnabledAdapterRegistrations(registrations, configuredAdapters).map(async (registration) => {
       const adapterType = registration.type
       const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
       if (!adapterConfig) return
@@ -1336,8 +1336,7 @@ export class AgentRuntimeBuilder {
         return
       }
 
-      const createFn = await this.resolveAdapterFactory(adapterType, registration)
-      if (!createFn) return
+      const createFn = (await this.resolveAdapterFactory(adapterType, registration)) ?? (() => createUnavailableAdapter(adapterType))
 
       try {
         const started = await manager.startAdapter(

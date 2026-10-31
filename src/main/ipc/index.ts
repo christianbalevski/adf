@@ -179,7 +179,7 @@ import { ExternalExecutionService } from '../services/external-execution.service
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
 import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
-import { ChannelAdapterManager } from '../services/channel-adapter-manager'
+import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
@@ -190,7 +190,7 @@ import { buildConfigSummary, deriveReviewIdentity, autoLockFields, getReviewedId
 import { inboxSnapshot } from '../runtime/inbox-snapshot'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
-import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
 import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
@@ -4738,7 +4738,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       })
 
       const configuredAdapters = config.adapters ?? {}
-      for (const registration of adapterRegistrations) {
+      for (const registration of withAgentEnabledAdapterRegistrations(adapterRegistrations, configuredAdapters)) {
         const adapterType = registration.type
         const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
         if (!adapterConfig) continue
@@ -4759,10 +4759,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           continue
         }
 
-        if (!createFn) {
-          console.warn(`[AGENT_START][Adapter] No createAdapter() found for "${adapterType}"`)
-          continue
-        }
+        if (!createFn) createFn = () => createUnavailableAdapter(adapterType)
 
         const started = await adapterMgr.startAdapter(
           adapterType, createFn, adapterConfig, capturedWorkspace, currentDerivedKey
