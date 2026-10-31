@@ -308,7 +308,7 @@ MCP servers are managed on **Settings → MCP servers**. This configuration is a
 
 From **Settings → MCP servers**:
 
-- **Add MCP Server** — One button opens the configuration modal: pick a known server from the curated quick-add cards or configure a custom/remote server, then follow its numbered steps (add details, connect or sign in, who can attach it). Prefilled options a known server rarely needs changed are under **Advanced**
+- **Add MCP Server** — One button opens the configuration modal: pick a known server from the curated quick-add cards or configure a custom/remote server, then follow its numbered steps (where it runs, add details, connect or sign in, who can attach it). Prefilled options a known server rarely needs changed are under **Advanced**
 - **Connect** — The modal's connect step runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
 - **Configure** — Reopens the same modal for any server
 - **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)

@@ -69,11 +69,11 @@ The app bundles the same document as its offline fallback, so what you fetch is 
 
 1. Open **Settings → MCP servers** and click **Add MCP Server**
 2. Pick a known server from the quick-add cards (sign-in servers are labeled; **Setup needed** marks servers that need something from your own account first, with the details in its tooltip), or choose **Custom server** / **Remote HTTP server**
-3. Follow the numbered steps. A known server asks only for what it needs: **Add details** (keys, required credential files, or values for its arguments, skipped when there are none), **Connect** or **Sign in**, then **Who can attach it**. A custom server's first step is **Server**: name, command or URL, args, and environment variables
+3. Follow the numbered steps. A local server starts with **Where it runs** (Host or Container): it decides where the server is installed, where its credential files land, and what Connect tests, and moving it later clears a prior verification. Known servers come with the location their setup works in already chosen. Then a known server asks only for what it needs: **Add details** (keys, required credential files, or values for its arguments, skipped when there are none), **Connect** or **Sign in**, then **Who can attach it**. A custom server's first step is **Server**: name, command or URL, args, and environment variables
 4. **Connect** (or **Sign in**) runs the real pipeline: credential files land where the server runs, the OAuth browser flow runs when declared, and the step shows the discovered tool count (or the server's own error output, verbatim)
 5. **Done** saves the server. Before a connect succeeds the button reads **Save without connecting**, and the row shows **Not verified** until one does. Managed npm/pypi packages download in the background into `~/.adf-studio/mcp-servers/<package>/`
 
-**Runs on** sits under the steps; known servers come with the right location already chosen. Everything else a known server prefills — name, package, args, extra environment variables, headers, optional credential files, the sign-in command, the tool timeout — is under **Advanced**.
+Everything else a known server prefills — name, package, args, extra environment variables, headers, optional credential files, the sign-in command, the tool timeout — is under **Advanced**.
 
 Each server row afterwards has **Configure** (same form), **Reconnect** (or **Re-authorize** for OAuth servers), **Logs**, and **Remove**.
 

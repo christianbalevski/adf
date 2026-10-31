@@ -390,8 +390,11 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
 
   // Editing any executable-identity field invalidates a prior "verified"
   // result — a stamp must never vouch for a config the user changed after.
+  // Moving the server between host and container does too: Connect tested it
+  // (and stored its credential files) where it ran.
   const patch = (p: Partial<McpServerRegistration>) => {
-    const touchesIdentity = MCP_EXECUTABLE_IDENTITY_FIELDS.some((k) => k in p)
+    const touchesIdentity = MCP_EXECUTABLE_IDENTITY_FIELDS.some((k) => k in p) ||
+      ('runLocation' in p && p.runLocation !== draftRef.current?.runLocation)
     setDraft((d) => (d ? { ...d, ...p, ...(touchesIdentity ? { lastVerifiedAt: undefined } : {}) } : d))
     if (touchesIdentity) setTest((t) => (t.phase === 'done' ? { phase: 'idle' } : t))
   }
@@ -495,7 +498,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
       })
       if (result?.success) {
         const current = draftRef.current
-        if (current && sameExecutableIdentity(current, tested)) {
+        if (current && sameExecutableIdentity(current, tested) && current.runLocation === tested.runLocation) {
           patch({ lastVerifiedAt: Date.now(), ...(result.serverVersion ? { version: result.serverVersion } : {}) })
           setTest({ phase: 'done', success: true, tools: result.tools, notes: result.notes, authRan: result.authRan, oauthRan: result.oauthRan, location: result.location })
         } else {
@@ -565,7 +568,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     : placeholderArgCount === 0 && stepEnvCount === 0 ? (requiredFiles.length === 1 ? 'Add credential file' : 'Add credential files')
       : placeholderArgCount === 0 && requiredFiles.length === 0 ? (stepEnvCount === 1 ? 'Add key' : 'Add keys')
         : 'Add details'
-  const nConnect = showDetailsStep ? 2 : 1
+  const nDetails = isHttp ? 1 : 2
+  const nConnect = showDetailsStep ? nDetails + 1 : nDetails
 
   /** Substitute a placeholder arg's value into the entry's template arg. */
   const placeholderValue = (i: number): string => {
@@ -897,9 +901,47 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             </div>
           )}
 
-          {/* ① What the server needs from you */}
+          {/* Where it runs comes first: it decides where the server is installed,
+              where credential files land, and what Connect tests. A catalog
+              entry already picked the location its setup works in. */}
+          {!isHttp && (
+            <SetupStep
+              n={1}
+              title="Where it runs"
+              done={(draft.runLocation !== undefined || !!catalogEntry) && !(draft.runLocation === 'host' && hostAccessEnabled === false)}
+              hint={onHost ? HOST_BOUNDARY_TEXT : isCustom ? `${CONTAINER_TEXT} ${CONTAINER_CUSTOM_COMMAND_TEXT}` : CONTAINER_TEXT}
+              aside={
+                <span className="inline-flex items-center gap-3">
+                  <DocsLink href={DOCS.mcpRunLocation} />
+                  <Segmented
+                    tone={onHost ? 'amber' : 'blue'}
+                    options={[
+                      { label: 'Host', active: onHost, onClick: () => patch({ runLocation: 'host' }) },
+                      { label: 'Container', active: !onHost, onClick: () => patch({ runLocation: 'shared' }) },
+                    ]}
+                  />
+                </span>
+              }
+            >
+              {hostByDefault && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  Host is the default while “MCP servers on the host” is on (Settings → Compute).
+                </p>
+              )}
+              {draft.runLocation === 'host' && hostAccessEnabled === false && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  Host access is off, so this runs in a container for now.{' '}
+                  {onEnableHostAccess && (
+                    <button onClick={onEnableHostAccess} className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300">Turn on host access</button>
+                  )}
+                </p>
+              )}
+            </SetupStep>
+          )}
+
+          {/* What the server needs from you */}
           {showDetailsStep && (
-            <SetupStep n={1} title={detailsTitle} done={!!catalogEntry && checklist.inputsDone} hint={catalogEntry?.prerequisite}>
+            <SetupStep n={nDetails} title={detailsTitle} done={!!catalogEntry && checklist.inputsDone} hint={catalogEntry?.prerequisite}>
               {!catalogEntry && (
                 <>
                   {identityFields}
@@ -1012,36 +1054,6 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               />
             }
           />
-
-          {/* Where it runs: settled by the catalog for most servers, so it stays small */}
-          {!isHttp && (
-            <div className="space-y-1 pt-1 border-t border-[var(--adf-ui-border)]">
-              <div className="flex items-center gap-2 pt-2">
-                <span className="text-[11px] text-neutral-500 dark:text-neutral-400 inline-flex items-center">
-                  Runs on
-                  <InfoHint tip={onHost ? HOST_BOUNDARY_TEXT : isCustom ? `${CONTAINER_TEXT} ${CONTAINER_CUSTOM_COMMAND_TEXT}` : CONTAINER_TEXT} />
-                </span>
-                <Segmented
-                  tone={onHost ? 'amber' : 'blue'}
-                  options={[{ label: 'Host', active: onHost, onClick: () => patch({ runLocation: 'host' }) }, { label: 'Container', active: !onHost, onClick: () => patch({ runLocation: 'shared' }) }]}
-                />
-                <DocsLink href={DOCS.mcpRunLocation} className="ml-auto" />
-              </div>
-              {hostByDefault && (
-                <p className="text-[9px] text-amber-600 dark:text-amber-400">
-                  Host is the default while “MCP servers on the host” is on (Settings → Compute).
-                </p>
-              )}
-              {draft.runLocation === 'host' && hostAccessEnabled === false && (
-                <p className="text-[9px] text-amber-600 dark:text-amber-400">
-                  Host access is off, so this runs in a container for now.{' '}
-                  {onEnableHostAccess && (
-                    <button onClick={onEnableHostAccess} className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300">Turn on host access</button>
-                  )}
-                </p>
-              )}
-            </div>
-          )}
 
           {/* Everything a catalog server already has right */}
           <div className="space-y-2">
