@@ -33,7 +33,7 @@
   <sub>Where an agent lives. At t = 0 its parts are spread across systems run by other people. At t = 2026 they are held in one file, ava.adf.</sub>
 </p>
 
-![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](docs/assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
+![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Upcoming.](docs/assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 This repository contains the spec, the runtime daemon, the CLI, and ADF Studio for desktop and browser. Together they are the reference implementation of ADF.
 

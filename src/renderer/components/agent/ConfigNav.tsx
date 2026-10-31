@@ -216,7 +216,7 @@ function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
             value={query}
             onChange={(e) => setQuery(e.target.value)}
             onKeyDown={onInputKey}
-            placeholder="Jump to a section…"
+            placeholder="Search sections…"
             className="w-full border-b border-hairline bg-transparent px-3 py-2 text-xs outline-none placeholder:text-[var(--adf-ui-text-subtle)]"
           />
           <div ref={listRef} role="listbox" className="max-h-[60vh] overflow-y-auto py-1">

@@ -402,10 +402,10 @@ type ApprovalStatus = { busy?: boolean; error?: string }
 
 /** Why an approval card ended with no decision. */
 const APPROVAL_ENDED_TEXT: Record<ApprovalEndedBy, string> = {
-  chat: 'Ended by your message',
-  state: 'Ended by a state change',
-  interrupt: 'Ended when you stopped the turn',
-  stop: 'Ended when the agent stopped',
+  chat: 'Ended: owner message',
+  state: 'Ended: state change',
+  interrupt: 'Ended: turn stopped',
+  stop: 'Ended: agent stopped',
 }
 
 /** Brand §10 "Tool calls, logs": sunken, hairline, ink-muted mono. Standalone

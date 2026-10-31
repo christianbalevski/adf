@@ -88,7 +88,7 @@ describe('powerTooltip', () => {
       factor('messaging:send', 'Sends messages on its own', 1, true),
       factor('security:signed_only', 'Only accepts signed messages', -0.5)
     ])
-    expect(powerTooltip(stat)).toBe(`Lv ${stat.level} of 20, some asks you first · serves a public web page, 3 HTTP API routes`)
+    expect(powerTooltip(stat)).toBe(`Lv ${stat.level} of 20, some requires approval · serves a public web page, 3 HTTP API routes`)
   })
 
   it('leaves out the gated part when nothing is gated', () => {
@@ -101,7 +101,7 @@ describe('powerTooltip', () => {
       factor('triggers', 'Wakes on 2 event types (on_inbox, on_timer)', 1),
       factor('tool:sys_update_config', 'Changes its own config (needs approval)', 1.5, true)
     ])
-    expect(powerTooltip(stat)).toBe(`Lv ${stat.level} of 20, mostly asks you first · changes its own config, wakes on 2 event types`)
+    expect(powerTooltip(stat)).toBe(`Lv ${stat.level} of 20, mostly requires approval · changes its own config, wakes on 2 event types`)
   })
 
   it('labels the warn state in words', () => {
@@ -289,9 +289,9 @@ describe('header helpers', () => {
   it('labels agent state', () => {
     expect(agentStatusLabel('active', { toolName: 'fs_write' })).toBe('Running fs_write')
     expect(agentStatusLabel('active')).toBe('Thinking')
-    expect(agentStatusLabel('active', { approvals: 2, toolName: 'fs_write' })).toBe('Waiting for you · 2 approvals')
-    expect(agentStatusLabel('active', { approvals: 1, asks: 1 })).toBe('Waiting for you · 1 approval, 1 question')
-    expect(agentStatusLabel('active', { suspend: true })).toBe('Waiting for you')
+    expect(agentStatusLabel('active', { approvals: 2, toolName: 'fs_write' })).toBe('Awaiting input · 2 approvals')
+    expect(agentStatusLabel('active', { approvals: 1, asks: 1 })).toBe('Awaiting input · 1 approval, 1 question')
+    expect(agentStatusLabel('active', { suspend: true })).toBe('Awaiting input')
     expect(agentStatusLabel('off', { approvals: 1 })).toBe('Stopped')
     expect(agentStatusLabel('idle', { nextWakeAt: 56 * 60_000, now: 0 })).toBe('Wakes in 56 min')
     expect(agentStatusLabel('idle')).toBe('')

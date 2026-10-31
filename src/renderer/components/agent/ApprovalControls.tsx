@@ -213,7 +213,7 @@ export function ApprovalControls({
               }}
               rows={3}
               aria-label="Feedback for the agent"
-              placeholder="Why is this rejected? (the agent sees this)"
+              placeholder="Feedback (sent to the agent)"
               className="w-full text-xs rounded border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-900 text-neutral-700 dark:text-neutral-200 p-1.5 resize-none focus:outline-none focus:ring-1 focus:ring-red-400"
             />
             <div className="flex items-center justify-between mt-1.5">

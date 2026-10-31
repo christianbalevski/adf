@@ -6,7 +6,7 @@ This document covers the **Studio application itself**: its interface, settings,
 
 > **Looking for a specific concept?** Start at [docs/index.md](index.md). This page is the app tour, not the full reference. It links into the guides rather than duplicating them.
 
-![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
+![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Upcoming.](assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 ---
 
@@ -123,7 +123,7 @@ The dock has five tabs:
 
 | Tab | What it shows |
 |-----|---------------|
-| **Overview** | The agent's card: avatar, name, description, state and model, four stats, Coming up, Activity and Contents. See [Agent Overview](guides/agent-overview.md). |
+| **Overview** | The agent's card: avatar, name, description, state and model, four stats, Upcoming, Activity and Contents. See [Agent Overview](guides/agent-overview.md). |
 | **Loops** | The chat: the main loop and any inner loops, each in its own tab. Absent while the chat is in the center. |
 | **Inbox** | Messages from other agents and channels, with **All**, **Unread**, **Read**, **Archived** and **Sent** filters and a search box. The tab shows the unread count. |
 | **Files** | The agent's files (`adf_files`), with search, upload and **New file**. It updates as the agent writes. |

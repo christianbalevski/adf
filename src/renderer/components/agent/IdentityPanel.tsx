@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
-import { DocsLink } from '../common/DocsLink'
+import { DocsLink, InfoHint } from '../common/DocsLink'
 import { FreshnessStamp } from '../common/FreshnessStamp'
 import { DOCS } from '../../../shared/constants/docs-links'
 import { useDocumentStore } from '../../stores/document.store'
@@ -86,9 +86,9 @@ const ROLE_TIPS: Record<string, string> = {
   runtime: 'Owner-signed delegation certifying a runtime key acts for this owner.',
 }
 const ROLE_SUBTITLES: Record<string, string> = {
-  owner: 'This agent belongs to you',
-  operator: 'This installation runs it',
-  clone: 'Re-minted from a previous identity when you claimed it',
+  owner: 'Signed by owner key',
+  operator: 'Signed by runtime key',
+  clone: 'Replaced a previous identity on claim',
 }
 const PEER_ROLE_TIP =
   'Peer attestation: another agent signed this statement about this agent. The role’s meaning is defined by the issuing peer, not the runtime.'
@@ -383,7 +383,7 @@ export function IdentityPanel() {
                   onClick={() => setShareOpen(true)}
                   className="text-[10px] text-blue-600 dark:text-blue-400 hover:underline"
                 >
-                  Set a share password…
+                  Set share password…
                 </button>
               )
             )}
@@ -433,6 +433,7 @@ export function IdentityPanel() {
             <h3 className="text-xs font-semibold text-neutral-500 dark:text-neutral-400 uppercase tracking-wide">
               Attestations ({attestations.length})
             </h3>
+            <InfoHint tip="Signed proofs of who owns and operates this agent. The badge shows whether they are published on the agent card (also set in Config → Security)." />
             <DocsLink href={DOCS.attestations} />
             <Tooltip tip={publishOnCard
               ? 'Attestations are published on this agent’s card — mesh peers can verify ownership. Click to make private.'
@@ -459,10 +460,6 @@ export function IdentityPanel() {
             </button>
           )}
         </div>
-        <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mb-2">
-          Signed proofs of who owns and operates this agent. The badge shows whether they are published on the
-          agent card (also toggleable in Config → Security).
-        </p>
         {attestations.length === 0 ? (
           <p className="text-xs text-[var(--adf-ui-text-subtle)]">No attestations</p>
         ) : (
