@@ -397,20 +397,26 @@ export const LOOP_NAME_LOCKED_TIP =
  * has an empty slice). Until the fetch answers, the name stays editable:
  * locking while it is pending would swap the input out from under every
  * keystroke of a new loop's name. Templates have no stream.
+ *
+ * Only a name in the open agent's saved config is asked about. On an agent
+ * switch the cards remount from the draft before it catches up, still holding
+ * the previous agent's loops; asking the new agent about those names only
+ * earns a 404. An unsaved name has no stream either way.
  */
 function useLoopHasHistory(name: string, inTemplate: boolean): boolean {
   const live = useAgentStore((s) => !inTemplate && !!name && (s.sideLoops[name]?.log.length ?? 0) > 0)
+  const saved = useAgentStore((s) => !inTemplate && !!name && (s.config?.loops?.some((l) => l.name === name) ?? false))
   const [stored, setStored] = useState<{ name: string; has: boolean } | null>(null)
   useEffect(() => {
-    if (inTemplate || !name) return
+    if (inTemplate || !name || !saved) return
     let cancelled = false
     void Promise.resolve(openApi()?.getChatOlder(Number.MAX_SAFE_INTEGER, 1, name))
       .then((page) => { if (!cancelled) setStored({ name, has: (page?.uiLog.length ?? 0) > 0 || (page?.earlierCount ?? 0) > 0 }) })
       .catch(() => { if (!cancelled) setStored({ name, has: false }) })
     return () => { cancelled = true }
-  }, [name, inTemplate])
+  }, [name, inTemplate, saved])
   if (inTemplate || !name) return false
-  return live || (stored?.name === name && stored.has)
+  return live || (saved && stored?.name === name && stored.has)
 }
 
 /**
