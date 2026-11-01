@@ -254,7 +254,7 @@ The selected agent’s registered lambda commands also appear in completion, hel
 | `/open-site [agent]` | `/site` | Open an agent’s website in the browser (starts the web server if it is stopped) |
 | `/copy-site [agent]` |  | Copy an agent’s website URL |
 | `/welcome` |  | What ADF is, and the getting-started checklist |
-| `/channels [add [telegram\|discord\|slack\|email\|whatsapp] \| remove <channel>]` |  | The selected agent’s channels (Telegram, Discord, Slack, email, WhatsApp): state, add, remove |
+| `/channels [add [telegram\|discord\|slack\|email\|whatsapp\|whatsapp_agent] \| remove <channel>]` |  | The selected agent’s channels (Telegram, Discord, Slack, email, WhatsApp): state, add, remove |
 | `/provider [add [preset] \| list \| remove <id>]` |  | Model providers: add one with an API key (stored in the daemon’s secret store), list, remove. Subscriptions: /login |
 | `/mcp [add [catalog-name \| npm:pkg \| python:pkg \| https://url] \| remove <name> \| restart <name> \| logs <name>]` |  | The selected agent’s MCP servers: state, add (catalog, npm, Python, remote URL), restart, credentials, tools, logs, remove |
 | `/templates [template-id]` |  | Agent templates: list, details, new, duplicate, rename, notes, default, review, reset, delete, edit in $EDITOR |
@@ -376,7 +376,8 @@ The selected agent’s registered lambda commands also appear in completion, hel
 | Add Discord channel | Actions |  |
 | Add Slack channel | Actions |  |
 | Add Email channel | Actions |  |
-| Add WhatsApp channel | Actions |  |
+| Add WhatsApp · Linked number channel | Actions |  |
+| Add WhatsApp · Official agent channel | Actions |  |
 | Connect a model provider | Actions |  |
 | Agent templates | Actions |  |
 | Skills of this agent | Actions |  |
