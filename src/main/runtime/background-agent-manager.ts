@@ -30,7 +30,7 @@ import { createProvider, providerNeedsApiKey, resolveAgentProviderConfig } from 
 import { ensureCoreToolDeclarations } from './core-tool-declarations'
 import { McpClientManager } from '../services/mcp-client-manager'
 import { createScratchDir, removeScratchDir } from '../utils/scratch-dir'
-import { ChannelAdapterManager } from '../services/channel-adapter-manager'
+import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import { PackageResolver } from '../services/mcp-package-resolver'
 import { captureEnvSchema, resolveMcpSpawnConfig, resolveMcpEnvVars } from '../services/mcp-spawn-utils'
 import type { UvxPackageResolver } from '../services/uvx-package-resolver'
@@ -46,7 +46,7 @@ import { containerLinkedFileReader } from '../services/mcp-linked-files'
 import { shouldContainerize, shouldIsolate, isServerForceShared, type ComputeSettings } from '../services/container-routing'
 import { prepareMcpContainer, ComputeUnavailableError } from '../services/mcp-container-ready'
 import { syncDiscoveredMcpTools } from '../services/mcp-tool-sync'
-import { getEnabledAgentAdapterConfig, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
+import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { adapterCredentialsLocked, createLockedCredentialsAdapter, describeHostEnv, detectLockedEnvelopes } from './agent-runtime-builder'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import type { SettingsService } from '../services/settings.service'
@@ -1648,7 +1648,7 @@ export class BackgroundAgentManager extends EventEmitter {
       // Adapters are independent of one another — start them in parallel.
       // Failures degrade to adapter-error status; the agent still starts.
       const configuredAdapters = config.adapters ?? {}
-      await Promise.allSettled(adapterRegistrations.map(async (registration) => {
+      await Promise.allSettled(withAgentEnabledAdapterRegistrations(adapterRegistrations, configuredAdapters).map(async (registration) => {
         const adapterType = registration.type
         const adapterConfig = getEnabledAgentAdapterConfig(configuredAdapters, adapterType)
         if (!adapterConfig) return
@@ -1679,10 +1679,7 @@ export class BackgroundAgentManager extends EventEmitter {
           return
         }
 
-        if (!createFn) {
-          console.warn(`[BackgroundAgent][Adapter] No createAdapter() found for "${adapterType}"`)
-          return
-        }
+        if (!createFn) createFn = () => createUnavailableAdapter(adapterType)
 
         try {
           const started = await adapterMgr.startAdapter(

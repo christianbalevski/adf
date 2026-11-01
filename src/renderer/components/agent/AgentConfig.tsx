@@ -280,7 +280,7 @@ function parseTcpAllowlist(value: string): StreamBindTcpAllowRule[] {
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, SystemPromptParts } from '../../../shared/types/ipc.types'
 import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
-import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
+import { findAdapterRegistryEntry, withAgentEnabledAdapterRegistrations } from '../../../shared/constants/adapter-registry'
 import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
 import { useRuntime } from '../../stores/runtimes.store'
 import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
@@ -1002,7 +1002,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     openApi()?.listIdentityPurposes('adapter:').then((purposes) => {
       const typesWithKeys = new Set<string>()
       const keysByType: Record<string, Set<string>> = {}
-      for (const reg of adapterRegistrations) {
+      for (const reg of withAgentEnabledAdapterRegistrations(adapterRegistrations, local?.adapters)) {
         const prefix = `adapter:${reg.type}:`
         const keys = new Set<string>()
         for (const p of purposes) {
@@ -3338,7 +3338,9 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               {template && (
                 <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>
               )}
-              {adapterRegistrations.map((reg) => {
+              {withAgentEnabledAdapterRegistrations(adapterRegistrations, local.adapters).map((reg) => {
+                // Enabled on the agent, but the runtime that runs it does not list this channel.
+                const unknownToRuntime = !adapterRegistrations.some((r) => r.type === reg.type)
                 const adapterConfig = local.adapters?.[reg.type]
                 const enabled = adapterConfig?.enabled ?? false
                 const registryEntry = findAdapterRegistryEntry(reg.type)
@@ -3470,6 +3472,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     {hasEmptyRequiredKeys && (
                       <p className="text-[10px] text-amber-600 dark:text-amber-400 pl-2">
                         Missing credentials — connect this agent under Settings → Channels
+                      </p>
+                    )}
+                    {unknownToRuntime && (
+                      <p className="text-[10px] text-amber-600 dark:text-amber-400 pl-2">
+                        Not available in the ADF runtime running this agent. Update ADF there (on a remote daemon, its host), then restart the agent.
                       </p>
                     )}
                   </div>
