@@ -22,7 +22,7 @@ That's it. Pushing the tag triggers `.github/workflows/release.yml`:
 
 1. **build** (matrix, **blocking**) — the three critical platforms each run
    `npm run release`, uploading to a single **draft** GitHub Release:
-   - `macos-14` → `…-arm64.dmg` (Apple Silicon) **and** `…-universal.dmg`
+   - `macos-15` → `…-arm64.dmg` (Apple Silicon) **and** `…-universal.dmg`
      (runs on Apple Silicon and Intel — the download for Intel users)
    - `windows-2022` → `…-Setup-….exe`
    - `ubuntu-latest` → `….deb` + `….AppImage`
@@ -35,7 +35,7 @@ That's it. Pushing the tag triggers `.github/workflows/release.yml`:
 **Why a universal dmg instead of an Intel one:** the old separate Intel job
 needed `macos-13` (GitHub's last Intel image), which routinely sat queued 30+
 minutes or never got a runner, so it never actually shipped. Instead the
-`macos-14` (arm64) runner builds with `--arm64 --universal`: the arm64-only
+`macos-15` (arm64) runner builds with `--arm64 --universal`: the arm64-only
 dmg stays as-is, and for the universal dmg electron-builder packs the app once
 per arch — rebuilding `better-sqlite3` for each, which the Xcode toolchain
 cross-compiles fine — and lipo-merges the two. Deps that ship prebuilt
