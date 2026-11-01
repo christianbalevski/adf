@@ -230,7 +230,8 @@ describe('WhatsAppAgentAdapter (against the mock Agent Platform API)', () => {
       await startConnected(h)
       await until(() => h.ingested.length === 1)
       expect(h.ingested[0].payload).toBe('a')
-      expect(h.logs.some((l) => l.includes('1 dropped') && l.includes('1 older message'))).toBe(true)
+      // The catch-up summary is logged after the batch is ingested.
+      await until(() => h.logs.some((l) => l.includes('1 dropped') && l.includes('1 older message')))
 
       await h.adapter.stop()
       server.pushMessage({ type: 'text', text: { body: 'c' } })

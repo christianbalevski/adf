@@ -209,6 +209,24 @@ describe('/channels', () => {
     await tui.waitFor(() => store!.getState().activeView === 'inspect')
   }, 15000)
 
+  it('adds WhatsApp · Official agent: the API key from WhatsApp, sealed, switched on', async () => {
+    const KEY_VALUE = 'wa-agent-key-0123456789abcdef'
+    const { tui, setup } = await mount()
+    await slash(tui, '/channels add whatsapp_agent')
+    let frame = await tui.waitFor('WhatsApp · Official agent · agent-1')
+    expect(frame).toContain('Settings → Agents')
+    expect(frame).toContain('Chat info → API key')
+    expect(frame).not.toContain('Linked Devices')
+    await tui.type(KEY_VALUE)
+    await tui.waitFor(`${KEY_VALUE.length} chars`)
+    await tui.press(KEY.enter)
+    frame = await tui.waitFor(f => f.includes('switched on for agent-1'))
+    expect(setup.calls).toEqual(['PUT /agents/' + AGENT_1_ID + '/adapters/credentials', 'POST /agents/' + AGENT_1_ID + '/adapters'])
+    expect(setup.credentials.get(AGENT_1_ID)?.get('whatsapp_agent')?.get('WHATSAPP_AGENT_API_KEY')).toBe(KEY_VALUE)
+    expect(setup.channels.get(AGENT_1_ID)?.get('whatsapp_agent')?.config).toMatchObject({ enabled: true })
+    for (const f of tui.frames) expect(f).not.toContain(KEY_VALUE)
+  }, 15000)
+
   it('validates before anything is sent', async () => {
     const { tui, setup } = await mount()
     await slash(tui, '/channels add telegram')
