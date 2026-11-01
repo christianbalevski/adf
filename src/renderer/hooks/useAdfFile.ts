@@ -605,8 +605,8 @@ export function useAdfFile() {
           alert(
             'Cannot open this file\n\n' +
             'This ADF file uses the old ZIP format (pre-v0.1).\n\n' +
-            'The format has been upgraded to SQLite for better performance and reliability.\n\n' +
-            'Please delete this file and create a new one with the same name.'
+            'Current ADF files are SQLite databases.\n\n' +
+            'Delete this file and create a new agent with the same name.'
           )
         } else {
           reportFileOperationError('open', result, alert)

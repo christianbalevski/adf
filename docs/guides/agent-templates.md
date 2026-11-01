@@ -87,7 +87,7 @@ Sending from the home screen with an unreviewed template creates nothing and ope
 
 ## Agents created by other agents
 
-Settings > Agent templates has a dropdown, **Template for agents created by agents**, with a **None (code defaults)** option. With a template chosen, children made with `sys_create_adf` start from it. They get its config, its files and its local tables, and never its credentials or identity rows, so an agent cannot gain credentials by making a child. The choice does not apply when the parent names a template file of its own in the `template` parameter, described in [Tools > sys_create_adf](tools.md#sys_create_adf).
+Settings > Agent templates > **Child agents** has a dropdown, **Template**, with a **None (code defaults)** option. With a template chosen, children made with `sys_create_adf` start from it. They get its config, its files and its local tables, and never its credentials or identity rows, so an agent cannot gain credentials by making a child. The choice does not apply when the parent names a template file of its own in the `template` parameter, described in [Tools > sys_create_adf](tools.md#sys_create_adf).
 
 ## The old Settings template
 

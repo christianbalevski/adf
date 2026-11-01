@@ -179,7 +179,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
           )}
         </SettingsRow>
         {plaintext && !view.keyringAvailable && (
-          <SettingsRow separator label="Switch back" description="Set up and unlock your system keychain, then check again: Encrypt with Keychain becomes available.">
+          <SettingsRow separator label="Keychain" description="Set up and unlock your system keychain, then check again: Encrypt with Keychain becomes available.">
             <Button onClick={onCheckAgain}>Check Again</Button>
           </SettingsRow>
         )}
@@ -364,7 +364,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
       {/* Owner identity */}
       <SettingsGroup
         title="Owner identity"
-        hint="Who you are. Rooted in a 12-word seed phrase generated on first launch; import the same phrase on another computer to be the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents."
+        hint="Derived from a 12-word seed phrase generated on first launch. Import the same phrase on another computer to use the same owner there. Stamped into agent files you claim or clone, and used to sign ownership attestations for your agents."
         docs={DOCS.settingsIdentity}
       >
         <SettingsRow
@@ -507,7 +507,7 @@ function IdentityTab({ remote, runtimeName }: { remote: boolean; runtimeName: st
               Cancel
             </Button>
             <Button onClick={confirmBackup} disabled={!mnemonic} variant="primary">
-              I have written it down
+              Mark as backed up
             </Button>
           </div>
         </div>
@@ -623,15 +623,11 @@ function SkillsTab() {
   return (
     <SettingsGroup
       title="Catalog sources"
-      description={<>
-        Where the Skills panel&apos;s browser looks for installable skills. A catalog is discovery
-        metadata only — installing writes <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> into
-        the open agent and nothing else. No tools, files, or approvals are ever granted by one.
-      </>}
+      description="Catalogs the Skills panel browser lists."
+      hint="A catalog is discovery metadata only. Installing a skill writes skills/<name>/SKILL.md into the open agent and nothing else; a catalog grants no tools, files, or approvals."
     >
       <SettingsRow
-        label="Sources"
-        description="All fetched together each time the browser opens, in this order. A name published by more than one catalog resolves to the first source that lists it."
+        label={<>Sources<InfoHint tip="All sources are fetched each time the browser opens, in this order. A name listed by more than one catalog resolves to the first source that lists it." /></>}
         stacked
       >
         {sources !== null && list.length === 0 ? (
@@ -677,8 +673,8 @@ function SkillsTab() {
       </SettingsRow>
 
       <SettingsRow
-        label="Add a source"
-        description="Any https URL serving a skill catalog document. Entries that fail validation are dropped individually, and a source that cannot be reached is reported in the browser without hiding the others."
+        label={<>Add<InfoHint tip="Entries that fail validation are dropped one by one. A source that cannot be reached is reported in the browser; the other sources still list." /></>}
+        description="An https URL serving a skill catalog document."
         error={error}
         help={full ? `Remove one first — at most ${MAX_CATALOG_SOURCES} catalog sources.` : undefined}
         separator
@@ -2206,7 +2202,7 @@ function ComputeTab({
     <div className="flex flex-col gap-5">
     <SettingsGroup
       title="Containers"
-      description="Podman containers that ADF sets up and manages; the recommended way to run agent code."
+      description="Podman containers that ADF sets up and manages."
       hint={'ADF manages Podman setup, container lifecycle, agent assignment, workspaces, and rebuilds.\n\nMCP servers use the shared container by default; agents can also receive a dedicated container for stronger isolation. Installed packages and dedicated containers persist across agent restarts.'}
       docs={DOCS.settingsCompute}
     >
@@ -2540,7 +2536,7 @@ function ComputeTab({
           </div>
           <label className="mt-3 flex items-center gap-2 text-[11px] text-[var(--adf-ui-text-muted)]">
             <input type="checkbox" checked={targetDraft.pinId} onChange={(event) => setTargetDraft((draft) => ({ ...draft, pinId: event.target.checked }))} />
-            Pin this container ID; do not follow the name when the container is recreated
+            Pin container ID<InfoHint tip="On: commands run only in the container with this ID; a container recreated under the same name is not used. Off: the name is followed." />
           </label>
           {targetMessage && (
             <p className={`mt-2 text-[11px] ${targetMessage.kind === 'error' ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-success)]'}`}>{targetMessage.text}</p>
@@ -2679,7 +2675,7 @@ function SetupWizard({
   return (
     <div className="mb-4 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] p-3">
       <div className="flex items-center justify-between mb-2">
-        <h4 className="text-xs font-semibold text-amber-800 dark:text-amber-300">Setup required</h4>
+        <h4 className="text-xs font-semibold text-amber-800 dark:text-amber-300">Podman setup</h4>
         <Button
           onClick={onRefresh}
           variant="ghost"
@@ -2693,7 +2689,7 @@ function SetupWizard({
       </div>
       <p className="text-[11px] text-amber-700 dark:text-amber-400 mb-3">
         The compute environment runs MCP servers and agent code inside containers.
-        {availability.machineRequired && ' On macOS/Windows, a lightweight Linux VM is also required.'}
+        {availability.machineRequired && ' On macOS/Windows, a Linux VM is also required.'}
       </p>
 
       <div className="space-y-2">

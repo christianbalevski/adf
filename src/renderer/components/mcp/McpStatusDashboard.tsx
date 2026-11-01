@@ -28,7 +28,7 @@ export const STATUS_LABELS: Record<string, string> = {
   stopped: 'Stopped',
   installing: 'Installing...',
   needs_sign_in: 'Sign in needed',
-  needs_compute: 'Needs setup'
+  needs_compute: 'Compute unavailable'
 }
 
 interface McpStatusDashboardProps {
@@ -468,7 +468,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                   </div>
                   <div className="flex items-center shrink-0">
                     {isOAuthRow && signedIn === true && (
-                      <Tooltip tip="Sign out — clears the stored token (re-sign-in is one click).">
+                      <Tooltip tip="Sign out. Clears the stored token.">
                         <button
                           onClick={(e) => { e.stopPropagation(); handleOAuthSignOut(reg) }}
                           className="p-1 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200"

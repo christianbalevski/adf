@@ -9,7 +9,7 @@ const BUTTON = 'px-2 py-0.5 rounded-[var(--adf-ui-control-radius)] border border
  * W3-F: "changed elsewhere" strip over an editor whose unsaved text someone
  * else's change overtook (the agent, another Studio window, the terminal
  * app, the CLI). Nothing is written until the user picks: Reload takes their
- * version and drops the unsaved text; Keep mine saves this version over
+ * version and drops the unsaved text; Overwrite saves this version over
  * theirs. Compare (when both texts are known) shows the difference first.
  * Used by the editor tabs and the config panel alike.
  */
@@ -34,15 +34,15 @@ export function ChangedElsewhereNotice({ what, writer, onReload, onKeep, focusSe
       <div className="flex flex-wrap items-center gap-2 px-3 py-1.5">
         <span className="flex-1 min-w-0">{conflictMessage(what, writer)} Your changes are not saved.</span>
         {canCompare && (
-          <button type="button" onClick={() => setComparing((c) => !c)} className={BUTTON} aria-expanded={comparing} title="Show what differs between your version and theirs">
+          <button type="button" onClick={() => setComparing((c) => !c)} className={BUTTON} aria-expanded={comparing} title="Show the differences between the saved version and your unsaved changes">
             {comparing ? 'Hide compare' : 'Compare'}
           </button>
         )}
-        <button ref={reloadRef} type="button" onClick={onReload} className={BUTTON} title="Discard your unsaved changes and show their version">
+        <button ref={reloadRef} type="button" onClick={onReload} className={BUTTON} title="Discard your unsaved changes and load the saved version">
           Reload
         </button>
-        <button type="button" onClick={onKeep} className={BUTTON} title="Save your version over theirs">
-          Keep mine
+        <button type="button" onClick={onKeep} className={BUTTON} title="Save your version over the saved version">
+          Overwrite
         </button>
       </div>
       {comparing && canCompare && <CompareView mine={mine} theirs={theirs} />}
@@ -97,8 +97,8 @@ function CompareView({ mine, theirs }: { mine: string; theirs: string }) {
   return (
     <div className="px-3 pb-2">
       <div className="flex gap-3 mb-1 text-[10px] text-[var(--adf-ui-text-muted)]">
-        <span><span className="text-red-600 dark:text-red-400">−</span> theirs</span>
-        <span><span className="text-green-600 dark:text-green-400">+</span> mine</span>
+        <span><span className="text-red-600 dark:text-red-400">−</span> saved</span>
+        <span><span className="text-green-600 dark:text-green-400">+</span> unsaved</span>
       </div>
       <pre className="max-h-[40vh] overflow-auto rounded border border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-surface)] text-[11px] leading-[16px] font-mono text-[var(--adf-ui-text)]">
         {same ? (

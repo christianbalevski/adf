@@ -164,7 +164,7 @@ export const FleetLensLegend = memo(function FleetLensLegend({
           <button
             onClick={cycleLens}
             className="group flex items-center gap-1.5 text-left"
-            title="Change overlay — terrain (state), burn (token heat), model, health, lineage. Press L to cycle."
+            title="Lens: terrain (agent state), burn (token rate), model, health, lineage. Click or press L for the next lens."
           >
             <span className="text-[10px] font-semibold uppercase tracking-wide text-neutral-500 dark:text-neutral-400 group-hover:text-neutral-700 dark:group-hover:text-neutral-200">{lens}</span>
             <svg

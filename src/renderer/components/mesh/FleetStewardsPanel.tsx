@@ -93,7 +93,7 @@ export const FleetStewardsPanel = memo(function FleetStewardsPanel({
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60 transition-colors"
-        title="Appointed stewards — each status line speaks for its whole group"
+        title="Stewards: agents whose status line is shown as their group's status"
       >
         <span className="flex items-center gap-1.5">
           <span>♛</span>

@@ -3,7 +3,7 @@
  * settings-scopes.md §6, §7): other devices that use the local agent server.
  *
  * - Studio → Connections → Add → Share (`SharePanel`): the name devices see
- *   ("Share this server as", the runtime alias), what Share needs, in one
+ *   ("Name", the runtime alias), what Share needs, in one
  *   sentence naming every network it will listen on, and Allow, which asks
  *   main (REMOTE_ACCESS_SHARE: one native dialog, then remote access on and
  *   each network it named allowed; review A1). Then the 6-digit pairing
@@ -351,8 +351,8 @@ function Block({ title, children }: { title: string; children: React.ReactNode }
   )
 }
 
-/** The label of Share's name field (owner wording). */
-export const SHARE_AS_LABEL = 'Share this server as'
+/** The label of Share's name field. */
+export const SHARE_AS_LABEL = 'Name'
 
 /** Under the name field. The name is the runtime alias: one name everywhere. */
 export const SHARE_AS_HELP = 'Devices see this server by this name. It is also the alias in Settings → Identity.'

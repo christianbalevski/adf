@@ -629,7 +629,7 @@ terminal app", "another Studio window", "the CLI or another API client" (an
 | Button | What happens |
 |---|---|
 | **Reload** | Shows their version; your unsaved text is discarded |
-| **Keep mine** | Saves your version over theirs |
+| **Overwrite** | Saves your version over theirs |
 
 While the strip is up, Ctrl+S saves nothing and moves focus to Reload.
 Closing the tab, closing the agent or switching agents asks first: "Discard
@@ -988,7 +988,7 @@ no second quit control here.
 
 ### Share
 
-**Add → Share** starts with **Share this server as**, the name devices
+**Add → Share** starts with **Name**, the name devices
 see. It is the runtime alias (Settings → Identity), so a change there and
 here is the same change; it is saved on Enter or when the field loses the
 focus, with "Saved." under it. Moving the focus to **Back** or **Cancel**
@@ -1202,7 +1202,7 @@ Every message the backend features show, and where it is explained. Text in
 | Keep running after Studio quits / "When you quit Studio, …" | [Quit Studio](#quit-studio) |
 | "The ADF daemon keeps running while *N* other client(s) are connected …" | [Quit Studio](#quit-studio) |
 | "The daemon stays up because this app is connected: …" (terminal app) | [Quit Studio](#quit-studio) |
-| "*File* was changed by … while you were editing." / Reload / Keep mine | [Changed elsewhere](#changed-elsewhere) |
+| "*File* was changed by … while you were editing." / Reload / Overwrite | [Changed elsewhere](#changed-elsewhere) |
 | "Discard your unsaved changes to …?" | [Changed elsewhere](#changed-elsewhere) |
 | "Studio kept your unsaved version of …" / Show folder / Dismiss | [Changed elsewhere](#changed-elsewhere) |
 | "… was changed by … after you opened it." / Overwrite / Reload theirs (terminal app) | [Changed elsewhere](#changed-elsewhere) |
@@ -1230,7 +1230,7 @@ Every message the backend features show, and where it is explained. Text in
 | "Waiting for the remote ADF daemon at …" | [Connection problems](#connection-problems) |
 | "Turn on remote access" / "Devices that you pair … get full control of this server. …" / "When you quit Studio, Studio stops this server. …" / "Change on *name*." | [Remote access](#remote-access) |
 | "Remote access paused on …" / "Agent sharing paused on …" / Allow / Dismiss / "Public network. …" / "Paused on …" / "Listening on …" | [Network status](#network-status) |
-| Share this server as / "Enter a name." / "Allow device" / "Approved: *name*." / "Some addresses use http. …" / "Remote access is off again. …" / "A device waits for Allow device. …" / Encrypted / Not encrypted / Copy / Renew / "No code." / Firewall / Token / "Remote access stays on. To turn it off, use Devices." / "Pairing: a device was locked out after 5 wrong codes." / "Pairing closed after too many wrong codes." / "Device added: …" | [Share](#share) |
+| Name (Share) / "Enter a name." / "Allow device" / "Approved: *name*." / "Some addresses use http. …" / "Remote access is off again. …" / "A device waits for Allow device. …" / Encrypted / Not encrypted / Copy / Renew / "No code." / Firewall / Token / "Remote access stays on. To turn it off, use Devices." / "Pairing: a device was locked out after 5 wrong codes." / "Pairing closed after too many wrong codes." / "Device added: …" | [Share](#share) |
 | "Revoke device" / "Device revoked: …" | [Devices](#devices) |
 | Connect / Share / "Connect to a remote agent server." / "Share this server." / "No server found yet. On the other computer, click Add, then Share." / "Enter a code or a token. …" / "The server at … has a different fingerprint …" | [Add](#add) |
 | Local server / Remote servers / Devices / Keep running after Studio quits | [Connection](#connection) |

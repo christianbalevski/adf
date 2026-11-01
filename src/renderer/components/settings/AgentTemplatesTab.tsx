@@ -846,13 +846,12 @@ export function AgentTemplatesTab({ providers, defaultProviderId, onOpenProvider
         </div>
       </SettingsGroup>
 
-      <SettingsGroup title="Applies to" description="Agents you create in Studio always start from a template.">
+      <SettingsGroup title="Child agents">
         <SettingsRow
-          label="Template for agents created by agents"
-          description="Agents made with sys_create_adf start from this template, without its credentials or identity. A parent that names a template .adf of its own uses that instead."
+          label={<>Template<InfoHint tip="The template for agents made with sys_create_adf. Credentials and identity are not copied. A parent that names its own template .adf uses that one. Agents created in Studio always use a template from the list above." /></>}
         >
           <Select
-            aria-label="Template for agents created by agents"
+            aria-label="Child agent template"
             className="w-64"
             value={childTemplateId}
             onChange={(e) => pickChildTemplate(e.target.value)}

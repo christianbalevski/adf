@@ -34,8 +34,8 @@ export function IdentityRestoreBanner() {
         onClick={() => openSettingsAt('identity', 'restore-identity')}
         className="w-full flex items-center justify-center gap-2 px-3 py-1.5 border-b border-[var(--adf-ui-warning)]/30 bg-[var(--adf-ui-warning-subtle)] text-[11px] text-[var(--adf-ui-warning)] cursor-pointer focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--adf-ui-accent)]"
       >
-        <span>Your owner identity <span className="font-mono">{short}</span> was set up in the terminal. Enter its 12 words to use it in Studio.</span>
-        <span className="font-medium underline">Restore your identity</span>
+        <span>Owner identity <span className="font-mono">{short}</span> was set up in the terminal. Enter its 12 words to use it in Studio.</span>
+        <span className="font-medium underline">Restore identity</span>
       </button>
     </div>
   )

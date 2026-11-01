@@ -3,7 +3,7 @@
  * write overtook, in both backends. The renderer's editors save with the
  * revision they last saw (preload `{ baseRevision }`); a stale one answers
  * `{ success: false, error, conflict }` instead of `{ success: true, revision }`,
- * and the editor offers Reload (their text) or Keep mine (the save again with
+ * and the editor offers Reload (their text) or Overwrite (the save again with
  * `conflict.revision` as its base). A save without a base never conflicts.
  *
  * `conflict.content` / `conflict.config` carry what is there now, so the

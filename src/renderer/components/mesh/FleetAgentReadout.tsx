@@ -141,7 +141,7 @@ export const FleetAgentReadout = memo(function FleetAgentReadout({
         onFocusAgent(a.filePath)
       }}
       className="flex items-center gap-1.5 px-2 py-0.5 rounded-full bg-violet-50 dark:bg-violet-900/30 text-violet-600 dark:text-violet-300 text-[10px] hover:bg-violet-100 dark:hover:bg-violet-900/50"
-      title={`${role} — fly to ${a.handle}`}
+      title={`${role}: center the map on ${a.handle}`}
     >
       <span className={a.online === false ? 'grayscale opacity-60' : ''}>
         <OrbitalAvatar seed={orbitalSeedFor({ did: a.did, filePath: a.filePath })} icon={a.icon} iconSeed={a.agentId || a.filePath} size={16} emojiSize={10} />

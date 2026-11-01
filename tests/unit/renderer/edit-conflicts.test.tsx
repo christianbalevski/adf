@@ -16,7 +16,7 @@ import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
  *   "changed elsewhere" notice naming the writer; a clean tab updates;
  * - a save goes over the tab's revision; a refusal keeps the text and raises
  *   the notice; a refusal over unchanged text saves again without asking;
- * - Reload takes their text, Keep mine saves over their revision.
+ * - Reload takes their text, Overwrite saves over their revision.
  *
  * No jsdom here: the notice renders to static markup.
  */
@@ -53,7 +53,7 @@ describe('an external write reaching an open tab', () => {
     const html = renderToStaticMarkup(<ChangedElsewhereNotice what="notes.md" writer={tab('notes.md').conflict!.writer} onReload={() => {}} onKeep={() => {}} />)
     expect(html).toContain('notes.md was changed by the agent while you were editing.')
     expect(html).toContain('>Reload<')
-    expect(html).toContain('>Keep mine<')
+    expect(html).toContain('>Overwrite<')
   })
 
   it('the README tab: document_updated over unsaved text keeps it and names the writer (through the document store)', () => {
@@ -90,7 +90,7 @@ describe('saving over a revision', () => {
     expect(tab('notes.md')).toMatchObject({ savedContent: 'b', isDirty: false, revision: 101 })
   })
 
-  it('refused because another session saved: the text stays, the notice offers Reload and Keep mine', async () => {
+  it('refused because another session saved: the text stays, the notice offers Reload and Overwrite', async () => {
     s().openTab('notes.md', 'a', false, undefined, 100)
     s().updateTabContent('notes.md', 'mine')
     const answers: SaveAnswer[] = [
@@ -104,7 +104,7 @@ describe('saving over a revision', () => {
     expect(tab('notes.md').conflict).toEqual({ content: 'theirs', revision: 105, writer: { kind: 'client', client: 'studio' } })
     expect(conflictMessage('notes.md', tab('notes.md').conflict!.writer)).toBe('notes.md was changed by another Studio window while you were editing.')
 
-    // Keep mine: based on their revision now, saved over it.
+    // Overwrite: based on their revision now, saved over it.
     s().resolveTabConflict('notes.md', 'keep')
     expect(tab('notes.md')).toMatchObject({ content: 'mine', isDirty: true, revision: 105 })
     expect(await saveTabContent('notes.md', 'mine', write)).toEqual({ kind: 'saved', revision: 106 })
@@ -156,7 +156,7 @@ describe('saving over a revision', () => {
     expect((await pending).kind).toBe('conflict')
     expect(tab('notes.md')).toMatchObject({ content: 'abcdef', savedContent: 'agent', isDirty: true })
     expect(tab('notes.md').conflict?.content).toBe('agent')
-    // Keep mine saves the newer text.
+    // Overwrite saves the newer text.
     s().resolveTabConflict('notes.md', 'keep')
     expect(tab('notes.md').content).toBe('abcdef')
   })

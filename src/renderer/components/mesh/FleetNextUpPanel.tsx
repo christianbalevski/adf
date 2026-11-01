@@ -74,11 +74,11 @@ export const FleetNextUpPanel = memo(function FleetNextUpPanel({
       <button
         onClick={() => setCollapsed(!collapsed)}
         className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60 transition-colors"
-        title="Upcoming timers across the fleet — the next thing that will trigger on its own"
+        title="Upcoming timers across the fleet, soonest first"
       >
         <span className="flex items-center gap-1.5">
           <span>⏰</span>
-          Next up
+          Timers
         </span>
         <svg
           width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"

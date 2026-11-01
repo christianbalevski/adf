@@ -45,7 +45,7 @@ describe('buildMenuBarModel', () => {
   it('shows no title and no waiting section when nothing is pending', () => {
     const model = buildMenuBarModel(snap())
     expect(model.title).toBe('')
-    expect(labels(snap())).not.toContain('Waiting on you')
+    expect(labels(snap())).not.toContain('Pending')
   })
 
   it('counts pending requests in the title and lists each as a reveal action', () => {

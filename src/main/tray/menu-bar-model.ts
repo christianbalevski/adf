@@ -123,7 +123,7 @@ export function buildMenuBarModel(snap: MenuBarSnapshot): MenuBarModel {
   const items: MenuBarItem[] = [{ kind: 'info', label: `${snap.surface} — ${summary}` }]
 
   if (waiting) {
-    items.push({ kind: 'separator' }, { kind: 'info', label: 'Waiting on you' })
+    items.push({ kind: 'separator' }, { kind: 'info', label: 'Pending' })
     for (const n of snap.pending.slice(0, MENU_BAR_SECTION_MAX)) {
       items.push({
         kind: 'action',

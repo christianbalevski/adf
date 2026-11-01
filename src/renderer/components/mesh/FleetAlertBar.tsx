@@ -311,7 +311,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
             ? 'bg-white/85 dark:bg-neutral-900/85 border-neutral-200 dark:border-neutral-800 text-neutral-500 dark:text-neutral-400 hover:text-neutral-700 dark:hover:text-neutral-200'
             : 'bg-white/60 dark:bg-neutral-900/60 border-dashed border-neutral-300 dark:border-neutral-700 text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-300'
         }`}
-        title="Voices — group status chips over the plots. On by default for terrain, hidden on diagnostic lenses. Press V to toggle."
+        title="Voices: each group's status line, shown over its tiles. On by default for the terrain lens, off for the other lenses. Shortcut: V."
       >
         <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
           <path d="M21 11.5a8.38 8.38 0 0 1-9 8.4 8.5 8.5 0 0 1-3.4-.7L3 21l1.8-5.6a8.38 8.38 0 0 1-.8-3.9 8.5 8.5 0 0 1 8.5-8.5 8.38 8.38 0 0 1 8.5 8.5z" />
@@ -324,7 +324,7 @@ export const FleetAlertBar = memo(function FleetAlertBar({
         <button
           onClick={() => onFocusAgent(mvp.filePath)}
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-white/85 dark:bg-neutral-900/85 backdrop-blur-sm border border-neutral-200 dark:border-neutral-800 shadow-sm pointer-events-auto select-none shrink-0 whitespace-nowrap hover:border-orange-300 dark:hover:border-orange-700"
-          title="Highest token burn right now — click to fly there"
+          title="Agent with the highest token rate. Click to center the map on it."
         >
           <span className="text-[11px]">🔥</span>
           <OrbitalAvatar seed={mvp.seed} icon={mvp.icon} size={14} emojiSize={12} />

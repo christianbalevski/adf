@@ -4,23 +4,12 @@ import { memo, useEffect, useState } from 'react'
  * Loading veil — covers the canvas while the first fleet poll and layout
  * land, so the user never sees the half-built grid assembling itself.
  * Civ-style: a slowly-orbiting hex sigil over the garden's atmosphere
- * washes, the title, and a rotating survey line. Fades out (700ms) once the
+ * washes, the title, and the loading line. Fades out (700ms) once the
  * world is ready and unmounts entirely after the fade.
  */
 
 const SURVEY_LINES = [
-  'Reading the lattice…',
-  'Listening for heartbeats…',
-  'Retracing old routes…',
-  'Counting what burned…',
-  'Waking the stewards…',
-  'Settling the dew…',
-  'Consulting the ledger…',
-  'Warming the wires…',
-  'Raising the territories…',
-  'Asking the garden what grew…',
-  'Following the moss…',
-  'Sounding the perimeter…'
+  'Loading agents…'
 ]
 
 /** Fisher–Yates — a different survey every time the veil rises */

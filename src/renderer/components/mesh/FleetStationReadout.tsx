@@ -262,7 +262,7 @@ export const FleetStationReadout = memo(function FleetStationReadout({
             {stats.top.length > 0 ? (
               <div className="mt-1.5 space-y-1">
                 <div className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                  {isPeer ? 'Who talked to this server:' : 'Who uses this station:'}
+                  {isPeer ? 'Agents that messaged this server' : 'Agents using this station'}
                 </div>
                 {stats.top.map((t) =>
                   t.localFilePath ? (

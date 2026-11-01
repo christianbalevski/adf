@@ -36,6 +36,7 @@ export const DOCS = {
   context: guideUrl('memory-management'),
   tools: guideUrl('tools'),
   toolAccess: guideUrl('tools', 'enabling-and-disabling-tools'),
+  loops: guideUrl('inner-loops'),
   authorizedCode: guideUrl('authorized-code'),
   codeExecution: guideUrl('code-execution'),
   packages: guideUrl('code-execution', 'custom-packages'),

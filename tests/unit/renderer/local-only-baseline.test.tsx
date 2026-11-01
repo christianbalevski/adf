@@ -18,6 +18,8 @@
  * from that redesign, local only, and pin what a local-only user sees there.
  * Only those two were written then. sidebar.html was updated on 2026-10-23
  * for the requested selected-agent marker and distinct sidebar hover tint.
+ * approvals-panel.html and mesh-on.html were updated on 2026-10-31 for plain
+ * UI copy (the approvals heading, two Mesh tooltips, the loading line).
  * Every other baseline is d00491a0's.
  *
  * Normalization: React's useId ids (`:R…:` / `«r…»`) are replaced by their

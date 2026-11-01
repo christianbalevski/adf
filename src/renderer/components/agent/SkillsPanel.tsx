@@ -4,7 +4,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import type { SkillCatalogEntry } from '../../../shared/schemas/skills-catalog.schema'
-import { DocsLink } from '../common/DocsLink'
+import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 import {
@@ -420,10 +420,9 @@ export function SkillsPanel() {
       <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
         {showNothingInstalled && (
           <div className="text-center py-8">
-            <p className="text-sm text-neutral-500 dark:text-neutral-400">No skills installed.</p>
-            <p className="text-xs text-[var(--adf-ui-text-subtle)] mt-1">
-              Every <span className="font-mono">skills/&lt;name&gt;/SKILL.md</span> in this agent is
-              indexed and kept in its prompt. Skills are instructions, never authority.
+            <p className="text-sm text-neutral-500 dark:text-neutral-400">
+              No skills installed.
+              <InfoHint tip="Every skills/<name>/SKILL.md in this agent is indexed and listed in its prompt. A skill is instructions only; it grants no tools, files, or approvals." className="ml-1 align-middle" />
             </p>
             <button
               onClick={() => setCatalogOpen(true)}

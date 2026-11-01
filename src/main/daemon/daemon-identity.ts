@@ -1181,7 +1181,7 @@ export class DaemonIdentity {
     return this.refresh()
   }
 
-  /** The user wrote the words down (Studio's "I have written it down"). */
+  /** The user wrote the words down (Studio's "Mark as backed up"). */
   confirmBackup(): DaemonIdentityStatus {
     if (!this.isReady()) throw new DaemonIdentityError('not_ready', 'No usable owner identity to confirm.', 409)
     this.service.confirmBackup()

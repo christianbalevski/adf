@@ -1,5 +1,5 @@
 /**
- * The overview's lower sections, under the stats: Coming up, the 14-day
+ * The overview's lower sections, under the stats: Upcoming, the 14-day
  * Activity sparkline and Contents. Each hides when it has nothing to show.
  * Sized to the height budget in AgentOverview.tsx, which folds the
  * sparkline into its facts line, then the Contents rows into one line, when
@@ -85,7 +85,7 @@ function Section({ title, aside, children }: { title: string; aside?: React.Reac
 }
 
 // =============================================================================
-// Coming up
+// Upcoming
 // =============================================================================
 
 function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
@@ -123,7 +123,7 @@ function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
 
   return (
     <Section
-      title="Coming up"
+      title="Upcoming"
       aside={hidden > 0 ? (
         <button type="button" onClick={() => setExpanded(true)} className="text-[11.5px] text-[var(--ink-muted)] hover:text-[var(--ink)] tabular-nums">
           +{hidden} more
@@ -259,7 +259,7 @@ const openContents: Record<ContentsKey, () => void> = {
   tables: openFiles
 }
 
-/** Coming up's row without its vertical padding: one 18 px line, as the old meter line was. */
+/** Upcoming's row without its vertical padding: one 18 px line, as the old meter line was. */
 const CONTENTS_ROW = ROW.replace('py-0.5', 'py-0')
 
 /**

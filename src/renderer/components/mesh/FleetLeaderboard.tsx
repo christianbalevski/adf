@@ -158,7 +158,7 @@ export const FleetLeaderboard = memo(function FleetLeaderboard({
         <button
           onClick={() => setCollapsed(!collapsed)}
           className="w-full flex items-center justify-between px-3 py-1.5 text-[11px] font-medium text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100/60 dark:hover:bg-neutral-800/60 transition-colors"
-          title="Where the fleet's tokens are going — amber means burn far above the agent's own baseline"
+          title="Agents ranked by token rate. Amber: far above that agent's usual rate."
         >
           <span className="flex items-center gap-1.5">
             <span>🔥</span>

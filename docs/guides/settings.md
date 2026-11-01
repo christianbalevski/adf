@@ -158,7 +158,7 @@ Requirements: Claude Code 2.1.248 or newer. adf looks for `claude` in the usual 
 
 Setup:
 1. Add a provider and pick **Claude** under Subscriptions
-2. If Claude Code is missing or too old, click **Install Claude Code and sign in** (or **Update Claude Code and sign in**). adf runs Anthropic's installer (`curl -fsSL https://claude.ai/install.sh | bash`; `irm https://claude.ai/install.ps1 | iex` on Windows), or `claude update` for an old copy, then starts sign-in. No admin password is needed. If it fails, click **Install it yourself** and follow [Claude Code setup](https://code.claude.com/docs/en/setup)
+2. If Claude Code is missing or too old, click **Install Claude Code and sign in** (or **Update Claude Code and sign in**). adf runs Anthropic's installer (`curl -fsSL https://claude.ai/install.sh | bash`; `irm https://claude.ai/install.ps1 | iex` on Windows), or `claude update` for an old copy, then starts sign-in. No admin password is needed. If it fails, click **Install manually** and follow [Claude Code setup](https://code.claude.com/docs/en/setup)
 3. Otherwise click **Sign in with Claude** — Claude Code opens your browser to Claude's sign-in page. If the page shows a code instead of finishing on its own, paste it into adf
 4. After signing in, the provider shows your email and plan
 5. Select a model from the dropdown (e.g., `claude-opus-5-5`, `claude-sonnet-5-5`)
@@ -312,7 +312,7 @@ From **Settings → MCP servers**:
 - **Connect** — The modal's connect step runs the real pipeline (credential files, OAuth browser flow when declared, tool discovery) and shows the discovered tools or the server's own error output; unconnected servers show a **Not verified** badge
 - **Configure** — Reopens the same modal for any server
 - **Reconnect / Re-authorize** — Re-runs the connect pipeline for a saved server (re-auth shown for OAuth servers)
-- **Needs setup** — The server runs in a container and Podman isn't set up. Connect or Reconnect opens a sheet that sets Podman up or runs the server on the host; see [Compute](compute.md#mcp-server-execution-location)
+- **Compute unavailable** — The server runs in a container and Podman isn't set up. Connect or Reconnect opens a sheet that sets Podman up or runs the server on the host; see [Compute](compute.md#mcp-server-execution-location)
 - **Agent access** — Per-server choice: **On** lets agents attach the server themselves (via `mcp_install`); defaults to **On** for container/remote servers, to **Off** for host
 - **Logs** — View per-server logs including tool call history
 - **Remove** — Delete the server and its installation
@@ -339,7 +339,7 @@ Telegram, email, Discord, Slack, and both WhatsApp channels (linked number, offi
 
 Each channel is a row listing the agents connected to it, one chip per agent with a live status dot (connected, connecting, error, or not running). When nothing is connected yet the page opens with a tile per channel.
 
-- **Connect an agent** — pick an agent from your tracked folders, paste the credentials the form asks for (a *Where to get this* panel walks through obtaining them), and click **Connect**. Credentials are written to that agent's `adf_identity` and the channel is enabled in the agent's config, which starts the adapter if the agent is running.
+- **Connect an agent** — pick an agent from your tracked folders, paste the credentials the form asks for (a *Setup steps* panel lists how to obtain them), and click **Connect**. Credentials are written to that agent's `adf_identity` and the channel is enabled in the agent's config, which starts the adapter if the agent is running.
 - **Click a chip** — edit that agent's credentials, see the adapter's last error, or **Disconnect** (removes the config and the stored credentials).
 - **Logs** — per-adapter log (up to 500 entries).
 
@@ -625,7 +625,7 @@ For a Studio with the local server only, **Remote servers** and **Devices** fold
 | Card | Help line | What it does |
 |---|---|---|
 | **Connect** | "Connect to a remote agent server." | Lists the servers found on this network and your tailnet as picks, then **Address**, **Code** and **Token**, all visible: "Enter a code or a token. To get a code, click Add, then Share on the other server." With a code, Studio shows the server's fingerprint to check, then **Pair**. The connection is saved and connects. |
-| **Share** | "Share this server." | **Share this server as** (the name devices see, the runtime alias), consent first when remote access is off or this network is not allowed (one **Allow**), then a 6-digit code with its countdown (**Renew** once it is gone), and one table of this server's addresses grouped by network, each row with its own **Copy**. The other computer enters the code; this computer still asks **Allow device**. Then "Approved: *name*." A token shown once is under **Token**. Only in Local mode. |
+| **Share** | "Share this server." | **Name** (the name devices see, the runtime alias), consent first when remote access is off or this network is not allowed (one **Allow**), then a 6-digit code with its countdown (**Renew** once it is gone), and one table of this server's addresses grouped by network, each row with its own **Copy**. The other computer enters the code; this computer still asks **Allow device**. Then "Approved: *name*." A token shown once is under **Token**. Only in Local mode. |
 
 On success the connection is saved and connects at once; the dialog shows **Done**. Studio does not restart. **Remove** asks first: "Removes the address and token from Studio and adf.", and "Closes *N* agent windows." when that server has agent windows open, then "Still listed on *name*; revoke it there."; it then disconnects and forgets the connection.
 

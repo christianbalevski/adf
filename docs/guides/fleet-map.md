@@ -152,7 +152,7 @@ Selecting any agents raises the command bar at the bottom:
 |---------|--------|
 | **Open** (single selection) | Open the agent's document and right panel |
 | **Details** (single selection) | Full agent readout (same as `I`) |
-| **Fly to** | Center the map on the selection |
+| **Center** | Center the map on the selection |
 | **Start** | Start the selected offline agents |
 | **Stop** | Shut down the selected running agents |
 | **Hold / Resume** | Hold: the current turn finishes, then triggers queue until resumed. Resume: queued triggers fire immediately |

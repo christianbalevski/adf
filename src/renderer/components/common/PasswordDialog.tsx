@@ -97,7 +97,7 @@ export function PasswordDialog() {
   }, [handleUnlock])
 
   return (
-    <Dialog lightDismiss={false} open={open} onClose={handleDialogClose} title="This agent is password-protected">
+    <Dialog lightDismiss={false} open={open} onClose={handleDialogClose} title="Password required">
       <p className="text-sm text-neutral-600 dark:text-neutral-400 mb-4">
         Enter the password from the sender.
       </p>

@@ -71,7 +71,7 @@ Your agent is now created and in the **idle** state by default.
 
 [ADF Studio](../ADF_STUDIO_DOCS.md#anatomy-of-the-interface) describes each area.
 
-![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Coming up.](../assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
+![The ADF Studio window: the agent quick-orchid in the sidebar, the Loops tab in the center with the user's request, a collapsed Dynamic Instructions block, assistant text, two fs_write tool calls and a sys_update_config call awaiting approval with Approve and Reject buttons, and the Overview tab on the right with the agent's levels and the pending approval under Upcoming.](../assets/screenshots/studio-agent-loop-approval-v0.7.8.png)
 
 ## Talking to Your Agent
 

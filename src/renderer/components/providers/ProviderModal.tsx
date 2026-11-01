@@ -492,7 +492,7 @@ function SubscriptionAccount({ auth, label }: { auth: SubscriptionAuthState; lab
           {(failed || !auth.install) && (
             <div className="flex gap-1.5">
               {auth.installUrl && (
-                <Button variant="secondary" className="flex-1" onClick={() => window.open(auth.installUrl, '_blank', 'noopener,noreferrer')}>Install it yourself</Button>
+                <Button variant="secondary" className="flex-1" onClick={() => window.open(auth.installUrl, '_blank', 'noopener,noreferrer')}>Install manually</Button>
               )}
               {auth.recheck && <Button variant="secondary" onClick={auth.recheck}>Check again</Button>}
             </div>

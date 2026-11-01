@@ -16,7 +16,7 @@ import type { ActivityDay, AgentContents, ExperienceStat, MemoryFileSize, PowerS
 // =============================================================================
 
 /** Words for the warn colour (brand: a status colour always carries a label). */
-export const HIGH_POWER_LABEL = 'Much of this runs without asking'
+export const HIGH_POWER_LABEL = 'Mostly runs without approval'
 
 export interface LevelBarParts {
   /** Width of the solid (open) fill, 0..100. */
@@ -72,12 +72,12 @@ function stripParenthetical(label: string): string {
   return label.replace(/\s*\([^)]*\)\s*$/, '')
 }
 
-/** "Lv 7 of 20, mostly asks you first · serves a public web page, 3 HTTP API routes" */
+/** "Lv 7 of 20, mostly requires approval · serves a public web page, 3 HTTP API routes" */
 export function powerTooltip(stat: PowerStat, maxFactors = 2): string {
   let head = `Lv ${stat.level} of ${POWER_LEVEL_MAX}`
   if (stat.points > 0 && stat.gated > 0) {
     const share = stat.gated / stat.points
-    head += share >= 0.99 ? ', all asks you first' : share >= 0.5 ? ', mostly asks you first' : ', some asks you first'
+    head += share >= 0.99 ? ', all requires approval' : share >= 0.5 ? ', mostly requires approval' : ', some requires approval'
   }
   if (stat.high) head += `. ${HIGH_POWER_LABEL}`
   const top = stat.factors
@@ -108,7 +108,7 @@ export function contextsLine(contexts: number): string {
   return `~${text} ${text === '1' ? 'context' : 'contexts'} of work`
 }
 
-/** A signal's raw value as the "How XP adds up" table shows it. */
+/** A signal's raw value as the "XP breakdown" table shows it. */
 export function experienceValueText(signal: { id: string; value: number }): string {
   if (signal.id === 'contextsWorked' && signal.value < 10) return trimZero(signal.value.toFixed(1))
   return compactCount(signal.value)
@@ -181,9 +181,9 @@ export interface PowerItem {
 }
 
 export interface PowerSections {
-  /** "Runs without asking" */
+  /** "Without approval" */
   open: PowerItem[]
-  /** "Asks you first" */
+  /** "Requires approval" */
   gated: PowerItem[]
   /** "Limits": mitigations. */
   limits: PowerItem[]
@@ -257,7 +257,7 @@ export function powerSections(stat: Pick<PowerStat, 'factors'>): PowerSections {
 /** Metrics shown before "+N", so the overview fits without scrolling. */
 export const OVERVIEW_ROW_LIMIT = 3
 
-/** Coming up rows shown before "+N" (in the section title row). */
+/** Upcoming rows shown before "+N" (in the section title row). */
 export const COMING_UP_ROW_LIMIT = 2
 
 /** The first `limit` items unless expanded, and how many are hidden. */
@@ -344,7 +344,7 @@ export interface StatusOpts {
 }
 
 /**
- * The card face's state line: "Running fs_write", "Waiting for you ·
+ * The card face's state line: "Running fs_write", "Awaiting input ·
  * 2 approvals", "Wakes in 56 min", "Stopped". Plain idle is '' (the
  * titlebar's dot says it).
  */
@@ -356,7 +356,7 @@ export function agentStatusLabel(state: AgentState | null | undefined, opts: Sta
     const parts: string[] = []
     if (approvals > 0) parts.push(plural(approvals, 'approval'))
     if (asks > 0) parts.push(plural(asks, 'question'))
-    return parts.length > 0 ? `Waiting for you · ${parts.join(', ')}` : 'Waiting for you'
+    return parts.length > 0 ? `Awaiting input · ${parts.join(', ')}` : 'Awaiting input'
   }
   const wake = typeof opts.nextWakeAt === 'number' && Number.isFinite(opts.nextWakeAt) && typeof opts.now === 'number'
     ? ` · ${formatWake(opts.nextWakeAt, opts.now)}`
@@ -486,7 +486,7 @@ function shortLine(s: string, max = 80): string {
 /** Characters of a timer's input (system) or prompt (agent) shown on its row. */
 export const TIMER_TEXT_MAX = 60
 
-/** One "Coming up" timer row. */
+/** One "Upcoming" timer row. */
 export interface TimerRowText {
   /** system: `lambda` in mono. agent: the loop name as a tag. */
   kind: 'lambda' | 'loop' | 'none'

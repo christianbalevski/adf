@@ -300,7 +300,7 @@ export function HomeComposer({ runtime, identity, nameSlot, onReroll, onCreated,
           onKeyDown={onKeyDown}
           disabled={busy}
           rows={1}
-          placeholder={name ? `Tell ${name} what to do` : 'Tell your new agent what to do'}
+          placeholder={name ? `Message ${name}` : 'Message the new agent'}
           aria-label="Message for a new agent"
           data-orbital-look="composer"
           className="home-composer-input block w-full resize-none bg-transparent px-4 pb-1 pt-3.5 text-[15px] leading-[22px] text-[var(--adf-ui-text)] placeholder:text-[var(--adf-ui-text-subtle)] focus:outline-none disabled:opacity-60"

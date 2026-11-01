@@ -112,7 +112,7 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
         <AutoGrowTextarea
           value={draft.other}
           onChange={(text) => onChange(typeOther(q, draft, text))}
-          placeholder="Your answer"
+          placeholder="Answer"
           aria-labelledby={headingId}
         />
       </div>
@@ -127,7 +127,7 @@ function QuestionField({ q, index, count, draft, onChange, formId }: {
     <fieldset className="min-w-0 space-y-1" aria-labelledby={headingId}>
       <div className="space-y-0.5">
         <QuestionHeading q={q} index={index} count={count} id={headingId} />
-        {q.multiple && <div className="text-[11px] text-[var(--ink-faint)]">Pick any</div>}
+        {q.multiple && <div className="text-[11px] text-[var(--ink-faint)]">Multiple selection</div>}
       </div>
       <div className="-mx-1.5">
         {q.options.map((option) => {
@@ -313,7 +313,7 @@ export function AskCard({ questions, result, drafts, onDraftsChange, onSubmit }:
     <div className={`overflow-hidden rounded-[var(--adf-ui-container-radius)] border border-[var(--rule)] bg-[var(--paper)] ${onSubmit ? 'border-l-2 border-l-[var(--blue)]' : ''}`}>
       <div className="p-2.5">
         <div className="mb-1.5 text-[12px] font-medium text-[var(--ink-muted)]">
-          {questions.length > 1 ? `Agent asked ${questions.length} questions` : 'Agent asked'}
+          {questions.length > 1 ? `${questions.length} questions` : 'Question'}
         </div>
         {onSubmit
           ? <AskForm questions={questions} drafts={drafts} onDraftsChange={onDraftsChange} onSubmit={onSubmit} />

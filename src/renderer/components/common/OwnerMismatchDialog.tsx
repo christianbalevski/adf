@@ -82,7 +82,7 @@ export function OwnerMismatchDialog() {
             loading={loading}
             variant="primary"
           >
-            {loading ? 'Claiming...' : 'Claim as Mine'}
+            {loading ? 'Claiming...' : 'Claim'}
           </Button>
         </div>
       </div>
