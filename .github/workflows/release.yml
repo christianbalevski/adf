@@ -20,13 +20,14 @@ concurrency:
 jobs:
   # Critical platforms — the release BLOCKS on these. One runner per OS: you
   # can't cross-build a macOS .dmg on Linux or a Windows .exe on macOS.
-  # macos-14 (Apple Silicon) builds TWO dmgs: the arm64-only dmg (smaller,
+  # macos-15 (Apple Silicon) builds TWO dmgs: the arm64-only dmg (smaller,
   # for Apple Silicon users) plus a universal dmg that covers Intel Macs —
   # electron-builder packs the app once per arch, rebuilding better-sqlite3
   # for each (the Xcode toolchain cross-compiles x64 on arm64 fine), and
   # lipo-merges the two via @electron/universal. The universal dmg replaced
   # the macos-13 Intel job, which sat queued / never got a runner on every
-  # release.
+  # release. macos-15, not macos-14: GitHub retired the macOS 14 images on
+  # 2026-11-02 (actions/runner-images#13518).
   # fail-fast: false so one platform failing doesn't abort the others.
   #
   # windows-2022 is PINNED, not windows-latest: GitHub migrated windows-latest
@@ -38,7 +39,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-14, windows-2022, ubuntu-latest]
+        os: [macos-15, windows-2022, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     # 90, not 45: the mac job notarizes two dmgs and Apple's notary queue is
     # unpredictable — the first-ever submission sat 44+ min and timed out at
@@ -183,7 +184,7 @@ jobs:
       fail-fast: false
       matrix:
         # windows-2022 pinned like the Studio build (see above).
-        os: [ubuntu-latest, macos-14, windows-2022]
+        os: [ubuntu-latest, macos-15, windows-2022]
         # Patched floors (CVE-2026-111497): a bare major can resolve to an older
         # Node already cached on the runner, which adf refuses to run on.
         # Every line the engines range admits is smoke-tested.
