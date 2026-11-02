@@ -293,6 +293,24 @@ describe('runMcpRegistrationTest: Gmail built-in OAuth client', () => {
     expect(result.notes).toEqual([])
   }))
 
+  it('Host access off: a host draft tests in the container and nothing is written to the host home', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    const result = await runMcpRegistrationTest({ registration: gmail }, deps({ computeSettings: () => ({ hostAccessEnabled: false, hostApproved: [] }) }))
+    expect(result.location).toBe('shared container')
+    expect(fs.existsSync(join(home, '.gmail-mcp'))).toBe(false)
+    expect(JSON.stringify(result.notes)).not.toContain('built-in')
+  }))
+
+  it('an existing token file with no client: writes the client, leaves the tokens byte-identical', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    fs.mkdirSync(join(home, '.gmail-mcp'))
+    fs.writeFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'existing-tokens')
+    const result = await runMcpRegistrationTest({ registration: gmail }, deps())
+    expect(result.success).toBe(true)
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'utf-8')).toBe(BUILT_IN)
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'utf-8')).toBe('existing-tokens')
+  }))
+
   it('builds without a client keep the manual flow; other packages never get it', () => withHome(async (home, fs, join) => {
     await runMcpRegistrationTest({ registration: gmail }, deps())
     expect(fs.existsSync(join(home, '.gmail-mcp'))).toBe(false)

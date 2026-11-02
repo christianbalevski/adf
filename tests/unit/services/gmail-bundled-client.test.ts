@@ -184,15 +184,25 @@ describe('Add MCP Server: Gmail with a built-in client', () => {
 
   it('bundledFilePaths matches the draft package, declared path and host location only', () => {
     expect(draft.runLocation).toBe('host')
-    expect([...bundledFilePaths(draft, files)]).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
-    expect(bundledFilePaths(draft, undefined).size).toBe(0)
-    expect(bundledFilePaths({ ...draft, npmPackage: '@other/gmail' }, files).size).toBe(0)
-    expect(bundledFilePaths({ ...draft, credentialFiles: [{ path: '~/.other/keys.json', required: true }] }, files).size).toBe(0)
-    expect(bundledFilePaths({ ...draft, runLocation: 'shared' }, files).size).toBe(0)
+    expect([...bundledFilePaths(draft, files, true)]).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
+    expect(bundledFilePaths(draft, undefined, true).size).toBe(0)
+    expect(bundledFilePaths({ ...draft, npmPackage: '@other/gmail' }, files, true).size).toBe(0)
+    expect(bundledFilePaths({ ...draft, credentialFiles: [{ path: '~/.other/keys.json', required: true }] }, files, true).size).toBe(0)
+    expect(bundledFilePaths({ ...draft, runLocation: 'shared' }, files, true).size).toBe(0)
+  })
+
+  it('a host draft with Host access off runs in the container, so the client file stays required', () => {
+    for (const hostAccess of [false, undefined]) {
+      const bundled = bundledFilePaths(draft, files, hostAccess)
+      expect(bundled.size).toBe(0)
+      const result = setupChecklist(draft, gmail, {}, bundled)
+      expect(result.requiredFiles).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
+      expect(result.inputsDone).toBe(false)
+    }
   })
 
   it('the client file no longer holds the setup open; choosing one still works', () => {
-    const bundled = bundledFilePaths(draft, files)
+    const bundled = bundledFilePaths(draft, files, true)
     const result = setupChecklist(draft, gmail, {}, bundled)
     expect(result.requiredFiles).toEqual([])
     expect(result.inputsDone).toBe(true)
@@ -201,9 +211,22 @@ describe('Add MCP Server: Gmail with a built-in client', () => {
   })
 
   it('without a built-in client the file is required as before', () => {
-    const result = setupChecklist(draft, gmail, {}, bundledFilePaths(draft, undefined))
+    const result = setupChecklist(draft, gmail, {}, bundledFilePaths(draft, undefined, true))
     expect(result.requiredFiles).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
     expect(result.inputsDone).toBe(false)
+  })
+})
+
+describe('mcp-registry store: bundledCredentialFiles follows the runtime', () => {
+  it('takes the flag from each result and clears it when the next runtime reports none', async () => {
+    const { useMcpRegistryStore } = await import('../../../src/renderer/stores/mcp-registry.store')
+    const files = [{ npmPackage: GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, path: GMAIL_BUNDLED_CLIENT_PATH }]
+    const withClient = { getMcpRegistry: async () => ({ entries: MCP_REGISTRY, source: 'remote' as const, bundledCredentialFiles: files }) }
+    const without = { getMcpRegistry: async () => ({ entries: MCP_REGISTRY, source: 'remote' as const }) }
+    await useMcpRegistryStore.getState().refresh(withClient)
+    expect(useMcpRegistryStore.getState().bundledCredentialFiles).toEqual(files)
+    await useMcpRegistryStore.getState().refresh(without)
+    expect(useMcpRegistryStore.getState().bundledCredentialFiles).toBeUndefined()
   })
 })
 

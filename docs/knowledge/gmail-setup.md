@@ -26,7 +26,11 @@ file** step, and **Sign in to Gmail** writes the built-in client to
 `~/.gmail-mcp/gcp-oauth.keys.json` when no client file is chosen and none
 exists on the host. An existing file is kept, and your sign-in tokens stay in
 `~/.gmail-mcp/credentials.json`. To use your own client instead, choose it
-under **Advanced → Use your own OAuth client**. Older builds, local builds
+under **Advanced → Use your own OAuth client** before the first Connect; it
+is written only when no client file exists yet. Once a client is on the host,
+it stays in place: switching to a different client needs a fresh Gmail
+sign-in with that client, and agents that already stored the old client
+file need it re-supplied in their MCP credentials. Older builds, local builds
 and the npm CLI package have no built-in client and need your own Google
 Cloud OAuth client; instructions make setup easier but do not remove
 Google's setup requirements. The current catalog uses the community package

@@ -165,13 +165,16 @@ export function pendingCredentialFiles(
  * Declared credential files of `draft` that the host fills itself when none
  * is chosen (MCP_REGISTRY_GET's bundledCredentialFiles: the Gmail server's
  * built-in OAuth client). Matched on the draft's package and path; host
- * registrations only, as the fallback writes to the host home.
+ * registrations only, and only while Host access is on: the fallback writes
+ * to the host home, and with Host access off a host draft runs in the
+ * container, which never gets the built-in client.
  */
 export function bundledFilePaths(
   draft: Pick<McpServerRegistration, 'npmPackage' | 'credentialFiles' | 'runLocation'> | null,
   bundled: { npmPackage: string; path: string }[] | undefined,
+  hostAccessEnabled: boolean | undefined,
 ): Set<string> {
-  if (draft?.runLocation !== 'host') return new Set()
+  if (draft?.runLocation !== 'host' || hostAccessEnabled !== true) return new Set()
   const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
   return new Set((bundled ?? []).filter((b) => b.npmPackage === draft.npmPackage && declared.has(b.path)).map((b) => b.path))
 }
@@ -566,7 +569,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   if (draft && catalogRef.current?.id !== draft.id) catalogRef.current = { id: draft.id, entry: isCustom ? undefined : registryEntry }
   const catalogEntry = draft ? catalogRef.current?.entry : undefined
   // Required files the host fills itself move under Advanced, as an override.
-  const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles)
+  const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles, hostAccessEnabled)
   const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads, bundledPaths) : null
   const signsIn = isOAuth || !!draft?.auth
 
@@ -1116,7 +1119,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 <div className="space-y-1.5">
                   <label className={labelCls}>
                     Use your own OAuth client
-                    <InfoHint tip="Optional. Connect uses the built-in client unless you choose your own client JSON, or one is already on this computer." />
+                    <InfoHint tip="Optional. Connect uses the built-in client only when you choose no client JSON and none is on this computer yet; an existing client file is kept. Switching to a different client later needs a fresh Gmail sign-in, and agents that already stored the old client need it re-supplied." />
                   </label>
                   {bundledFiles.map(fileRow)}
                 </div>
