@@ -65,7 +65,8 @@ jobs:
         if: runner.os == 'macOS'
         run: node scripts/install-mac-x64-deps.mjs
 
-      # = electron-vite build && electron-builder --publish always.
+      # = npm run build (bundle-mcp-servers, electron-vite build, build:web)
+      # && electron-builder --publish always.
       # electron-builder.yml forces no arch, so Windows/Linux build for the
       # runner's host arch; on macOS the extra flags make both the arm64 and
       # universal dmgs described above. releaseType: draft means all runners

@@ -19,6 +19,8 @@ files:
   # sandbox host (src/main/runtime/sandbox-host.ts) both depend on it.
   - out/**/*
   - resources/**/*
+  # Bundled MCP servers ship OUTSIDE the asar (extraResources below), once.
+  - "!resources/mcp-servers/**"
   # better-sqlite3 runs from its prebuilt N-API binaries (prebuilds/); its
   # SQLite and C++ sources are only for building one, which never happens here.
   - "!node_modules/better-sqlite3/{deps,src}/**"
@@ -37,6 +39,12 @@ extraResources:
     filter:
       - "*.adf"
       - "index.json"
+  # MCP servers bundled by scripts/bundle-mcp-servers.mjs (npm run build),
+  # run on Studio's own executable as Node: <resources>/mcp-servers — see
+  # src/main/services/bundled-mcp-servers.ts. Platform-level extraResources
+  # (mac: below) are added to this list, not replacing it.
+  - from: resources/mcp-servers
+    to: mcp-servers
 mac:
   # No `arch:` override on purpose: local builds stay host-arch. CI passes
   # --arm64 --universal (see .github/workflows/release.yml): the arm64 dmg
