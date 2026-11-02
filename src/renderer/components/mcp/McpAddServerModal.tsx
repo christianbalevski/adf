@@ -4,7 +4,8 @@ import type { McpServerLogEntry, McpToolInfo } from '../../../shared/types/adf-v
 import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
-import { MCP_EXECUTABLE_IDENTITY_FIELDS, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
+import { bundledMcpServerForShape } from '../../../shared/utils/bundled-mcp-shape'
+import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -127,8 +128,9 @@ export function registrationSourceLine(
   reg: McpServerRegistration,
   bundledServers?: { npmPackage: string; version: string }[],
   hostAccessEnabled?: boolean,
+  mcpOnHost?: boolean,
 ): string {
-  const builtIn = bundledServerFor(reg, bundledServers, hostAccessEnabled)
+  const builtIn = bundledServerFor(reg, bundledServers, hostAccessEnabled, mcpOnHost)
   if (builtIn) return `built into ADF Studio: ${builtIn.npmPackage} · v${builtIn.version}`
   const source = reg.url
     ? reg.url
@@ -169,18 +171,32 @@ export function pendingCredentialFiles(
 
 /**
  * The server this app ships that `reg` launches on the host instead of npx
- * (MCP_REGISTRY_GET's bundledServers), or undefined: the catalog shape only
- * (its package, no command or args), host registrations while Host access is
- * on — anywhere else it runs through npx (bundled-mcp-servers.ts).
+ * (MCP_REGISTRY_GET's bundledServers), or undefined: the config Studio builds
+ * from `reg` has the catalog shape (shared/utils/bundled-mcp-shape.ts, the
+ * runtime's own check) and `reg` runs on the host (draftRunsOnHost).
  */
 export function bundledServerFor(
-  reg: Pick<McpServerRegistration, 'type' | 'npmPackage' | 'command' | 'args' | 'runLocation'>,
+  reg: McpServerRegistration,
   bundled: { npmPackage: string; version: string }[] | undefined,
   hostAccessEnabled: boolean | undefined,
+  mcpOnHost?: boolean,
 ): { npmPackage: string; version: string } | undefined {
-  if (reg.runLocation !== 'host' || hostAccessEnabled !== true) return undefined
-  if ((reg.type ?? 'npm') !== 'npm' || reg.command || (reg.args ?? []).some(Boolean)) return undefined
-  return bundled?.find((b) => b.npmPackage === reg.npmPackage)
+  if (!draftRunsOnHost(reg, hostAccessEnabled, mcpOnHost) || reg.type === 'http' || reg.url) return undefined
+  return bundledMcpServerForShape(buildMcpServerConfigFromRegistration(reg), bundled)
+}
+
+/**
+ * Whether `draft` runs on the host the way the backend places it:
+ * runLocation 'host', or no location while "MCP on host" is on; Host access
+ * on either way (off, it runs in the container).
+ */
+function draftRunsOnHost(
+  draft: Pick<McpServerRegistration, 'runLocation'>,
+  hostAccessEnabled: boolean | undefined,
+  mcpOnHost: boolean | undefined,
+): boolean {
+  const onHost = draft.runLocation === 'host' || (draft.runLocation === undefined && mcpOnHost === true)
+  return onHost && hostAccessEnabled === true
 }
 
 /**
@@ -198,8 +214,7 @@ export function bundledFilePaths(
   hostAccessEnabled: boolean | undefined,
   mcpOnHost?: boolean,
 ): Set<string> {
-  const onHost = draft?.runLocation === 'host' || (draft?.runLocation === undefined && mcpOnHost === true)
-  if (!draft || !onHost || hostAccessEnabled !== true) return new Set()
+  if (!draft || !draftRunsOnHost(draft, hostAccessEnabled, mcpOnHost)) return new Set()
   const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
   return new Set((bundled ?? []).filter((b) => b.npmPackage === draft.npmPackage && declared.has(b.path)).map((b) => b.path))
 }
@@ -1109,8 +1124,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               {catalogEntry && (
                 <>
                   {identityFields}
-                  {registrationSourceLine(draft, bundledServers, hostAccessEnabled) && (
-                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft, bundledServers, hostAccessEnabled)}</p>
+                  {registrationSourceLine(draft, bundledServers, hostAccessEnabled, mcpOnHost) && (
+                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft, bundledServers, hostAccessEnabled, mcpOnHost)}</p>
                   )}
                   {argsEditor}
                   <div>

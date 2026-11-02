@@ -11,7 +11,9 @@ import {
 } from '../../../src/shared/utils/mcp-config'
 import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
-import { availableRegistryEntries, blankDraft, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { matchBundledMcpServer } from '../../../src/main/services/bundled-mcp-servers'
+import { buildMcpServerConfigFromRegistration } from '../../../src/shared/utils/mcp-config'
+import { availableRegistryEntries, blankDraft, bundledServerFor, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -508,6 +510,27 @@ describe('registrationSourceLine (modal identity subtitle)', () => {
     expect(registrationSourceLine({ ...gmail, runLocation: 'shared' }, bundled, true)).toMatch(/^npx /)
     expect(registrationSourceLine({ ...gmail, args: ['--x'] }, bundled, true)).toMatch(/^npx /)
     expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', runLocation: 'host' }), bundled, true)).toBe('npx @x/mcp')
+  })
+
+  it('the built-in label uses the runtime\'s own shape check and the backend\'s host placement', () => {
+    const bundled = [{ npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', version: '1.1.11' }]
+    const gmail = reg({ type: 'npm', npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', runLocation: 'host' })
+    const builtIn = (r: McpServerRegistration, hostAccess = true, mcpOnHost?: boolean) => bundledServerFor(r, bundled, hostAccess, mcpOnHost)
+    // 0.8.6-style registrations carry the npx prefix; the runtime runs the bundle for them.
+    expect(builtIn({ ...gmail, args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'] })).toEqual(bundled[0])
+    expect(builtIn({ ...gmail, args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp', 'x'] })).toBeUndefined()
+    expect(builtIn({ ...gmail, command: 'npx' })).toBeUndefined()
+    // No location while "MCP on host" is on: placed on the host.
+    expect(builtIn({ ...gmail, runLocation: undefined }, true, true)).toEqual(bundled[0])
+    expect(builtIn({ ...gmail, runLocation: undefined }, true, false)).toBeUndefined()
+    expect(builtIn({ ...gmail, runLocation: undefined }, false, true)).toBeUndefined()
+    expect(registrationSourceLine({ ...gmail, runLocation: undefined }, bundled, true, true)).toBe('built into ADF Studio: @gongrzhe/server-gmail-autoauth-mcp · v1.1.11')
+    // Label and runtime agree for every one of these shapes.
+    const shapes: Partial<McpServerRegistration>[] = [{}, { args: ['-y', '@gongrzhe/server-gmail-autoauth-mcp'] }, { args: ['--x'] }, { command: 'node' }, { npmPackage: '@acme/gh' }]
+    for (const shape of shapes) {
+      const r = { ...gmail, ...shape }
+      expect(!!builtIn(r), JSON.stringify(shape)).toBe(!!matchBundledMcpServer(buildMcpServerConfigFromRegistration(r)))
+    }
   })
 
   it('appends the verified version, skipping "unknown"', () => {

@@ -5,7 +5,7 @@ import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
-import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
+import { McpAddServerModal, HOST_BOUNDARY_TEXT, bundledServerFor, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { ComputeNeededSheet } from './ComputeNeededSheet'
 import { Tooltip } from '../common/Tooltip'
 import { allowHostTip, registrationPlacement } from '../../../shared/utils/mcp-host-placement'
@@ -50,6 +50,21 @@ interface McpStatusDashboardProps {
   onAcceptMcpOnHost?: () => Promise<boolean>
 }
 
+/**
+ * The server this app ships that a new managed registration launches
+ * (bundledServerFor: the runtime's catalog shape, on the host): saving it
+ * downloads nothing. Undefined: install the npm/pypi package as before.
+ */
+export function builtInManagedServer(
+  reg: McpServerRegistration,
+  bundledServers: { npmPackage: string; version: string }[] | undefined,
+  hostAccessEnabled: boolean | undefined,
+  mcpOnHost: boolean | undefined,
+): { npmPackage: string; version: string } | undefined {
+  if (!reg.managed || reg.type === 'uvx' || reg.type === 'pip') return undefined
+  return bundledServerFor(reg, bundledServers, hostAccessEnabled, mcpOnHost)
+}
+
 export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost, mcpOnHost, onEnableHostAccessNow, onAcceptMcpOnHost }: McpStatusDashboardProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
@@ -60,6 +75,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const [serverStates, setServerStates] = useState<McpServerState[]>([])
   // Dynamic registry: bundled snapshot until the remote-first fetch lands.
   const registryEntries = useMcpRegistryStore((s) => s.entries)
+  const bundledServers = useMcpRegistryStore((s) => s.bundledServers)
   const refreshRegistry = useMcpRegistryStore((s) => s.refresh)
   const [installing, setInstalling] = useState<Set<string>>(new Set())
   const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
@@ -221,6 +237,12 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const handleModalSave = async (reg: McpServerRegistration) => {
     const current = mcpServersRef.current
     const exists = current.some((s) => s.id === reg.id)
+    const builtIn = exists ? undefined : builtInManagedServer(reg, bundledServers, hostAccessEnabled, mcpOnHost)
+    if (builtIn) {
+      // Nothing to download: the bundled version is the installed one.
+      onServersChanged([...current, { ...reg, version: builtIn.version }])
+      return
+    }
     onServersChanged(exists ? current.map((s) => (s.id === reg.id ? reg : s)) : [...current, reg])
 
     // New managed npm/pypi servers: download the package in the background
