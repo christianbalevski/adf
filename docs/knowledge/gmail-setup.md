@@ -56,7 +56,10 @@ or package, for development builds, and for the npm-distributed daemon
 (`@agentdocumentformat/cli`), which run the server through `npx` as before.
 Container runs are unchanged: the server is fetched by `npx` inside the
 container. On Linux the sign-in opens your browser with the system
-`xdg-open`.
+`xdg-open`; where it is not installed, the server keeps waiting for the
+sign-in and the auth URL it prints is the one to open in a browser on the
+same computer. The built-in server accepts the sign-in callback on
+`127.0.0.1:3000` only, not from other machines on the network.
 
 1. In [Google Cloud Console](https://console.cloud.google.com/), select an existing
    project or create one, then enable **Gmail API** in **APIs & Services → Library**.

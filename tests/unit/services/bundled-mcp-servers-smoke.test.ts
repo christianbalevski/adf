@@ -3,8 +3,9 @@
 // files under a throwaway HOME (never a real account). Skipped where the
 // Electron binary was not downloaded.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
-import { execFileSync, spawn } from 'child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { execFileSync, spawn, type ChildProcess } from 'child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
+import { connect } from 'net'
 import { tmpdir } from 'os'
 import { join, resolve } from 'path'
 
@@ -25,6 +26,9 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-N
 
   it('writes one ESM entry and the third-party notices', () => {
     expect(existsSync(join(dir, 'mcp-servers', 'gmail', 'index.mjs'))).toBe(true)
+    const code = readFileSync(join(dir, 'mcp-servers', 'gmail', 'index.mjs'), 'utf-8')
+    expect(code.slice(0, 1000)).toContain('delete process.env.ELECTRON_RUN_AS_NODE;')
+    expect(code).toContain('listen(3e3,process.argv[3]?void 0:"127.0.0.1")')
     const notices = readFileSync(join(dir, 'mcp-servers', 'gmail', 'THIRD_PARTY_NOTICES.txt'), 'utf-8')
     expect(notices).toContain('@gongrzhe/server-gmail-autoauth-mcp@1.1.11')
     expect(notices).toContain('googleapis@')
@@ -37,7 +41,7 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-N
     writeFileSync(keys, JSON.stringify({ installed: { client_id: '0-dummy.apps.googleusercontent.com', client_secret: 'dummy', redirect_uris: ['http://localhost'] } }))
     writeFileSync(creds, JSON.stringify({ access_token: 'dummy', refresh_token: 'dummy', token_type: 'Bearer', expiry_date: 1 }))
     const child = spawn(electronBin, [join(dir, 'mcp-servers', 'gmail', 'index.mjs')], {
-      env: { PATH: process.env.PATH ?? '', HOME: home, USERPROFILE: home, ELECTRON_RUN_AS_NODE: '1', GMAIL_OAUTH_PATH: keys, GMAIL_CREDENTIALS_PATH: creds },
+      env: { PATH: process.env.PATH ?? '', HOME: home, USERPROFILE: home, ELECTRON_RUN_AS_NODE: '1', GMAIL_OAUTH_PATH: keys, GMAIL_CREDENTIALS_PATH: creds, ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}) },
       stdio: ['pipe', 'pipe', 'pipe'],
       windowsHide: true,
     })
@@ -77,4 +81,82 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-N
       child.kill()
     }
   }, 60_000)
+
+  // `auth` starts the callback server on :3000 and opens the browser. Linux
+  // only: elsewhere `open` would start a real browser (the opener is not
+  // xdg-open there).
+  describe.runIf(process.platform === 'linux')('auth', () => {
+    const bin = () => join(dir, 'bin')
+    const home = () => join(dir, 'auth-home')
+    beforeAll(() => {
+      mkdirSync(join(home(), '.gmail-mcp'), { recursive: true })
+      writeFileSync(join(home(), '.gmail-mcp', 'gcp-oauth.keys.json'), JSON.stringify({ installed: { client_id: '0-dummy.apps.googleusercontent.com', client_secret: 'dummy', redirect_uris: ['http://localhost'] } }))
+      mkdirSync(bin(), { recursive: true })
+    })
+    const startAuth = (): { child: ChildProcess; output: () => string } => {
+      const child = spawn(electronBin, [join(dir, 'mcp-servers', 'gmail', 'index.mjs'), 'auth'], {
+        env: { PATH: bin(), HOME: home(), ELECTRON_RUN_AS_NODE: '1' },
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+      let output = ''
+      child.stdout!.on('data', (c: Buffer) => { output += c.toString() })
+      child.stderr!.on('data', (c: Buffer) => { output += c.toString() })
+      return { child, output: () => output }
+    }
+    const stop = async (child: ChildProcess) => {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise((r) => child.once('exit', r))
+        child.kill()
+        await exited
+      }
+    }
+    const waitUntil = async (cond: () => boolean, what: string) => {
+      const deadline = Date.now() + 15_000
+      while (!cond()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+        await new Promise((r) => setTimeout(r, 50))
+      }
+    }
+    const canConnect = (host: string) => new Promise<boolean>((done) => {
+      const s = connect(3000, host)
+      s.once('connect', () => { s.destroy(); done(true) })
+      s.once('error', () => done(false))
+    })
+
+    it('survives a missing xdg-open and listens on 127.0.0.1 only', async () => {
+      const { child, output } = startAuth()
+      try {
+        await waitUntil(() => /Could not open a browser/.test(output()) || child.exitCode !== null, 'the opener error')
+        await new Promise((r) => setTimeout(r, 1500))
+        expect(child.exitCode, output()).toBeNull()
+        expect(output()).toContain('Please visit this URL to authenticate:')
+        expect(await canConnect('127.0.0.1')).toBe(true)
+        // Bound to loopback, not every interface: 127.0.0.1:3000 in LISTEN, no IPv6 wildcard.
+        const v4 = readFileSync('/proc/net/tcp', 'utf-8').split('\n').filter((l) => / 0A /.test(l))
+        expect(v4.some((l) => l.includes(' 0100007F:0BB8 '))).toBe(true)
+        expect(v4.some((l) => l.includes(' 00000000:0BB8 '))).toBe(false)
+        const v6 = existsSync('/proc/net/tcp6') ? readFileSync('/proc/net/tcp6', 'utf-8').split('\n').filter((l) => / 0A /.test(l)) : []
+        expect(v6.some((l) => / [0-9A-F]{32}:0BB8 /.test(l))).toBe(false)
+      } finally {
+        await stop(child)
+      }
+    }, 30_000)
+
+    it('the browser opener does not inherit ELECTRON_RUN_AS_NODE', async () => {
+      const record = join(dir, 'opener-env.txt')
+      writeFileSync(join(bin(), 'xdg-open'), `#!/bin/sh\necho "ELECTRON_RUN_AS_NODE=\${ELECTRON_RUN_AS_NODE-unset}" > '${record}'\n`)
+      chmodSync(join(bin(), 'xdg-open'), 0o755)
+      const { child, output } = startAuth()
+      try {
+        await waitUntil(() => existsSync(record) || child.exitCode !== null, 'the opener')
+        expect(child.exitCode, output()).toBeNull()
+        await waitUntil(() => readFileSync(record, 'utf-8').includes('\n'), 'the opener output')
+        expect(readFileSync(record, 'utf-8').trim()).toBe('ELECTRON_RUN_AS_NODE=unset')
+      } finally {
+        await stop(child)
+        rmSync(join(bin(), 'xdg-open'), { force: true })
+      }
+    }, 30_000)
+  })
 })

@@ -22,8 +22,55 @@ const outRoot = outArg !== -1 && process.argv[outArg + 1] ? resolve(process.argv
 const rootPkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf-8'))
 
 const SERVERS = [
-  { dir: 'gmail', pkg: '@gongrzhe/server-gmail-autoauth-mcp', entry: 'dist/index.js' },
+  {
+    dir: 'gmail',
+    pkg: '@gongrzhe/server-gmail-autoauth-mcp',
+    entry: 'dist/index.js',
+    // The sign-in callback server listens on every interface upstream; a LAN
+    // peer could post its own code to it. Loopback only for the default
+    // http://localhost:3000 callback; a custom callback URL (`auth <url>`,
+    // the upstream reverse-proxy setup) keeps upstream's bind.
+    patches: [{ find: 'server.listen(3000);', replace: "server.listen(3000, process.argv[3] ? undefined : '127.0.0.1');" }],
+  },
 ]
+
+/**
+ * Runs before the server's own code (esbuild banner):
+ * - CommonJS dependencies call require(); ESM output has none.
+ * - ELECTRON_RUN_AS_NODE is read only at startup; drop it so the processes
+ *   the server starts (the browser opener, the browser) do not inherit it.
+ * - The server calls open(authUrl) without handling its spawn error. On
+ *   Electron, `open` uses the system xdg-open; where there is none, that
+ *   error would kill the callback server. Only that error is reported (the
+ *   URL is printed above); anything else crashes as Node would.
+ */
+const BANNER = [
+  "import{createRequire as __cr}from'module';const require=__cr(import.meta.url);",
+  'delete process.env.ELECTRON_RUN_AS_NODE;',
+  "process.on('uncaughtException',(e)=>{",
+  "if(e&&e.code==='ENOENT'&&/^spawn /.test(e.syscall)&&e.path==='xdg-open'){",
+  "console.error('Could not open a browser: xdg-open is not installed. Open the sign-in URL printed above in a browser on this computer.');return}",
+  'console.error(e);process.exit(1)});',
+].join('')
+
+/** esbuild plugin: exact-text patches to one package file; the build fails unless each matches exactly once. */
+function patchPlugin(file, patches) {
+  return {
+    name: 'patch-upstream',
+    setup(b) {
+      b.onLoad({ filter: /\.js$/ }, (args) => {
+        if (resolve(args.path) !== resolve(file)) return undefined
+        let code = readFileSync(args.path, 'utf-8')
+        for (const { find, replace } of patches) {
+          const count = code.split(find).length - 1
+          if (count !== 1) throw new Error(`${file}: expected exactly one \`${find}\` to patch, found ${count}`)
+          code = code.replace(find, () => replace)
+        }
+        return { contents: code, loader: 'js' }
+      })
+    },
+  }
+}
 
 /** name@version + license text of every node_modules package in the bundle. */
 function thirdPartyNotices(inputs) {
@@ -61,6 +108,7 @@ for (const server of SERVERS) {
   mkdirSync(outDir, { recursive: true })
   const result = await build({
     entryPoints: [join(pkgDir, server.entry)],
+    plugins: server.patches ? [patchPlugin(join(pkgDir, server.entry), server.patches)] : [],
     outfile: join(outDir, 'index.mjs'),
     bundle: true,
     platform: 'node',
@@ -72,8 +120,7 @@ for (const server of SERVERS) {
     logLevel: 'warning',
     // googleapis declares "sideEffects": "false" (a string); harmless.
     logOverride: { 'package.json': 'silent' },
-    // CommonJS dependencies call require(); ESM output has none.
-    banner: { js: "import{createRequire as __cr}from'module';const require=__cr(import.meta.url);" },
+    banner: { js: BANNER },
   })
   writeFileSync(join(outDir, 'THIRD_PARTY_NOTICES.txt'), thirdPartyNotices(result.metafile.inputs))
   console.log(`[bundle-mcp-servers] ${server.pkg}@${pinned} -> ${join(outDir, 'index.mjs')}`)
