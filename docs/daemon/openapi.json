@@ -29407,7 +29407,27 @@
       "McpRegistryResult": {
         "type": "object",
         "description": "Curated MCP registry, remote-first with cached and bundled fallback (McpRegistryFetchService.getRegistry).",
-        "properties": {},
+        "properties": {
+          "bundledCredentialFiles": {
+            "type": "array",
+            "description": "Declared credential files this build fills itself when none is chosen and the host has none (the Gmail server's built-in OAuth client). Set from the build, never from a registry document; absent when the build ships none.",
+            "items": {
+              "type": "object",
+              "required": [
+                "npmPackage",
+                "path"
+              ],
+              "properties": {
+                "npmPackage": {
+                  "type": "string"
+                },
+                "path": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        },
         "additionalProperties": true
       },
       "BringHomeResult": {

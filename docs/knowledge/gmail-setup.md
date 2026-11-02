@@ -20,9 +20,16 @@ start a polling loop, or authorize automatic replies.
 
 ## Direct Gmail setup
 
-This path has no Composio dependency. It still requires your own Google Cloud
-OAuth client; instructions make setup easier but do not remove Google's setup
-requirements. The current catalog uses the community package
+This path has no Composio dependency. Release builds of ADF Studio that ship a
+built-in Google OAuth client skip steps 1–3 and 5: Gmail has no **Credential
+file** step, and **Sign in to Gmail** writes the built-in client to
+`~/.gmail-mcp/gcp-oauth.keys.json` when no client file is chosen and none
+exists on the host. An existing file is kept, and your sign-in tokens stay in
+`~/.gmail-mcp/credentials.json`. To use your own client instead, choose it
+under **Advanced → Use your own OAuth client**. Older builds, local builds
+and the npm CLI package have no built-in client and need your own Google
+Cloud OAuth client; instructions make setup easier but do not remove
+Google's setup requirements. The current catalog uses the community package
 [`@gongrzhe/server-gmail-autoauth-mcp`](https://github.com/GongRzhe/Gmail-MCP-Server).
 Its upstream repository was archived on March 3, 2026; ADF's catalog marks it
 unverified. This article describes the existing integration, not a newly maintained

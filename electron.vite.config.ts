@@ -3,8 +3,20 @@ import { readFileSync } from 'node:fs'
 import { build, defineConfig, externalizeDepsPlugin, type UserConfig } from 'electron-vite'
 import { normalizePath, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
+import { GMAIL_OAUTH_CLIENT_ENV, parseGmailOAuthClientJson } from './src/shared/utils/gmail-oauth-client'
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')) as { version: string }
+
+// The Gmail catalog server's built-in Desktop OAuth client
+// (src/shared/utils/gmail-oauth-client.ts). Release builds get the JSON from
+// the ADF_GMAIL_OAUTH_CLIENT_JSON secret; without it the constant is
+// undefined and Gmail keeps asking for the user's own client file. A
+// malformed value fails the build (the message never includes the value).
+// Studio main and the daemon both get it, so either backend can fill the file.
+const gmailOAuthClient = parseGmailOAuthClientJson(process.env[GMAIL_OAUTH_CLIENT_ENV])
+const mainDefine = {
+  __ADF_GMAIL_OAUTH_CLIENT__: gmailOAuthClient === undefined ? 'undefined' : JSON.stringify(gmailOAuthClient),
+}
 
 // The headless daemon (src/main/daemon/index.ts) ships as out/main/daemon.js;
 // Studio runs it with ELECTRON_RUN_AS_NODE=1 (design daemon-backend.md §8.1).
@@ -77,7 +89,7 @@ export default defineConfig(({ mode }): UserConfig => {
     return {
       main: {
         plugins: [externalizeDepsPlugin()],
-        define: { __ADF_VERSION__: JSON.stringify(pkg.version) },
+        define: { ...mainDefine, __ADF_VERSION__: JSON.stringify(pkg.version) },
         build: {
           // Studio's main build already wrote out/main.
           emptyOutDir: false,
@@ -92,6 +104,7 @@ export default defineConfig(({ mode }): UserConfig => {
   return {
     main: {
       plugins: [externalizeDepsPlugin(), daemonEntryPlugin()],
+      define: mainDefine,
       build: {
         // A bootstrap entry: out/main/index.js checks the runtime before the app loads (src/main/entry.ts).
         rollupOptions: {

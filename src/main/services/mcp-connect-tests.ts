@@ -20,6 +20,7 @@ import { z } from 'zod'
 import { McpClientManager } from './mcp-client-manager'
 import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
+import { writeBundledClientIfAbsent } from './gmail-bundled-client'
 import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
 import type { McpOAuthStore } from './mcp-oauth.types'
@@ -320,6 +321,15 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         mkdirSync(dirname(dest), { recursive: true })
         writeFileSync(dest, content, { mode: 0o600 })
         notes.push(`Wrote ${f.path} to the host home.`)
+      }
+      // A declared file this build ships (the Gmail server's built-in OAuth
+      // client), when none was chosen and the host has none: same
+      // write-if-absent rule, so a chosen or existing client always wins.
+      for (const f of reg.credentialFiles ?? []) {
+        if (credentialFiles?.some((c) => c.path === f.path)) continue
+        if (writeBundledClientIfAbsent(reg.npmPackage, f.path, expandCredentialPath(f.path, { kind: 'host' }))) {
+          notes.push(`Wrote the built-in OAuth client to ${f.path}.`)
+        }
       }
 
       // Resolve the launch command the way the probe does — BEFORE the auth

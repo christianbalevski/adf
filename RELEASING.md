@@ -245,6 +245,27 @@ If a Defender behavioural false positive recurs on a signed build, submit
 the installer at <https://www.microsoft.com/wdsi/filesubmission> as a
 software developer; the verdict then clears for the certificate.
 
+## Gmail OAuth client
+
+Release builds can embed a Google **Desktop app** OAuth client so Gmail's
+Add MCP Server flow signs in without the user creating a Google Cloud
+project. The build step of `.github/workflows/release.yml` reads it from the
+`ADF_GMAIL_OAUTH_CLIENT_JSON` secret: the client JSON as downloaded from
+Google Cloud Console (`{"installed": {...}}`). `electron.vite.config.ts`
+validates it and defines it into Studio's main process and the daemon; a
+malformed value, a Web application client, or one carrying tokens fails the
+build (the error never prints the value). Without the secret (local builds,
+pull requests, the npm CLI package) the constant is undefined and Gmail asks
+for the user's own client file as before.
+
+A Desktop client is not confidential: anyone can extract it from the
+installed app (`app.asar`). It identifies the app to Google and grants
+nothing by itself. No tokens are bundled; each user's tokens are created by
+the server's own sign-in and stay in `~/.gmail-mcp/credentials.json`. Never
+commit the client JSON. To rotate, create a new Desktop client, update the
+secret and release; existing installs keep the client file they already
+wrote until the user removes it.
+
 ## In-app updates
 
 Installed copies check GitHub Releases (`latest*.yml`, published by the same

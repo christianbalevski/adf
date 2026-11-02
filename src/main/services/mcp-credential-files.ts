@@ -17,6 +17,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
+import { writeBundledClientIfAbsent } from './gmail-bundled-client'
 
 /** Decoded size cap per credential file. Real targets are ~1 KB token files. */
 export const CREDENTIAL_FILE_MAX_BYTES = 256 * 1024
@@ -218,6 +219,9 @@ export async function materializeCredentialFiles(
         ? existsSync(existingPath)
         : await target.fileExists(target.containerName, existingPath)
       if (presentInRuntime) continue
+      // Nothing stored and nothing on the host: the Gmail server's built-in
+      // OAuth client, when this build ships one (host only, write-if-absent).
+      if (!rowExists && target.kind === 'host' && writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath)) continue
       // Present-but-locked (daemon without a runtime key): fail plainly for
       // optional and required files alike.
       if (rowExists) {

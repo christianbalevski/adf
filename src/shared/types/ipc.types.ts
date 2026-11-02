@@ -898,6 +898,13 @@ export interface McpRegistryGetResult {
   updatedAt?: string
   /** Epoch ms of the fetch that transferred this document, when remote/cache. */
   fetchedAt?: number
+  /**
+   * Declared credential files this build fills itself when the user picks
+   * none and the host has none (the Gmail server's built-in OAuth client).
+   * Set by the host from the build, never by a registry document; absent in
+   * builds that ship none.
+   */
+  bundledCredentialFiles?: { npmPackage: string; path: string }[]
 }
 
 /** One registry agent as the gallery shows it — the index entry plus where it comes from. */

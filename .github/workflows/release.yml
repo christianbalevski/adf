@@ -94,6 +94,10 @@ jobs:
           AZURE_TENANT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_TENANT_ID || '' }}
           AZURE_CLIENT_ID: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_ID || '' }}
           AZURE_CLIENT_SECRET: ${{ runner.os == 'Windows' && secrets.AZURE_CLIENT_SECRET || '' }}
+          # Gmail's built-in Google Desktop OAuth client (see RELEASING.md),
+          # compiled into Studio main and the daemon. Unset: Gmail keeps
+          # asking for the user's own client file.
+          ADF_GMAIL_OAUTH_CLIENT_JSON: ${{ secrets.ADF_GMAIL_OAUTH_CLIENT_JSON }}
 
       # Belt and braces: forceCodeSigning already fails an unsigned build, but
       # verify the shipped installer carries a valid Authenticode signature from
