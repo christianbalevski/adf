@@ -6,7 +6,8 @@
  * client file the user chose, or one already on the host, always wins; the
  * token file (~/.gmail-mcp/credentials.json) is never touched, and when it
  * already exists the client is not written either (those tokens may belong
- * to another client). Agent write-back never stores the built-in client.
+ * to another client) — unless materialization knows the tokens are the
+ * agent's own, sealed without a client. Agent write-back never stores the built-in client.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
@@ -60,15 +61,21 @@ export function bundledTokenFileFor(dest: string): string {
  * applies, the file is absent and the server has no token file yet (tokens
  * minted by another client would not refresh with this one). Returns whether
  * it wrote.
+ *
+ * `ignoreTokenFile`: only for materialization when the token file is the
+ * agent's own (sealed in its keystore with no sealed client beside it, so it
+ * was minted with the built-in client).
  */
 export function writeBundledClientIfAbsent(
   npmPackage: string | undefined,
   path: string,
   dest: string,
   client = compiledGmailOAuthClient(),
+  opts: { ignoreTokenFile?: boolean } = {},
 ): boolean {
   if (!client || !bundledClientApplies(npmPackage, path, client)) return false
-  if (existsSync(dest) || existsSync(bundledTokenFileFor(dest))) return false
+  if (existsSync(dest)) return false
+  if (!opts.ignoreTokenFile && existsSync(bundledTokenFileFor(dest))) return false
   mkdirSync(dirname(dest), { recursive: true })
   // 'wx': never replace a file that appeared since the check.
   try {

@@ -153,6 +153,56 @@ describe('host fallback', () => {
     expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('other-client-tokens')
   })
 
+  describe('tokens sealed in the agent keystore without a client (minted with the built-in client)', () => {
+    const tokensPurpose = `mcp:${GMAIL_BUNDLED_CLIENT_NPM_PACKAGE}:file:~/.gmail-mcp/credentials.json`
+    const TOKENS = '{"refresh_token":"synthetic-agent-refresh"}'
+    const tokensOnly: CredentialStore = {
+      getDecrypted: (p) => p === tokensPurpose ? JSON.stringify({ encoding: 'base64', data: Buffer.from(TOKENS).toString('base64') }) : null,
+      hasRow: (p) => p === tokensPurpose,
+    }
+    const reversed = (): McpServerConfig => ({ ...gmailServer(), credential_files: [...gmailServer().credential_files!].reverse() })
+    // Never touch the real home, even if a path falls back to os.homedir().
+    beforeEach(() => { vi.stubEnv('HOME', home); vi.stubEnv('USERPROFILE', home) })
+    afterEach(() => { vi.unstubAllEnvs() })
+
+    it('fresh host, declarations reversed: tokens land first and the built-in client is still written', async () => {
+      vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+      const cfg = reversed()
+      expect(cfg.credential_files![0].path).toBe('~/.gmail-mcp/credentials.json')
+      await materializeCredentialFiles(tokensOnly, cfg, { kind: 'host', home })
+      expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe(CLIENT_JSON)
+      expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
+    })
+
+    it('fresh host, registry order: same result', async () => {
+      vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+      await materializeCredentialFiles(tokensOnly, gmailServer(), { kind: 'host', home })
+      expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe(CLIENT_JSON)
+      expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
+    })
+
+    it('an existing host client is still never replaced', async () => {
+      vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+      mkdirSync(join(home, '.gmail-mcp'))
+      writeFileSync(join(home, KEYS_REL), 'own-client')
+      await materializeCredentialFiles(tokensOnly, reversed(), { kind: 'host', home })
+      expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe('own-client')
+    })
+
+    it('no token row in the keystore + credentials.json already on the host: client NOT written (either order)', async () => {
+      vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+      // A keystore with rows, just not the token row.
+      const otherRows: CredentialStore = { getDecrypted: () => null, hasRow: (p) => p === 'mcp:gmail:env:UNRELATED' }
+      for (const cfg of [gmailServer(), reversed()]) {
+        mkdirSync(join(home, '.gmail-mcp'), { recursive: true })
+        writeFileSync(join(home, TOKENS_REL), 'foreign-tokens')
+        await expect(materializeCredentialFiles(otherRows, cfg, { kind: 'host', home })).rejects.toThrow(/Required credential file "~\/.gmail-mcp\/gcp-oauth.keys.json"/)
+        expect(existsSync(join(home, KEYS_REL))).toBe(false)
+        expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('foreign-tokens')
+      }
+    })
+  })
+
   it('a locked keystore row is not papered over by the built-in client', async () => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
     const locked: CredentialStore = { getDecrypted: () => null, hasRow: (p) => p.endsWith(GMAIL_BUNDLED_CLIENT_PATH) }

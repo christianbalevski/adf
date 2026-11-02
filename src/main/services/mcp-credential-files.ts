@@ -17,7 +17,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
-import { isBundledClientContent, writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { compiledGmailOAuthClient, isBundledClientContent, writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 
 /** Decoded size cap per credential file. Real targets are ~1 KB token files. */
 export const CREDENTIAL_FILE_MAX_BYTES = 256 * 1024
@@ -221,7 +222,16 @@ export async function materializeCredentialFiles(
       if (presentInRuntime) continue
       // Nothing stored and nothing on the host: the Gmail server's built-in
       // OAuth client, when this build ships one (host only, write-if-absent).
-      if (!rowExists && target.kind === 'host' && writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath)) continue
+      // A host token file normally blocks it (it may be another client's), but
+      // not when this agent seals the tokens itself: with no sealed client
+      // beside them they were minted with the built-in client, and the token
+      // file on the host is (or, later in this loop, will be) the agent's own
+      // — whatever order the files are declared in.
+      if (!rowExists && target.kind === 'host') {
+        const ownTokens = declared.some((f) => f.path === GMAIL_BUNDLED_TOKEN_PATH) &&
+          credentialFilePurposes(serverCfg, GMAIL_BUNDLED_TOKEN_PATH).some((p) => store.hasRow(p))
+        if (writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath, compiledGmailOAuthClient(), { ignoreTokenFile: ownTokens })) continue
+      }
       // Present-but-locked (daemon without a runtime key): fail plainly for
       // optional and required files alike.
       if (rowExists) {
