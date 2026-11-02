@@ -5,6 +5,7 @@ import { promisify } from 'util'
 import type { McpInstalledPackage } from '../../shared/types/adf-v02.types'
 import { getUserDataPath } from '../utils/user-data-path'
 import { assertNpmSpec } from '../utils/npm-spec'
+import { bundledMcpInstall } from './bundled-mcp-servers'
 
 const execFileAsync = promisify(execFile)
 const IS_WIN = process.platform === 'win32'
@@ -135,6 +136,13 @@ export class PackageResolver {
     onProgress?: (message: string) => void
   ): Promise<McpInstalledPackage> {
     assertNpmSpec(packageName)
+    // An MCP server this app ships (bundled-mcp-servers.ts) needs no npm:
+    // report the bundled copy, write nothing (resolveMcpSpawnConfig prefers it).
+    const bundled = this.subdirName === 'mcp-servers' ? bundledMcpInstall(packageName) : null
+    if (bundled) {
+      onProgress?.(`${bundled.package}@${bundled.version} is built into ADF Studio — no install needed`)
+      return bundled
+    }
     const baseDir = this.getBaseDir()
     // Each package gets its own subdirectory to avoid dependency conflicts
     const safeName = packageName.replace(/[/@]/g, '_')

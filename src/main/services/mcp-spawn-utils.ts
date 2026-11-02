@@ -2,6 +2,7 @@ import { delimiter, isAbsolute, join } from 'path'
 import { existsSync } from 'fs'
 import type { McpEnvKeySchema, McpInstalledPackage, McpServerConfig } from '../../shared/types/adf-v02.types'
 import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef } from '../../shared/utils/mcp-config'
+import { resolveBundledMcpSpawn, type BundledMcpRuntime } from './bundled-mcp-servers'
 
 export { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef }
 
@@ -124,11 +125,13 @@ export interface McpSpawnDeps {
     getInstalled(pkg: string): McpInstalledPackage | undefined
   }
   uvBinPath?: string
+  /** Process facts for the bundled-server check (tests); default: this process. */
+  bundledRuntime?: BundledMcpRuntime
 }
 
 /**
  * Resolve the command + args needed to spawn an MCP server process.
- * Handles npm (managed + npx fallback), uvx (managed + uvx fallback), and custom commands.
+ * Handles npm (bundled, managed + npx fallback), uvx (managed + uvx fallback), and custom commands.
  * Used by both foreground IPC and background agent manager.
  */
 export function resolveMcpSpawnConfig(
@@ -139,6 +142,10 @@ export function resolveMcpSpawnConfig(
 
   // --- npm packages ---
   if (serverCfg.npm_package) {
+    // A server this app ships (bundled-mcp-servers.ts) runs on Studio's own
+    // executable: ahead of any managed install, no system node/npx involved.
+    const bundled = resolveBundledMcpSpawn(serverCfg, deps.bundledRuntime)
+    if (bundled) return { command: bundled.command, args: bundled.args }
     const installed = deps.npmResolver.getInstalled(serverCfg.npm_package)
     // Strip npx/entrypoint prefixes from user args
     let cleanArgs = [...userArgs]

@@ -30,6 +30,7 @@ import { parseMcpRegistryDocument, type ParsedMcpRegistryDocument } from '../../
 import type { McpRegistryGetResult } from '../../shared/types/ipc.types'
 import { writeJsonAtomic } from '../utils/atomic-json'
 import { bundledCredentialFiles } from './gmail-bundled-client'
+import { availableBundledMcpServers } from './bundled-mcp-servers'
 
 export const MCP_REGISTRY_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json'
 
@@ -53,6 +54,8 @@ export interface McpRegistryFetchOptions {
   isRemoteEnabled?: () => boolean
   /** Injectable for tests; defaults to the files this build ships (bundledCredentialFiles). */
   bundledFiles?: () => { npmPackage: string; path: string }[]
+  /** Injectable for tests; defaults to the servers this build ships (availableBundledMcpServers). */
+  bundledServers?: () => { npmPackage: string; version: string }[]
 }
 
 export class McpRegistryFetchService {
@@ -64,6 +67,7 @@ export class McpRegistryFetchService {
   private readonly fetchFn: typeof fetch
   private readonly isRemoteEnabled: () => boolean
   private readonly bundledFiles: () => { npmPackage: string; path: string }[]
+  private readonly bundledServers: () => { npmPackage: string; version: string }[]
   private lastResult: McpRegistryGetResult | null = null
   /** lastResult was served while remote fetches were off — refetch once they are back on. */
   private servedWhileDisabled = false
@@ -76,6 +80,7 @@ export class McpRegistryFetchService {
     this.fetchFn = options.fetchFn ?? ((...args) => fetch(...args))
     this.isRemoteEnabled = options.isRemoteEnabled ?? (() => true)
     this.bundledFiles = options.bundledFiles ?? (() => bundledCredentialFiles())
+    this.bundledServers = options.bundledServers ?? (() => availableBundledMcpServers())
   }
 
   /**
@@ -94,7 +99,13 @@ export class McpRegistryFetchService {
    */
   private withBundledFiles(result: McpRegistryGetResult): McpRegistryGetResult {
     const files = this.bundledFiles()
-    return files.length ? { ...result, bundledCredentialFiles: files } : result
+    const servers = this.bundledServers()
+    if (!files.length && !servers.length) return result
+    return {
+      ...result,
+      ...(files.length ? { bundledCredentialFiles: files } : {}),
+      ...(servers.length ? { bundledServers: servers } : {}),
+    }
   }
 
   /**

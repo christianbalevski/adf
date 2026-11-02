@@ -499,6 +499,17 @@ describe('registrationSourceLine (modal identity subtitle)', () => {
     expect(registrationSourceLine(reg({ type: 'http', url: 'https://mcp.example.com/mcp' }))).toBe('https://mcp.example.com/mcp')
   })
 
+  it('a server the runtime ships reads as built in, only for the catalog shape on the host with Host access on', () => {
+    const bundled = [{ npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', version: '1.1.11' }]
+    const gmail = reg({ type: 'npm', npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', runLocation: 'host', version: '1.0.0' })
+    expect(registrationSourceLine(gmail, bundled, true)).toBe('built into ADF Studio: @gongrzhe/server-gmail-autoauth-mcp · v1.1.11')
+    expect(registrationSourceLine(gmail, bundled, false)).toBe('npx @gongrzhe/server-gmail-autoauth-mcp · v1.0.0')
+    expect(registrationSourceLine(gmail, undefined, true)).toBe('npx @gongrzhe/server-gmail-autoauth-mcp · v1.0.0')
+    expect(registrationSourceLine({ ...gmail, runLocation: 'shared' }, bundled, true)).toMatch(/^npx /)
+    expect(registrationSourceLine({ ...gmail, args: ['--x'] }, bundled, true)).toMatch(/^npx /)
+    expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', runLocation: 'host' }), bundled, true)).toBe('npx @x/mcp')
+  })
+
   it('appends the verified version, skipping "unknown"', () => {
     expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', version: '1.2.3' }))).toBe('npx @x/mcp · v1.2.3')
     expect(registrationSourceLine(reg({ type: 'npm', npmPackage: '@x/mcp', version: 'unknown' }))).toBe('npx @x/mcp')

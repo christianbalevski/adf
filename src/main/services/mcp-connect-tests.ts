@@ -22,6 +22,7 @@ import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
 import { bundledClientApplies, bundledTokenFileFor, writeBundledClientIfAbsent } from './gmail-bundled-client'
 import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
+import { resolveBundledMcpSpawn } from './bundled-mcp-servers'
 import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
 import type { McpOAuthStore } from './mcp-oauth.types'
@@ -355,8 +356,11 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
           args = [reg.pypiPackage, ...userArgs]
         }
       } else if (reg.npmPackage) {
-        command = 'npx'
-        args = ['-y', reg.npmPackage, ...userArgs]
+        // A server this app ships runs on Studio's own executable
+        // (bundled-mcp-servers.ts); everything else through npx.
+        const bundled = resolveBundledMcpSpawn(serverCfg)
+        command = bundled ? bundled.command : 'npx'
+        args = bundled ? bundled.args : ['-y', reg.npmPackage, ...userArgs]
       } else {
         command = reg.command ?? ''
         args = userArgs

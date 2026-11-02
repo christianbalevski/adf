@@ -45,6 +45,19 @@ Its upstream repository was archived on March 3, 2026; ADF's catalog marks it
 unverified. This article describes the existing integration, not a newly maintained
 ADF Gmail server.
 
+**Node.js is not needed for Gmail on ADF Studio.** Installed ADF Studio
+builds ship this server (pinned at version 1.1.11) and run it with Studio's
+own executable when it runs on the host: there is no npm download and no
+system `node`, `npm` or `npx` involved, for Connect, sign-in, or agents
+using it, including through the daemon Studio starts. **Advanced** shows the
+source as *built into ADF Studio*. Node.js is still needed for every other
+npm-based MCP server on the host, for Gmail if you edit its command, arguments
+or package, for development builds, and for the npm-distributed daemon
+(`@agentdocumentformat/cli`), which run the server through `npx` as before.
+Container runs are unchanged: the server is fetched by `npx` inside the
+container. On Linux the sign-in opens your browser with the system
+`xdg-open`.
+
 1. In [Google Cloud Console](https://console.cloud.google.com/), select an existing
    project or create one, then enable **Gmail API** in **APIs & Services → Library**.
 2. Configure the OAuth consent screen (Google Auth Platform). For a personal

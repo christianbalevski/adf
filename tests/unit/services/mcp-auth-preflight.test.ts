@@ -405,3 +405,30 @@ posixOnly('runMcpAuthPreflight container mode', () => {
     expect(io.opened).toEqual(['https://auth.example.com/authorize?redirect_uri=http%3A%2F%2Flocalhost%3A18923%2Fcallback'])
   })
 })
+
+describe('runMcpAuthPreflight: bundled server', () => {
+  it('a bundled npm server runs on Studio\'s executable with ELECTRON_RUN_AS_NODE=1 and its auth args; others keep npx', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const resources = mkdtempSync(join(tmpdir(), 'adf-preflight-bundle-'))
+    const entry = join(resources, 'mcp-servers', 'gmail', 'index.mjs')
+    mkdirSync(join(resources, 'mcp-servers', 'gmail'), { recursive: true })
+    writeFileSync(entry, 'console.log("run-as-node:" + process.env.ELECTRON_RUN_AS_NODE + ",args:" + process.argv.slice(2).join(","))')
+    const proc = process as { resourcesPath?: string }
+    const saved = proc.resourcesPath
+    proc.resourcesPath = resources
+    Object.defineProperty(process.versions, 'electron', { value: '43.0.0', configurable: true, enumerable: true })
+    try {
+      const logs: string[] = []
+      const cfg: McpServerConfig = { name: 'gmail', transport: 'stdio', npm_package: '@gongrzhe/server-gmail-autoauth-mcp', source: 'npm:@gongrzhe/server-gmail-autoauth-mcp' }
+      await runMcpAuthPreflight(cfg, { authArgs: ['auth'] }, { ...makeIO(), log: (m) => logs.push(m) })
+      expect(logs.some(l => l.includes(`Auth preflight: ${process.execPath} ${entry} auth`))).toBe(true)
+      expect(logs.some(l => l.includes('run-as-node:1,args:auth'))).toBe(true)
+    } finally {
+      proc.resourcesPath = saved
+      delete (process.versions as { electron?: string }).electron
+      rmSync(resources, { recursive: true, force: true })
+    }
+  }, 30_000)
+})

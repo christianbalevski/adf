@@ -123,7 +123,13 @@ export function availableRegistryEntries(
  * verified server version when known. Empty string when the identity field
  * itself is still blank.
  */
-export function registrationSourceLine(reg: McpServerRegistration): string {
+export function registrationSourceLine(
+  reg: McpServerRegistration,
+  bundledServers?: { npmPackage: string; version: string }[],
+  hostAccessEnabled?: boolean,
+): string {
+  const builtIn = bundledServerFor(reg, bundledServers, hostAccessEnabled)
+  if (builtIn) return `built into ADF Studio: ${builtIn.npmPackage} · v${builtIn.version}`
   const source = reg.url
     ? reg.url
     : reg.type === 'custom'
@@ -159,6 +165,22 @@ export function pendingCredentialFiles(
     ;(f.required ? required : optional).push(f.path)
   }
   return { required, optional }
+}
+
+/**
+ * The server this app ships that `reg` launches on the host instead of npx
+ * (MCP_REGISTRY_GET's bundledServers), or undefined: the catalog shape only
+ * (its package, no command or args), host registrations while Host access is
+ * on — anywhere else it runs through npx (bundled-mcp-servers.ts).
+ */
+export function bundledServerFor(
+  reg: Pick<McpServerRegistration, 'type' | 'npmPackage' | 'command' | 'args' | 'runLocation'>,
+  bundled: { npmPackage: string; version: string }[] | undefined,
+  hostAccessEnabled: boolean | undefined,
+): { npmPackage: string; version: string } | undefined {
+  if (reg.runLocation !== 'host' || hostAccessEnabled !== true) return undefined
+  if ((reg.type ?? 'npm') !== 'npm' || reg.command || (reg.args ?? []).some(Boolean)) return undefined
+  return bundled?.find((b) => b.npmPackage === reg.npmPackage)
 }
 
 /**
@@ -430,7 +452,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   }
 
   // Dynamic registry: bundled snapshot immediately, live entries once fetched.
-  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt, bundledCredentialFiles } = useMcpRegistryStore()
+  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt, bundledCredentialFiles, bundledServers } = useMcpRegistryStore()
 
   const registryEntry = useMemo(() => {
     if (!draft) return undefined
@@ -1087,8 +1109,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               {catalogEntry && (
                 <>
                   {identityFields}
-                  {registrationSourceLine(draft) && (
-                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft)}</p>
+                  {registrationSourceLine(draft, bundledServers, hostAccessEnabled) && (
+                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft, bundledServers, hostAccessEnabled)}</p>
                   )}
                   {argsEditor}
                   <div>

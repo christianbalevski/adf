@@ -1,6 +1,7 @@
 import { dirname, join } from 'path'
 import { homedir } from 'os'
 import { inheritableEnv } from '../utils/child-env'
+import { bundledMcpServerEnv } from './bundled-mcp-servers'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
@@ -357,7 +358,10 @@ export class McpClientManager extends EventEmitter {
           command,
           args,
           // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
-          env: { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) } as Record<string, string>,
+          // ELECTRON_RUN_AS_NODE only for Studio's executable running a server
+          // file it ships (bundled-mcp-servers.ts) — decided from the command
+          // line, never settable through config env.
+          env: { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}), ...bundledMcpServerEnv(command, args) } as Record<string, string>,
           stderr: 'pipe',
           cwd: this.scratchDir
         })

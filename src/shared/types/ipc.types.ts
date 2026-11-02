@@ -905,6 +905,14 @@ export interface McpRegistryGetResult {
    * builds that ship none.
    */
   bundledCredentialFiles?: { npmPackage: string; path: string }[]
+  /**
+   * npm MCP servers this build ships and runs on its own executable when
+   * they run on the host (no system Node.js/npm), at the exact version
+   * bundled. Set by the host from what is installed with it, never by a
+   * registry document; absent when none is present (dev, npm-distributed
+   * daemon).
+   */
+  bundledServers?: { npmPackage: string; version: string }[]
 }
 
 /** One registry agent as the gallery shows it — the index entry plus where it comes from. */
