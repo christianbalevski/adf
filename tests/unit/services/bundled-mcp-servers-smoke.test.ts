@@ -19,7 +19,7 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-N
   let dir: string
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'adf-gmail-bundle-smoke-'))
-    execFileSync(process.execPath, [join(root, 'scripts', 'bundle-mcp-servers.mjs'), '--out', join(dir, 'mcp-servers')], { stdio: 'pipe' })
+    execFileSync(process.execPath, [join(root, 'scripts', 'bundle-mcp-servers.mjs'), '--out', join(dir, 'mcp-servers')], { stdio: 'pipe', windowsHide: true })
   }, 120_000)
   afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -39,6 +39,7 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-N
     const child = spawn(electronBin, [join(dir, 'mcp-servers', 'gmail', 'index.mjs')], {
       env: { PATH: process.env.PATH ?? '', HOME: home, USERPROFILE: home, ELECTRON_RUN_AS_NODE: '1', GMAIL_OAUTH_PATH: keys, GMAIL_CREDENTIALS_PATH: creds },
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
     })
     const replies = new Map<number, { result?: { serverInfo?: { name: string }; tools?: { name: string }[] }; error?: unknown }>()
     let buffer = ''
