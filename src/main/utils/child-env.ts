@@ -27,3 +27,30 @@ export function inheritableEnv(base: NodeJS.ProcessEnv = process.env): Record<st
   }
   return env
 }
+
+/** Env vars that user-supplied MCP config must never override. */
+export const BLOCKED_ENV_VARS = new Set([
+  'ELECTRON_RUN_AS_NODE',
+  'NODE_OPTIONS',
+  'LD_PRELOAD',
+  'DYLD_INSERT_LIBRARIES',
+  'LD_LIBRARY_PATH',
+  'DYLD_LIBRARY_PATH',
+])
+
+/** Strip security-sensitive env vars that MCP server configs must not override. */
+export function filterBlockedEnv(env: Record<string, string>): Record<string, string> {
+  const filtered: Record<string, string> = {}
+  const blocked: string[] = []
+  for (const [key, value] of Object.entries(env)) {
+    if (BLOCKED_ENV_VARS.has(key)) {
+      blocked.push(key)
+    } else {
+      filtered[key] = value
+    }
+  }
+  if (blocked.length) {
+    console.warn(`[MCP] Blocked security-sensitive env vars: ${blocked.join(', ')}`)
+  }
+  return filtered
+}

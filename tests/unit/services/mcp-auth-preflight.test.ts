@@ -431,4 +431,41 @@ describe('runMcpAuthPreflight: bundled server', () => {
       rmSync(resources, { recursive: true, force: true })
     }
   }, 30_000)
+
+  it('the bundled spawn drops Studio\'s ELECTRON_* / NODE_OPTIONS and blocklisted config env; other preflights keep their env', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, rmSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const resources = mkdtempSync(join(tmpdir(), 'adf-preflight-bundle-env-'))
+    const entry = join(resources, 'mcp-servers', 'gmail', 'index.mjs')
+    const other = join(resources, 'other.mjs')
+    mkdirSync(join(resources, 'mcp-servers', 'gmail'), { recursive: true })
+    const report = 'console.log("env:" + JSON.stringify({ logging: process.env.ELECTRON_ENABLE_LOGGING ?? null, nodeOptions: process.env.NODE_OPTIONS ?? null, preload: process.env.LD_PRELOAD ?? null, foo: process.env.FOO ?? null }))'
+    writeFileSync(entry, report)
+    writeFileSync(other, report)
+    const proc = process as { resourcesPath?: string }
+    const saved = { resourcesPath: proc.resourcesPath, logging: process.env.ELECTRON_ENABLE_LOGGING }
+    proc.resourcesPath = resources
+    process.env.ELECTRON_ENABLE_LOGGING = '1'
+    Object.defineProperty(process.versions, 'electron', { value: '43.0.0', configurable: true, enumerable: true })
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      // NODE_OPTIONS in config env: a value Node accepts, so the non-bundled run shows it is passed through.
+      const env = { FOO: 'bar', NODE_OPTIONS: '--no-deprecation', LD_PRELOAD: '' }
+      const logs: string[] = []
+      const cfg: McpServerConfig = { name: 'gmail', transport: 'stdio', npm_package: '@gongrzhe/server-gmail-autoauth-mcp', source: 'npm:@gongrzhe/server-gmail-autoauth-mcp', env }
+      await runMcpAuthPreflight(cfg, { authArgs: ['auth'] }, { ...makeIO(), log: (m) => logs.push(m) })
+      expect(logs.find(l => l.includes('env:'))).toContain('env:{"logging":null,"nodeOptions":null,"preload":null,"foo":"bar"}')
+      const plainLogs: string[] = []
+      await runMcpAuthPreflight({ name: 'x', transport: 'stdio', command: process.execPath, args: [other], env }, {}, { ...makeIO(), log: (m) => plainLogs.push(m) })
+      expect(plainLogs.find(l => l.includes('env:'))).toContain('env:{"logging":"1","nodeOptions":"--no-deprecation","preload":"","foo":"bar"}')
+    } finally {
+      warn.mockRestore()
+      proc.resourcesPath = saved.resourcesPath
+      if (saved.logging === undefined) delete process.env.ELECTRON_ENABLE_LOGGING
+      else process.env.ELECTRON_ENABLE_LOGGING = saved.logging
+      delete (process.versions as { electron?: string }).electron
+      rmSync(resources, { recursive: true, force: true })
+    }
+  }, 30_000)
 })

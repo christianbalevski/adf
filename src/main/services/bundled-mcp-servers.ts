@@ -15,9 +15,11 @@
  */
 
 import { existsSync } from 'fs'
-import { dirname, join, resolve } from 'path'
-import type { McpInstalledPackage, McpServerConfig } from '../../shared/types/adf-v02.types'
+import { isAbsolute, join, resolve } from 'path'
+import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import { GMAIL_BUNDLED_CLIENT_NPM_PACKAGE } from '../../shared/utils/gmail-oauth-client'
+import { bundledMcpServerForShape } from '../../shared/utils/bundled-mcp-shape'
+import { filterBlockedEnv } from '../utils/child-env'
 
 export interface BundledMcpServer {
   npmPackage: string
@@ -38,39 +40,44 @@ export interface BundledMcpRuntime {
   execPath: string
   /** Running on an Electron binary (main process or ELECTRON_RUN_AS_NODE). */
   electron: boolean
+  /** An installed app (resources hold app.asar), not a dev tree on node_modules/electron. */
+  packaged?: boolean
 }
 
 export function currentBundledMcpRuntime(): BundledMcpRuntime {
+  const resourcesPath = (process as { resourcesPath?: string }).resourcesPath
   return {
-    resourcesPath: (process as { resourcesPath?: string }).resourcesPath,
+    resourcesPath,
     execPath: process.execPath,
     electron: !!process.versions.electron,
+    packaged: !!resourcesPath && existsSync(join(resourcesPath, 'app.asar')),
   }
 }
+
+const warnedMissing = new Set<string>()
 
 /** Absolute path of a bundled server's entry file, or null when this process has none. */
 export function bundledMcpServerEntry(server: BundledMcpServer, rt: BundledMcpRuntime = currentBundledMcpRuntime()): string | null {
   if (!rt.electron || !rt.resourcesPath) return null
   const entry = join(rt.resourcesPath, 'mcp-servers', server.dir, 'index.mjs')
-  return existsSync(entry) ? entry : null
+  if (existsSync(entry)) return entry
+  // An installed app should ship it: say so once, or the npx fallback is silent.
+  if (rt.packaged && !warnedMissing.has(entry)) {
+    warnedMissing.add(entry)
+    console.warn(`[MCP] Built-in ${server.npmPackage} is missing from this installation (${entry}); running it through npx instead.`)
+  }
+  return null
 }
 
 /**
  * The bundled server a HOST config launches, or null. Matches only the
- * catalog shape: the package, no command, no args beyond the `-y <pkg>` npx
- * prefix, and a `source` of `npm:<pkg>` (or `npm:<pkg>@<bundled version>`).
+ * catalog shape (shared/utils/bundled-mcp-shape.ts, which the Settings label
+ * uses too).
  */
 export function matchBundledMcpServer(
   cfg: Pick<McpServerConfig, 'npm_package' | 'command' | 'args' | 'source'>,
 ): BundledMcpServer | null {
-  const server = BUNDLED_MCP_SERVERS.find((s) => s.npmPackage === cfg.npm_package)
-  if (!server || cfg.command) return null
-  let args = (cfg.args ?? []).filter(Boolean)
-  if (args[0] === '-y' && args[1] === server.npmPackage) args = args.slice(2)
-  if (args.length) return null
-  const source = cfg.source
-  if (source !== undefined && source !== `npm:${server.npmPackage}` && source !== `npm:${server.npmPackage}@${server.version}`) return null
-  return server
+  return bundledMcpServerForShape(cfg, BUNDLED_MCP_SERVERS) ?? null
 }
 
 export interface BundledMcpSpawn {
@@ -93,42 +100,45 @@ export function resolveBundledMcpSpawn(
  * Whether a resolved host spawn is Studio's executable running one of its
  * own bundled server files. The one case that gets ELECTRON_RUN_AS_NODE=1
  * (which MCP configs may otherwise never set, see mcp-client-manager.ts):
- * decided from the command line, never from config env.
+ * decided from the command line, never from config env. The entry must be
+ * absolute: the child runs in another cwd than the one a relative path would
+ * be checked against.
  */
 export function isBundledMcpServerSpawn(
   command: string | undefined,
   args: readonly string[] | undefined,
   rt: BundledMcpRuntime = currentBundledMcpRuntime(),
 ): boolean {
-  if (!command || !args?.length || resolve(command) !== resolve(rt.execPath)) return false
+  if (!command || !args?.length || !isAbsolute(args[0]) || resolve(command) !== resolve(rt.execPath)) return false
   return BUNDLED_MCP_SERVERS.some((s) => {
     const entry = bundledMcpServerEntry(s, rt)
     return !!entry && resolve(args[0]) === resolve(entry)
   })
 }
 
-/** The env a bundled-server spawn adds on top of the filtered server env. */
-export function bundledMcpServerEnv(
+/**
+ * The env of a bundled-server spawn, or null for any other spawn (which keeps
+ * its caller's env). Like the daemon's (buildDaemonEnv): the inherited env
+ * minus what configures Electron or its Node (ELECTRON_*, NODE_OPTIONS); the
+ * config env through the MCP blocklist; then ELECTRON_RUN_AS_NODE=1.
+ */
+export function bundledMcpSpawnEnv(
   command: string | undefined,
   args: readonly string[] | undefined,
+  inherited: Record<string, string>,
+  configEnv: Record<string, string>,
   rt: BundledMcpRuntime = currentBundledMcpRuntime(),
-): Record<string, string> {
-  return isBundledMcpServerSpawn(command, args, rt) ? { ELECTRON_RUN_AS_NODE: '1' } : {}
+): Record<string, string> | null {
+  if (!isBundledMcpServerSpawn(command, args, rt)) return null
+  const env: Record<string, string> = {}
+  for (const [key, value] of Object.entries(inherited)) {
+    if (/^ELECTRON_/i.test(key) || /^NODE_OPTIONS$/i.test(key)) continue
+    env[key] = value
+  }
+  return { ...env, ...filterBlockedEnv(configEnv), ELECTRON_RUN_AS_NODE: '1' }
 }
 
 /** The bundled servers present in this process (MCP_REGISTRY_GET's `bundledServers`). */
 export function availableBundledMcpServers(rt: BundledMcpRuntime = currentBundledMcpRuntime()): { npmPackage: string; version: string }[] {
   return BUNDLED_MCP_SERVERS.filter((s) => bundledMcpServerEntry(s, rt)).map((s) => ({ npmPackage: s.npmPackage, version: s.version }))
-}
-
-/**
- * What a managed install of `spec` resolves to when this app ships it (no
- * npm run, nothing written to the install manifest), or null. `spec` is the
- * bare package or `<pkg>@<bundled version>`.
- */
-export function bundledMcpInstall(spec: string, rt: BundledMcpRuntime = currentBundledMcpRuntime()): McpInstalledPackage | null {
-  const server = BUNDLED_MCP_SERVERS.find((s) => spec === s.npmPackage || spec === `${s.npmPackage}@${s.version}`)
-  const entry = server && bundledMcpServerEntry(server, rt)
-  if (!server || !entry) return null
-  return { package: server.npmPackage, version: server.version, command: entry, installPath: dirname(entry), installedAt: Date.now() }
 }

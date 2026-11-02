@@ -1,12 +1,12 @@
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { join } from 'path'
 import {
   BUNDLED_MCP_SERVERS,
   availableBundledMcpServers,
-  bundledMcpInstall,
-  bundledMcpServerEnv,
+  bundledMcpServerEntry,
+  bundledMcpSpawnEnv,
   isBundledMcpServerSpawn,
   matchBundledMcpServer,
   resolveBundledMcpSpawn,
@@ -130,13 +130,58 @@ describe('resolveMcpSpawnConfig with a bundled server', () => {
 describe('ELECTRON_RUN_AS_NODE exception', () => {
   it('only for Studio\'s executable running a bundled entry', () => {
     const rt = studio()
+    const env = (command: string, args: string[], over: Partial<BundledMcpRuntime> = {}) => bundledMcpSpawnEnv(command, args, {}, {}, { ...rt, ...over })
     expect(isBundledMcpServerSpawn(STUDIO_EXE, [entry], rt)).toBe(true)
-    expect(bundledMcpServerEnv(STUDIO_EXE, [entry, 'auth'], rt)).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
-    expect(bundledMcpServerEnv(STUDIO_EXE, ['/tmp/other.mjs'], rt)).toEqual({})
-    expect(bundledMcpServerEnv(STUDIO_EXE, [], rt)).toEqual({})
-    expect(bundledMcpServerEnv('node', [entry], rt)).toEqual({})
-    expect(bundledMcpServerEnv('npx', ['-y', GMAIL], rt)).toEqual({})
-    expect(bundledMcpServerEnv(STUDIO_EXE, [entry], { ...rt, resourcesPath: undefined })).toEqual({})
+    expect(env(STUDIO_EXE, [entry, 'auth'])).toEqual({ ELECTRON_RUN_AS_NODE: '1' })
+    expect(env(STUDIO_EXE, ['/tmp/other.mjs'])).toBeNull()
+    expect(env(STUDIO_EXE, [])).toBeNull()
+    expect(env('node', [entry])).toBeNull()
+    expect(env('npx', ['-y', GMAIL])).toBeNull()
+    expect(env(STUDIO_EXE, [entry], { resourcesPath: undefined })).toBeNull()
+  })
+
+  it('the entry must be an absolute path (the child runs in another cwd)', () => {
+    const cwd = process.cwd()
+    try {
+      process.chdir(resources)
+      const relative = join('mcp-servers', 'gmail', 'index.mjs')
+      expect(isBundledMcpServerSpawn(STUDIO_EXE, [relative], studio())).toBe(false)
+      expect(isBundledMcpServerSpawn(STUDIO_EXE, [join('.', relative)], studio())).toBe(false)
+      expect(isBundledMcpServerSpawn(STUDIO_EXE, [entry], studio())).toBe(true)
+    } finally {
+      process.chdir(cwd)
+    }
+  })
+
+  it('drops inherited ELECTRON_* and NODE_OPTIONS and blocklisted config env; other spawns get null (env unchanged)', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    try {
+      const inherited = { PATH: '/bin', HOME: '/h', ELECTRON_ENABLE_LOGGING: '1', electron_no_asar: '1', NODE_OPTIONS: '--require /x.js', node_options: '--inspect' }
+      const config = { FOO: 'bar', NODE_OPTIONS: '--require /y.js', LD_PRELOAD: '/z.so', ELECTRON_RUN_AS_NODE: '0' }
+      expect(bundledMcpSpawnEnv(STUDIO_EXE, [entry], inherited, config, studio())).toEqual({ PATH: '/bin', HOME: '/h', FOO: 'bar', ELECTRON_RUN_AS_NODE: '1' })
+      expect(bundledMcpSpawnEnv('/usr/bin/node', ['/srv/x.js'], inherited, config, studio())).toBeNull()
+    } finally {
+      warn.mockRestore()
+    }
+  })
+
+  it('an installed app missing its bundled file warns once; dev trees stay quiet', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const empty = mkdtempSync(join(tmpdir(), 'adf-bundled-missing-'))
+    try {
+      const server = BUNDLED_MCP_SERVERS[0]
+      expect(bundledMcpServerEntry(server, { ...studio(), resourcesPath: empty, packaged: false })).toBeNull()
+      expect(warn).not.toHaveBeenCalled()
+      expect(bundledMcpServerEntry(server, { ...studio(), resourcesPath: empty, packaged: true })).toBeNull()
+      expect(bundledMcpServerEntry(server, { ...studio(), resourcesPath: empty, packaged: true })).toBeNull()
+      expect(warn).toHaveBeenCalledTimes(1)
+      expect(String(warn.mock.calls[0][0])).toMatch(/Built-in @gongrzhe\/server-gmail-autoauth-mcp is missing from this installation .* npx/)
+      expect(bundledMcpServerEntry(server, { ...studio(), packaged: true })).toBe(entry)
+      expect(warn).toHaveBeenCalledTimes(1)
+    } finally {
+      warn.mockRestore()
+      rmSync(empty, { recursive: true, force: true })
+    }
   })
 
   describe('McpClientManager child env (real spawn)', () => {
@@ -148,7 +193,7 @@ describe('ELECTRON_RUN_AS_NODE exception', () => {
       rl.on('line', (line) => {
         const msg = JSON.parse(line)
         if (msg.method === 'initialize') send({ jsonrpc: '2.0', id: msg.id, result: { protocolVersion: msg.params.protocolVersion, capabilities: { tools: {} }, serverInfo: { name: 'env', version: '1' } } })
-        else if (msg.method === 'tools/list') send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'run_as_node_' + (process.env.ELECTRON_RUN_AS_NODE ?? 'unset'), inputSchema: { type: 'object' } }] } })
+        else if (msg.method === 'tools/list') send({ jsonrpc: '2.0', id: msg.id, result: { tools: [{ name: 'run_as_node_' + (process.env.ELECTRON_RUN_AS_NODE ?? 'unset'), description: JSON.stringify({ logging: process.env.ELECTRON_ENABLE_LOGGING ?? null, nodeOptions: process.env.NODE_OPTIONS ?? null, foo: process.env.FOO ?? null }), inputSchema: { type: 'object' } }] } })
         else if (msg.id !== undefined) send({ jsonrpc: '2.0', id: msg.id, result: {} })
       })`
     let liveResources: string
@@ -180,6 +225,24 @@ describe('ELECTRON_RUN_AS_NODE exception', () => {
       expect(tools?.map((t) => t.name)).toEqual(['run_as_node_1'])
     }, 30_000)
 
+    it('the bundled spawn drops Studio\'s ELECTRON_* and NODE_OPTIONS; any other server keeps them', async () => {
+      const saved = { logging: process.env.ELECTRON_ENABLE_LOGGING, nodeOptions: process.env.NODE_OPTIONS }
+      process.env.ELECTRON_ENABLE_LOGGING = '1'
+      process.env.NODE_OPTIONS = '--no-deprecation'
+      try {
+        manager = new McpClientManager()
+        const bundled = await manager.connect({ name: 'gmail', transport: 'stdio', command: process.execPath, args: [liveEntry], env: { FOO: 'bar', NODE_OPTIONS: '--no-warnings' } })
+        expect(JSON.parse(bundled![0].description!)).toEqual({ logging: null, nodeOptions: null, foo: 'bar' })
+        const plain = await manager.connect({ name: 'other', transport: 'stdio', command: process.execPath, args: [other] })
+        expect(JSON.parse(plain![0].description!)).toEqual({ logging: '1', nodeOptions: '--no-deprecation', foo: null })
+      } finally {
+        for (const [key, value] of [['ELECTRON_ENABLE_LOGGING', saved.logging], ['NODE_OPTIONS', saved.nodeOptions]] as const) {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }
+      }
+    }, 30_000)
+
     it('any other server cannot get it, not even through its config env', async () => {
       manager = new McpClientManager()
       const tools = await manager.connect({ name: 'other', transport: 'stdio', command: process.execPath, args: [other], env: { ELECTRON_RUN_AS_NODE: '1' } })
@@ -189,32 +252,26 @@ describe('ELECTRON_RUN_AS_NODE exception', () => {
 })
 
 describe('managed install of a bundled server', () => {
-  it('reports the bundled copy for the bare package or its pinned spec; nothing else', () => {
-    const v = BUNDLED_MCP_SERVERS[0].version
-    expect(bundledMcpInstall(GMAIL, studio())).toMatchObject({ package: GMAIL, version: v, command: entry })
-    expect(bundledMcpInstall(`${GMAIL}@${v}`, studio())).toMatchObject({ version: v })
-    expect(bundledMcpInstall(`${GMAIL}@1.2.0`, studio())).toBeNull()
-    expect(bundledMcpInstall('@acme/gh', studio())).toBeNull()
-    expect(bundledMcpInstall(GMAIL, { ...studio(), resourcesPath: undefined })).toBeNull()
-  })
-
-  it('PackageResolver("mcp-servers").install runs no npm and writes no manifest entry', async () => {
+  // The install IPC carries only a package name, not the config: whether a
+  // registration launches the bundle is decided where it is known (Settings,
+  // builtInManagedServer). install() itself runs npm as it always did.
+  it('PackageResolver("mcp-servers").install runs npm for it even with the bundle present', async () => {
     const savedResources = (process as { resourcesPath?: string }).resourcesPath
     const savedUserData = process.env.ADF_USER_DATA_DIR
+    const savedPath = process.env.PATH
     const userData = mkdtempSync(join(tmpdir(), 'adf-bundled-userdata-'))
     ;(process as { resourcesPath?: string }).resourcesPath = resources
     Object.defineProperty(process.versions, 'electron', { value: '43.0.0', configurable: true, enumerable: true })
     process.env.ADF_USER_DATA_DIR = userData
+    process.env.PATH = join(userData, 'no-npm-here')
     try {
-      const resolver = new PackageResolver('mcp-servers')
       const progress: string[] = []
-      const installed = await resolver.install(GMAIL, (m) => progress.push(m))
-      expect(installed).toMatchObject({ package: GMAIL, version: BUNDLED_MCP_SERVERS[0].version, command: entry })
-      expect(progress.join('\n')).toMatch(/built into ADF Studio/)
-      expect(resolver.getInstalled(GMAIL)).toBeUndefined()
+      await expect(new PackageResolver('mcp-servers').install(GMAIL, (m) => progress.push(m))).rejects.toThrow()
+      expect(progress).toEqual([`Installing ${GMAIL}...`])
     } finally {
       ;(process as { resourcesPath?: string }).resourcesPath = savedResources
       delete (process.versions as { electron?: string }).electron
+      process.env.PATH = savedPath
       if (savedUserData === undefined) delete process.env.ADF_USER_DATA_DIR
       else process.env.ADF_USER_DATA_DIR = savedUserData
       rmSync(userData, { recursive: true, force: true })

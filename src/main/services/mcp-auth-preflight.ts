@@ -8,7 +8,7 @@ import { createServer } from 'net'
 import type { Server, Socket } from 'net'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import { trackChild, killTree } from '../utils/child-registry'
-import { bundledMcpServerEnv, resolveBundledMcpSpawn } from './bundled-mcp-servers'
+import { bundledMcpSpawnEnv, resolveBundledMcpSpawn } from './bundled-mcp-servers'
 
 /**
  * Interactive-auth preflight for stdio MCP servers (OAuth etc.): spawn the
@@ -245,7 +245,11 @@ export async function runMcpAuthPreflight(
     preflightArgs = [...preflightArgs, ...opts.authArgs]
   }
 
-  const preflightEnv = { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}), ...bundledMcpServerEnv(preflightCmd, preflightArgs) }
+  // A bundled server (Studio's executable): Electron/Node settings dropped
+  // and config env through the MCP blocklist (bundled-mcp-servers.ts).
+  // Every other preflight keeps the env as configured.
+  const preflightEnv = bundledMcpSpawnEnv(preflightCmd, preflightArgs, inheritableEnv(), { ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) })
+    ?? { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
   log(`[MCP] Auth preflight: ${preflightCmd} ${preflightArgs.join(' ')}`)
 
   // No blanket shell:true — on Windows that routes through cmd.exe with
