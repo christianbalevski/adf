@@ -17,7 +17,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
-import { writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { isBundledClientContent, writeBundledClientIfAbsent } from './gmail-bundled-client'
 
 /** Decoded size cap per credential file. Real targets are ~1 KB token files. */
 export const CREDENTIAL_FILE_MAX_BYTES = 256 * 1024
@@ -328,6 +328,10 @@ export async function writeBackCredentialFiles(
       }
     }
     if (content == null) continue
+    // The built-in Gmail client is the build's, not the agent's: never seal it
+    // (it would follow the agent into containers and back over a client the
+    // user picks later). A client file with any other bytes is captured.
+    if (isBundledClientContent(serverCfg.npm_package, file.path, content)) continue
     captureCredentialFile(store, serverCfg, file.path, content, capturedAt)
     log?.(`[MCP] Captured credential file "${file.path}" for "${serverCfg.name}" into the identity keystore`)
   }

@@ -301,14 +301,15 @@ describe('runMcpRegistrationTest: Gmail built-in OAuth client', () => {
     expect(JSON.stringify(result.notes)).not.toContain('built-in')
   }))
 
-  it('an existing token file with no client: writes the client, leaves the tokens byte-identical', () => withHome(async (home, fs, join) => {
+  it('an existing token file with no client: does not write the client, says why, leaves the tokens byte-identical', () => withHome(async (home, fs, join) => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
     fs.mkdirSync(join(home, '.gmail-mcp'))
     fs.writeFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'existing-tokens')
     const result = await runMcpRegistrationTest({ registration: gmail }, deps())
-    expect(result.success).toBe(true)
-    expect(fs.readFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'utf-8')).toBe(BUILT_IN)
+    expect(fs.existsSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'))).toBe(false)
     expect(fs.readFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'utf-8')).toBe('existing-tokens')
+    expect(result.notes).toEqual([expect.stringMatching(/^Did not write the built-in OAuth client: ~\/.gmail-mcp\/credentials.json already exists/)])
+    expect(JSON.stringify(result)).not.toContain('synthetic')
   }))
 
   it('builds without a client keep the manual flow; other packages never get it', () => withHome(async (home, fs, join) => {

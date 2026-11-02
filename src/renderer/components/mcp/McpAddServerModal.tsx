@@ -164,17 +164,20 @@ export function pendingCredentialFiles(
 /**
  * Declared credential files of `draft` that the host fills itself when none
  * is chosen (MCP_REGISTRY_GET's bundledCredentialFiles: the Gmail server's
- * built-in OAuth client). Matched on the draft's package and path; host
- * registrations only, and only while Host access is on: the fallback writes
- * to the host home, and with Host access off a host draft runs in the
- * container, which never gets the built-in client.
+ * built-in OAuth client). Matched on the draft's package and path; only for
+ * drafts that run on the host, the way the backend places them: runLocation
+ * 'host', or no location while "MCP on host" is on. Host access must be on:
+ * the fallback writes to the host home, and with Host access off the draft
+ * runs in the container, which never gets the built-in client.
  */
 export function bundledFilePaths(
   draft: Pick<McpServerRegistration, 'npmPackage' | 'credentialFiles' | 'runLocation'> | null,
   bundled: { npmPackage: string; path: string }[] | undefined,
   hostAccessEnabled: boolean | undefined,
+  mcpOnHost?: boolean,
 ): Set<string> {
-  if (draft?.runLocation !== 'host' || hostAccessEnabled !== true) return new Set()
+  const onHost = draft?.runLocation === 'host' || (draft?.runLocation === undefined && mcpOnHost === true)
+  if (!draft || !onHost || hostAccessEnabled !== true) return new Set()
   const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
   return new Set((bundled ?? []).filter((b) => b.npmPackage === draft.npmPackage && declared.has(b.path)).map((b) => b.path))
 }
@@ -569,7 +572,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   if (draft && catalogRef.current?.id !== draft.id) catalogRef.current = { id: draft.id, entry: isCustom ? undefined : registryEntry }
   const catalogEntry = draft ? catalogRef.current?.entry : undefined
   // Required files the host fills itself move under Advanced, as an override.
-  const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles, hostAccessEnabled)
+  const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles, hostAccessEnabled, mcpOnHost)
   const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads, bundledPaths) : null
   const signsIn = isOAuth || !!draft?.auth
 
@@ -647,7 +650,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     const base = f.path.split('/').pop()
     const status = payload
       ? `${payload.fileName} · ${payload.size < 2048 ? `${payload.size} B` : `${Math.round(payload.size / 1024)} KiB`}`
-      : draft?.lastVerifiedAt ? 'Stored' : bundledPaths.has(f.path) ? 'Built-in client' : f.required ? 'Not chosen' : 'Created by the server'
+      : draft?.lastVerifiedAt ? 'Stored' : bundledPaths.has(f.path) ? 'Built-in client, used only if no client file exists yet' : f.required ? 'Not chosen' : 'Created by the server'
     return (
       <div key={f.path} className="flex items-center justify-between gap-2">
         <Tooltip tip={f.path} className="min-w-0">
@@ -1119,7 +1122,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 <div className="space-y-1.5">
                   <label className={labelCls}>
                     Use your own OAuth client
-                    <InfoHint tip="Optional. Connect uses the built-in client only when you choose no client JSON and none is on this computer yet; an existing client file is kept. Switching to a different client later needs a fresh Gmail sign-in, and agents that already stored the old client need it re-supplied." />
+                    <InfoHint tip="Optional. Connect uses the built-in client only when you choose no client JSON and none is on this computer yet; an existing client file is kept. Switching to a different client later needs a fresh Gmail sign-in, and agents that stored a client you chose earlier need the new one re-supplied." />
                   </label>
                   {bundledFiles.map(fileRow)}
                 </div>

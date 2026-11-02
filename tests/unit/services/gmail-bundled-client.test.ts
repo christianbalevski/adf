@@ -11,7 +11,7 @@ import {
   parseGmailOAuthClientJson,
 } from '../../../src/shared/utils/gmail-oauth-client'
 import { bundledClientApplies, bundledCredentialFiles, compiledGmailOAuthClient, writeBundledClientIfAbsent } from '../../../src/main/services/gmail-bundled-client'
-import { materializeCredentialFiles, type CredentialStore } from '../../../src/main/services/mcp-credential-files'
+import { materializeCredentialFiles, writeBackCredentialFiles, type CredentialContainerTarget, type CredentialStore } from '../../../src/main/services/mcp-credential-files'
 import { McpRegistryFetchService } from '../../../src/main/services/mcp-registry-fetch.service'
 import { MCP_REGISTRY, registrationFromRegistryEntry } from '../../../src/shared/constants/mcp-registry'
 import { bundledFilePaths, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
@@ -143,11 +143,75 @@ describe('host fallback', () => {
     expect(existsSync(join(home, KEYS_REL))).toBe(false)
   })
 
+  it('an existing token file without a client blocks the built-in client (tokens may be another client\'s)', async () => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+    mkdirSync(join(home, '.gmail-mcp'))
+    writeFileSync(join(home, TOKENS_REL), 'other-client-tokens')
+    expect(writeBundledClientIfAbsent(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH, join(home, KEYS_REL), CLIENT_JSON)).toBe(false)
+    await expect(materializeCredentialFiles(emptyStore, gmailServer(), { kind: 'host', home })).rejects.toThrow(/Required credential file "~\/.gmail-mcp\/gcp-oauth.keys.json"/)
+    expect(existsSync(join(home, KEYS_REL))).toBe(false)
+    expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('other-client-tokens')
+  })
+
   it('a locked keystore row is not papered over by the built-in client', async () => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
     const locked: CredentialStore = { getDecrypted: () => null, hasRow: (p) => p.endsWith(GMAIL_BUNDLED_CLIENT_PATH) }
     await expect(materializeCredentialFiles(locked, gmailServer(), { kind: 'host', home })).rejects.toThrow(/locked/)
     expect(existsSync(join(home, KEYS_REL))).toBe(false)
+  })
+})
+
+describe('container targets never get the built-in client', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('materializeCredentialFiles: no client file in the keystore or container fails with "Required credential file" and copies nothing', async () => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+    const copyToContainer = vi.fn(async () => {})
+    const target: CredentialContainerTarget = {
+      kind: 'container', containerName: 'adf-mcp', home: '/home/agent',
+      copyToContainer, copyFromContainer: vi.fn(async () => {}), fileExists: vi.fn(async () => false),
+    }
+    await expect(materializeCredentialFiles(emptyStore, gmailServer(), target)).rejects.toThrow(/Required credential file "~\/.gmail-mcp\/gcp-oauth.keys.json"/)
+    expect(copyToContainer).not.toHaveBeenCalled()
+  })
+})
+
+describe('write-back never stores the built-in client', () => {
+  let home: string
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'adf-gmail-writeback-')) })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+    rmSync(home, { recursive: true, force: true })
+  })
+
+  const capture = async (target: Parameters<typeof writeBackCredentialFiles>[2]) => {
+    const sealed: Record<string, string> = {}
+    await writeBackCredentialFiles({ setIdentitySealed: (p, v) => { sealed[p] = v } }, gmailServer(), target, '2026-11-02T00:00:00Z')
+    return Object.fromEntries(Object.entries(sealed).map(([p, v]) => [p, Buffer.from(JSON.parse(v).data, 'base64').toString('utf-8')]))
+  }
+  const keysPurpose = `mcp:${GMAIL_BUNDLED_CLIENT_NPM_PACKAGE}:file:${GMAIL_BUNDLED_CLIENT_PATH}`
+  const tokensPurpose = `mcp:${GMAIL_BUNDLED_CLIENT_NPM_PACKAGE}:file:~/.gmail-mcp/credentials.json`
+
+  it('skips the built-in client file the host fallback wrote; still captures the tokens', async () => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+    await materializeCredentialFiles(emptyStore, gmailServer(), { kind: 'host', home })
+    writeFileSync(join(home, TOKENS_REL), 'tokens')
+    expect(await capture({ kind: 'host', home })).toEqual({ [tokensPurpose]: 'tokens' })
+  })
+
+  it('still captures a client file the user chose (different bytes)', async () => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+    mkdirSync(join(home, '.gmail-mcp'))
+    const own = JSON.stringify({ installed: { ...CLIENT.installed, client_id: '111-own.apps.googleusercontent.com' } })
+    writeFileSync(join(home, KEYS_REL), own)
+    writeFileSync(join(home, TOKENS_REL), 'tokens')
+    expect(await capture({ kind: 'host', home })).toEqual({ [keysPurpose]: own, [tokensPurpose]: 'tokens' })
+  })
+
+  it('builds without a built-in client capture the client file as before', async () => {
+    mkdirSync(join(home, '.gmail-mcp'))
+    writeFileSync(join(home, KEYS_REL), CLIENT_JSON)
+    expect(await capture({ kind: 'host', home })).toEqual({ [keysPurpose]: CLIENT_JSON })
   })
 })
 
@@ -189,6 +253,19 @@ describe('Add MCP Server: Gmail with a built-in client', () => {
     expect(bundledFilePaths({ ...draft, npmPackage: '@other/gmail' }, files, true).size).toBe(0)
     expect(bundledFilePaths({ ...draft, credentialFiles: [{ path: '~/.other/keys.json', required: true }] }, files, true).size).toBe(0)
     expect(bundledFilePaths({ ...draft, runLocation: 'shared' }, files, true).size).toBe(0)
+  })
+
+  it('no run location while "MCP on host" is on counts as host, like the backend; the container never does', () => {
+    const unplaced = { ...draft, runLocation: undefined }
+    expect([...bundledFilePaths(unplaced, files, true, true)]).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
+    expect(bundledFilePaths(unplaced, files, true, false).size).toBe(0)
+    expect(bundledFilePaths(unplaced, files, true).size).toBe(0)
+    expect(bundledFilePaths({ ...draft, runLocation: 'shared' }, files, true, true).size).toBe(0)
+    for (const hostAccess of [false, undefined]) {
+      const bundled = bundledFilePaths(unplaced, files, hostAccess, true)
+      expect(bundled.size).toBe(0)
+      expect(setupChecklist(unplaced, gmail, {}, bundled).requiredFiles).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
+    }
   })
 
   it('a host draft with Host access off runs in the container, so the client file stays required', () => {

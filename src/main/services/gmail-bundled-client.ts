@@ -4,12 +4,14 @@
  * host has no client file yet, the registration test and host materialization
  * write it to ~/.gmail-mcp/gcp-oauth.keys.json (0600, write-if-absent). A
  * client file the user chose, or one already on the host, always wins; the
- * token file (~/.gmail-mcp/credentials.json) is never touched.
+ * token file (~/.gmail-mcp/credentials.json) is never touched, and when it
+ * already exists the client is not written either (those tokens may belong
+ * to another client). Agent write-back never stores the built-in client.
  */
 
 import { existsSync, mkdirSync, writeFileSync } from 'fs'
-import { dirname } from 'path'
-import { GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH } from '../../shared/utils/gmail-oauth-client'
+import { basename, dirname, join } from 'path'
+import { GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH, GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 
 // Defined by electron.vite.config.ts in the Studio main and daemon builds
 // (undefined when the build had no client). Builds that do not define it at
@@ -35,8 +37,29 @@ export function bundledClientApplies(npmPackage: string | undefined, path: strin
 }
 
 /**
+ * Whether `content` (a captured copy of `path`) is exactly the built-in
+ * client this build would write. Write-back skips it: agents must not carry
+ * the built-in client into containers or back over a host file later.
+ */
+export function isBundledClientContent(
+  npmPackage: string | undefined,
+  path: string,
+  content: Buffer,
+  client = compiledGmailOAuthClient(),
+): boolean {
+  return !!client && bundledClientApplies(npmPackage, path, client) && content.equals(Buffer.from(client))
+}
+
+/** Host path of the server's token file, given the host path of its client file. */
+export function bundledTokenFileFor(dest: string): string {
+  return join(dirname(dest), basename(GMAIL_BUNDLED_TOKEN_PATH))
+}
+
+/**
  * Write the built-in client to `dest` (the host expansion of `path`) if it
- * applies and the file is absent. Returns whether it wrote.
+ * applies, the file is absent and the server has no token file yet (tokens
+ * minted by another client would not refresh with this one). Returns whether
+ * it wrote.
  */
 export function writeBundledClientIfAbsent(
   npmPackage: string | undefined,
@@ -45,7 +68,7 @@ export function writeBundledClientIfAbsent(
   client = compiledGmailOAuthClient(),
 ): boolean {
   if (!client || !bundledClientApplies(npmPackage, path, client)) return false
-  if (existsSync(dest)) return false
+  if (existsSync(dest) || existsSync(bundledTokenFileFor(dest))) return false
   mkdirSync(dirname(dest), { recursive: true })
   // 'wx': never replace a file that appeared since the check.
   try {
