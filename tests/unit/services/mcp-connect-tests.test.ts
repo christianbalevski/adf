@@ -337,3 +337,54 @@ describe('runMcpRegistrationTest: cancel signal', () => {
     releasePreflight()
   })
 })
+
+describe('runMcpRegistrationTest: bundled Gmail server', () => {
+  const GMAIL = '@gongrzhe/server-gmail-autoauth-mcp'
+  const gmail = { name: 'gmail', type: 'npm', npmPackage: GMAIL, runLocation: 'host', auth: true, authArgs: ['auth'] }
+
+  async function withBundle(fn: (entry: string) => Promise<void>) {
+    const fs = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const resources = fs.mkdtempSync(join(tmpdir(), 'adf-connect-bundle-'))
+    const entry = join(resources, 'mcp-servers', 'gmail', 'index.mjs')
+    fs.mkdirSync(join(resources, 'mcp-servers', 'gmail'), { recursive: true })
+    fs.writeFileSync(entry, '')
+    const proc = process as { resourcesPath?: string }
+    const saved = proc.resourcesPath
+    proc.resourcesPath = resources
+    Object.defineProperty(process.versions, 'electron', { value: '43.0.0', configurable: true, enumerable: true })
+    try {
+      await fn(entry)
+    } finally {
+      proc.resourcesPath = saved
+      delete (process.versions as { electron?: string }).electron
+      fs.rmSync(resources, { recursive: true, force: true })
+    }
+  }
+
+  it('host, bundle present: auth preflight and connect run Studio\'s executable on the bundled entry', () => withBundle(async (entry) => {
+    const d = deps()
+    const result = await runMcpRegistrationTest({ registration: gmail }, d)
+    expect(d.authPreflight).toHaveBeenCalledWith(expect.objectContaining({ command: process.execPath, args: [entry] }), expect.objectContaining({ authArgs: ['auth'] }))
+    expect(h.FakeManager.instances[0].connects[0].cfg).toMatchObject({ command: process.execPath, args: [entry] })
+    expect(result).toMatchObject({ success: true, location: 'host' })
+  }))
+
+  it('edited args, another package or the shared container keep npx', () => withBundle(async () => {
+    await runMcpRegistrationTest({ registration: { ...gmail, args: ['--x'] } }, deps())
+    expect(h.FakeManager.instances.at(-1)!.connects[0].cfg).toMatchObject({ command: 'npx', args: ['-y', GMAIL, '--x'] })
+    await runMcpRegistrationTest({ registration: { ...gmail, npmPackage: '@acme/gh' } }, deps())
+    expect(h.FakeManager.instances.at(-1)!.connects[0].cfg).toMatchObject({ command: 'npx', args: ['-y', '@acme/gh'] })
+    const shared = await runMcpRegistrationTest({ registration: gmail }, deps({ computeSettings: () => ({ hostAccessEnabled: false, hostApproved: [] }) }))
+    expect(shared.location).toBe('shared container')
+    const transport = h.FakeManager.instances.at(-1)!.connects[0].opts?.externalTransport as { opts: { command: string; args: string[] } }
+    expect(transport.opts).toMatchObject({ command: 'npx', args: ['-y', GMAIL] })
+  }))
+
+  it('no bundle (dev, npm daemon): npx exactly as before', async () => {
+    const d = deps()
+    await runMcpRegistrationTest({ registration: gmail }, d)
+    expect(h.FakeManager.instances[0].connects[0].cfg).toMatchObject({ command: 'npx', args: ['-y', GMAIL] })
+  })
+})

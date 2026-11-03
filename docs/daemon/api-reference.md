@@ -14795,6 +14795,12 @@ Example 200 (`application/json`):
       "npmPackage": "string",
       "path": "string"
     }
+  ],
+  "bundledServers": [
+    {
+      "npmPackage": "string",
+      "version": "string"
+    }
   ]
 }
 ```
@@ -22514,6 +22520,9 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 | `bundledCredentialFiles` | object[] |  | Declared credential files this build fills itself when none is chosen and the host has none (the Gmail server's built-in OAuth client). Set from the build, never from a registry document; absent when the build ships none. |
 | `bundledCredentialFiles[].npmPackage` | string | yes |  |
 | `bundledCredentialFiles[].path` | string | yes |  |
+| `bundledServers` | object[] |  | npm MCP servers this build ships and runs with its own executable when they run on the host (no system Node.js or npm), at the exact version bundled. Set from what is installed with the runtime, never from a registry document; absent when none is present (dev trees, the npm-distributed daemon). |
+| `bundledServers[].npmPackage` | string | yes |  |
+| `bundledServers[].version` | string | yes |  |
 
 <a id="schema-bringhomeresult"></a>
 

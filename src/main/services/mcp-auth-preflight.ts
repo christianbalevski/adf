@@ -8,6 +8,7 @@ import { createServer } from 'net'
 import type { Server, Socket } from 'net'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import { trackChild, killTree } from '../utils/child-registry'
+import { bundledMcpSpawnEnv, resolveBundledMcpSpawn } from './bundled-mcp-servers'
 
 /**
  * Interactive-auth preflight for stdio MCP servers (OAuth etc.): spawn the
@@ -223,8 +224,13 @@ export async function runMcpAuthPreflight(
   let preflightCmd = serverCfg.command ? expandHome(serverCfg.command) : 'npx'
   let preflightArgs = (serverCfg.args ?? []).map(expandHome)
 
-  // For npm packages without a resolved command, use npx
-  if (serverCfg.npm_package && !serverCfg.command) {
+  // For npm packages without a resolved command: a server this app ships
+  // runs on Studio's own executable (bundled-mcp-servers.ts), else npx.
+  const bundled = serverCfg.npm_package && !serverCfg.command && !opts.container ? resolveBundledMcpSpawn(serverCfg) : null
+  if (bundled) {
+    preflightCmd = bundled.command
+    preflightArgs = bundled.args
+  } else if (serverCfg.npm_package && !serverCfg.command) {
     preflightCmd = 'npx'
     preflightArgs = ['-y', serverCfg.npm_package, ...preflightArgs.filter(a => a !== '-y' && a !== serverCfg.npm_package)]
   }
@@ -239,7 +245,11 @@ export async function runMcpAuthPreflight(
     preflightArgs = [...preflightArgs, ...opts.authArgs]
   }
 
-  const preflightEnv = { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+  // A bundled server (Studio's executable): Electron/Node settings dropped
+  // and config env through the MCP blocklist (bundled-mcp-servers.ts).
+  // Every other preflight keeps the env as configured.
+  const preflightEnv = bundledMcpSpawnEnv(preflightCmd, preflightArgs, inheritableEnv(), { ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) })
+    ?? { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
   log(`[MCP] Auth preflight: ${preflightCmd} ${preflightArgs.join(' ')}`)
 
   // No blanket shell:true — on Windows that routes through cmd.exe with

@@ -1,6 +1,7 @@
 import { dirname, join } from 'path'
 import { homedir } from 'os'
-import { inheritableEnv } from '../utils/child-env'
+import { filterBlockedEnv, inheritableEnv } from '../utils/child-env'
+import { bundledMcpSpawnEnv } from './bundled-mcp-servers'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
@@ -64,16 +65,6 @@ function loadStdioTransportHidden(stdioPath: string): typeof import('@modelconte
 }
 const { StreamableHTTPClientTransport } = _require(join(clientDir, 'streamableHttp.js')) as typeof import('@modelcontextprotocol/sdk/client/streamableHttp.js')
 
-/** Env vars that user-supplied MCP config must never override. */
-const BLOCKED_ENV_VARS = new Set([
-  'ELECTRON_RUN_AS_NODE',
-  'NODE_OPTIONS',
-  'LD_PRELOAD',
-  'DYLD_INSERT_LIBRARIES',
-  'LD_LIBRARY_PATH',
-  'DYLD_LIBRARY_PATH',
-])
-
 /** The egress policy of an MCP HTTP server's requests (utils/guarded-fetch.ts). */
 export { MCP_HTTP_EGRESS }
 
@@ -102,23 +93,6 @@ const HEALTH_CHECK_INTERVAL_MS = 60_000
 const TOOL_CALL_TIMEOUT_MS = 60_000
 /** How long a closing stdio server gets to exit on stdin EOF before its process tree is killed (the SDK waits as long). */
 const CLOSE_GRACE_MS = 2000
-
-/** Strip security-sensitive env vars that MCP server configs must not override. */
-function filterBlockedEnv(env: Record<string, string>): Record<string, string> {
-  const filtered: Record<string, string> = {}
-  const blocked: string[] = []
-  for (const [key, value] of Object.entries(env)) {
-    if (BLOCKED_ENV_VARS.has(key)) {
-      blocked.push(key)
-    } else {
-      filtered[key] = value
-    }
-  }
-  if (blocked.length) {
-    console.warn(`[MCP] Blocked security-sensitive env vars: ${blocked.join(', ')}`)
-  }
-  return filtered
-}
 
 export interface McpConnectOptions {
   /** Pre-built transport (e.g. PodmanStdioTransport for container execution).
@@ -357,7 +331,11 @@ export class McpClientManager extends EventEmitter {
           command,
           args,
           // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
-          env: { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) } as Record<string, string>,
+          // ELECTRON_RUN_AS_NODE only for Studio's executable running a server
+          // file it ships (bundled-mcp-servers.ts) — decided from the command
+          // line, never settable through config env.
+          env: bundledMcpSpawnEnv(command, args, inheritableEnv(), managed.config.env ?? {})
+            ?? { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) },
           stderr: 'pipe',
           cwd: this.scratchDir
         })

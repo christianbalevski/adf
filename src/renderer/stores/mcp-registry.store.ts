@@ -17,6 +17,8 @@ interface McpRegistryState {
   updatedAt?: string
   /** Declared credential files the runtime fills itself (McpRegistryGetResult.bundledCredentialFiles). */
   bundledCredentialFiles?: { npmPackage: string; path: string }[]
+  /** npm servers the runtime ships and runs itself on the host (McpRegistryGetResult.bundledServers). */
+  bundledServers?: { npmPackage: string; version: string }[]
 
   /** Replace the bundled snapshot with the remote-first view of `api`'s runtime (Settings: the picked one). */
   refresh: (api?: { getMcpRegistry?: typeof window.adfApi.getMcpRegistry }) => Promise<void>
@@ -33,7 +35,7 @@ export const useMcpRegistryStore = create<McpRegistryState>((set) => ({
       // An empty entry list never replaces a working one — the bundled copy
       // is always non-empty, so keep whatever we have on a degenerate result.
       if (result && result.entries.length > 0) {
-        set({ entries: result.entries, source: result.source, updatedAt: result.updatedAt, bundledCredentialFiles: result.bundledCredentialFiles })
+        set({ entries: result.entries, source: result.source, updatedAt: result.updatedAt, bundledCredentialFiles: result.bundledCredentialFiles, bundledServers: result.bundledServers })
       }
     } catch {
       // Bundled/previous entries stay in place — refresh is best-effort.

@@ -4,7 +4,8 @@ import type { McpServerLogEntry, McpToolInfo } from '../../../shared/types/adf-v
 import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs, registrationFromRegistryEntry } from '../../../shared/constants/mcp-registry'
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
-import { MCP_EXECUTABLE_IDENTITY_FIELDS, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
+import { bundledMcpServerForShape } from '../../../shared/utils/bundled-mcp-shape'
+import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -123,7 +124,14 @@ export function availableRegistryEntries(
  * verified server version when known. Empty string when the identity field
  * itself is still blank.
  */
-export function registrationSourceLine(reg: McpServerRegistration): string {
+export function registrationSourceLine(
+  reg: McpServerRegistration,
+  bundledServers?: { npmPackage: string; version: string }[],
+  hostAccessEnabled?: boolean,
+  mcpOnHost?: boolean,
+): string {
+  const builtIn = bundledServerFor(reg, bundledServers, hostAccessEnabled, mcpOnHost)
+  if (builtIn) return `built into ADF Studio: ${builtIn.npmPackage} · v${builtIn.version}`
   const source = reg.url
     ? reg.url
     : reg.type === 'custom'
@@ -162,6 +170,36 @@ export function pendingCredentialFiles(
 }
 
 /**
+ * The server this app ships that `reg` launches on the host instead of npx
+ * (MCP_REGISTRY_GET's bundledServers), or undefined: the config Studio builds
+ * from `reg` has the catalog shape (shared/utils/bundled-mcp-shape.ts, the
+ * runtime's own check) and `reg` runs on the host (draftRunsOnHost).
+ */
+export function bundledServerFor(
+  reg: McpServerRegistration,
+  bundled: { npmPackage: string; version: string }[] | undefined,
+  hostAccessEnabled: boolean | undefined,
+  mcpOnHost?: boolean,
+): { npmPackage: string; version: string } | undefined {
+  if (!draftRunsOnHost(reg, hostAccessEnabled, mcpOnHost) || reg.type === 'http' || reg.url) return undefined
+  return bundledMcpServerForShape(buildMcpServerConfigFromRegistration(reg), bundled)
+}
+
+/**
+ * Whether `draft` runs on the host the way the backend places it:
+ * runLocation 'host', or no location while "MCP on host" is on; Host access
+ * on either way (off, it runs in the container).
+ */
+function draftRunsOnHost(
+  draft: Pick<McpServerRegistration, 'runLocation'>,
+  hostAccessEnabled: boolean | undefined,
+  mcpOnHost: boolean | undefined,
+): boolean {
+  const onHost = draft.runLocation === 'host' || (draft.runLocation === undefined && mcpOnHost === true)
+  return onHost && hostAccessEnabled === true
+}
+
+/**
  * Declared credential files of `draft` that the host fills itself when none
  * is chosen (MCP_REGISTRY_GET's bundledCredentialFiles: the Gmail server's
  * built-in OAuth client). Matched on the draft's package and path; only for
@@ -176,8 +214,7 @@ export function bundledFilePaths(
   hostAccessEnabled: boolean | undefined,
   mcpOnHost?: boolean,
 ): Set<string> {
-  const onHost = draft?.runLocation === 'host' || (draft?.runLocation === undefined && mcpOnHost === true)
-  if (!draft || !onHost || hostAccessEnabled !== true) return new Set()
+  if (!draft || !draftRunsOnHost(draft, hostAccessEnabled, mcpOnHost)) return new Set()
   const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
   return new Set((bundled ?? []).filter((b) => b.npmPackage === draft.npmPackage && declared.has(b.path)).map((b) => b.path))
 }
@@ -430,7 +467,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   }
 
   // Dynamic registry: bundled snapshot immediately, live entries once fetched.
-  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt, bundledCredentialFiles } = useMcpRegistryStore()
+  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt, bundledCredentialFiles, bundledServers } = useMcpRegistryStore()
 
   const registryEntry = useMemo(() => {
     if (!draft) return undefined
@@ -1087,8 +1124,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
               {catalogEntry && (
                 <>
                   {identityFields}
-                  {registrationSourceLine(draft) && (
-                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft)}</p>
+                  {registrationSourceLine(draft, bundledServers, hostAccessEnabled, mcpOnHost) && (
+                    <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft, bundledServers, hostAccessEnabled, mcpOnHost)}</p>
                   )}
                   {argsEditor}
                   <div>

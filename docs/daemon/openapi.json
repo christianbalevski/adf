@@ -29426,6 +29426,25 @@
                 }
               }
             }
+          },
+          "bundledServers": {
+            "type": "array",
+            "description": "npm MCP servers this build ships and runs with its own executable when they run on the host (no system Node.js or npm), at the exact version bundled. Set from what is installed with the runtime, never from a registry document; absent when none is present (dev trees, the npm-distributed daemon).",
+            "items": {
+              "type": "object",
+              "required": [
+                "npmPackage",
+                "version"
+              ],
+              "properties": {
+                "npmPackage": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              }
+            }
           }
         },
         "additionalProperties": true

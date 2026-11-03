@@ -2,6 +2,8 @@ node_modules
 dist/
 out/
 build/
+# Bundled MCP servers (scripts/bundle-mcp-servers.mjs, run by npm run build).
+resources/mcp-servers/
 .env
 .env.local
 .env.*.local
