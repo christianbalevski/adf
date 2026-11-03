@@ -14789,7 +14789,14 @@ Operation `getMcpRegistry` · bearer token
 Example 200 (`application/json`):
 
 ```json
-{}
+{
+  "bundledCredentialFiles": [
+    {
+      "npmPackage": "string",
+      "path": "string"
+    }
+  ]
+}
 ```
 
 <a id="op-getskillscatalog"></a>
@@ -22502,7 +22509,11 @@ Registry gallery: bundled entries always, live entries layered on top (AgentRegi
 
 Curated MCP registry, remote-first with cached and bundled fallback (McpRegistryFetchService.getRegistry).
 
-Type: object
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `bundledCredentialFiles` | object[] |  | Declared credential files this build fills itself when none is chosen and the host has none (the Gmail server's built-in OAuth client). Set from the build, never from a registry document; absent when the build ships none. |
+| `bundledCredentialFiles[].npmPackage` | string | yes |  |
+| `bundledCredentialFiles[].path` | string | yes |  |
 
 <a id="schema-bringhomeresult"></a>
 

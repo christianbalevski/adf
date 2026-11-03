@@ -29,6 +29,7 @@ import {
 import { parseMcpRegistryDocument, type ParsedMcpRegistryDocument } from '../../shared/schemas/mcp-registry.schema'
 import type { McpRegistryGetResult } from '../../shared/types/ipc.types'
 import { writeJsonAtomic } from '../utils/atomic-json'
+import { bundledCredentialFiles } from './gmail-bundled-client'
 
 export const MCP_REGISTRY_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json'
 
@@ -50,6 +51,8 @@ export interface McpRegistryFetchOptions {
    * serves cache/bundled without touching the network. Defaults to enabled.
    */
   isRemoteEnabled?: () => boolean
+  /** Injectable for tests; defaults to the files this build ships (bundledCredentialFiles). */
+  bundledFiles?: () => { npmPackage: string; path: string }[]
 }
 
 export class McpRegistryFetchService {
@@ -60,6 +63,7 @@ export class McpRegistryFetchService {
   private readonly cachePath: string
   private readonly fetchFn: typeof fetch
   private readonly isRemoteEnabled: () => boolean
+  private readonly bundledFiles: () => { npmPackage: string; path: string }[]
   private lastResult: McpRegistryGetResult | null = null
   /** lastResult was served while remote fetches were off — refetch once they are back on. */
   private servedWhileDisabled = false
@@ -71,6 +75,7 @@ export class McpRegistryFetchService {
     // Bind so an injected bare `fetch` keeps its expected receiver.
     this.fetchFn = options.fetchFn ?? ((...args) => fetch(...args))
     this.isRemoteEnabled = options.isRemoteEnabled ?? (() => true)
+    this.bundledFiles = options.bundledFiles ?? (() => bundledCredentialFiles())
   }
 
   /**
@@ -79,8 +84,17 @@ export class McpRegistryFetchService {
    * (startPeriodicRefresh) keeps it from going stale within a session.
    */
   async getRegistry(): Promise<McpRegistryGetResult> {
-    if (this.lastResult && !(this.servedWhileDisabled && this.isRemoteEnabled())) return this.lastResult
-    return this.refresh()
+    if (this.lastResult && !(this.servedWhileDisabled && this.isRemoteEnabled())) return this.withBundledFiles(this.lastResult)
+    return this.withBundledFiles(await this.refresh())
+  }
+
+  /**
+   * What this build ships comes from the build, never from a registry
+   * document: whichever tier served the entries, the flag is this host's.
+   */
+  private withBundledFiles(result: McpRegistryGetResult): McpRegistryGetResult {
+    const files = this.bundledFiles()
+    return files.length ? { ...result, bundledCredentialFiles: files } : result
   }
 
   /**

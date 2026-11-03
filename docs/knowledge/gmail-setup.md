@@ -20,9 +20,26 @@ start a polling loop, or authorize automatic replies.
 
 ## Direct Gmail setup
 
-This path has no Composio dependency. It still requires your own Google Cloud
-OAuth client; instructions make setup easier but do not remove Google's setup
-requirements. The current catalog uses the community package
+This path has no Composio dependency. Release builds of ADF Studio that ship a
+built-in Google OAuth client skip steps 1–3 and 5: Gmail has no **Credential
+file** step, and **Sign in to Gmail** writes the built-in client to
+`~/.gmail-mcp/gcp-oauth.keys.json` when no client file is chosen and none
+exists on the host. An existing file is kept, and your sign-in tokens stay in
+`~/.gmail-mcp/credentials.json`. If `credentials.json` already exists without
+a client file, the built-in client is not written (those tokens may come from
+another client): choose that client, or delete `credentials.json` and connect
+again. Agents store your tokens and any client you chose, never the built-in
+client. To use your own client instead, choose it under **Advanced → Use your
+own OAuth client** before the first Connect; it is written only when no client
+file exists yet. To switch clients later, delete
+`~/.gmail-mcp/gcp-oauth.keys.json` and `~/.gmail-mcp/credentials.json`, then
+connect again (with your own client chosen, or none for the built-in one).
+Agents that already stored Gmail tokens need a fresh sign-in, and agents that
+stored a client you chose earlier keep using it until you re-supply it in
+their MCP credentials. Older builds, local builds
+and the npm CLI package have no built-in client and need your own Google
+Cloud OAuth client; instructions make setup easier but do not remove
+Google's setup requirements. The current catalog uses the community package
 [`@gongrzhe/server-gmail-autoauth-mcp`](https://github.com/GongRzhe/Gmail-MCP-Server).
 Its upstream repository was archived on March 3, 2026; ADF's catalog marks it
 unverified. This article describes the existing integration, not a newly maintained

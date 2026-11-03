@@ -20,6 +20,8 @@ import { z } from 'zod'
 import { McpClientManager } from './mcp-client-manager'
 import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
+import { bundledClientApplies, bundledTokenFileFor, writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
 import type { McpOAuthStore } from './mcp-oauth.types'
@@ -320,6 +322,19 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         mkdirSync(dirname(dest), { recursive: true })
         writeFileSync(dest, content, { mode: 0o600 })
         notes.push(`Wrote ${f.path} to the host home.`)
+      }
+      // A declared file this build ships (the Gmail server's built-in OAuth
+      // client), when none was chosen and the host has none: same
+      // write-if-absent rule, so a chosen or existing client always wins.
+      // An existing token file without a client blocks it too.
+      for (const f of reg.credentialFiles ?? []) {
+        if (credentialFiles?.some((c) => c.path === f.path)) continue
+        const dest = expandCredentialPath(f.path, { kind: 'host' })
+        if (writeBundledClientIfAbsent(reg.npmPackage, f.path, dest)) {
+          notes.push(`Wrote the built-in OAuth client to ${f.path}.`)
+        } else if (bundledClientApplies(reg.npmPackage, f.path) && !existsSync(dest) && existsSync(bundledTokenFileFor(dest))) {
+          notes.push(`Did not write the built-in OAuth client: ${GMAIL_BUNDLED_TOKEN_PATH} already exists and may belong to another client. Choose that client, or delete the token file and connect again.`)
+        }
       }
 
       // Resolve the launch command the way the probe does — BEFORE the auth

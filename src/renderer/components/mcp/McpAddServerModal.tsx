@@ -162,23 +162,46 @@ export function pendingCredentialFiles(
 }
 
 /**
+ * Declared credential files of `draft` that the host fills itself when none
+ * is chosen (MCP_REGISTRY_GET's bundledCredentialFiles: the Gmail server's
+ * built-in OAuth client). Matched on the draft's package and path; only for
+ * drafts that run on the host, the way the backend places them: runLocation
+ * 'host', or no location while "MCP on host" is on. Host access must be on:
+ * the fallback writes to the host home, and with Host access off the draft
+ * runs in the container, which never gets the built-in client.
+ */
+export function bundledFilePaths(
+  draft: Pick<McpServerRegistration, 'npmPackage' | 'credentialFiles' | 'runLocation'> | null,
+  bundled: { npmPackage: string; path: string }[] | undefined,
+  hostAccessEnabled: boolean | undefined,
+  mcpOnHost?: boolean,
+): Set<string> {
+  const onHost = draft?.runLocation === 'host' || (draft?.runLocation === undefined && mcpOnHost === true)
+  if (!draft || !onHost || hostAccessEnabled !== true) return new Set()
+  const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
+  return new Set((bundled ?? []).filter((b) => b.npmPackage === draft.npmPackage && declared.has(b.path)).map((b) => b.path))
+}
+
+/**
  * What the "Configuration" step of a catalog server asks for, and whether the
  * setup steps read as done. Placeholder args are located by the ENTRY's args
  * (not the draft's), so an arg stays in the step after the user fills it in.
  * Required credential files count as provided once picked or once a Connect
- * has stored them (lastVerifiedAt). Env keys stored per agent live in the
+ * has stored them (lastVerifiedAt); files the host fills itself
+ * (`bundledPaths`) are not asked for. Env keys stored per agent live in the
  * .adf, so they never hold the step open.
  */
 export function setupChecklist(
   draft: Pick<McpServerRegistration, 'args' | 'env' | 'credentialFiles' | 'lastVerifiedAt' | 'credentialStorage'>,
   entry: Pick<McpRegistryEntry, 'args' | 'requiredEnvKeys'> | undefined,
   filePayloads: Record<string, unknown>,
+  bundledPaths: ReadonlySet<string> = new Set(),
 ): { placeholderArgs: number[]; requiredEnv: string[]; requiredFiles: string[]; inputsDone: boolean; connected: boolean } {
   const placeholderArgs = (entry?.args ?? [])
     .map((arg, i) => (REGISTRY_ARG_PLACEHOLDER_RE.test(arg) && i < (draft.args ?? []).length ? i : -1))
     .filter((i) => i >= 0)
   const requiredEnv = entry?.requiredEnvKeys ?? []
-  const requiredFiles = (draft.credentialFiles ?? []).filter((f) => f.required).map((f) => f.path)
+  const requiredFiles = (draft.credentialFiles ?? []).filter((f) => f.required && !bundledPaths.has(f.path)).map((f) => f.path)
   const envDone = draft.credentialStorage === 'agent' ||
     requiredEnv.every((k) => (draft.env ?? []).some((e) => e.key === k && !!e.value))
   const filesDone = !!draft.lastVerifiedAt || requiredFiles.every((p) => !!filePayloads[p])
@@ -407,7 +430,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   }
 
   // Dynamic registry: bundled snapshot immediately, live entries once fetched.
-  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt } = useMcpRegistryStore()
+  const { entries: registryEntries, source: registrySource, updatedAt: registryUpdatedAt, bundledCredentialFiles } = useMcpRegistryStore()
 
   const registryEntry = useMemo(() => {
     if (!draft) return undefined
@@ -548,7 +571,9 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const catalogRef = useRef<{ id: string; entry: McpRegistryEntry | undefined } | null>(null)
   if (draft && catalogRef.current?.id !== draft.id) catalogRef.current = { id: draft.id, entry: isCustom ? undefined : registryEntry }
   const catalogEntry = draft ? catalogRef.current?.entry : undefined
-  const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads) : null
+  // Required files the host fills itself move under Advanced, as an override.
+  const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles, hostAccessEnabled, mcpOnHost)
+  const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads, bundledPaths) : null
   const signsIn = isOAuth || !!draft?.auth
 
   // Env keys the catalog entry declares sit in the "Configuration" step; anything
@@ -559,8 +584,9 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const envInStep = (key: string) => !catalogEntry || (declaredEnvKeys.has(key) && !(isOAuth && tokenEnvKeys.has(key)))
   const stepEnvCount = (draft?.env ?? []).filter((e) => envInStep(e.key)).length
   const advancedEnvCount = (draft?.env ?? []).length - stepEnvCount
-  const requiredFiles = (draft?.credentialFiles ?? []).filter((f) => f.required)
-  const optionalFiles = (draft?.credentialFiles ?? []).filter((f) => !f.required)
+  const requiredFiles = (draft?.credentialFiles ?? []).filter((f) => f.required && !bundledPaths.has(f.path))
+  const bundledFiles = (draft?.credentialFiles ?? []).filter((f) => bundledPaths.has(f.path))
+  const optionalFiles = (draft?.credentialFiles ?? []).filter((f) => !f.required && !bundledPaths.has(f.path))
 
   const placeholderArgCount = checklist?.placeholderArgs.length ?? 0
   const showDetailsStep = !catalogEntry || placeholderArgCount > 0 || stepEnvCount > 0 || (!isHttp && requiredFiles.length > 0)
@@ -624,7 +650,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     const base = f.path.split('/').pop()
     const status = payload
       ? `${payload.fileName} · ${payload.size < 2048 ? `${payload.size} B` : `${Math.round(payload.size / 1024)} KiB`}`
-      : draft?.lastVerifiedAt ? 'Stored' : f.required ? 'Not chosen' : 'Created by the server'
+      : draft?.lastVerifiedAt ? 'Stored' : bundledPaths.has(f.path) ? 'Built-in client, used only if no client file exists yet' : f.required ? 'Not chosen' : 'Created by the server'
     return (
       <div key={f.path} className="flex items-center justify-between gap-2">
         <Tooltip tip={f.path} className="min-w-0">
@@ -1091,6 +1117,15 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                     <button onClick={() => patch({ headers: [...(draft.headers ?? []), { key: '', value: '' }] })} className="text-[11px] text-blue-500 hover:text-blue-700 font-medium">+ Add header</button>
                   </div>
                 </>
+              )}
+              {!isHttp && bundledFiles.length > 0 && (
+                <div className="space-y-1.5">
+                  <label className={labelCls}>
+                    Use your own OAuth client
+                    <InfoHint tip="Optional. Connect uses the built-in client only when you choose no client JSON and none is on this computer yet; an existing client file is kept. Switching to a different client later needs a fresh Gmail sign-in, and agents that stored a client you chose earlier need the new one re-supplied." />
+                  </label>
+                  {bundledFiles.map(fileRow)}
+                </div>
               )}
               {!isHttp && optionalFiles.length > 0 && (
                 <div className="space-y-1.5">

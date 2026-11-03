@@ -231,6 +231,96 @@ describe('runMcpRegistrationTest: host credential files', () => {
   })
 })
 
+describe('runMcpRegistrationTest: Gmail built-in OAuth client', () => {
+  const KEYS = '~/.gmail-mcp/gcp-oauth.keys.json'
+  const BUILT_IN = '{"installed":{"client_id":"0-synthetic.apps.googleusercontent.com","client_secret":"synthetic"}}'
+  const gmail = {
+    name: 'gmail', type: 'npm', npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', runLocation: 'host', auth: true, authArgs: ['auth'],
+    credentialFiles: [{ path: KEYS, required: true }, { path: '~/.gmail-mcp/credentials.json' }],
+  }
+
+  async function withHome(fn: (home: string, fs: typeof import('node:fs'), join: typeof import('node:path').join) => Promise<void>) {
+    const fs = await import('node:fs')
+    const { tmpdir } = await import('node:os')
+    const { join } = await import('node:path')
+    const home = fs.mkdtempSync(join(tmpdir(), 'adf-mcp-gmail-home-'))
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
+    process.env.HOME = home
+    process.env.USERPROFILE = home
+    try {
+      await fn(home, fs, join)
+    } finally {
+      if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME
+      if (saved.USERPROFILE === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = saved.USERPROFILE
+      vi.unstubAllGlobals()
+      fs.rmSync(home, { recursive: true, force: true })
+    }
+  }
+
+  it('no file chosen and none on the host: writes the built-in client 0600 before the sign-in', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    const keysPath = join(home, '.gmail-mcp', 'gcp-oauth.keys.json')
+    const d = deps({ authPreflight: vi.fn(async () => { expect(fs.readFileSync(keysPath, 'utf-8')).toBe(BUILT_IN) }) })
+    const result = await runMcpRegistrationTest({ registration: gmail }, d)
+    expect(result).toMatchObject({ success: true, location: 'host', authRan: true })
+    expect(d.authPreflight).toHaveBeenCalledOnce()
+    if (process.platform !== 'win32') expect(fs.statSync(keysPath).mode & 0o777).toBe(0o600)
+    expect(fs.existsSync(join(home, '.gmail-mcp', 'credentials.json'))).toBe(false)
+    expect(result.notes).toEqual([`Wrote the built-in OAuth client to ${KEYS}.`])
+    expect(JSON.stringify(result)).not.toContain('synthetic')
+  }))
+
+  it('a chosen file wins over the built-in client', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    const result = await runMcpRegistrationTest({
+      registration: gmail,
+      credentialFiles: [{ path: KEYS, contentB64: Buffer.from('own-client').toString('base64') }],
+    }, deps())
+    expect(result.success).toBe(true)
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'utf-8')).toBe('own-client')
+    expect(result.notes).toEqual([`Wrote ${KEYS} to the host home.`])
+  }))
+
+  it('an existing host client and token file are never modified', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    fs.mkdirSync(join(home, '.gmail-mcp'))
+    fs.writeFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'existing-client')
+    fs.writeFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'existing-tokens')
+    const result = await runMcpRegistrationTest({ registration: gmail }, deps())
+    expect(result.success).toBe(true)
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'utf-8')).toBe('existing-client')
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'utf-8')).toBe('existing-tokens')
+    expect(result.notes).toEqual([])
+  }))
+
+  it('Host access off: a host draft tests in the container and nothing is written to the host home', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    const result = await runMcpRegistrationTest({ registration: gmail }, deps({ computeSettings: () => ({ hostAccessEnabled: false, hostApproved: [] }) }))
+    expect(result.location).toBe('shared container')
+    expect(fs.existsSync(join(home, '.gmail-mcp'))).toBe(false)
+    expect(JSON.stringify(result.notes)).not.toContain('built-in')
+  }))
+
+  it('an existing token file with no client: does not write the client, says why, leaves the tokens byte-identical', () => withHome(async (home, fs, join) => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    fs.mkdirSync(join(home, '.gmail-mcp'))
+    fs.writeFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'existing-tokens')
+    const result = await runMcpRegistrationTest({ registration: gmail }, deps())
+    expect(fs.existsSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'))).toBe(false)
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'utf-8')).toBe('existing-tokens')
+    expect(result.notes).toEqual([expect.stringMatching(/^Did not write the built-in OAuth client: ~\/.gmail-mcp\/credentials.json already exists/)])
+    expect(JSON.stringify(result)).not.toContain('synthetic')
+  }))
+
+  it('builds without a client keep the manual flow; other packages never get it', () => withHome(async (home, fs, join) => {
+    await runMcpRegistrationTest({ registration: gmail }, deps())
+    expect(fs.existsSync(join(home, '.gmail-mcp'))).toBe(false)
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
+    await runMcpRegistrationTest({ registration: { ...gmail, npmPackage: '@someone/gmail-mcp' } }, deps())
+    expect(fs.existsSync(join(home, '.gmail-mcp'))).toBe(false)
+  }))
+})
+
 describe('runMcpRegistrationTest: cancel signal', () => {
   it('stops at the next step, disconnects and answers Cancelled', async () => {
     const controller = new AbortController()
