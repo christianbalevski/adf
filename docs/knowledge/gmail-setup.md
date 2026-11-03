@@ -94,6 +94,16 @@ same computer. The built-in server accepts the sign-in callback on
    mcp_install({ name: "gmail" })
    ```
 
+**A second Gmail account:** add **Gmail** again in **Settings → MCP servers →
+Add MCP Server** (its card shows **Added**) and sign in with the other account.
+The new server is named `gmail-2` (then `gmail-3`, …) and gets its own folder,
+so its client and tokens live in `~/.gmail-mcp/` under that folder instead of
+your home directory. The first account's files are not touched. The built-in
+client, when this build has one, is written there the same way. Give each one
+a **Label** (for example *Work*) to tell them apart; agents attach one with
+`mcp_install({ name: "gmail-2" })`, and its tools are `mcp_gmail-2_*`. See
+[several instances of one server](../guides/mcp-integration.md#several-instances-of-one-server-eg-two-accounts).
+
 Studio's host setup writes the credential files under the host home. Attaching
 captures declared credentials into the agent's existing encrypted identity store;
 the local server still needs materialized files while it runs. These files are

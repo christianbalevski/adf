@@ -77,6 +77,17 @@ Everything else a known server prefills — name, package, args, extra environme
 
 Each server row afterwards has **Configure** (same form), **Reconnect** (or **Re-authorize** for OAuth servers), **Logs**, and **Remove**.
 
+### Several instances of one server (e.g. two accounts)
+
+A server you already added stays in the quick-add cards, marked **Added**. Adding it again creates **another instance**, for example to sign in with a second Gmail account. This works the same way for every server, including custom servers with the same command and arguments and remote servers with the same URL:
+
+- **Name.** The new instance gets the first free numbered name: `gmail-2`, then `gmail-3`, and so on. The name is the instance's id: agents attach it by this name, its tools are prefixed `mcp_gmail-2_…`, and its folder is keyed by it. So the name is fixed once you save. To organise instances, give each one a **Label** (under **Advanced** for catalog servers). Settings, the configure dialog and an agent's **Add from runtime** list show the label, falling back to the name.
+- **Own folder.** The instance's process runs with its home directory (`HOME`, and `USERPROFILE` on Windows) set to its own folder. On the host that folder is `mcp-instances/<name>/` inside the ADF Studio user data directory, the same directory that holds settings; in a container it is `.mcp-instances/<name>` inside the agent's container home. Anything the server keeps under `~` is therefore separate per instance: its sign-in tokens, its cache, and the declared `~/…` credential files, which Connect, sign-in and agents write to and read from that folder. Configured environment variables cannot point the home back to the shared one. The npm cache stays shared, so `npx` downloads a package only once.
+- **Not isolated.** State a server keeps outside its home directory is shared between instances: `APPDATA`/`LOCALAPPDATA` on Windows, `XDG_*` directories set explicitly in the environment, and absolute paths. Instances also share the installed package: removing one instance does not uninstall a package another instance still uses.
+- **Credentials.** An instance's credentials are stored separately from the first registration's. Per-agent environment values and sealed credential files are stored under the instance name (`mcp:gmail-2:…`) instead of the package. A remote server's browser sign-in has its own record, even for the same URL. App-wide environment values already belong to each registration.
+- **Existing servers do not change.** The first registration of a server keeps using your real home directory, where its existing sign-in lives. Nothing is moved or migrated.
+- **Agents.** `mcp_install` with an instance's `name` attaches that instance. With only the package, the first registration of that package is attached.
+
 ### Run Location
 
 Servers you install in Settings **run in the shared compute container by default** — the same default an agent's own `mcp_install` gets, so a server does not become more privileged just because you were the one who added it. The container has no bind mount of your filesystem, so a containerized server sees its own files and nothing of yours. It requires Podman, which Studio sets up once. If Podman isn't set up when a server needs it, the server shows **Compute unavailable** and Studio offers to set Podman up or to run the server on the host; see [Compute › When Podman isn't set up](compute.md#mcp-server-execution-location).
