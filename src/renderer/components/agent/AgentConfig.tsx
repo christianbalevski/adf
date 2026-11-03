@@ -13,7 +13,7 @@ import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
 import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, hasLoopGoal } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpToolInfo, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
-import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
+import { buildMcpServerConfigFromRegistration, registrationDisplayName } from '../../../shared/utils/mcp-config'
 import { agentServerPlacement, allowHostPatch, allowHostTip, serverSourceIdentity, type McpLocation, type RuntimeHostApproval } from '../../../shared/utils/mcp-host-placement'
 import { HOST_ACCESS_CONFIRM, useConfirm } from '../common/ConfirmDialog'
 import { writeSettings } from '../settings/settings-save'
@@ -980,9 +980,11 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     openApi()?.listIdentityPurposes('mcp:').then((purposes) => {
       const namesWithKeys = new Set<string>()
       for (const srv of local.mcp!.servers) {
-        const regType = mcpRegistrations.find((r) => r.name === srv.name)?.type ?? (srv.npm_package ? 'npm' : srv.pypi_package ? 'uvx' : 'custom')
+        const srvReg = mcpRegistrations.find((r) => r.name === srv.name)
+        const regType = srvReg?.type ?? (srv.npm_package ? 'npm' : srv.pypi_package ? 'uvx' : 'custom')
         const pkg = srv.npm_package ?? srv.pypi_package
-        const prefix = (regType === 'npm' || regType === 'uvx') && pkg
+        // An additional instance keeps its credentials under its own name.
+        const prefix = (regType === 'npm' || regType === 'uvx') && pkg && !srvReg?.isolatedHome
           ? `mcp:${pkg}:`
           : `mcp:${srv.name}:`
         if (purposes.some((p) => p.startsWith(prefix))) {
@@ -3316,7 +3318,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                       <option value="">Select a server to add...</option>
                       {availableToAdd.map((reg) => (
                         <option key={reg.id} value={reg.name}>
-                          {reg.name} ({reg.type ?? 'npm'}{reg.npmPackage ? `: ${reg.npmPackage}` : reg.pypiPackage ? `: ${reg.pypiPackage}` : ''})
+                          {registrationDisplayName(reg)}{reg.label?.trim() && reg.label.trim() !== reg.name ? ` [${reg.name}]` : ''} ({reg.type ?? 'npm'}{reg.npmPackage ? `: ${reg.npmPackage}` : reg.pypiPackage ? `: ${reg.pypiPackage}` : ''})
                         </option>
                       ))}
                     </select>

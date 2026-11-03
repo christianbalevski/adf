@@ -19,7 +19,9 @@ import { dirname } from 'path'
 import { z } from 'zod'
 import { McpClientManager } from './mcp-client-manager'
 import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
-import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
+import { expandCredentialPath, serverCredentialTarget, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
+import { containerIsolatedHomeEnv, mcpServerContainerHome } from './mcp-instance-home'
+import { instanceOAuthStore } from './mcp-oauth-store'
 import { bundledClientApplies, bundledTokenFileFor, writeBundledClientIfAbsent } from './gmail-bundled-client'
 import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 import { resolveBundledMcpSpawn } from './bundled-mcp-servers'
@@ -31,7 +33,7 @@ import { prepareMcpContainer, ComputeUnavailableError } from './mcp-container-re
 import type { ComputeSettings } from './container-routing'
 import type { PodmanAvailability } from '../../shared/types/compute.types'
 import { resolveContainerCommand } from './container-command-resolver'
-import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan } from '../../shared/utils/mcp-config'
+import { buildMcpServerConfigFromRegistration, deriveRegistrationTestPlan, registrationInstanceFields, type McpInstanceServerConfig } from '../../shared/utils/mcp-config'
 import type { McpServerLogEntry } from '../../shared/types/adf-v02.types'
 import type { McpRegistrationTestResult, McpServerRegistration } from '../../shared/types/ipc.types'
 
@@ -176,6 +178,9 @@ export const McpRegistrationTestArgs = z.object({
       required: z.boolean().optional(),
       writeBack: z.boolean().optional(),
     })).optional(),
+    // An additional instance: its own HOME folder and name-keyed credentials
+    // (stripped here, the test would run it in the first instance's home).
+    isolatedHome: z.boolean().optional(),
   }),
   credentialFiles: z.array(z.object({
     path: z.string().min(1),
@@ -244,7 +249,8 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
   const notes = [...plan.notes]
   // Whether an interactive OAuth sign-in was driven during this test.
   let oauthRan = false
-  const serverCfg = buildMcpServerConfigFromRegistration(reg)
+  const serverCfg: McpInstanceServerConfig = { ...buildMcpServerConfigFromRegistration(reg), ...registrationInstanceFields(reg) }
+  const instance = registrationInstanceFields(reg)
 
   const env: Record<string, string> = {}
   for (const e of reg.env ?? []) { if (e.key && e.value) env[e.key] = e.value }
@@ -252,7 +258,8 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
   // The connect factory attaches the token stored by the interactive flow
   // below; it returns undefined for non-oauth servers, so it is harmless on
   // the host/container branches.
-  const appOAuthStore = deps.appOAuthStore
+  // An additional instance of a URL keeps its own app-level record.
+  const appOAuthStore = deps.appOAuthStore ? instanceOAuthStore(deps.appOAuthStore, serverCfg) : null
   const tempManager = new McpClientManager(undefined, buildOAuthProviderFactory(
     () => appOAuthStore ?? undefined,
   ))
@@ -312,9 +319,11 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
       // Materialize provided credential files into the real host home —
       // for a host-located server the host FS IS the runtime credential
       // store, so these persist (write-if-absent: never clobber existing
-      // credentials). Paths are ~-confined by expandCredentialPath.
+      // credentials). Paths are ~-confined by expandCredentialPath; an
+      // additional instance's ~ is its own folder (serverCredentialTarget).
+      const hostTarget = serverCredentialTarget(serverCfg, { kind: 'host' })
       for (const f of credentialFiles ?? []) {
-        const dest = expandCredentialPath(f.path, { kind: 'host' })
+        const dest = expandCredentialPath(f.path, hostTarget)
         if (existsSync(dest)) { notes.push(`${f.path} already exists on the host — kept the existing file.`); continue }
         const content = Buffer.from(f.contentB64, 'base64')
         if (content.length > CREDENTIAL_FILE_MAX_BYTES) {
@@ -330,7 +339,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
       // An existing token file without a client blocks it too.
       for (const f of reg.credentialFiles ?? []) {
         if (credentialFiles?.some((c) => c.path === f.path)) continue
-        const dest = expandCredentialPath(f.path, { kind: 'host' })
+        const dest = expandCredentialPath(f.path, hostTarget)
         if (writeBundledClientIfAbsent(reg.npmPackage, f.path, dest)) {
           notes.push(`Wrote the built-in OAuth client to ${f.path}.`)
         } else if (bundledClientApplies(reg.npmPackage, f.path) && !existsSync(dest) && existsSync(bundledTokenFileFor(dest))) {
@@ -374,7 +383,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         // `uv tool run <pkg> <userArgs> <authArgs>` for pypi.
         await step(deps.authPreflight({ ...serverCfg, command, args }, { authArgs: reg.authArgs, authPort: reg.authPort, resolvedEnv: env }))
       }
-      const tools = await step(tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined }, connectOpts))
+      const tools = await step(tempManager.connect({ name: reg.name, transport: 'stdio', command, args, env: Object.keys(env).length ? env : undefined, ...instance }, connectOpts))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })
     }
@@ -387,12 +396,12 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     // delete each other's ephemeral home.
     const testDir = `/workspace/_settings_test_${randomUUID()}`
     const testHome = `${testDir}/home`
-    try { await deps.podman.ensureWorkspace('adf-mcp', testHome) } catch { /* mkdir in wrapper */ }
+    try { await deps.podman.ensureWorkspace('adf-mcp', mcpServerContainerHome(serverCfg, testHome)) } catch { /* mkdir in wrapper */ }
     const containerCmd = resolveContainerCommand(serverCfg)
     try {
       const tools = await step(tempManager.connect(
         { name: reg.name, transport: 'stdio', env },
-        { ...connectOpts, externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env }, cwd: testDir }) },
+        { ...connectOpts, externalTransport: new PodmanStdioTransport({ podmanBin, containerName: 'adf-mcp', command: containerCmd.command, args: containerCmd.args, env: { HOME: testHome, ...env, ...containerIsolatedHomeEnv(serverCfg, testHome, env) }, cwd: testDir }) },
       ))
       if (tools) return finish({ success: true, tools })
       return finish({ success: false, tools: [], error: tempManager.getServerState(reg.name)?.error ?? 'Failed to connect' })

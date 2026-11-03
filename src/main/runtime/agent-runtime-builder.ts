@@ -58,7 +58,8 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { withDeadline } from '../utils/concurrency'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
-import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
+import { AgentKeystoreOAuthStore, instanceOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
+import { containerIsolatedHomeEnv, mcpServerContainerHome } from '../services/mcp-instance-home'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn, MCP_OAUTH_AUTHORIZE_APPROVAL } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
 import { canonicalizeServerUrl, type McpOAuthStore } from '../services/mcp-oauth.types'
@@ -771,7 +772,7 @@ export class AgentRuntimeBuilder {
         })
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
-        try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
+        try { await this.podmanService.ensureWorkspace(containerName, mcpServerContainerHome(connCfg, containerAgentHome(isolated, freshConfig.id))) } catch { /* ignore */ }
         // Materialize keystore-held credential files into the container before spawn.
         await materializeCredentialFiles(
           credentialStore(),
@@ -789,8 +790,9 @@ export class AgentRuntimeBuilder {
               containerName,
               command: containerCmd.command,
               args: containerCmd.args,
-              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
-              env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
+              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still
+              // wins, except over an additional instance's own HOME (last).
+              env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv, ...containerIsolatedHomeEnv(connCfg, containerAgentHome(isolated, freshConfig.id), connCfg.env) },
               cwd: containerWorkspacePath(isolated, freshConfig.id),
             }),
             linkedFileReader: containerLinkedFileReader(this.podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
@@ -996,7 +998,7 @@ export class AgentRuntimeBuilder {
             home: containerAgentHome(isolated, freshConfig.id),
           }
           // The auth subcommand writes tokens into $HOME — make sure it exists.
-          try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
+          try { await this.podmanService.ensureWorkspace(container.containerName, mcpServerContainerHome(cfg, container.home!)) } catch { /* preflight itself will surface real failures */ }
         }
         const podmanSvc = this.podmanService
         // Host credential target ONLY when routing chose host — a
@@ -1139,7 +1141,8 @@ export class AgentRuntimeBuilder {
     const { serverCfg, url, workspace, executor } = params
     const serverName = serverCfg.name
     const agentStore = new AgentKeystoreOAuthStore(workspace, serverName, params.keyRef.current)
-    const appStore = this.mcpOAuthAppStore
+    // An additional instance of a URL keeps its own app-level record.
+    const appStore = this.mcpOAuthAppStore ? instanceOAuthStore(this.mcpOAuthAppStore, serverCfg) : null
     const log = (level: 'info' | 'warn', message: string): void => {
       ;(level === 'warn' ? console.warn : console.log)(`[AgentRuntimeBuilder][MCP] ${message}`)
       try { workspace.insertLog(level, 'mcp', 'oauth_signin', serverName, message.slice(0, 500)) } catch { /* non-fatal */ }

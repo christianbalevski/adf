@@ -16,7 +16,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { McpServerConfig } from '../../../shared/types/adf-v02.types'
 import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries } from '../../services/mcp-spawn-utils'
-import { isSensitiveMcpHeader, buildMcpServerConfigFromRegistration, isRegistrationAgentVisible } from '../../../shared/utils/mcp-config'
+import { isSensitiveMcpHeader, buildMcpServerConfigFromRegistration, isRegistrationAgentVisible, registrationInstanceFields } from '../../../shared/utils/mcp-config'
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
 import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 import { captureCredentialFile } from '../../services/mcp-credential-files'
@@ -95,9 +95,15 @@ export class McpInstallTool implements Tool {
     private getRegistrations?: () => McpServerRegistration[],
   ) {}
 
-  /** Find the Settings registration this install request matches, if any. */
+  /**
+   * Find the Settings registration this install request matches, if any. An
+   * explicit `name` wins: with several instances of one package registered,
+   * the package alone matches the first of them.
+   */
   private findMatchingRegistration(parsed: z.infer<typeof InputSchema>, derivedName: string): McpServerRegistration | undefined {
     const regs = this.getRegistrations?.() ?? []
+    const named = parsed.name ? regs.find((r) => r.name === parsed.name) : undefined
+    if (named) return named
     return regs.find((r) => r.name && (
       (parsed.package !== undefined && (r.npmPackage === parsed.package || r.pypiPackage === parsed.package)) ||
       (parsed.url !== undefined && r.url === parsed.url) ||
@@ -141,12 +147,18 @@ export class McpInstallTool implements Tool {
     if (attachReg && !isRegistrationAgentVisible(attachReg)) {
       return { content: JSON.stringify({
         success: false,
-        error: `"${attachReg.name}" is registered in ADF Studio Settings but not made available to agents — ` +
+        error: `"${attachReg.name}"${attachReg.label?.trim() ? ` (${attachReg.label.trim()})` : ''} is registered in ADF Studio Settings but not made available to agents — ` +
           'ask your principal to enable "Available to agents" on it (Settings → MCP Servers), then retry. ' +
           'Installing a separate copy would duplicate the user\'s configured server without its credentials.',
       }), isError: true }
     }
     if (attachReg) serverName = attachReg.name
+    // An additional instance seals its credential files under its own name.
+    const instance = attachReg ? registrationInstanceFields(attachReg) : {}
+    // How the agent sees an attached server: `name`, plus the user's label.
+    const shownName = attachReg?.label?.trim() && attachReg.label.trim() !== serverName
+      ? `"${serverName}" (${attachReg.label.trim()})`
+      : `"${serverName}"`
 
     // The visible browser is per-agent by design. Installing its MCP server
     // therefore opts the agent into an isolated browser-enabled container so
@@ -219,7 +231,7 @@ export class McpInstallTool implements Tool {
             const buf = Buffer.from(f.content, f.encoding === 'base64' ? 'base64' : 'utf8')
             captureCredentialFile(
               { setIdentitySealed: (purpose, value) => workspace.setIdentitySealed(purpose, value) },
-              existing, f.path, buf, new Date().toISOString(),
+              { ...existing, ...instance }, f.path, buf, new Date().toISOString(),
             )
             sealedFiles.push(f.path)
           } catch (err) {
@@ -387,7 +399,7 @@ export class McpInstallTool implements Tool {
           const buf = Buffer.from(f.content, f.encoding === 'base64' ? 'base64' : 'utf8')
           captureCredentialFile(
             { setIdentitySealed: (purpose, value) => workspace.setIdentitySealed(purpose, value) },
-            serverConfig, f.path, buf, new Date().toISOString(),
+            { ...serverConfig, ...instance }, f.path, buf, new Date().toISOString(),
           )
           sealedCredentialFiles.push(f.path)
         } catch (err) {
@@ -471,9 +483,9 @@ export class McpInstallTool implements Tool {
         ...(discoveredTools === 0 && outcome?.stderrTail?.length ? { stderr_tail: outcome.stderrTail } : {}),
         message: discoveredTools > 0
           ? attachReg
-            ? `Attached existing server "${serverName}" configured in ADF Studio Settings (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
+            ? `Attached existing server ${shownName} configured in ADF Studio Settings (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
             : `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
-          : `Server "${serverName}" ${attachReg ? 'attached from Settings' : 'configured'} (${location}) but no tools discovered. ${failureDetail || 'The server may need correct args, credentials, or a restart to connect.'}`,
+          : `Server ${shownName} ${attachReg ? 'attached from Settings' : 'configured'} (${location}) but no tools discovered. ${failureDetail || 'The server may need correct args, credentials, or a restart to connect.'}`,
       }),
       isError: false,
     }

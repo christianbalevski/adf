@@ -49,7 +49,9 @@ export const McpAttachArgs = z.object({
     // McpServerRegistration / McpServerConfig.
     oauth: z.boolean().optional(),
     oauthClientId: z.string().optional(),
-    oauthScopes: z.array(z.string()).optional()
+    oauthScopes: z.array(z.string()).optional(),
+    // An additional instance: its env credentials are keyed by its name.
+    isolatedHome: z.boolean().optional()
   })
 })
 export const McpDetachArgs = z.object({
@@ -124,6 +126,7 @@ export function mcpAttachEntry(serverConfig: z.infer<typeof McpAttachArgs>['serv
     headerEnv: serverConfig.headerEnv,
     bearerTokenEnvVar: serverConfig.bearerTokenEnvVar,
     credentialStorage: serverConfig.credentialStorage,
-    runLocation: serverConfig.runLocation
+    runLocation: serverConfig.runLocation,
+    isolatedHome: serverConfig.isolatedHome
   })
 }

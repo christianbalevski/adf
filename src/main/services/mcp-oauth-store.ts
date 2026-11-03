@@ -32,6 +32,7 @@ import type {
   McpOAuthInvalidateScope,
 } from './mcp-oauth.types'
 import { canonicalizeServerUrl } from './mcp-oauth.types'
+import { isIsolatedMcpInstance, mcpOAuthStoreKey } from '../../shared/utils/mcp-config'
 
 /**
  * URL-binding guard shared by both stores' `get`. A record stamped with a
@@ -583,7 +584,7 @@ export class AgentKeystoreOAuthStore implements McpOAuthStore {
  * grant. Returns false (no-op) when the app store holds nothing for the url.
  */
 export async function captureOAuthToAgent(
-  appStore: AppSettingsOAuthStore,
+  appStore: Pick<McpOAuthStore, 'get'>,
   agentStore: AgentKeystoreOAuthStore,
   serverUrl: string,
 ): Promise<boolean> {
@@ -594,6 +595,25 @@ export async function captureOAuthToAgent(
   // endpoint. The app record is already stamped at mint; re-stamp defensively.
   await agentStore.save(serverUrl, { ...record, serverUrl: canonicalizeServerUrl(serverUrl) })
   return true
+}
+
+/**
+ * The app-level store (keyed by URL) as one server sees it. An additional
+ * instance of a URL that is already registered (isolatedHome) gets its own
+ * record under mcpOAuthStoreKey; every other server is passed the store
+ * unchanged. Not needed for AgentKeystoreOAuthStore, which is name-keyed.
+ */
+export function instanceOAuthStore<T extends McpOAuthStore>(
+  store: T,
+  server: { name: string; isolated_home?: boolean },
+): T | McpOAuthStore {
+  if (!isIsolatedMcpInstance(server)) return store
+  const key = (url: string): string => mcpOAuthStoreKey(url, server)
+  return {
+    get: (url) => store.get(key(url)),
+    save: (url, record) => store.save(key(url), record),
+    invalidate: (url, scope) => store.invalidate(key(url), scope),
+  }
 }
 
 /**

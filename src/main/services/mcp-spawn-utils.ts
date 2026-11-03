@@ -1,7 +1,7 @@
 import { delimiter, isAbsolute, join } from 'path'
 import { existsSync } from 'fs'
 import type { McpEnvKeySchema, McpInstalledPackage, McpServerConfig } from '../../shared/types/adf-v02.types'
-import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef } from '../../shared/utils/mcp-config'
+import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, isIsolatedMcpInstance, mcpCredentialNamespace, mcpCredentialRef, type McpInstanceServerConfig } from '../../shared/utils/mcp-config'
 import { resolveBundledMcpSpawn, type BundledMcpRuntime } from './bundled-mcp-servers'
 
 export { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef }
@@ -236,12 +236,14 @@ function agentScopedEnvKeys(serverCfg: McpServerConfig): string[] {
  * Handles both npm_package and pypi_package credential namespaces.
  */
 export function resolveMcpEnvVars(
-  serverCfg: McpServerConfig,
+  serverCfg: McpInstanceServerConfig,
   getDecrypted: (key: string) => string | null
 ): Record<string, string> {
   const keys = agentScopedEnvKeys(serverCfg)
   if (!keys.length) return {}
-  const pkg = serverCfg.npm_package ?? serverCfg.pypi_package
+  // An additional instance shares the package namespace with the first
+  // registration: it reads its own (name-keyed) credentials only.
+  const pkg = isIsolatedMcpInstance(serverCfg) ? undefined : serverCfg.npm_package ?? serverCfg.pypi_package
 
   const resolved: Record<string, string> = {}
   for (const key of keys) {

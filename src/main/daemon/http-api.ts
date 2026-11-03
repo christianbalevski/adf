@@ -3248,6 +3248,8 @@ function buildMcpSettingsDiagnostics(settingsStore?: DaemonSettingsStore) {
       headerEnv: server.headerEnv?.map(entry => ({ header: entry.key, env: entry.value })) ?? [],
       bearerTokenEnvVar: server.bearerTokenEnvVar ?? null,
       toolCallTimeout: server.toolCallTimeout ?? null,
+      ...(server.label ? { label: server.label } : {}),
+      ...(server.isolatedHome ? { isolatedHome: true } : {}),
     })),
   }
 }

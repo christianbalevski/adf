@@ -4,7 +4,7 @@ import type { McpServerRegistration, McpServerStatusEvent } from '../../../share
 import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
-import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
+import { isRegistrationAgentVisible, mcpOAuthStoreKey, registrationDisplayName, sameExecutableIdentity, sameMcpServerSource } from '../../../shared/utils/mcp-config'
 import { McpAddServerModal, HOST_BOUNDARY_TEXT, bundledServerFor, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { ComputeNeededSheet } from './ComputeNeededSheet'
 import { Tooltip } from '../common/Tooltip'
@@ -65,6 +65,14 @@ export function builtInManagedServer(
   return bundledServerFor(reg, bundledServers, hostAccessEnabled, mcpOnHost)
 }
 
+/**
+ * Whether removing a managed registration uninstalls its package: not while
+ * another instance of the same package still runs from the installed copy.
+ */
+export function uninstallsPackageOnRemove(server: McpServerRegistration, servers: McpServerRegistration[]): boolean {
+  return !!server.managed && !servers.some((s) => s.id !== server.id && s.managed && sameMcpServerSource(s, server))
+}
+
 export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost, mcpOnHost, onEnableHostAccessNow, onAcceptMcpOnHost }: McpStatusDashboardProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
@@ -114,7 +122,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
     const oauthRows = mcpServersRef.current.filter((s) => s.type === 'http' && !!s.url && oauthEntryFor(s))
     const results = await Promise.all(oauthRows.map(async (s) => {
       try {
-        const r = await api?.mcpOAuthStatus({ url: s.url! })
+        // An additional instance of a URL has its own record (mcpOAuthStoreKey).
+        const r = await api?.mcpOAuthStatus({ url: mcpOAuthStoreKey(s.url!, s) })
         return [s.id, r?.signedIn] as const
       } catch {
         return [s.id, undefined] as const
@@ -137,7 +146,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const handleOAuthSignOut = async (reg: McpServerRegistration) => {
     if (!reg.url) return
     try {
-      await api?.mcpOAuthSignOut({ url: reg.url })
+      await api?.mcpOAuthSignOut({ url: mcpOAuthStoreKey(reg.url, reg) })
     } catch {
       // Low-stakes: re-sign-in is one click. Surface nothing on failure.
     }
@@ -211,10 +220,11 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
 
   const handleRemove = async (id: string) => {
     const server = mcpServers.find((s) => s.id === id)
-    if (!window.confirm(`Remove ${server?.name ?? 'this server'}?${server?.managed ? ' Its installed package is uninstalled.' : ''}`)) return
+    const uninstalls = !!server && uninstallsPackageOnRemove(server, mcpServers)
+    if (!window.confirm(`Remove ${server ? registrationDisplayName(server) : 'this server'}?${uninstalls ? ' Its installed package is uninstalled.' : ''}`)) return
 
     // Uninstall the managed package before removing the config entry
-    if (server?.managed) {
+    if (server && uninstalls) {
       const isPython = server.type === 'uvx' || server.type === 'pip'
       const pkg = isPython ? server.pypiPackage : server.npmPackage
       if (pkg) {
@@ -241,6 +251,12 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
     if (builtIn) {
       // Nothing to download: the bundled version is the installed one.
       onServersChanged([...current, { ...reg, version: builtIn.version }])
+      return
+    }
+    // An additional instance runs from the copy its sibling installed: nothing to download.
+    const sibling = exists || !reg.managed ? undefined : current.find((s) => s.managed && !!s.version && sameMcpServerSource(s, reg))
+    if (sibling) {
+      onServersChanged([...current, { ...reg, version: sibling.version }])
       return
     }
     onServersChanged(exists ? current.map((s) => (s.id === reg.id ? reg : s)) : [...current, reg])
@@ -410,8 +426,11 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                     <span className={`w-2 h-2 rounded-full shrink-0 ${STATUS_COLORS[status] ?? 'bg-neutral-400'}`} />
                     <BrandIcon iconKey={registryEntry?.iconKey} category={registryEntry?.category ?? (isHttp ? 'web' : 'tools')} size={22} />
                     <span className="text-sm font-medium text-neutral-700 dark:text-neutral-200 truncate">
-                      {reg.name || '(unnamed)'}
+                      {registrationDisplayName(reg) || '(unnamed)'}
                     </span>
+                    {registrationDisplayName(reg) !== reg.name && (
+                      <span className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{reg.name}</span>
+                    )}
                     <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
                       {STATUS_LABELS[status] ?? status}{state?.toolCount ? ` · ${state.toolCount} tools` : ''}
                     </span>

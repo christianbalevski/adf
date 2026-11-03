@@ -16,7 +16,9 @@
 import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, existsSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
-import type { McpServerConfig } from '../../shared/types/adf-v02.types'
+import type { McpInstanceServerConfig } from '../../shared/utils/mcp-config'
+import { isIsolatedMcpInstance } from '../../shared/utils/mcp-config'
+import { mcpServerContainerHome, mcpServerHostHome } from './mcp-instance-home'
 import { compiledGmailOAuthClient, isBundledClientContent, keepHostTokensOverSealed, writeBundledClientIfAbsent } from './gmail-bundled-client'
 import { GMAIL_BUNDLED_CLIENT_PATH, GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 
@@ -35,7 +37,11 @@ interface CredentialFileRecord {
 export interface CredentialContainerTarget {
   kind: 'container'
   containerName: string
-  /** Agent-scoped HOME inside the container (containerAgentHome). */
+  /**
+   * Agent-scoped HOME inside the container (containerAgentHome). For an
+   * isolated instance `~` expands under its instance folder below it
+   * (serverCredentialTarget) — callers always pass the agent home.
+   */
   home: string
   copyToContainer: (hostPath: string, containerPath: string, containerName: string) => Promise<void>
   copyFromContainer: (containerPath: string, hostPath: string, containerName: string) => Promise<void>
@@ -45,7 +51,7 @@ export interface CredentialContainerTarget {
 
 export interface CredentialHostTarget {
   kind: 'host'
-  /** Host home for ~ expansion. Defaults to os.homedir(). */
+  /** Host home for ~ expansion. Defaults to the server's home (os.homedir(), or its instance folder). */
   home?: string
 }
 
@@ -85,13 +91,26 @@ export interface CredentialStore {
 /**
  * Purposes for a declared credential file, in READ order: package namespace
  * first, then server-name namespace — mirroring resolveMcpEnvVars. Writes
- * always use the first (package) purpose.
+ * always use the first (package) purpose. An isolated instance shares its
+ * package with another registration, so it uses its name only.
  */
-export function credentialFilePurposes(serverCfg: McpServerConfig, path: string): string[] {
+export function credentialFilePurposes(serverCfg: McpInstanceServerConfig, path: string): string[] {
+  if (isIsolatedMcpInstance(serverCfg)) return [`mcp:${serverCfg.name}:file:${path}`]
   const pkgNs = serverCfg.npm_package ?? serverCfg.pypi_package ?? serverCfg.name
   const purposes = [`mcp:${pkgNs}:file:${path}`]
   if (serverCfg.name !== pkgNs) purposes.push(`mcp:${serverCfg.name}:file:${path}`)
   return purposes
+}
+
+/**
+ * The target `~` expands against for this server: an isolated instance's
+ * own folder (host: under the user data dir; container: under the agent
+ * home), else the target as given. The one place credential files learn
+ * about instances.
+ */
+export function serverCredentialTarget<T extends CredentialFileTarget>(serverCfg: McpInstanceServerConfig, target: T): T {
+  if (target.kind === 'host') return target.home ? target : { ...target, home: mcpServerHostHome(serverCfg) }
+  return { ...target, home: mcpServerContainerHome(serverCfg, target.home) }
 }
 
 /**
@@ -146,7 +165,7 @@ export function captureCredentialFile(
      */
     setIdentityCodeAccess?: (purpose: string, codeAccess: boolean) => void
   },
-  serverCfg: McpServerConfig,
+  serverCfg: McpInstanceServerConfig,
   path: string,
   content: Buffer,
   capturedAt: string,
@@ -195,9 +214,10 @@ const INGESTION_ROUTES =
  */
 export async function materializeCredentialFiles(
   store: CredentialStore,
-  serverCfg: McpServerConfig,
-  target: CredentialFileTarget,
+  serverCfg: McpInstanceServerConfig,
+  serverTarget: CredentialFileTarget,
 ): Promise<void> {
+  const target = serverCredentialTarget(serverCfg, serverTarget)
   const declared = serverCfg.credential_files ?? []
   for (const file of declared) {
     const purposes = credentialFilePurposes(serverCfg, file.path)
@@ -289,11 +309,12 @@ export async function materializeCredentialFiles(
  */
 export async function writeBackCredentialFiles(
   store: { setIdentitySealed: (purpose: string, value: string) => void },
-  serverCfg: McpServerConfig,
-  target: CredentialFileTarget,
+  serverCfg: McpInstanceServerConfig,
+  serverTarget: CredentialFileTarget,
   capturedAt: string,
   log?: (msg: string) => void,
 ): Promise<void> {
+  const target = serverCredentialTarget(serverCfg, serverTarget)
   const declared = (serverCfg.credential_files ?? []).filter((f) => f.write_back !== false)
   for (const file of declared) {
     const srcPath = expandCredentialPath(file.path, target)

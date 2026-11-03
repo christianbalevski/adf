@@ -2,6 +2,7 @@ import { dirname, join } from 'path'
 import { homedir } from 'os'
 import { filterBlockedEnv, inheritableEnv } from '../utils/child-env'
 import { bundledMcpSpawnEnv } from './bundled-mcp-servers'
+import { hostIsolatedHomeEnv } from './mcp-instance-home'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
@@ -327,15 +328,18 @@ export class McpClientManager extends EventEmitter {
         const command = expandHome(managed.config.command!)
         const args = managed.config.args?.map(expandHome)
 
+        // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
+        // ELECTRON_RUN_AS_NODE only for Studio's executable running a server
+        // file it ships (bundled-mcp-servers.ts) — decided from the command
+        // line, never settable through config env.
+        const env = bundledMcpSpawnEnv(command, args, inheritableEnv(), managed.config.env ?? {})
+          ?? { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) }
         transport = new StdioClientTransport({
           command,
           args,
-          // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
-          // ELECTRON_RUN_AS_NODE only for Studio's executable running a server
-          // file it ships (bundled-mcp-servers.ts) — decided from the command
-          // line, never settable through config env.
-          env: bundledMcpSpawnEnv(command, args, inheritableEnv(), managed.config.env ?? {})
-            ?? { ...inheritableEnv(), ...filterBlockedEnv(managed.config.env ?? {}) },
+          // An additional instance's own HOME (mcp-instance-home.ts) goes
+          // last, so config env cannot point it back at the shared home.
+          env: { ...env, ...hostIsolatedHomeEnv(managed.config, env) },
           stderr: 'pipe',
           cwd: this.scratchDir
         })

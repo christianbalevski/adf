@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn } from 'child_process'
 import { inheritableEnv } from '../utils/child-env'
+import { containerIsolatedHomeEnv, hostIsolatedHomeEnv } from './mcp-instance-home'
 import type { ChildProcess } from 'child_process'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
@@ -51,7 +52,11 @@ export interface ContainerAuthTarget {
   /** In-container command from resolveContainerCommand (npx/uvx/custom). */
   command: string
   args: string[]
-  /** Agent-scoped HOME (containerAgentHome) — exported first so an explicit serverCfg.env.HOME wins. */
+  /**
+   * Agent-scoped HOME (containerAgentHome) — exported first so an explicit
+   * serverCfg.env.HOME wins, except for an additional instance, whose HOME is
+   * its folder below this one (mcpServerContainerHome; the caller creates it).
+   */
   home?: string
 }
 
@@ -305,7 +310,11 @@ export async function runMcpAuthPreflight(
       verbatim = true
     }
   }
-  let spawnEnv: NodeJS.ProcessEnv = { ...preflightEnv, ...quoteEnvExtra }
+  // An additional instance authorizes into its own HOME (mcp-instance-home.ts),
+  // last so config env cannot point it back at the shared home.
+  let spawnEnv: NodeJS.ProcessEnv = opts.container
+    ? { ...preflightEnv, ...quoteEnvExtra }
+    : { ...preflightEnv, ...quoteEnvExtra, ...hostIsolatedHomeEnv(serverCfg, preflightEnv) }
   // Container mode writes the crossing env (identity-resolved credentials) to a
   // 0600 --env-file rather than onto the host podman client's argv; this temp
   // dir must be reaped on every settle/exit/error/teardown path (guarded against
@@ -324,7 +333,9 @@ export async function runMcpAuthPreflight(
     // boundary — NEVER the host process.env, which carries runtime API keys
     // that must not leak into agent-reachable code.
     const c = opts.container
-    const containerEnv = { ...(c.home ? { HOME: c.home } : {}), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+    const configEnv = { ...(c.home ? { HOME: c.home } : {}), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+    // An additional instance's HOME is its folder under the agent home — last, never overridable.
+    const containerEnv = { ...configEnv, ...(c.home ? containerIsolatedHomeEnv(serverCfg, c.home, configEnv) : {}) }
     // Those credential values (API keys, OAuth client secrets) must NOT land on
     // the host podman client's argv: process argv is world-readable
     // (/proc/<pid>/cmdline on Linux, `ps` on macOS) and this preflight stays

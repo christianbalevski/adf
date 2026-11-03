@@ -40,6 +40,7 @@ import type { WsConnectionManager } from '../services/ws-connection-manager'
 import { containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
+import { containerIsolatedHomeEnv, mcpServerContainerHome } from '../services/mcp-instance-home'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
 import { containerLinkedFileReader } from '../services/mcp-linked-files'
@@ -1393,7 +1394,7 @@ export class BackgroundAgentManager extends EventEmitter {
         const { isolatedContainerName } = await import('../services/podman.service')
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
-        try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
+        try { await this.podmanService.ensureWorkspace(containerName, mcpServerContainerHome(connCfg, containerAgentHome(isolated, freshConfig.id))) } catch { /* ignore */ }
         // Materialize keystore-held credential files into the container before spawn.
         await materializeCredentialFiles(
           { getDecrypted: (p) => workspace.getIdentityDecrypted(p, derivedKey ?? null), hasRow: (p) => workspace.getIdentityRow(p) !== null },
@@ -1411,8 +1412,9 @@ export class BackgroundAgentManager extends EventEmitter {
               containerName,
               command: containerCmd.command,
               args: containerCmd.args,
-              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
-              env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
+              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still
+              // wins, except over an additional instance's own HOME (last).
+              env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv, ...containerIsolatedHomeEnv(connCfg, containerAgentHome(isolated, freshConfig.id), connCfg.env) },
               cwd: containerWorkspacePath(isolated, freshConfig.id),
             }),
             linkedFileReader: containerLinkedFileReader(this.podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
@@ -1522,7 +1524,7 @@ export class BackgroundAgentManager extends EventEmitter {
             home: containerAgentHome(isolated, freshConfig.id),
           }
           // The auth subcommand writes tokens into $HOME — make sure it exists.
-          try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
+          try { await this.podmanService.ensureWorkspace(container.containerName, mcpServerContainerHome(cfg, container.home!)) } catch { /* preflight itself will surface real failures */ }
         }
         const podmanSvc = this.podmanService
         const credStore = { getDecrypted: (p: string) => workspace.getIdentityDecrypted(p, derivedKey ?? null), hasRow: (p: string) => workspace.getIdentityRow(p) !== null }

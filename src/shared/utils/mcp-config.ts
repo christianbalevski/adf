@@ -1,10 +1,85 @@
 import type { McpEnvKeySchema, McpHeaderEnvSchema, McpServerConfig } from '../types/adf-v02.types'
 import type { McpServerRegistration } from '../types/ipc.types'
 
-type McpCredentialSource = Pick<McpServerConfig, 'name' | 'npm_package' | 'pypi_package'> | {
+/**
+ * A spawn-time server config: the ADF `McpServerConfig` plus runtime-only
+ * facts derived from the Settings registration. Never written to a `.adf`
+ * (buildMcpServerConfigFromRegistration, which attach persists, does not
+ * emit them; pinServerConfigToRegistration and the Settings connect test add
+ * them in memory), so the ADF format is unchanged.
+ */
+export type McpInstanceServerConfig = McpServerConfig & {
+  /** The registration is an additional instance (isolatedHome): own HOME folder, name-keyed credentials. */
+  isolated_home?: boolean
+}
+
+type McpCredentialSource = Pick<McpInstanceServerConfig, 'name' | 'npm_package' | 'pypi_package' | 'isolated_home'> | {
   name: string
   npmPackage?: string
   pypiPackage?: string
+  isolatedHome?: boolean
+}
+
+/** Whether a registration or spawn config is an additional, home-isolated instance. */
+export function isIsolatedMcpInstance(source: { isolated_home?: boolean } | { isolatedHome?: boolean }): boolean {
+  const s = source as { isolated_home?: boolean; isolatedHome?: boolean }
+  return !!(s.isolated_home ?? s.isolatedHome)
+}
+
+/** The runtime-only fields a registration adds to its spawn config (see McpInstanceServerConfig). */
+export function registrationInstanceFields(registration: Pick<McpServerRegistration, 'isolatedHome'>): Pick<McpInstanceServerConfig, 'isolated_home'> {
+  return registration.isolatedHome ? { isolated_home: true } : {}
+}
+
+/**
+ * Key of a server's record in the app-level HTTP OAuth store (keyed by URL).
+ * An additional instance of the same URL gets its own record: the instance
+ * name rides in the fragment, which canonicalizeServerUrl drops, so the
+ * record's URL binding is still checked against the real endpoint.
+ */
+export function mcpOAuthStoreKey(url: string, source: { name: string } & ({ isolated_home?: boolean } | { isolatedHome?: boolean })): string {
+  return isIsolatedMcpInstance(source) ? `${url}#adf-instance=${source.name}` : url
+}
+
+/** What Settings lists a registration as: its label, else its name. */
+export function registrationDisplayName(reg: Pick<McpServerRegistration, 'name' | 'label'>): string {
+  return reg.label?.trim() || reg.name
+}
+
+/**
+ * Whether two registrations launch the same server (same npm/PyPI package,
+ * same URL, or — custom — the same command and args).
+ */
+export function sameMcpServerSource(
+  a: Pick<McpServerRegistration, 'type' | 'npmPackage' | 'pypiPackage' | 'url' | 'command' | 'args'>,
+  b: Pick<McpServerRegistration, 'type' | 'npmPackage' | 'pypiPackage' | 'url' | 'command' | 'args'>,
+): boolean {
+  const aHttp = a.type === 'http' || !!a.url
+  const bHttp = b.type === 'http' || !!b.url
+  if (aHttp || bHttp) return aHttp && bHttp && !!a.url && a.url === b.url
+  if (a.npmPackage || b.npmPackage) return !!a.npmPackage && a.npmPackage === b.npmPackage
+  if (a.pypiPackage || b.pypiPackage) return !!a.pypiPackage && a.pypiPackage === b.pypiPackage
+  const argsA = a.args ?? []
+  const argsB = b.args ?? []
+  return !!a.command && a.command === b.command &&
+    argsA.length === argsB.length && argsA.every((arg, i) => arg === argsB[i])
+}
+
+/**
+ * A new registration whose server is already registered becomes an
+ * additional instance: `isolatedHome` set and, when its name is taken, the
+ * first free `<name>-2`, `<name>-3`, … (`-` because the shell's `mcp` command
+ * splits tool names on `_`). Returned unchanged otherwise, so first
+ * registrations are untouched.
+ */
+export function asAdditionalInstance(draft: McpServerRegistration, existing: McpServerRegistration[]): McpServerRegistration {
+  const others = existing.filter((r) => r.id !== draft.id)
+  if (!others.some((r) => sameMcpServerSource(r, draft))) return draft
+  const taken = new Set(others.map((r) => r.name))
+  const base = draft.name.replace(/-\d+$/, '') || draft.name
+  let name = draft.name
+  for (let n = 2; name && taken.has(name); n++) name = `${base}-${n}`
+  return { ...draft, name, isolatedHome: true }
 }
 
 function sourcePackage(source: McpCredentialSource): string | undefined {
@@ -17,6 +92,9 @@ function sourcePackage(source: McpCredentialSource): string | undefined {
 }
 
 export function mcpCredentialNamespace(source: McpCredentialSource): string {
+  // An additional instance shares its package with the first registration:
+  // its credentials are keyed by its own (unique) name.
+  if (isIsolatedMcpInstance(source)) return source.name
   return sourcePackage(source) ?? source.name
 }
 
@@ -189,7 +267,7 @@ export function buildMcpServerConfigFromRegistration(registration: McpServerRegi
 export function pinServerConfigToRegistration(
   connCfg: McpServerConfig,
   registration: McpServerRegistration,
-): McpServerConfig {
+): McpInstanceServerConfig {
   const canonical = buildMcpServerConfigFromRegistration(registration)
   // Preserve the agent's own agent-scoped env declarations; the registration
   // owns the app-scoped ones. (canonical.env_schema is app-scoped by build.)
@@ -200,8 +278,9 @@ export function pinServerConfigToRegistration(
       (a) => !(canonical.env_schema ?? []).some((c) => c.key === a.key && c.scope === a.scope),
     ),
   ]
-  const pinned: McpServerConfig = {
+  const pinned: McpInstanceServerConfig = {
     ...canonical,
+    ...registrationInstanceFields(registration),
     // Agent-owned state kept from the .adf copy:
     env: connCfg.env,
     env_keys: connCfg.env_keys,

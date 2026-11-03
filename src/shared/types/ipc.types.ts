@@ -186,6 +186,15 @@ export interface McpServerRegistration {
   credentialFiles?: { path: string; required?: boolean; writeBack?: boolean }[]
   /** Epoch ms of the last successful Settings connect test; absent = "Not verified". */
   lastVerifiedAt?: number
+  /** User-editable display name. `name` stays the immutable id (tool prefix, attach key, instance folder). */
+  label?: string
+  /**
+   * An additional instance of a server that is already registered (same
+   * package, URL or command): its process gets its own HOME folder keyed by
+   * `name`, and its credentials are keyed by `name` instead of the package.
+   * Set when the instance is added; first registrations never carry it.
+   */
+  isolatedHome?: boolean
 }
 
 /**

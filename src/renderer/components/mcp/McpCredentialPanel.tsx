@@ -4,6 +4,7 @@ import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { isOAuthEntry, isDualModeOAuthEntry } from './McpAddServerModal'
 import { editPlaceholderField } from '../../utils/placeholder-field'
 import { useSettingsApi } from '../settings/settings-runtime'
+import { mcpCredentialNamespace } from '../../../shared/utils/mcp-config'
 
 /** Flatten a TrackedDirEntry tree into a list of .adf file entries. */
 function flattenAdfFiles(entries: TrackedDirEntry[]): { filePath: string; fileName: string }[] {
@@ -43,7 +44,8 @@ export function mcpAttachServerConfig(server: McpServerRegistration, registryEnt
     headerEnv: server.headerEnv,
     bearerTokenEnvVar: server.bearerTokenEnvVar,
     credentialStorage: server.credentialStorage,
-    runLocation: server.runLocation
+    runLocation: server.runLocation,
+    isolatedHome: server.isolatedHome
   }
 }
 
@@ -74,8 +76,9 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   const isDualMode = isDualModeOAuthEntry(server, registryEntry)
   const oauthOnly = isOAuth && !isDualMode
 
-  // Credential namespace: npmPackage or pypiPackage for managed, server name for custom
-  const credentialNamespace = server.npmPackage || server.pypiPackage || server.name
+  // Credential namespace: npmPackage or pypiPackage for managed, server name
+  // for custom servers and for an additional instance of a package.
+  const credentialNamespace = mcpCredentialNamespace(server)
 
   // Env keys: from registry for managed servers, from server.env for custom
   const httpEnvKeys = [

@@ -5,7 +5,7 @@ import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs,
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { bundledMcpServerForShape } from '../../../shared/utils/bundled-mcp-shape'
-import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
+import { MCP_EXECUTABLE_IDENTITY_FIELDS, asAdditionalInstance, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, registrationDisplayName, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -99,19 +99,37 @@ export function filterRegistryEntries(
 /**
  * Entries the quick-add grid offers: deprecated entries are excluded (they
  * stay valid data for lookups on existing installs, but must not be installed
- * fresh), as is anything already registered.
+ * fresh). Entries already registered stay: adding one again creates another
+ * instance (asAdditionalInstance), e.g. a second account.
  */
-export function availableRegistryEntries(
-  entries: McpRegistryEntry[],
-  existingServers: McpServerRegistration[],
-): McpRegistryEntry[] {
-  return entries.filter(
-    (entry) => !entry.deprecated && !existingServers.some((s) =>
-      (entry.npmPackage && s.npmPackage === entry.npmPackage) ||
-      (entry.pypiPackage && s.pypiPackage === entry.pypiPackage) ||
-      (entry.url && s.url === entry.url)
-    )
+export function availableRegistryEntries(entries: McpRegistryEntry[]): McpRegistryEntry[] {
+  return entries.filter((entry) => !entry.deprecated)
+}
+
+/** Whether a catalog entry is registered already (its card then adds another instance). */
+export function isRegistryEntryRegistered(entry: McpRegistryEntry, existingServers: McpServerRegistration[]): boolean {
+  return existingServers.some((s) =>
+    (!!entry.npmPackage && s.npmPackage === entry.npmPackage) ||
+    (!!entry.pypiPackage && s.pypiPackage === entry.pypiPackage) ||
+    (!!entry.url && s.url === entry.url)
   )
+}
+
+/**
+ * Whether the Name field is read-only: an additional instance's folder and
+ * credentials are keyed by its name, so it is fixed once saved (the label
+ * renames it).
+ */
+export function isRegistrationNameLocked(editing: McpServerRegistration | null, draft: McpServerRegistration | null): boolean {
+  return !!editing && !!draft?.isolatedHome
+}
+
+/**
+ * The draft a catalog card starts: the entry's registration, made an
+ * additional instance (numbered name, own home) when it is registered already.
+ */
+export function draftFromRegistryEntry(entry: McpRegistryEntry, id: string, existingServers: McpServerRegistration[]): McpServerRegistration {
+  return asAdditionalInstance(registrationFromRegistryEntry(entry, id), existingServers)
 }
 
 /**
@@ -476,10 +494,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
       : draft.url ? findEntryIn(registryEntries, { url: draft.url }) : undefined
   }, [draft, registryEntries])
 
-  const availableEntries = useMemo(
-    () => availableRegistryEntries(registryEntries, existingServers),
-    [registryEntries, existingServers]
-  )
+  const availableEntries = useMemo(() => availableRegistryEntries(registryEntries), [registryEntries])
   const availableCategories = useMemo(
     () => REGISTRY_CATEGORIES.filter((c) => availableEntries.some((e) => e.category === c)),
     [availableEntries]
@@ -537,23 +552,40 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [retestRequested])
 
+  /**
+   * A new draft whose server is registered already (a custom command, or a
+   * package typed in by hand) becomes an additional instance before it first
+   * runs or is saved: numbered name, own home. Saved registrations never
+   * change — the first one's tokens live in the real home.
+   */
+  const instanceDraft = (d: McpServerRegistration): McpServerRegistration => {
+    if (editing || externallyRemoved || existingServers.some((s) => s.id === d.id)) return d
+    const next = asAdditionalInstance(d, existingServers)
+    if (next !== d) {
+      draftRef.current = next
+      setDraft((cur) => (cur ? { ...cur, name: next.name, isolatedHome: next.isolatedHome } : cur))
+    }
+    return next
+  }
+
   const handleConnect = async () => {
     if (!draft || !canLaunch || hasPlaceholders) return
+    const target = instanceDraft(draft)
     // Snapshot the identity under test — the form stays editable while the
     // test runs, and a success stamp must only ever land on this identity.
-    const tested = draft
+    const tested = target
     setTest({ phase: 'running' })
     setShowTools(false)
     try {
       // Only send payloads the CURRENT draft declares — filePayloads can hold
       // leftovers from a previously picked card (cleared on Back/re-pick, but
       // this filter is the hard guarantee they never leave the renderer).
-      const declared = new Set((draft.credentialFiles ?? []).map((f) => f.path))
+      const declared = new Set((target.credentialFiles ?? []).map((f) => f.path))
       const credentialFiles = Object.entries(filePayloads)
         .filter(([path]) => declared.has(path))
         .map(([path, p]) => ({ path, contentB64: p.contentB64 }))
       const result = await api?.testMcpRegistration({
-        registration: { ...draft, authArgs: commitAuthArgs() },
+        registration: { ...target, authArgs: commitAuthArgs() },
         credentialFiles: credentialFiles.length ? credentialFiles : undefined,
       })
       if (result?.success) {
@@ -589,7 +621,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
 
   const handleSave = () => {
     if (!draft || hasPlaceholders || hasPendingRequiredCreds) return
-    onSave({ ...draft, authArgs: commitAuthArgs() })
+    onSave({ ...instanceDraft(draft), authArgs: commitAuthArgs() })
     onClose()
   }
 
@@ -746,14 +778,16 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     </div>
   ) : null
 
+  const nameLocked = isRegistrationNameLocked(editing, draft)
   const identityFields = draft ? (
     <div className="grid grid-cols-2 gap-2">
       <div>
-        <label className={labelCls}>Name</label>
+        <label className={labelCls}>Name{nameLocked && <InfoHint tip="Fixed for an additional instance: agents attach it, its tools are prefixed and its folder is kept by this name. Use the label to rename it." />}</label>
         <input
           type="text"
           value={draft.name}
-          onChange={(e) => patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') })}
+          readOnly={nameLocked}
+          onChange={(e) => { if (!nameLocked) patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') }) }}
           placeholder="e.g. my_server"
           className={inputCls}
         />
@@ -771,6 +805,16 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
         ) : (
           <input type="text" value={draft.npmPackage ?? ''} onChange={(e) => patch({ npmPackage: e.target.value })} placeholder="@scope/mcp-package" className={inputCls} />
         )}
+      </div>
+      <div className="col-span-2">
+        <label className={labelCls}>Label <span className="text-[var(--adf-ui-text-subtle)]">(optional, shown instead of the name)</span></label>
+        <input
+          type="text"
+          value={draft.label ?? ''}
+          onChange={(e) => patch({ label: e.target.value || undefined })}
+          placeholder={draft.isolatedHome ? 'e.g. Work account' : draft.name}
+          className={inputCls}
+        />
       </div>
     </div>
   ) : null
@@ -824,7 +868,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     : `Saves the server unverified; its row shows “Not verified” until a connect succeeds.${hasPendingOptionalCreds ? ' Chosen files are only stored when you connect.' : ''}`
 
   return (
-    <Dialog lightDismiss={false} open={open} onClose={onClose} title={editing ? `Configure — ${editing.name}` : externallyRemoved && draft ? `Configure — ${draft.name}` : 'Add MCP Server'} wide>
+    <Dialog lightDismiss={false} open={open} onClose={onClose} title={editing ? `Configure — ${registrationDisplayName(editing)}` : externallyRemoved && draft ? `Configure — ${registrationDisplayName(draft)}` : 'Add MCP Server'} wide>
       {mode === 'choose' && (
         <div className="space-y-3">
           <input
@@ -855,7 +899,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 return (
                   <button
                     key={entry.name}
-                    onClick={() => { const d = registrationFromRegistryEntry(entry, newId()); setDraft(d); setFilePayloads({}); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
+                    onClick={() => { const d = draftFromRegistryEntry(entry, newId(), existingServers); setDraft(d); setFilePayloads({}); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
                     className="text-left p-2.5 rounded-md border border-neutral-200 dark:border-neutral-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
                   >
                     <div className="flex items-center gap-1.5">
@@ -875,6 +919,11 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                       )}
                       {entry.oauth && (
                         <span className="text-[9px] px-1 py-0.5 bg-violet-100 dark:bg-violet-900/40 text-violet-700 dark:text-violet-300 rounded font-medium">Sign in</span>
+                      )}
+                      {isRegistryEntryRegistered(entry, existingServers) && (
+                        <Tooltip tip="Already added. Adding it again creates another instance with its own folder and sign-in, e.g. for a second account.">
+                          <span className="text-[9px] px-1 py-0.5 bg-neutral-100 dark:bg-neutral-700 text-neutral-500 dark:text-neutral-400 rounded font-medium">Added</span>
+                        </Tooltip>
                       )}
                     </div>
                     <p className="text-[10px] text-neutral-500 dark:text-neutral-400 mt-0.5 line-clamp-2">{entry.description}</p>
@@ -938,6 +987,12 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 ×
               </button>
             </div>
+          )}
+
+          {draft.isolatedHome && (
+            <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
+              Another instance of a server you already added, as <span className="font-mono">{draft.name}</span>: it runs with its own folder and sign-in, e.g. for a second account.{catalogEntry ? ' Set a label under Advanced to tell the instances apart.' : ''}
+            </p>
           )}
 
           {/* Catalog header: what this is, flags as tooltips, the setup guide one click away */}

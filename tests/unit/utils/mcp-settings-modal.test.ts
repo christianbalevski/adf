@@ -13,7 +13,7 @@ import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
 import { matchBundledMcpServer } from '../../../src/main/services/bundled-mcp-servers'
 import { buildMcpServerConfigFromRegistration } from '../../../src/shared/utils/mcp-config'
-import { availableRegistryEntries, blankDraft, bundledServerFor, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, blankDraft, isRegistryEntryRegistered, bundledServerFor, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -441,18 +441,17 @@ describe('availableRegistryEntries (quick-add offering)', () => {
     mk({ name: 'sunset', npmPackage: '@x/sunset', deprecated: 'Superseded by @x/fresh' }),
   ]
 
-  it('excludes deprecated entries and everything already registered', () => {
+  it('excludes deprecated entries but keeps already-registered ones (adding again = another instance)', () => {
     const existing = [
       reg({ name: 'a', npmPackage: '@x/installed' }),
       reg({ name: 'b', type: 'uvx', pypiPackage: 'x-installed' }),
       reg({ name: 'c', type: 'http', url: 'https://x.example/mcp' }),
     ]
-    expect(availableRegistryEntries(entries, existing).map((e) => e.name)).toEqual(['fresh'])
-  })
-
-  it('deprecated entries are excluded even with nothing installed', () => {
-    expect(availableRegistryEntries(entries, []).map((e) => e.name)).toEqual([
+    expect(availableRegistryEntries(entries).map((e) => e.name)).toEqual([
       'fresh', 'installed-npm', 'installed-py', 'installed-http',
+    ])
+    expect(entries.filter((e) => isRegistryEntryRegistered(e, existing)).map((e) => e.name)).toEqual([
+      'installed-npm', 'installed-py', 'installed-http',
     ])
   })
 

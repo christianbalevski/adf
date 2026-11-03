@@ -155,7 +155,8 @@ import { createScratchDir, removeScratchDir, purgeAllScratchDirs, scratchRootPat
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
-import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent } from '../services/mcp-oauth-store'
+import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent, instanceOAuthStore } from '../services/mcp-oauth-store'
+import { containerIsolatedHomeEnv, mcpServerContainerHome } from '../services/mcp-instance-home'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
@@ -178,7 +179,7 @@ import { resolveContainerCommand } from '../services/container-command-resolver'
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
-import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration, registrationInstanceFields } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
@@ -2016,7 +2017,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // this runner only performs the browser flow + keystore seal once approved
   // (mirrors setMcpAuthPreflight injection — Electron wiring stays in ipc).
   backgroundAgentManager.setMcpHttpOAuthSignIn(async (ctx) => {
-    const appStore = getAppOAuthStore()
+    // An additional instance of a URL signs in to its own app-level record.
+    const ctxReg = ((settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []).find((r) => r.name === ctx.serverName)
+    const appStore = instanceOAuthStore(getAppOAuthStore(), { name: ctx.serverName, ...(ctxReg ? registrationInstanceFields(ctxReg) : {}) })
     const flow = await runMcpHttpOAuthFlow(ctx.url, appStore, studioOAuthIO, {
       clientId: ctx.oauthClientId,
       scopes: ctx.oauthScopes,
@@ -3898,7 +3901,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       cfg: import('../../shared/types/adf-v02.types').McpServerConfig,
     ): Promise<void> => {
       if (!cfg.oauth || !cfg.url) return
-      const appStore = getAppOAuthStore()
+      // cfg is pinned: an additional instance of a URL has its own app-level record.
+      const appStore = instanceOAuthStore(getAppOAuthStore(), cfg)
       const agentStore = new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey)
       try {
         await captureOAuthToAgent(appStore, agentStore, cfg.url)
@@ -4145,7 +4149,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           const { isolatedContainerName } = await import('../services/podman.service')
           const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
           try { await podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
-          try { await podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
+          try { await podmanService.ensureWorkspace(containerName, mcpServerContainerHome(connCfg, containerAgentHome(isolated, freshConfig.id))) } catch { /* ignore */ }
           // Materialize keystore-held credential files into the container before spawn.
           await materializeCredentialFiles(
             { getDecrypted: (p) => capturedWorkspace.getIdentityDecrypted(p, capturedDerivedKey), hasRow: (p) => capturedWorkspace.getIdentityRow(p) !== null },
@@ -4161,8 +4165,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
                 containerName,
                 command: containerCmd.command,
                 args: containerCmd.args,
-                // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
-                env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
+                // Agent-scoped HOME first — an explicit serverCfg.env.HOME still
+                // wins, except over an additional instance's own HOME (last).
+                env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv, ...containerIsolatedHomeEnv(connCfg, containerAgentHome(isolated, freshConfig.id), connCfg.env) },
                 cwd: containerWorkspacePath(isolated, freshConfig.id),
               }),
               linkedFileReader: containerLinkedFileReader(podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
@@ -4339,7 +4344,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
                 home: containerAgentHome(isolated, freshConfig.id),
               }
               // The auth subcommand writes tokens into $HOME — make sure it exists.
-              try { await podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* wrapper-less exec may still mkdir via server */ }
+              try { await podmanService.ensureWorkspace(container.containerName, mcpServerContainerHome(connCfg, container.home!)) } catch { /* wrapper-less exec may still mkdir via server */ }
             }
             const credStore = { getDecrypted: (p: string) => capturedWorkspace.getIdentityDecrypted(p, capturedDerivedKey), hasRow: (p: string) => capturedWorkspace.getIdentityRow(p) !== null }
             // Host credential target ONLY when routing chose host — a
@@ -4582,15 +4587,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               const { isolatedContainerName } = await import('../services/podman.service')
               const containerName = isolated ? isolatedContainerName(config.name, config.id) : 'adf-mcp'
               try { await podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, config.id)) } catch { /* ignore */ }
-              try { await podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, config.id)) } catch { /* ignore */ }
+              try { await podmanService.ensureWorkspace(containerName, mcpServerContainerHome(connCfg, containerAgentHome(isolated, config.id))) } catch { /* ignore */ }
               await materializeCredentialFiles(
                 { getDecrypted: (p) => capturedWorkspace.getIdentityDecrypted(p, capturedDerivedKey), hasRow: (p) => capturedWorkspace.getIdentityRow(p) !== null },
                 connCfg,
                 containerCredentialTarget(podmanService, containerName, containerAgentHome(isolated, config.id)),
               )
               const browserEnv = await podmanService.getBrowserRuntimeEnv()
-              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
-              const transportEnv = { HOME: containerAgentHome(isolated, config.id), ...connCfg.env, ...browserEnv }
+              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still
+              // wins, except over an additional instance's own HOME (last).
+              const transportEnv = { HOME: containerAgentHome(isolated, config.id), ...connCfg.env, ...browserEnv, ...containerIsolatedHomeEnv(connCfg, containerAgentHome(isolated, config.id), connCfg.env) }
               const envKeys = Object.keys(transportEnv)
               console.log(`[MCP] Connecting "${connCfg.name}" (container ${containerName}): ${containerCmd.command} ${containerCmd.args.join(' ')}${envKeys.length ? ` [env: ${envKeys.join(', ')}]` : ''}`)
               connectOptions = {
