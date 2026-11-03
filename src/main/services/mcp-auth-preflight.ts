@@ -1,6 +1,6 @@
 import { spawn as nodeSpawn } from 'child_process'
 import { inheritableEnv } from '../utils/child-env'
-import { containerIsolatedHomeEnv, hostIsolatedHomeEnv } from './mcp-instance-home'
+import { containerIsolatedHomeEnv, hostIsolatedHomeEnv, mcpServerHostHome } from './mcp-instance-home'
 import type { ChildProcess } from 'child_process'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
@@ -225,9 +225,11 @@ export async function runMcpAuthPreflight(
   // (managed-install fast paths are not consulted here), kept for parity.
   // (Container mode below skips this entirely: the in-container command comes
   // from resolveContainerCommand at the call site.)
-  const expandHome = (p: string) => p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
+  const expandHome = (p: string, home = homedir()) => p.startsWith('~/') ? join(home, p.slice(2)) : p
   let preflightCmd = serverCfg.command ? expandHome(serverCfg.command) : 'npx'
-  let preflightArgs = (serverCfg.args ?? []).map(expandHome)
+  // `~/` in args is the server's own home (an additional instance's folder).
+  const argsHome = opts.container ? homedir() : mcpServerHostHome(serverCfg)
+  let preflightArgs = (serverCfg.args ?? []).map((a) => expandHome(a, argsHome))
 
   // For npm packages without a resolved command: a server this app ships
   // runs on Studio's own executable (bundled-mcp-servers.ts), else npx.

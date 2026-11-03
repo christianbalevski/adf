@@ -54,7 +54,7 @@ import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
-import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration, unpinnedServerConfig } from '../../shared/utils/mcp-config'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
@@ -115,6 +115,8 @@ export interface McpHttpOAuthSignInContext {
   oauthScopes?: string[]
   /** The agent-sealed store the runner seals the freshly-signed-in token into. */
   agentStore: AgentKeystoreOAuthStore
+  /** An additional instance's key (McpInstanceServerConfig): its own app-level record. */
+  isolated_home?: string
 }
 
 /**
@@ -155,6 +157,7 @@ export async function maybeGateBackgroundOAuthSignIn(params: {
   signIn?: McpHttpOAuthSignInRunner
   oauthClientId?: string
   oauthScopes?: string[]
+  isolated_home?: string
   log?: (level: 'info' | 'warn', message: string) => void
 }): Promise<void> {
   const { serverName, url, executor, agentStore, signIn } = params
@@ -173,6 +176,7 @@ export async function maybeGateBackgroundOAuthSignIn(params: {
       oauthClientId: params.oauthClientId,
       oauthScopes: params.oauthScopes,
       agentStore,
+      isolated_home: params.isolated_home,
     }),
     log: params.log,
   })
@@ -1312,7 +1316,7 @@ export class BackgroundAgentManager extends EventEmitter {
       // toggle govern Settings-managed servers past an attach-time snapshot.
       const connCfg = reg
         ? pinServerConfigToRegistration(serverCfg, reg)
-        : { ...serverCfg }
+        : unpinnedServerConfig(serverCfg, freshConfig.mcp?.servers ?? [])
 
       const appEnvKeys: string[] = []
       if (reg?.env?.length) {
@@ -1366,6 +1370,7 @@ export class BackgroundAgentManager extends EventEmitter {
             signIn: this.mcpHttpOAuthSignIn,
             oauthClientId: oauthReg?.oauthClientId,
             oauthScopes: oauthReg?.oauthScopes,
+            isolated_home: connCfg.isolated_home,
             log: (level, message) => {
               console.log(`[BackgroundAgent][MCP] ${message}`)
               try { workspace.insertLog(level, 'mcp', 'oauth_signin', connCfg.name, message) } catch { /* non-fatal */ }
@@ -1490,7 +1495,7 @@ export class BackgroundAgentManager extends EventEmitter {
         // SECURITY: pin the executable identity to the Settings registration
         // (if any) so a tampered .adf command/args can't run under auth.
         const authReg = getRegistrationsForAttach().find((r) => r.name === serverName)
-        const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
+        const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : unpinnedServerConfig(serverCfg, freshConfig.mcp?.servers ?? [])
         const resolvedEnv = resolveMcpEnvVars(cfg, (k) => workspace.getIdentityDecrypted(k, derivedKey ?? null))
         let uvBinPath: string | undefined
         if (cfg.pypi_package || cfg.command === 'uvx') {

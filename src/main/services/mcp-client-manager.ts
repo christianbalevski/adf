@@ -2,7 +2,7 @@ import { dirname, join } from 'path'
 import { homedir } from 'os'
 import { filterBlockedEnv, inheritableEnv } from '../utils/child-env'
 import { bundledMcpSpawnEnv } from './bundled-mcp-servers'
-import { hostIsolatedHomeEnv } from './mcp-instance-home'
+import { hostIsolatedHomeEnv, mcpServerHostHome } from './mcp-instance-home'
 import { createRequire } from 'module'
 import { EventEmitter } from 'events'
 import { Client } from '@modelcontextprotocol/sdk/client'
@@ -324,9 +324,11 @@ export class McpClientManager extends EventEmitter {
         })
       } else {
         // Default: spawn directly on host via StdioClientTransport
-        const expandHome = (p: string) => p.startsWith('~/') ? join(homedir(), p.slice(2)) : p
+        const expandHome = (p: string, home = homedir()) => p.startsWith('~/') ? join(home, p.slice(2)) : p
         const command = expandHome(managed.config.command!)
-        const args = managed.config.args?.map(expandHome)
+        // `~/` in args is the server's own home (an additional instance's folder).
+        const argsHome = mcpServerHostHome(managed.config)
+        const args = managed.config.args?.map((a) => expandHome(a, argsHome))
 
         // Never the runtime's own secrets (daemon token, owner passphrase): utils/child-env.ts.
         // ELECTRON_RUN_AS_NODE only for Studio's executable running a server

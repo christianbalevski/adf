@@ -116,12 +116,13 @@ export function isRegistryEntryRegistered(entry: McpRegistryEntry, existingServe
 }
 
 /**
- * Whether the Name field is read-only: an additional instance's folder and
- * credentials are keyed by its name, so it is fixed once saved (the label
- * renames it).
+ * Whether the Name field is read-only: an additional instance is numbered
+ * for you and agents attach it by that name, while its folder and sign-in
+ * are keyed by its id — renaming would only orphan agents' attachments and
+ * name-keyed credentials. The label renames it.
  */
-export function isRegistrationNameLocked(editing: McpServerRegistration | null, draft: McpServerRegistration | null): boolean {
-  return !!editing && !!draft?.isolatedHome
+export function isRegistrationNameLocked(draft: McpServerRegistration | null): boolean {
+  return !!draft?.isolatedHome
 }
 
 /**
@@ -778,20 +779,40 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     </div>
   ) : null
 
-  const nameLocked = isRegistrationNameLocked(editing, draft)
+  const nameLocked = isRegistrationNameLocked(draft)
+  const nameField = draft ? (
+    <div>
+      <label htmlFor="mcp-server-name" className={labelCls}>Name{nameLocked && <InfoHint tip="Fixed for an additional instance: agents attach it and its tools are prefixed by this name. Use the label to rename it." />}</label>
+      <input
+        id="mcp-server-name"
+        type="text"
+        value={draft.name}
+        readOnly={nameLocked}
+        onChange={(e) => { if (!nameLocked) patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') }) }}
+        placeholder="e.g. my_server"
+        className={inputCls}
+      />
+    </div>
+  ) : null
+  const labelField = draft ? (
+    <div>
+      <label htmlFor="mcp-server-label" className={labelCls}>Label <span className="text-[var(--adf-ui-text-subtle)]">(optional, shown instead of the name)</span></label>
+      <input
+        id="mcp-server-label"
+        type="text"
+        value={draft.label ?? ''}
+        onChange={(e) => patch({ label: e.target.value || undefined })}
+        placeholder={draft.isolatedHome ? 'e.g. Work account' : draft.name}
+        className={inputCls}
+      />
+    </div>
+  ) : null
+  // A catalog server's identity sits under Advanced; naming an additional
+  // instance is the point of adding it, so its Name and Label come up front.
+  const namingUpFront = !!catalogEntry && !!draft?.isolatedHome
   const identityFields = draft ? (
     <div className="grid grid-cols-2 gap-2">
-      <div>
-        <label className={labelCls}>Name{nameLocked && <InfoHint tip="Fixed for an additional instance: agents attach it, its tools are prefixed and its folder is kept by this name. Use the label to rename it." />}</label>
-        <input
-          type="text"
-          value={draft.name}
-          readOnly={nameLocked}
-          onChange={(e) => { if (!nameLocked) patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') }) }}
-          placeholder="e.g. my_server"
-          className={inputCls}
-        />
-      </div>
+      {!namingUpFront && nameField}
       <div>
         <label className={labelCls}>
           {isHttp ? 'URL' : isCustom ? 'Command' : isPython ? 'PyPI package' : 'npm package'}
@@ -806,16 +827,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           <input type="text" value={draft.npmPackage ?? ''} onChange={(e) => patch({ npmPackage: e.target.value })} placeholder="@scope/mcp-package" className={inputCls} />
         )}
       </div>
-      <div className="col-span-2">
-        <label className={labelCls}>Label <span className="text-[var(--adf-ui-text-subtle)]">(optional, shown instead of the name)</span></label>
-        <input
-          type="text"
-          value={draft.label ?? ''}
-          onChange={(e) => patch({ label: e.target.value || undefined })}
-          placeholder={draft.isolatedHome ? 'e.g. Work account' : draft.name}
-          className={inputCls}
-        />
-      </div>
+      {!namingUpFront && <div className="col-span-2">{labelField}</div>}
     </div>
   ) : null
 
@@ -991,9 +1003,10 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
 
           {draft.isolatedHome && (
             <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-              Another instance of a server you already added, as <span className="font-mono">{draft.name}</span>: it runs with its own folder and sign-in, e.g. for a second account.{catalogEntry ? ' Set a label under Advanced to tell the instances apart.' : ''}
+              Another instance of a server you already added, as <span className="font-mono">{draft.name}</span>: it runs with its own folder and sign-in, e.g. for a second account.
             </p>
           )}
+          {namingUpFront && <div className="grid grid-cols-2 gap-2">{nameField}{labelField}</div>}
 
           {/* Catalog header: what this is, flags as tooltips, the setup guide one click away */}
           {catalogEntry && (

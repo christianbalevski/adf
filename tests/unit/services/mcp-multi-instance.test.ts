@@ -5,6 +5,7 @@
 //
 // Never touches the real home: HOME (os.homedir() on POSIX) and the user data
 // dir are temp dirs for the whole file.
+import { spawnSync } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -17,7 +18,9 @@ import {
   mcpOAuthStoreKey,
   pinServerConfigToRegistration,
   registrationDisplayName,
+  registrationInstanceFields,
   sameMcpServerSource,
+  unpinnedServerConfig,
   type McpInstanceServerConfig,
 } from '../../../src/shared/utils/mcp-config'
 import {
@@ -79,7 +82,7 @@ readline.createInterface({ input: process.stdin }).on('line', (line) => {
     ] } })
   } else if (m.method === 'tools/call') {
     const name = m.params.name
-    if (name === 'whoami') text(m.id, JSON.stringify({ HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, homedir: os.homedir(), npmCache: process.env.npm_config_cache }))
+    if (name === 'whoami') text(m.id, JSON.stringify({ HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, homedir: os.homedir(), npmCache: process.env.npm_config_cache, argv: process.argv.slice(2) }))
     else if (name === 'sign_in') { fs.mkdirSync(path.dirname(tokenPath()), { recursive: true }); fs.writeFileSync(tokenPath(), m.params.arguments.account); text(m.id, 'ok') }
     else text(m.id, fs.existsSync(tokenPath()) ? fs.readFileSync(tokenPath(), 'utf8') : '')
   } else if (m.id !== undefined) {
@@ -148,6 +151,36 @@ describe('adding a registered server again', () => {
     expect(sameMcpServerSource({ type: 'custom', command: 'node', args: ['a'] }, { type: 'custom', command: 'node', args: ['b'] })).toBe(false)
   })
 
+  it('a package with different args is a different server (e.g. two filesystem roots); env is not compared', () => {
+    const fs1: McpServerRegistration = { id: 'mcp:1', name: 'fs', type: 'npm', npmPackage: '@x/fs', args: ['/a'] }
+    expect(sameMcpServerSource(fs1, { ...fs1, args: ['/b'] })).toBe(false)
+    expect(sameMcpServerSource({ type: 'uvx', pypiPackage: 'p', args: ['--db', 'a'] }, { type: 'uvx', pypiPackage: 'p', args: ['--db', 'b'] })).toBe(false)
+    expect(sameMcpServerSource(fs1, { ...fs1, env: [{ key: 'TOKEN', value: 'other' }] })).toBe(true)
+    expect(asAdditionalInstance({ ...fs1, id: 'mcp:2', args: ['/b'] }, [fs1])).toMatchObject({ name: 'fs' })
+    expect(asAdditionalInstance({ ...fs1, id: 'mcp:2', args: ['/b'] }, [fs1]).isolatedHome).toBeUndefined()
+  })
+
+  it('isolates only next to a first (not isolated) registration: the first added back after removal runs in the real home again', () => {
+    const second = fakeRegistration({ id: 'mcp:two', name: 'fake-2', isolatedHome: true })
+    const readded = asAdditionalInstance(fakeRegistration({ id: 'mcp:new' }), [second])
+    expect(readded.name).toBe('fake')
+    expect(readded.isolatedHome).toBeUndefined()
+  })
+
+  it('a new draft that no longer matches any registered server loses a stale instance flag', () => {
+    const first = fakeRegistration()
+    const draft = asAdditionalInstance(fakeRegistration({ id: 'mcp:two' }), [first])
+    expect(draft.isolatedHome).toBe(true)
+    const edited = asAdditionalInstance({ ...draft, args: ['other.js'] }, [first])
+    expect(edited).not.toHaveProperty('isolatedHome')
+    expect(edited.name).toBe('fake-2')
+  })
+
+  it('taken names compare case-insensitively (one folder on case-insensitive filesystems)', () => {
+    const first = fakeRegistration({ name: 'Fake' })
+    expect(asAdditionalInstance(fakeRegistration({ id: 'mcp:two', name: 'fake' }), [first]).name).toBe('fake-2')
+  })
+
   it('a catalog card for a registered entry starts an additional instance', () => {
     const entry: McpRegistryEntry = { name: 'fakecat', displayName: 'Fake', description: 'd', category: 'tools', requiredEnvKeys: [], verified: false, npmPackage: '@x/fakecat' }
     const fresh = draftFromRegistryEntry(entry, 'mcp:a', [])
@@ -163,11 +196,12 @@ describe('adding a registered server again', () => {
     expect(third.name).toBe('fakecat-3')
   })
 
-  it('the name is read-only once an additional instance is saved; a first registration stays editable', () => {
+  it('the name is read-only for any additional instance, saved or still being added; a first registration stays editable', () => {
     const saved = fakeRegistration({ id: 'mcp:two', name: 'fake-2', isolatedHome: true })
-    expect(isRegistrationNameLocked(saved, saved)).toBe(true)
-    expect(isRegistrationNameLocked(null, saved)).toBe(false) // still being added
-    expect(isRegistrationNameLocked(fakeRegistration(), fakeRegistration())).toBe(false)
+    expect(isRegistrationNameLocked(saved)).toBe(true)
+    expect(isRegistrationNameLocked(asAdditionalInstance(fakeRegistration({ id: 'mcp:new' }), [fakeRegistration()]))).toBe(true)
+    expect(isRegistrationNameLocked(fakeRegistration())).toBe(false)
+    expect(isRegistrationNameLocked(null)).toBe(false)
   })
 
   it('removing one instance keeps the package the other still runs from', () => {
@@ -194,7 +228,8 @@ describe('the ADF format is unchanged', () => {
     // .adf-supplied marker is ignored: the registration decides.
     const tampered = { ...persisted, isolated_home: true } as McpServerConfig
     expect((pinServerConfigToRegistration(tampered, fakeRegistration()) as McpInstanceServerConfig).isolated_home).toBeUndefined()
-    expect(pinServerConfigToRegistration(persisted, reg).isolated_home).toBe(true)
+    // The runtime-only marker carries the registration id (one path segment), not the name.
+    expect(pinServerConfigToRegistration(persisted, reg).isolated_home).toBe('mcp_two')
   })
 })
 
@@ -217,7 +252,7 @@ describe('two instances of one stdio server on the host (real spawn)', () => {
     expect(await manager.connect(pinServerConfigToRegistration(buildMcpServerConfigFromRegistration(firstReg), firstReg))).toHaveLength(3)
     expect(await manager.connect(pinServerConfigToRegistration(adfSecond, secondReg))).toHaveLength(3)
 
-    const instanceHome = join(userData, 'mcp-instances', 'fake-2')
+    const instanceHome = join(userData, 'mcp-instances', 'mcp_two')
     const one = JSON.parse(await call('fake', 'whoami'))
     const two = JSON.parse(await call('fake-2', 'whoami'))
     expect(one.homedir).toBe(realHome)
@@ -249,7 +284,7 @@ describe('two instances of one stdio server on the host (real spawn)', () => {
       onLog: () => {},
     })
     expect(result).toMatchObject({ success: true, location: 'host' })
-    expect(readFileSync(join(userData, 'mcp-instances', 'fake-3', '.fake-mcp', 'token'), 'utf8')).toBe('third@example.com')
+    expect(readFileSync(join(userData, 'mcp-instances', 'mcp_three', '.fake-mcp', 'token'), 'utf8')).toBe('third@example.com')
     expect(readFileSync(join(realHome, '.fake-mcp', 'token'), 'utf8')).toBe('first@example.com')
   }, 60_000)
 
@@ -261,29 +296,76 @@ describe('two instances of one stdio server on the host (real spawn)', () => {
   })
 
   it('the override never sets a blocked variable and keeps a cache the env already names', () => {
-    const cfg = { name: 'fake-2', isolated_home: true }
-    const env = hostIsolatedHomeEnv(cfg, { NPM_CONFIG_CACHE: '/c' })
-    expect(Object.keys(env).sort()).toEqual(['HOME', 'USERPROFILE'])
-    expect(Object.keys(hostIsolatedHomeEnv(cfg, {})).every((k) => ['HOME', 'USERPROFILE', 'npm_config_cache'].includes(k))).toBe(true)
+    const cfg = { name: 'fake-2', isolated_home: 'fake-2' }
+    const env = hostIsolatedHomeEnv(cfg, { NPM_CONFIG_CACHE: '/c', NPM_CONFIG_USERCONFIG: '/u', UV_CACHE_DIR: '/v', BROWSER: 'mine' })
+    const shimVars = process.platform === 'linux' ? ['ADF_REAL_HOME', 'PATH'] : []
+    expect(Object.keys(env).sort()).toEqual(['HOME', 'USERPROFILE', ...shimVars].sort())
+    const allowed = ['HOME', 'USERPROFILE', 'npm_config_cache', 'npm_config_userconfig', 'UV_CACHE_DIR', 'ADF_REAL_HOME', 'PATH', 'BROWSER']
+    expect(Object.keys(hostIsolatedHomeEnv(cfg, {})).every((k) => allowed.includes(k))).toBe(true)
   })
 
-  it('refuses a name that is not one plain path segment', () => {
-    expect(() => hostMcpInstanceHome('../escape')).toThrow(/cannot name an instance folder/)
-    expect(() => mcpServerContainerHome({ name: 'a/b', isolated_home: true }, '/h')).toThrow(/cannot name an instance folder/)
+  it('points ~/.npmrc and the uv cache back at the real ones unless the env names them', () => {
+    const cfg = { name: 'fake-2', isolated_home: 'fake-2' }
+    const env = hostIsolatedHomeEnv(cfg, {})
+    expect(env.npm_config_userconfig).toBe(join(realHome, '.npmrc'))
+    if (process.platform !== 'win32') expect(env.UV_CACHE_DIR).toBe(join(realHome, '.cache', 'uv'))
+    // uv follows an explicit XDG_CACHE_HOME by itself (outside HOME): left alone.
+    expect(hostIsolatedHomeEnv(cfg, { XDG_CACHE_HOME: '/xdg' })).not.toHaveProperty('UV_CACHE_DIR')
+    expect(hostIsolatedHomeEnv(cfg, { npm_config_userconfig: '/u' })).not.toHaveProperty('npm_config_userconfig')
+    // The container keeps its own npm cache only.
+    expect(Object.keys(containerIsolatedHomeEnv(cfg, '/h', {})).sort()).toEqual(['HOME', 'USERPROFILE', 'npm_config_cache'])
+  })
+
+  it('expands ~/ in args against the instance home (the command keeps the real home)', async () => {
+    manager = new McpClientManager(root)
+    await manager.connect({ name: 'fake-args', transport: 'stdio', command: process.execPath, args: [serverScript, '~/data'], isolated_home: 'fake-args' } as McpInstanceServerConfig)
+    const r = await manager.callTool('fake-args', 'whoami', {})
+    expect(JSON.parse(r.content).argv).toEqual([join(userData, 'mcp-instances', 'fake-args', 'data')])
+  }, 60_000)
+
+  it('refuses an instance key that is not one plain, portable path segment', () => {
+    expect(() => hostMcpInstanceHome('../escape')).toThrow(/cannot name an MCP instance folder/)
+    expect(() => mcpServerContainerHome({ name: 'a/b', isolated_home: 'a/b' }, '/h')).toThrow(/cannot name an MCP instance folder/)
+    for (const reserved of ['con', 'NUL', 'Aux', 'prn', 'com1', 'LPT9']) {
+      expect(() => hostMcpInstanceHome(reserved)).toThrow(/reserved device name/)
+    }
+    expect(hostMcpInstanceHome('console')).toBe(join(userData, 'mcp-instances', 'console'))
+  })
+
+  it.skipIf(process.platform !== 'linux')('Linux: a browser the server opens itself gets the real HOME (xdg-open shim)', () => {
+    const bin = join(root, 'fake-xdg-bin')
+    const out = join(root, 'xdg-open.log')
+    mkdirSync(bin, { recursive: true })
+    writeFileSync(join(bin, 'xdg-open'), `#!/bin/sh\necho "HOME=$HOME BROWSER=\${BROWSER-unset} URL=$1" >> ${JSON.stringify(out)}\n`)
+    chmodSync(join(bin, 'xdg-open'), 0o755)
+    const base = { PATH: `${bin}:/usr/bin:/bin` }
+    const env = { ...base, ...hostIsolatedHomeEnv({ name: 'fake-2', isolated_home: 'fake-2' }, base) }
+    expect(env.HOME).toBe(join(userData, 'mcp-instances', 'fake-2'))
+    // Via $BROWSER (Python webbrowser and others) and via xdg-open by name on PATH.
+    expect(spawnSync(env.BROWSER, ['https://a.example/'], { env, windowsHide: true }).status).toBe(0)
+    expect(spawnSync('xdg-open', ['https://b.example/'], { env, windowsHide: true }).status).toBe(0)
+    expect(readFileSync(out, 'utf8').trim().split('\n')).toEqual([
+      `HOME=${realHome} BROWSER=unset URL=https://a.example/`,
+      `HOME=${realHome} BROWSER=unset URL=https://b.example/`,
+    ])
   })
 })
 
 describe('auth preflight spawn env', () => {
-  const recordEnv = (out: string) => `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify(process.env)); process.exit(0)`
+  const recordEnv = (out: string) => `require('fs').writeFileSync(${JSON.stringify(out)}, JSON.stringify({ ...process.env, ARGV: process.argv.slice(1) })); process.exit(0)`
   const io = { openUrl: () => {}, log: () => {} }
 
   it('host: an additional instance authorizes in its own home, config env cannot move it; a normal server keeps the real home', async () => {
     const out = join(root, 'preflight-env.json')
-    const cfg: McpInstanceServerConfig = { name: 'fake-2', transport: 'stdio', command: process.execPath, args: ['-e', recordEnv(out)], env: { HOME: realHome }, isolated_home: true }
+    const cfg: McpInstanceServerConfig = { name: 'fake-2', transport: 'stdio', command: process.execPath, args: ['-e', recordEnv(out), '~/arg'], env: { HOME: realHome }, isolated_home: 'fake-2' }
     await runMcpAuthPreflight(cfg, {}, io)
     const env = JSON.parse(readFileSync(out, 'utf8'))
     expect(env.HOME).toBe(join(userData, 'mcp-instances', 'fake-2'))
     expect(env.USERPROFILE).toBe(env.HOME)
+    // ~/ in args is the instance home here too; ~/.npmrc is never the instance's.
+    expect(env.ARGV).toEqual([join(userData, 'mcp-instances', 'fake-2', 'arg')])
+    expect(env.npm_config_userconfig).toBeTruthy()
+    expect(env.npm_config_userconfig).not.toContain('mcp-instances')
 
     const { isolated_home: _drop, ...normal } = cfg
     void _drop
@@ -297,7 +379,7 @@ describe('auth preflight spawn env', () => {
     // podman exec -i --env-file <file> ... : $4 is the env file.
     writeFileSync(fakePodman, `#!/bin/sh\ncp "$4" ${JSON.stringify(out)}\n`)
     chmodSync(fakePodman, 0o755)
-    const cfg: McpInstanceServerConfig = { name: 'fake-2', transport: 'stdio', env: { HOME: '/elsewhere' }, isolated_home: true }
+    const cfg: McpInstanceServerConfig = { name: 'fake-2', transport: 'stdio', env: { HOME: '/elsewhere' }, isolated_home: 'fake-2' }
     await runMcpAuthPreflight(cfg, { container: { podmanBin: fakePodman, containerName: 'adf-mcp', command: 'node', args: ['s.js'], home: '/workspace/a/home' } }, io)
     const lines = readFileSync(out, 'utf8').trim().split('\n')
     // podman: later lines win.
@@ -309,7 +391,7 @@ describe('auth preflight spawn env', () => {
 
 describe('credential stores are per instance', () => {
   const pkgFirst: McpServerConfig = { name: 'fake', transport: 'stdio', npm_package: '@x/fake', credential_files: [{ path: TOKEN_PATH }] }
-  const pkgSecond: McpInstanceServerConfig = { ...pkgFirst, name: 'fake-2', isolated_home: true }
+  const pkgSecond: McpInstanceServerConfig = { ...pkgFirst, name: 'fake-2', isolated_home: 'fake-2' }
 
   it('keystore purposes: the first keeps package-then-name, an instance uses its name only', () => {
     expect(credentialFilePurposes(pkgFirst, TOKEN_PATH)).toEqual(['mcp:@x/fake:file:~/.fake-mcp/token', 'mcp:fake:file:~/.fake-mcp/token'])
@@ -335,7 +417,7 @@ describe('credential stores are per instance', () => {
 
     // An instance with nothing sealed starts empty — it does not inherit the first's grant.
     const fresh = memStore({ 'mcp:@x/fake:file:~/.fake-mcp/token': record('first-sealed') })
-    await materializeCredentialFiles(fresh, { ...pkgSecond, name: 'fake-4' }, { kind: 'host' })
+    await materializeCredentialFiles(fresh, { ...pkgSecond, name: 'fake-4', isolated_home: 'fake-4' }, { kind: 'host' })
     expect(existsSync(join(userData, 'mcp-instances', 'fake-4', '.fake-mcp', 'token'))).toBe(false)
   })
 
@@ -381,7 +463,7 @@ describe('the Gmail built-in OAuth client follows the instance home (no Gmail-sp
     mkdirSync(join(realToken, '..'), { recursive: true })
     writeFileSync(realToken, '{"refresh_token":"first"}')
     const cfg: McpInstanceServerConfig = {
-      name: 'gmail-2', transport: 'stdio', npm_package: GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, isolated_home: true,
+      name: 'gmail-2', transport: 'stdio', npm_package: GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, isolated_home: 'gmail-2',
       credential_files: [{ path: GMAIL_BUNDLED_CLIENT_PATH, required: true }, { path: GMAIL_BUNDLED_TOKEN_PATH }],
     }
     await materializeCredentialFiles(memStore(), cfg, { kind: 'host' })
@@ -409,8 +491,7 @@ describe('HTTP OAuth: two registrations of one URL keep separate tokens', () => 
   it('each instance reads, writes and signs out of its own record', async () => {
     const app = new AppSettingsOAuthStore(settingsHandle())
     const first = instanceOAuthStore(app, { name: 'remote' })
-    const second = instanceOAuthStore(app, { name: 'remote-2', isolated_home: true })
-    expect(first).toBe(app)
+    const second = instanceOAuthStore(app, { name: 'remote-2', isolated_home: 'mcp_r2' })
     const tokens = (t: string) => ({ access_token: t, token_type: 'Bearer' })
     await first.save(URL_, { tokens: tokens('first'), serverUrl: URL_, updatedAt: 1 })
     await second.save(URL_, { tokens: tokens('second'), serverUrl: URL_, updatedAt: 2 })
@@ -419,7 +500,7 @@ describe('HTTP OAuth: two registrations of one URL keep separate tokens', () => 
     expect((await second.get(URL_))?.tokens?.access_token).toBe('second')
 
     // Settings status / sign-out address a row by mcpOAuthStoreKey.
-    const key2 = mcpOAuthStoreKey(URL_, { name: 'remote-2', isolatedHome: true })
+    const key2 = mcpOAuthStoreKey(URL_, { id: 'mcp:r2', name: 'remote-2', isolatedHome: true })
     expect(key2).not.toBe(URL_)
     expect(mcpOAuthStoreKey(URL_, { name: 'remote' })).toBe(URL_)
     expect(await mcpOAuthStatus(app, { url: key2 })).toEqual({ signedIn: true })
@@ -457,11 +538,19 @@ describe('mcp_install picks the right instance', () => {
     }, ws as unknown as AdfWorkspace)
     const content = JSON.parse(result.content)
     expect(content).toMatchObject({ success: true, name: 'fake-2', attached_existing: true })
-    expect(content.message).toContain('"fake-2" (Work)')
+    expect(content.message).toContain('"fake-2"')
     expect(config.mcp.servers.map((s: McpServerConfig) => s.name)).toEqual(['fake-2'])
     expect(config.mcp.servers[0]).not.toHaveProperty('isolated_home')
     expect(connect).toHaveBeenCalledWith('fake-2', expect.anything())
     expect(ws.setIdentitySealed).toHaveBeenCalledWith('mcp:fake-2:file:~/.fake-mcp/token', expect.any(String))
+  })
+
+  it('package only prefers an instance that is available to agents', async () => {
+    const { config, ws } = workspace()
+    const onlySecondVisible = [{ ...regs[0], agentVisible: false }, regs[1]]
+    const result = await new McpInstallTool(vi.fn().mockResolvedValue({ toolsDiscovered: 1 }), () => onlySecondVisible).execute({ package: '@x/fake', type: 'npm' }, ws as unknown as AdfWorkspace)
+    expect(JSON.parse(result.content)).toMatchObject({ success: true, name: 'fake-2', attached_existing: true })
+    expect(config.mcp.servers.map((s: McpServerConfig) => s.name)).toEqual(['fake-2'])
   })
 
   it('package only still attaches the first', async () => {
@@ -469,5 +558,116 @@ describe('mcp_install picks the right instance', () => {
     const result = await new McpInstallTool(vi.fn().mockResolvedValue({ toolsDiscovered: 1 }), () => regs).execute({ package: '@x/fake', type: 'npm' }, ws as unknown as AdfWorkspace)
     expect(JSON.parse(result.content)).toMatchObject({ success: true, name: 'fake', attached_existing: true })
     expect(config.mcp.servers.map((s: McpServerConfig) => s.name)).toEqual(['fake'])
+  })
+})
+
+describe('rename and re-add never reach an old account (folder and OAuth record keyed by registration id)', () => {
+  const URL_ = 'https://remote.example/mcp'
+
+  it('renaming keeps the folder and record; re-adding under a reused name gets fresh ones', () => {
+    const second = fakeRegistration({ id: 'mcp:two', name: 'fake-2', isolatedHome: true })
+    const home = hostIsolatedHomeEnv(pinServerConfigToRegistration(buildMcpServerConfigFromRegistration(second), second)).HOME
+    expect(home).toBe(join(userData, 'mcp-instances', 'mcp_two'))
+
+    // Renamed (settings edit): same id, same folder and OAuth record.
+    const renamed = { ...second, name: 'fake-work' }
+    expect(hostIsolatedHomeEnv(pinServerConfigToRegistration(buildMcpServerConfigFromRegistration(renamed), renamed)).HOME).toBe(home)
+    expect(mcpOAuthStoreKey(URL_, renamed)).toBe(mcpOAuthStoreKey(URL_, second))
+
+    // Removed, then added again: numbered fake-2 again, but a new id.
+    const first = fakeRegistration()
+    const readded = asAdditionalInstance(fakeRegistration({ id: 'mcp:fresh' }), [first])
+    expect(readded.name).toBe('fake-2')
+    expect(registrationInstanceFields(readded)).toEqual({ isolated_home: 'mcp_fresh' })
+    expect(hostIsolatedHomeEnv(pinServerConfigToRegistration(buildMcpServerConfigFromRegistration(readded), readded)).HOME).not.toBe(home)
+    expect(mcpOAuthStoreKey(URL_, readded)).not.toBe(mcpOAuthStoreKey(URL_, second))
+  })
+
+  it('Settings status/sign-out and the runtime address the same OAuth record', () => {
+    const reg: McpServerRegistration = { id: 'mcp:r2', name: 'remote-2', type: 'http', url: URL_, oauth: true, isolatedHome: true }
+    const pinned = pinServerConfigToRegistration(buildMcpServerConfigFromRegistration(reg), reg)
+    expect(mcpOAuthStoreKey(URL_, pinned)).toBe(mcpOAuthStoreKey(URL_, reg))
+    expect(mcpOAuthStoreKey(URL_, reg)).toBe(`${URL_}#adf-instance=mcp_r2`)
+  })
+
+  it('the agent keystore stays keyed by the server name', () => {
+    const reg = fakeRegistration({ id: 'mcp:two', name: 'fake-2', isolatedHome: true, credentialFiles: [{ path: TOKEN_PATH }] })
+    const pinned = pinServerConfigToRegistration(buildMcpServerConfigFromRegistration(reg), reg)
+    expect(credentialFilePurposes(pinned, TOKEN_PATH)).toEqual(['mcp:fake-2:file:~/.fake-mcp/token'])
+  })
+})
+
+describe('an instance with no registration on this runtime does not fall back to the first account', () => {
+  const first: McpServerConfig = { name: 'fake', transport: 'stdio', npm_package: '@x/fake', env_keys: ['API_KEY'], credential_files: [{ path: TOKEN_PATH }] }
+  const second: McpServerConfig = { ...first, name: 'fake-9' }
+
+  it('an unregistered duplicate of an earlier entry is isolated by its name; the earlier one and unrelated servers are not', () => {
+    const servers = [first, second]
+    expect(unpinnedServerConfig(first, servers)).not.toHaveProperty('isolated_home')
+    const cfg = unpinnedServerConfig(second, servers)
+    expect(cfg.isolated_home).toBe('fake-9')
+    expect(unpinnedServerConfig({ ...second, args: ['/other'] }, [first, { ...second, args: ['/other'] }])).not.toHaveProperty('isolated_home')
+    // A marker written into the .adf is never trusted.
+    const forged = { ...first, isolated_home: '../x' } as McpServerConfig
+    expect(unpinnedServerConfig(forged, [forged])).not.toHaveProperty('isolated_home')
+  })
+
+  it('its home, credential files and env credentials are its own; the package rows stay untouched', async () => {
+    const cfg = unpinnedServerConfig(second, [first, second])
+    expect(hostIsolatedHomeEnv(cfg).HOME).toBe(join(userData, 'mcp-instances', 'fake-9'))
+    expect(credentialFilePurposes(cfg, TOKEN_PATH)).toEqual(['mcp:fake-9:file:~/.fake-mcp/token'])
+    const rows: Record<string, string> = { 'mcp:@x/fake:API_KEY': 'ACCOUNT1', 'mcp:fake-9:API_KEY': 'ACCOUNT2' }
+    expect(resolveMcpEnvVars(cfg, (k) => rows[k] ?? null)).toEqual({ API_KEY: 'ACCOUNT2' })
+
+    const store = memStore({ 'mcp:@x/fake:file:~/.fake-mcp/token': record('account1') })
+    await materializeCredentialFiles(store, cfg, { kind: 'host' })
+    const instanceFile = join(userData, 'mcp-instances', 'fake-9', '.fake-mcp', 'token')
+    expect(existsSync(instanceFile)).toBe(false)
+    mkdirSync(join(instanceFile, '..'), { recursive: true })
+    writeFileSync(instanceFile, 'account2')
+    await writeBackCredentialFiles(store, cfg, { kind: 'host' }, 'now')
+    expect(JSON.parse(store.rows['mcp:@x/fake:file:~/.fake-mcp/token']).data).toBe(Buffer.from('account1').toString('base64'))
+    expect(JSON.parse(store.rows['mcp:fake-9:file:~/.fake-mcp/token']).data).toBe(Buffer.from('account2').toString('base64'))
+  })
+
+  it('a remote duplicate gets its own app OAuth record, so capture and sign-in never touch the first account', async () => {
+    const URL_ = 'https://remote.example/mcp'
+    const a: McpServerConfig = { name: 'remote', transport: 'http', url: URL_, oauth: true }
+    const b: McpServerConfig = { ...a, name: 'remote-2' }
+    const secrets = new Map<string, string>()
+    const app = new AppSettingsOAuthStore({
+      getSecret: (k: string) => secrets.get(k) ?? null,
+      secretStatus: (k: string) => (secrets.has(k) ? 'ok' as const : 'absent' as const),
+      setSecret: (k: string, v: string) => { secrets.set(k, v) },
+      delete: (k: string) => { secrets.delete(k) },
+      secretWriteRefusal: () => null,
+    })
+    await app.save(URL_, { tokens: { access_token: 'account1', token_type: 'Bearer' }, serverUrl: URL_, updatedAt: 1 })
+    const store = instanceOAuthStore(app, unpinnedServerConfig(b, [a, b]))
+    expect(await store.get(URL_)).toBeUndefined()
+    await store.save(URL_, { tokens: { access_token: 'account2', token_type: 'Bearer' }, serverUrl: URL_, updatedAt: 2 })
+    expect((await app.get(URL_))?.tokens?.access_token).toBe('account1')
+  })
+})
+
+describe('a URL fragment in a config cannot name another instance\'s OAuth record', () => {
+  it('drops the fragment before keying', async () => {
+    const URL_ = 'https://remote.example/mcp'
+    const forgedUrl = `${URL_}#adf-instance=mcp_r2`
+    expect(mcpOAuthStoreKey(forgedUrl, { name: 'zzz' })).toBe(URL_)
+    expect(mcpOAuthStoreKey(forgedUrl, { name: 'zzz', isolated_home: 'zzz' })).toBe(`${URL_}#adf-instance=zzz`)
+
+    const secrets = new Map<string, string>()
+    const app = new AppSettingsOAuthStore({
+      getSecret: (k: string) => secrets.get(k) ?? null,
+      secretStatus: (k: string) => (secrets.has(k) ? 'ok' as const : 'absent' as const),
+      setSecret: (k: string, v: string) => { secrets.set(k, v) },
+      delete: (k: string) => { secrets.delete(k) },
+      secretWriteRefusal: () => null,
+    })
+    await instanceOAuthStore(app, { name: 'remote-2', isolated_home: 'mcp_r2' }).save(URL_, { tokens: { access_token: 'instance', token_type: 'Bearer' }, serverUrl: URL_, updatedAt: 1 })
+    expect(await instanceOAuthStore(app, { name: 'zzz', url: forgedUrl }).get(forgedUrl)).toBeUndefined()
+    // A normal server is handed the store itself.
+    expect(instanceOAuthStore(app, { name: 'remote', url: URL_ })).toBe(app)
   })
 })

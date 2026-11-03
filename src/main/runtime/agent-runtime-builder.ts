@@ -50,7 +50,7 @@ import { shouldContainerize, shouldIsolate, isServerForceShared, hostDenialReaso
 import { resolveContainerCommand } from '../services/container-command-resolver'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
-import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration, unpinnedServerConfig } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import type { AdapterRegistration, ChannelAdapter, CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
@@ -706,7 +706,7 @@ export class AgentRuntimeBuilder {
       // snapshot predates a location change.
       const connCfg = registration
         ? pinServerConfigToRegistration(serverCfg, registration)
-        : { ...serverCfg }
+        : unpinnedServerConfig(serverCfg, freshConfig.mcp?.servers ?? [])
 
       const appEnvKeys: string[] = []
       if (registration?.env?.length) {
@@ -969,7 +969,7 @@ export class AgentRuntimeBuilder {
         // SECURITY: pin the executable identity to the Settings registration
         // (if any) so a tampered .adf command/args can't run under auth.
         const authReg = this.getMcpRegistrations().find(r => r.name === serverName)
-        const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
+        const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : unpinnedServerConfig(serverCfg, freshConfig.mcp?.servers ?? [])
         const resolvedEnv = resolveMcpEnvVars(cfg, key => workspace.getIdentityDecrypted(key, keyRef.current))
         let uvBinPath: string | undefined
         if (cfg.pypi_package || cfg.command === 'uvx') {

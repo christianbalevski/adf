@@ -179,7 +179,7 @@ import { resolveContainerCommand } from '../services/container-command-resolver'
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
-import { pinServerConfigToRegistration, registrationInstanceFields } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration, unpinnedServerConfig } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
@@ -2018,8 +2018,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // (mirrors setMcpAuthPreflight injection — Electron wiring stays in ipc).
   backgroundAgentManager.setMcpHttpOAuthSignIn(async (ctx) => {
     // An additional instance of a URL signs in to its own app-level record.
-    const ctxReg = ((settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []).find((r) => r.name === ctx.serverName)
-    const appStore = instanceOAuthStore(getAppOAuthStore(), { name: ctx.serverName, ...(ctxReg ? registrationInstanceFields(ctxReg) : {}) })
+    const appStore = instanceOAuthStore(getAppOAuthStore(), { name: ctx.serverName, url: ctx.url, isolated_home: ctx.isolated_home })
     const flow = await runMcpHttpOAuthFlow(ctx.url, appStore, studioOAuthIO, {
       clientId: ctx.oauthClientId,
       scopes: ctx.oauthScopes,
@@ -3898,10 +3897,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Never fatal: a locked keystore is logged, not thrown, so the surrounding
     // connect path is unaffected.
     const captureAttachedOAuthToken = async (
-      cfg: import('../../shared/types/adf-v02.types').McpServerConfig,
+      cfg: import('../../shared/utils/mcp-config').McpInstanceServerConfig,
     ): Promise<void> => {
       if (!cfg.oauth || !cfg.url) return
-      // cfg is pinned: an additional instance of a URL has its own app-level record.
+      // cfg is the spawn config: an additional instance of a URL has its own app-level record.
       const appStore = instanceOAuthStore(getAppOAuthStore(), cfg)
       const agentStore = new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey)
       try {
@@ -4095,7 +4094,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       // toggle govern Settings-managed servers past an attach-time snapshot.
       const connCfg = reg
         ? pinServerConfigToRegistration(serverCfg, reg)
-        : { ...serverCfg }
+        : unpinnedServerConfig(serverCfg, freshConfig.mcp?.servers ?? [])
 
       const appEnvKeys: string[] = []
       if (reg?.env?.length) {
@@ -4302,7 +4301,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           // (if any) so a tampered .adf command/args can't run under auth or
           // hot-load. The .adf's agent-scoped env values still apply.
           const hotReg = ((settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []).find((r) => r.name === serverName)
-          const connCfg = hotReg ? pinServerConfigToRegistration(serverCfg, hotReg) : { ...serverCfg }
+          const connCfg = hotReg ? pinServerConfigToRegistration(serverCfg, hotReg) : unpinnedServerConfig(serverCfg, freshConfig.mcp?.servers ?? [])
 
           // Resolve uv binary path for pypi packages
           let uvBinPath: string | undefined
@@ -4440,7 +4439,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const mcpOAuthProviderFactory = buildOAuthProviderFactory((cfg) =>
       resolveOAuthStoreForConnect({
         agentStore: new AgentKeystoreOAuthStore(capturedWorkspace, cfg.name, capturedDerivedKey),
-        appStore: getAppOAuthStore(),
+        appStore: instanceOAuthStore(getAppOAuthStore(), cfg),
       }),
     )
     const mcpManager = new McpClientManager(newScratchDir, mcpOAuthProviderFactory)
@@ -4546,7 +4545,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
             const reg = mcpRegistrations.find((r) => r.name === serverCfg.name)
             const connCfg = reg
               ? pinServerConfigToRegistration(serverCfg, reg)
-              : { ...serverCfg }
+              : unpinnedServerConfig(serverCfg, config.mcp?.servers ?? [])
 
             // Merge app-wide credentials from Settings registration (env key/value pairs)
             const appEnvKeys: string[] = []
