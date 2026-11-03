@@ -98,17 +98,18 @@ export class McpInstallTool implements Tool {
   /**
    * Find the Settings registration this install request matches, if any. An
    * explicit `name` wins: with several instances of one package registered,
-   * the package alone matches the first of them.
+   * the package alone matches the first of them available to agents.
    */
   private findMatchingRegistration(parsed: z.infer<typeof InputSchema>, derivedName: string): McpServerRegistration | undefined {
     const regs = this.getRegistrations?.() ?? []
     const named = parsed.name ? regs.find((r) => r.name === parsed.name) : undefined
     if (named) return named
-    return regs.find((r) => r.name && (
+    const matches = (r: McpServerRegistration): boolean => !!r.name && (
       (parsed.package !== undefined && (r.npmPackage === parsed.package || r.pypiPackage === parsed.package)) ||
       (parsed.url !== undefined && r.url === parsed.url) ||
       r.name === derivedName
-    ))
+    )
+    return regs.find((r) => matches(r) && isRegistrationAgentVisible(r)) ?? regs.find(matches)
   }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
@@ -147,7 +148,7 @@ export class McpInstallTool implements Tool {
     if (attachReg && !isRegistrationAgentVisible(attachReg)) {
       return { content: JSON.stringify({
         success: false,
-        error: `"${attachReg.name}"${attachReg.label?.trim() ? ` (${attachReg.label.trim()})` : ''} is registered in ADF Studio Settings but not made available to agents — ` +
+        error: `"${attachReg.name}" is registered in ADF Studio Settings but not made available to agents — ` +
           'ask your principal to enable "Available to agents" on it (Settings → MCP Servers), then retry. ' +
           'Installing a separate copy would duplicate the user\'s configured server without its credentials.',
       }), isError: true }
@@ -155,10 +156,6 @@ export class McpInstallTool implements Tool {
     if (attachReg) serverName = attachReg.name
     // An additional instance seals its credential files under its own name.
     const instance = attachReg ? registrationInstanceFields(attachReg) : {}
-    // How the agent sees an attached server: `name`, plus the user's label.
-    const shownName = attachReg?.label?.trim() && attachReg.label.trim() !== serverName
-      ? `"${serverName}" (${attachReg.label.trim()})`
-      : `"${serverName}"`
 
     // The visible browser is per-agent by design. Installing its MCP server
     // therefore opts the agent into an isolated browser-enabled container so
@@ -483,9 +480,9 @@ export class McpInstallTool implements Tool {
         ...(discoveredTools === 0 && outcome?.stderrTail?.length ? { stderr_tail: outcome.stderrTail } : {}),
         message: discoveredTools > 0
           ? attachReg
-            ? `Attached existing server ${shownName} configured in ADF Studio Settings (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
+            ? `Attached existing server "${serverName}" configured in ADF Studio Settings (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
             : `Server "${serverName}" installed (${location}). ${discoveredTools} tools discovered, enabled, and protected by human approval.`
-          : `Server ${shownName} ${attachReg ? 'attached from Settings' : 'configured'} (${location}) but no tools discovered. ${failureDetail || 'The server may need correct args, credentials, or a restart to connect.'}`,
+          : `Server "${serverName}" ${attachReg ? 'attached from Settings' : 'configured'} (${location}) but no tools discovered. ${failureDetail || 'The server may need correct args, credentials, or a restart to connect.'}`,
       }),
       isError: false,
     }
