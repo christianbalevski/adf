@@ -23926,14 +23926,6 @@
                     "integer",
                     "null"
                   ]
-                },
-                "label": {
-                  "type": "string",
-                  "description": "User-set display name (the name stays the server's id)"
-                },
-                "isolatedHome": {
-                  "type": "boolean",
-                  "description": "An additional instance of an already-registered server: runs with its own home folder and name-keyed credentials"
                 }
               }
             }

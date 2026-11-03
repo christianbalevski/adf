@@ -7258,9 +7258,7 @@ Example 200 (`application/json`):
         }
       ],
       "bearerTokenEnvVar": "string",
-      "toolCallTimeout": 0,
-      "label": "string",
-      "isolatedHome": true
+      "toolCallTimeout": 0
     }
   ]
 }
@@ -10886,9 +10884,7 @@ Example 200 (`application/json`):
           }
         ],
         "bearerTokenEnvVar": "string",
-        "toolCallTimeout": 0,
-        "label": "string",
-        "isolatedHome": true
+        "toolCallTimeout": 0
       }
     ]
   },
@@ -20574,8 +20570,6 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | `servers[].headerEnv[].env` | string | yes |  |
 | `servers[].bearerTokenEnvVar` | string \| null | yes |  |
 | `servers[].toolCallTimeout` | integer \| null | yes |  |
-| `servers[].label` | string |  | User-set display name (the name stays the server's id) |
-| `servers[].isolatedHome` | boolean |  | An additional instance of an already-registered server: runs with its own home folder and name-keyed credentials |
 
 <a id="schema-mcprestartresponse"></a>
 
