@@ -181,12 +181,25 @@ describe('host fallback', () => {
       expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
     })
 
-    it('an existing host client is still never replaced', async () => {
+    it('another client on the host: neither file is replaced, the host sign-in is kept (either order)', async () => {
+      vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+      for (const cfg of [gmailServer(), reversed()]) {
+        mkdirSync(join(home, '.gmail-mcp'), { recursive: true })
+        writeFileSync(join(home, KEYS_REL), 'own-client')
+        writeFileSync(join(home, TOKENS_REL), 'own-tokens')
+        await materializeCredentialFiles(tokensOnly, cfg, { kind: 'host', home })
+        expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe('own-client')
+        expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('own-tokens')
+      }
+    })
+
+    it('the built-in client already on the host: the sealed tokens are written', async () => {
       vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
       mkdirSync(join(home, '.gmail-mcp'))
-      writeFileSync(join(home, KEYS_REL), 'own-client')
+      writeFileSync(join(home, KEYS_REL), CLIENT_JSON)
+      writeFileSync(join(home, TOKENS_REL), 'stale-tokens')
       await materializeCredentialFiles(tokensOnly, reversed(), { kind: 'host', home })
-      expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe('own-client')
+      expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
     })
 
     it('no token row in the keystore + credentials.json already on the host: client NOT written (either order)', async () => {

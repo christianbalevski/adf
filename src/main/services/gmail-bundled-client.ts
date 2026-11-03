@@ -10,7 +10,7 @@
  * agent's own, sealed without a client. Agent write-back never stores the built-in client.
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { basename, dirname, join } from 'path'
 import { GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH, GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 
@@ -54,6 +54,27 @@ export function isBundledClientContent(
 /** Host path of the server's token file, given the host path of its client file. */
 export function bundledTokenFileFor(dest: string): string {
   return join(dirname(dest), basename(GMAIL_BUNDLED_TOKEN_PATH))
+}
+
+/**
+ * Whether materialization should keep the host's Gmail token file instead of
+ * writing the agent's sealed one at `tokenDest`. With no client sealed beside
+ * them, the agent's tokens were minted with the built-in client; next to a
+ * different client file on the host they cannot refresh, and writing them
+ * would also replace the host's own working sign-in. Kept, the server uses the
+ * host's sign-in and write-back captures that pair for the agent.
+ */
+export function keepHostTokensOverSealed(
+  npmPackage: string | undefined,
+  path: string,
+  tokenDest: string,
+  clientSealed: () => boolean,
+  client = compiledGmailOAuthClient(),
+): boolean {
+  if (npmPackage !== GMAIL_BUNDLED_CLIENT_NPM_PACKAGE || path !== GMAIL_BUNDLED_TOKEN_PATH) return false
+  const clientDest = join(dirname(tokenDest), basename(GMAIL_BUNDLED_CLIENT_PATH))
+  if (!existsSync(clientDest) || clientSealed()) return false
+  return !client || !readFileSync(clientDest).equals(Buffer.from(client))
 }
 
 /**

@@ -17,8 +17,8 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
-import { compiledGmailOAuthClient, isBundledClientContent, writeBundledClientIfAbsent } from './gmail-bundled-client'
-import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
+import { compiledGmailOAuthClient, isBundledClientContent, keepHostTokensOverSealed, writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { GMAIL_BUNDLED_CLIENT_PATH, GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
 
 /** Decoded size cap per credential file. Real targets are ~1 KB token files. */
 export const CREDENTIAL_FILE_MAX_BYTES = 256 * 1024
@@ -252,6 +252,10 @@ export async function materializeCredentialFiles(
     }
     const { content, mode } = decodeRecord(found.p, found.raw as string)
     const destPath = expandCredentialPath(file.path, target)
+    // Gmail tokens minted with the built-in client never land beside another
+    // client on the host: the host's own sign-in is kept and used instead.
+    if (target.kind === 'host' && keepHostTokensOverSealed(serverCfg.npm_package, file.path, destPath,
+      () => credentialFilePurposes(serverCfg, GMAIL_BUNDLED_CLIENT_PATH).some((p) => store.hasRow(p)))) continue
     if (target.kind === 'host') {
       mkdirSync(dirname(destPath), { recursive: true })
       writeFileSync(destPath, content, { mode })
