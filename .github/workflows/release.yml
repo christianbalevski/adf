@@ -100,6 +100,22 @@ jobs:
           # asking for the user's own client file.
           ADF_GMAIL_OAUTH_CLIENT_JSON: ${{ secrets.ADF_GMAIL_OAUTH_CLIENT_JSON }}
 
+      # Every packaged app must carry the bundled Gmail MCP server next to its
+      # app.asar (extraResources, see src/main/services/bundled-mcp-servers.ts).
+      # Without it Studio silently falls back to npx and Gmail needs Node.js
+      # again. Fails the build job, so the publish job never flips the draft.
+      - name: Verify bundled MCP servers are packaged
+        shell: bash
+        run: |
+          asars="$(find dist -name app.asar)"
+          [ -n "$asars" ] || { echo "::error::No packaged app (app.asar) under dist/"; exit 1; }
+          missing=0
+          while IFS= read -r asar; do
+            f="$(dirname "$asar")/mcp-servers/gmail/index.mjs"
+            if [ -s "$f" ]; then echo "ok: $f"; else echo "::error::Missing $f"; missing=1; fi
+          done <<< "$asars"
+          exit $missing
+
       # Belt and braces: forceCodeSigning already fails an unsigned build, but
       # verify the shipped installer carries a valid Authenticode signature from
       # our certificate before the publish job can flip the release live.
