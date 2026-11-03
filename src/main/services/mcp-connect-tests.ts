@@ -249,8 +249,9 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
   const notes = [...plan.notes]
   // Whether an interactive OAuth sign-in was driven during this test.
   let oauthRan = false
-  const serverCfg: McpInstanceServerConfig = { ...buildMcpServerConfigFromRegistration(reg), ...registrationInstanceFields(reg) }
+  // An additional instance runs in its own home (mcp-instance-home.ts).
   const instance = registrationInstanceFields(reg)
+  const serverCfg: McpInstanceServerConfig = { ...buildMcpServerConfigFromRegistration(reg), ...instance }
 
   const env: Record<string, string> = {}
   for (const e of reg.env ?? []) { if (e.key && e.value) env[e.key] = e.value }
