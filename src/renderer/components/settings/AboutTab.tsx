@@ -9,6 +9,8 @@
 
 import { useEffect, useState } from 'react'
 import { Button, SettingsGroup, SettingsRow } from '../ui'
+import { ReleaseNotesDialog } from '../common/ReleaseNotesDialog'
+import { bundledReleaseNotes } from '../../utils/release-notes'
 import { Wordmark } from '../common/Wordmark'
 import type { AppUpdateCheckResult, AppUpdateState } from '../../../shared/types/ipc.types'
 
@@ -44,6 +46,7 @@ export function UpdatesGroup() {
   const [update, setUpdate] = useState<AppUpdateState>({ status: 'idle' })
   const [checking, setChecking] = useState(false)
   const [checkResult, setCheckResult] = useState<AppUpdateCheckResult | null>(null)
+  const [notesOpen, setNotesOpen] = useState(false)
 
   // Same feed the status-bar badge reads, so the two never disagree.
   useEffect(() => {
@@ -95,10 +98,7 @@ export function UpdatesGroup() {
           }
         >
           <div className="flex items-center gap-1">
-            <Button variant="ghost" onClick={() => openExternal(RELEASES_URL)}>
-              <span>Release notes</span>
-              <span aria-hidden>↗</span>
-            </Button>
+            <Button variant="ghost" onClick={() => setNotesOpen(true)}>Release notes</Button>
             {window.adfApi?.platform === 'web' ? <span className="text-xs text-[var(--adf-ui-text-muted)]">Updated with the daemon</span> : canDownload ? (
               <Button onClick={() => void window.adfApi.downloadUpdate()}>
                 {update.status === 'error' ? 'Retry download' : 'Download and restart'}
@@ -110,6 +110,17 @@ export function UpdatesGroup() {
             )}
           </div>
         </SettingsRow>
+        <ReleaseNotesDialog
+          open={notesOpen}
+          onClose={() => setNotesOpen(false)}
+          title={`What's new in v${appVersion ?? ''}`}
+          notes={appVersion ? bundledReleaseNotes(appVersion) : null}
+        >
+          <Button variant="ghost" onClick={() => openExternal(RELEASES_URL)}>
+            <span>All releases</span>
+            <span aria-hidden>↗</span>
+          </Button>
+        </ReleaseNotesDialog>
       </SettingsGroup>
   )
 }

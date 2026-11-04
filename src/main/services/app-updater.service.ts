@@ -189,7 +189,8 @@ export function initAppUpdater(h: AppUpdaterHooks): void {
 
   autoUpdater.on('update-available', (info: UpdateInfo) => {
     if (state.status === 'idle' || state.status === 'error') {
-      setState({ status: 'available', version: info.version })
+      const notes = releaseNotesText(info.releaseNotes)
+      setState({ status: 'available', version: info.version, ...(notes ? { notes } : {}) })
     }
   })
   autoUpdater.on('update-not-available', () => {
@@ -215,4 +216,11 @@ export function initAppUpdater(h: AppUpdaterHooks): void {
 
   setTimeout(() => void checkQuietly(), FIRST_CHECK_DELAY_MS).unref()
   setInterval(() => void checkQuietly(), CHECK_INTERVAL_MS).unref()
+}
+
+/** The feed's release notes as one string: a string as is, per-version notes joined, newest first. */
+function releaseNotesText(notes: UpdateInfo['releaseNotes']): string | undefined {
+  if (!notes) return undefined
+  if (typeof notes === 'string') return notes
+  return notes.map((n) => n.note ?? '').filter(Boolean).join('\n\n') || undefined
 }

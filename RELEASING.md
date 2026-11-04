@@ -102,6 +102,13 @@ in the candidate commit before a separately authorized release. Keep the
 opening focused on user-visible changes; the generator adds the technical
 changelog and installation section.
 
+The same file is bundled into Studio: the version number in the status bar
+shows it as "What's new in vX" (a dot marks notes not opened yet), and the
+update badge shows the GitHub release text before downloading. When a release
+needs the user to do something (sign in again, re-enter a key), put the steps
+under an `## Action needed` heading: Studio then opens the notes by itself
+once, on the first launch of that version.
+
 `node scripts/release-notes.mjs <existing-tag>` prints the assembled notes
 without publishing anything. The script reads the exact matching Markdown
 file from the current checkout and prepends it to the generated commit

@@ -1247,7 +1247,8 @@ export interface DashboardAgentStats {
  */
 export type AppUpdateState =
   | { status: 'idle' }
-  | { status: 'available'; version: string }
+  /** `notes`: the release text the update feed carries for that version (GitHub release body, HTML), if any. */
+  | { status: 'available'; version: string; notes?: string }
   | { status: 'downloading'; version: string; percent: number }
   | { status: 'ready'; version: string }
   | { status: 'installing'; version: string }
