@@ -20,6 +20,7 @@ import { isSensitiveMcpHeader, buildMcpServerConfigFromRegistration, isRegistrat
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
 import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 import { captureCredentialFile } from '../../services/mcp-credential-files'
+import { mcpCredentialOwner } from '../../services/mcp-server-home'
 
 /** Result of a connect attempt, reported back by the runtime's connect callback. */
 export interface McpConnectOutcome {
@@ -77,8 +78,11 @@ export class McpInstallTool implements Tool {
   readonly name = 'mcp_install'
   readonly description =
     'Install an MCP server package, attach a custom server, or connect a Streamable HTTP MCP server. ' +
-    'If the requested name or package is already configured in ADF Studio Settings and available to agents, ' +
+    'A server is identified by its name. If the name is configured in ADF Studio Settings and available to agents, ' +
     'this tool ATTACHES that registration instead of installing a fresh copy — the user\'s configuration, credentials, and authorization come along. ' +
+    'Without a name, the package\'s (or URL\'s) registration is attached when exactly one exists; when several do, pass the name of the one you want. ' +
+    'Pass a name nobody uses to install your own copy with your own credentials — one package can be installed several times under different names (e.g. one per account). ' +
+    'Names are fixed once installed: to rename, install under the new name, supply its credentials, and uninstall the old one. ' +
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity, and credential_files for file-shaped credentials (OAuth keys/token stores) that are kept sealed in the keystore and materialized where the server runs. ' +
     'Set host=true to run on host (requires host_access). ' +
@@ -95,14 +99,21 @@ export class McpInstallTool implements Tool {
     private getRegistrations?: () => McpServerRegistration[],
   ) {}
 
-  /** Find the Settings registration this install request matches, if any. */
-  private findMatchingRegistration(parsed: z.infer<typeof InputSchema>, derivedName: string): McpServerRegistration | undefined {
-    const regs = this.getRegistrations?.() ?? []
-    return regs.find((r) => r.name && (
+  /**
+   * The Settings registration this install request attaches, if any. The
+   * name is the identity: a request that names a registration attaches it,
+   * and one that names anything else installs its own copy. Without a name,
+   * the package's (or URL's) registration is the default when exactly one
+   * exists; several are `ambiguous` and the caller must name one.
+   */
+  private findMatchingRegistration(parsed: z.infer<typeof InputSchema>, derivedName: string): { reg?: McpServerRegistration; ambiguous?: McpServerRegistration[] } {
+    const regs = (this.getRegistrations?.() ?? []).filter((r) => r.name)
+    if (parsed.name) return { reg: regs.find((r) => r.name === parsed.name) }
+    const sameSource = regs.filter((r) =>
       (parsed.package !== undefined && (r.npmPackage === parsed.package || r.pypiPackage === parsed.package)) ||
-      (parsed.url !== undefined && r.url === parsed.url) ||
-      r.name === derivedName
-    ))
+      (parsed.url !== undefined && r.url === parsed.url))
+    if (sameSource.length > 1) return { ambiguous: sameSource }
+    return { reg: sameSource[0] ?? regs.find((r) => r.name === derivedName) }
   }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
@@ -137,7 +148,15 @@ export class McpInstallTool implements Tool {
     // --- Attach mode: prefer a Settings registration over a fresh install ---
     // A server the user already configured (env, auth, run location) is the
     // better artifact than a fresh npm copy with none of that.
-    const attachReg = this.findMatchingRegistration(parsed, serverName)
+    const { reg: attachReg, ambiguous } = this.findMatchingRegistration(parsed, serverName)
+    if (ambiguous) {
+      const names = ambiguous.map((r) => `"${r.name}"`).join(', ')
+      return { content: JSON.stringify({
+        success: false,
+        error: `"${pkg}" is configured in ADF Studio Settings more than once: ${names}. ` +
+          `Pass name to attach one (e.g. mcp_install with name ${names.split(', ')[0]}), or a new name to install your own copy.`,
+      }), isError: true }
+    }
     if (attachReg && !isRegistrationAgentVisible(attachReg)) {
       return { content: JSON.stringify({
         success: false,
@@ -158,6 +177,18 @@ export class McpInstallTool implements Tool {
     )
     if (browserMcp && !host && !(attachReg?.runLocation === 'host')) {
       config.compute = { ...config.compute, enabled: true, browser: true }
+    }
+
+    // A server whose credentials the app stores reads its credential files
+    // from the registration's folder, never the agent's keystore: a sealed
+    // copy here would be ignored, so refuse it plainly.
+    const appCredentials = (this.getRegistrations?.() ?? []).find((r) => r.name === serverName)
+    if (appCredentials && mcpCredentialOwner(appCredentials, config.id).kind === 'app' && parsed.credential_files?.some((f) => f.content !== undefined)) {
+      return { content: JSON.stringify({
+        success: false,
+        error: `"${serverName}" keeps its credentials in ADF Studio Settings, shared by every agent that attaches it — its credential files cannot be set from an agent. ` +
+          'Ask your principal to sign in from Settings → MCP Servers, or install your own copy under a new name with your own credential_files.',
+      }), isError: true }
     }
 
     // Check if already installed

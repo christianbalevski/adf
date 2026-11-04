@@ -5899,7 +5899,7 @@ Per-agent provider, MCP and channel credentials. Writes take a value; reads retu
 |---|---|---|
 | GET | [`/agents/{id}/providers/{providerId}/credentials`](#op-getagentprovidercredentials) | Provider credential metadata and config overrides |
 | PUT | [`/agents/{id}/providers/{providerId}/credential`](#op-setagentprovidercredential) | Store a provider API key in the agent |
-| GET | [`/agents/{id}/mcp/credentials`](#op-getagentmcpcredentials) | MCP credential metadata by package |
+| GET | [`/agents/{id}/mcp/credentials`](#op-getagentmcpcredentials) | MCP credential metadata by server name |
 | PUT | [`/agents/{id}/mcp/credentials`](#op-setagentmcpcredential) | Store an MCP credential |
 | GET | [`/agents/{id}/adapters/credentials`](#op-getagentadaptercredentials) | Channel adapter credential metadata by type |
 | PUT | [`/agents/{id}/adapters/credentials`](#op-setagentadaptercredential) | Store a channel adapter credential |
@@ -6012,9 +6012,9 @@ Example 200 (`application/json`):
 
 ### GET `/agents/{id}/mcp/credentials`
 
-**MCP credential metadata by package**
+**MCP credential metadata by server name**
 
-Metadata only.
+Metadata only. Env credentials: the server's sealed OAuth token and credential files are not listed.
 
 Operation `getAgentMcpCredentials` · bearer token
 
@@ -6023,7 +6023,7 @@ Operation `getAgentMcpCredentials` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
-| `npmPackage` | query | string | yes | Package or server name |
+| `serverName` | query | string | yes | Server name (`mcp:<serverName>:*`) |
 
 **Responses**
 
@@ -6041,7 +6041,7 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "npmPackage": "string",
+  "serverName": "string",
   "credentials": {}
 }
 ```
@@ -6052,7 +6052,7 @@ Example 200 (`application/json`):
 
 **Store an MCP credential**
 
-Stored as `mcp:{npmPackage}:{envKey}`. Values go in, never out. While the agent's credentials envelope is locked (or foreign) on this daemon the write is refused with 409 `credentials_locked`: a plain write would destroy a sealed value it cannot read, or store a new one unsealed. Unlock the owner identity first, or send `replace: true` (the owner's override: a locked sealed value is discarded unread, the new value stored plain and sealed once the envelope unlocks, logged as `credential_replaced`; the response then has `replaced: true`). `replace` is refused for key material (`crypto:*`, 400). A write to an agent locked by a legacy whole-file identity password answers 500 (unlock it with POST …/identity/password/unlock).
+Stored as `mcp:{serverName}:{envKey}`. Values go in, never out. While the agent's credentials envelope is locked (or foreign) on this daemon the write is refused with 409 `credentials_locked`: a plain write would destroy a sealed value it cannot read, or store a new one unsealed. Unlock the owner identity first, or send `replace: true` (the owner's override: a locked sealed value is discarded unread, the new value stored plain and sealed once the envelope unlocks, logged as `credential_replaced`; the response then has `replaced: true`). `replace` is refused for key material (`crypto:*`, 400). A write to an agent locked by a legacy whole-file identity password answers 500 (unlock it with POST …/identity/password/unlock).
 
 Operation `setAgentMcpCredential` · bearer token
 
@@ -6066,14 +6066,14 @@ Operation `setAgentMcpCredential` · bearer token
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `npmPackage` | string | yes | Package or server name the credential belongs to |
+| `serverName` | string | yes | Name of the server the credential belongs to |
 | `envKey` | string | yes |  |
 | `value` | string | yes |  |
 | `replace` | boolean |  | Owner override while the agent's credentials envelope is locked on this daemon: a locked sealed value is discarded unread and the new value is stored plain, sealed again on unlock; logged to adf_logs (`credential_replaced`). Without it such a write answers 409 `credentials_locked`. |
 
 ```json
 {
-  "npmPackage": "@acme/mcp-server",
+  "serverName": "acme",
   "envKey": "ACME_TOKEN",
   "value": "…"
 }
@@ -6096,7 +6096,7 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "npmPackage": "string",
+  "serverName": "string",
   "envKey": "string",
   "success": true,
   "replaced": true
@@ -6212,8 +6212,7 @@ Operation `listMcpCredentialFiles` · bearer token
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `mcpServerName` | query | string | yes | Server name in agent configs |
-| `npmPackage` | query | string | yes | Credential namespace (`mcp:<npmPackage>:*`) |
+| `serverName` | query | string | yes | Server name: agent configs that name it, and `mcp:<serverName>:*` credentials |
 
 **Responses**
 
@@ -7052,7 +7051,7 @@ Example 200 (`application/json`):
 
 **Detach an MCP server and delete its credentials**
 
-Removes the server config and the matching `mcp:*` identity rows.
+Removes the server config and its `mcp:<serverName>:*` identity rows.
 
 Operation `detachAgentMcpServer` · bearer token
 
@@ -7062,7 +7061,6 @@ Operation `detachAgentMcpServer` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `serverName` | path | string | yes | MCP server name in the agent config |
-| `credentialNamespace` | query | string |  | Credential namespace to delete (default: the server's package or name) |
 
 **Responses**
 
@@ -7520,7 +7518,8 @@ Operation `getMcpOAuthStatus` · bearer token
 
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
-| `url` | query | string |  | Remote server URL |
+| `name` | query | string |  | Settings registration name. App-level sign-ins are stored per server name. |
+| `url` | query | string |  | Remote server URL. A record is only reported for the URL it was minted for. |
 
 **Responses**
 
@@ -7546,15 +7545,15 @@ Example 200 (`application/json`):
 
 Operation `signOutMcpOAuth` · bearer token
 
-**Request body** (required): [McpOAuthUrlBody](#schema-mcpoauthurlbody)
+**Request body** (required): [McpOAuthNameBody](#schema-mcpoauthnamebody)
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `url` | string | yes | The remote server URL |
+| `name` | string | yes | The Settings registration name of the remote server |
 
 ```json
 {
-  "url": "string"
+  "name": "string"
 }
 ```
 
@@ -16046,7 +16045,7 @@ Operation `getAgentFileMcpCredentials` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `path` | query | string | yes | Absolute path of the .adf file |
-| `npmPackage` | query | string | yes |  |
+| `serverName` | query | string | yes |  |
 
 **Responses**
 
@@ -16064,7 +16063,7 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "npmPackage": "string",
+  "serverName": "string",
   "credentials": {},
   "filePath": "string",
   "loaded": true
@@ -16091,14 +16090,14 @@ Operation `setAgentFileMcpCredential` · bearer token
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `npmPackage` | string | yes | Package or server name the credential belongs to |
+| `serverName` | string | yes | Name of the server the credential belongs to |
 | `envKey` | string | yes |  |
 | `value` | string | yes |  |
 | `replace` | boolean |  | Owner override while the agent's credentials envelope is locked on this daemon: a locked sealed value is discarded unread and the new value is stored plain, sealed again on unlock; logged to adf_logs (`credential_replaced`). Without it such a write answers 409 `credentials_locked`. |
 
 ```json
 {
-  "npmPackage": "@acme/mcp-server",
+  "serverName": "acme",
   "envKey": "ACME_TOKEN",
   "value": "…"
 }
@@ -16121,7 +16120,7 @@ Example 200 (`application/json`):
 ```json
 {
   "agentId": "Xk3v9QpLm2",
-  "npmPackage": "string",
+  "serverName": "string",
   "envKey": "string",
   "success": true,
   "replaced": true,
@@ -16273,7 +16272,7 @@ Example 200 (`application/json`):
 
 **Detach an MCP server from an agent file**
 
-Also deletes its credentials (`mcp:{credentialNamespace}:*`, default the server name). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. Credentials are matched by exact prefix.
+Also deletes its credentials (`mcp:{serverName}:*`). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. Credentials are matched by exact prefix.
 
 Operation `detachAgentFileMcpServer` · bearer token
 
@@ -16283,7 +16282,6 @@ Operation `detachAgentFileMcpServer` · bearer token
 |---|---|---|---|---|
 | `path` | query | string | yes | Absolute path of the .adf file |
 | `serverName` | path | string | yes | MCP server name in the agent config |
-| `credentialNamespace` | query | string |  |  |
 
 **Responses**
 
@@ -20502,7 +20500,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `npmPackage` | string | yes | Package or server name the credential belongs to |
+| `serverName` | string | yes | Name of the server the credential belongs to |
 | `envKey` | string | yes |  |
 | `value` | string | yes |  |
 | `replace` | boolean |  | Owner override while the agent's credentials envelope is locked on this daemon: a locked sealed value is discarded unread and the new value is stored plain, sealed again on unlock; logged to adf_logs (`credential_replaced`). Without it such a write answers 409 `credentials_locked`. |
@@ -20514,7 +20512,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agentId` | string | yes | Agent id |
-| `npmPackage` | string | yes |  |
+| `serverName` | string | yes |  |
 | `credentials` | map<string, [CredentialMeta](#schema-credentialmeta)> | yes | By env key |
 
 <a id="schema-mcpcredentialwriteresponse"></a>
@@ -20524,7 +20522,7 @@ At least one field. `null` clears model / compact_threshold. Loops cannot be ren
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agentId` | string | yes | Agent id |
-| `npmPackage` | string | yes |  |
+| `serverName` | string | yes |  |
 | `envKey` | string | yes |  |
 | `success` | `true` | yes |  |
 | `replaced` | boolean |  |  |
@@ -22649,15 +22647,15 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `signedIn` | boolean | yes | A token is stored for the URL. The token itself is never returned. |
+| `signedIn` | boolean | yes | A token is stored for the server name and URL. The token itself is never returned. |
 
-<a id="schema-mcpoauthurlbody"></a>
+<a id="schema-mcpoauthnamebody"></a>
 
-### McpOAuthUrlBody
+### McpOAuthNameBody
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `url` | string | yes | The remote server URL |
+| `name` | string | yes | The Settings registration name of the remote server |
 
 <a id="schema-pythonruntimeresult"></a>
 

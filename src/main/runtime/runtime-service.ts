@@ -5,7 +5,7 @@ import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'nod
 import { readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
-import { AdfWorkspace } from '../adf/adf-workspace'
+import { AdfWorkspace, isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
 import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { templateFilePath } from '../adf/agent-templates'
@@ -105,13 +105,12 @@ function lockedCredentialsReason(filePath: string, locked: string[]): string {
     'Loaded agents re-check automatically once it is ready.'
 }
 
-/** MCP servers whose per-agent credentials live in the keystore (`mcp:<pkg|name>:*`). */
+/** MCP servers whose per-agent credentials live in the keystore (`mcp:<name>:*`). */
 function mcpServersWithSealedCredentials(workspace: AdfWorkspace): string[] {
   try {
     const servers = workspace.getAgentConfig().mcp?.servers ?? []
     return servers
-      .filter(server => [server.npm_package, server.pypi_package, server.name]
-        .some(key => key && workspace.listIdentityPurposes(`mcp:${key}:`).length > 0))
+      .filter(server => workspace.listIdentityPurposes(`mcp:${server.name}:`).length > 0)
       .map(server => server.name)
   } catch {
     return []
@@ -3470,19 +3469,23 @@ export class RuntimeService extends EventEmitter {
     return { agentId: target.id, providerId, success: true, deletedCredentials, config: result.config }
   }
 
-  setAgentMcpCredential(agentId: string, npmPackage: string, envKey: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; npmPackage: string; envKey: string; success: true; replaced?: boolean } {
+  setAgentMcpCredential(agentId: string, serverName: string, envKey: string, value: string, opts: RuntimeCredentialWriteOptions = {}): { agentId: string; serverName: string; envKey: string; success: true; replaced?: boolean } {
     const target = this.requireTarget(agentId)
-    const replaced = this.setIdentityValue(target, `mcp:${npmPackage}:${envKey}`, value, opts)
-    return { agentId: target.id, npmPackage, envKey, success: true, ...(replaced ? { replaced } : {}) }
+    const replaced = this.setIdentityValue(target, `mcp:${serverName}:${envKey}`, value, opts)
+    return { agentId: target.id, serverName, envKey, success: true, ...(replaced ? { replaced } : {}) }
   }
 
   /** Metadata only (see RuntimeIdentityMeta), keyed by env key. */
-  getAgentMcpCredentials(agentId: string, npmPackage: string): { agentId: string; npmPackage: string; credentials: Record<string, RuntimeIdentityMeta> } {
+  getAgentMcpCredentials(agentId: string, serverName: string): { agentId: string; serverName: string; credentials: Record<string, RuntimeIdentityMeta> } {
     const target = this.requireTarget(agentId)
+    const prefix = `mcp:${serverName}:`
+    // Env credentials only: the sealed OAuth token and credential files share the prefix.
+    const credentials = Object.fromEntries(Object.entries(this.describeCredentials(target, prefix))
+      .filter(([key]) => !isReservedMcpRuntimePurpose(prefix + key)))
     return {
       agentId: target.id,
-      npmPackage,
-      credentials: this.describeCredentials(target, `mcp:${npmPackage}:`),
+      serverName,
+      credentials,
     }
   }
 
@@ -3498,14 +3501,14 @@ export class RuntimeService extends EventEmitter {
     return { agentId: target.id, serverName: server.name, success: true, alreadyAttached, config: result.config }
   }
 
-  async detachAgentMcpServer(agentId: string, serverName: string, credentialNamespace = serverName): Promise<{ agentId: string; serverName: string; success: true; deletedCredentials: number; config: AgentConfig }> {
+  async detachAgentMcpServer(agentId: string, serverName: string): Promise<{ agentId: string; serverName: string; success: true; deletedCredentials: number; config: AgentConfig }> {
     const target = this.requireTarget(agentId)
     const servers = (target.config.mcp?.servers ?? []).filter(server => server.name !== serverName)
     const result = await this.setAgentConfig(target.id, {
       ...target.config,
       mcp: { ...(target.config.mcp ?? {}), servers },
     })
-    const deletedCredentials = target.workspace.deleteIdentityByPrefix(`mcp:${credentialNamespace}:`)
+    const deletedCredentials = target.workspace.deleteIdentityByPrefix(`mcp:${serverName}:`)
     return { agentId: target.id, serverName, success: true, deletedCredentials, config: result.config }
   }
 

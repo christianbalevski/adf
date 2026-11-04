@@ -159,26 +159,27 @@ describe('credential values: local mode reads them, a remote daemon never sends 
   it('local MCP_CREDENTIAL_GET: the values through the reveal route, as embedded reads them', async () => {
     daemon.routes.set('POST /files/agent/identity/reveal', ({ query, body }) => {
       expect(query).toEqual({ path: FILE })
-      expect(body).toEqual({ prefix: 'mcp:@acme/server:' })
-      return { values: { 'mcp:@acme/server:API_KEY': 'k-1', 'mcp:@acme/server:EMPTY': '' } }
+      expect(body).toEqual({ prefix: 'mcp:acme:' })
+      // The sealed OAuth token and credential files share the prefix: never shown as env values.
+      return { values: { 'mcp:acme:API_KEY': 'k-1', 'mcp:acme:EMPTY': '', 'mcp:acme:oauth': '{}', 'mcp:acme:file:~/.acme/t.json': '{}' } }
     })
-    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: { API_KEY: 'k-1', EMPTY: '' } })
+    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, serverName: 'acme' })).toEqual({ credentials: { API_KEY: 'k-1', EMPTY: '' } })
     expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE })).toEqual({ credentials: {} })
     daemon.routes.set('POST /files/agent/identity/reveal', () => ({ status: 403, body: { error: 'this request lacks the local proof', code: 'forbidden' } }))
-    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: {}, error: 'Error: this request lacks the local proof' })
+    expect(await invoke(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, serverName: 'acme' })).toEqual({ credentials: {}, error: 'Error: this request lacks the local proof' })
   })
 
   it('local MCP_CREDENTIAL_SET writes what it is given, a literal placeholder too (as embedded); a refusal reads without a prefix', async () => {
     const bodies: unknown[] = []
     daemon.routes.set('PUT /files/agent/mcp/credentials', ({ body }) => { bodies.push(body); return { success: true } })
-    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' })).toEqual({ success: true })
-    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
+    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: 'k-1' })).toEqual({ success: true })
+    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
     expect(bodies).toEqual([
-      { npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' },
-      { npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' },
+      { serverName: 'acme', envKey: 'API_KEY', value: 'k-1' },
+      { serverName: 'acme', envKey: 'API_KEY', value: '__redacted__' },
     ])
     daemon.routes.set('PUT /files/agent/mcp/credentials', () => ({ status: 409, body: { error: 'The credentials envelope of this agent is locked on this daemon.', code: 'credentials_locked' } }))
-    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-1' }))
+    expect(await invoke(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: 'k-1' }))
       .toEqual({ success: false, error: 'The credentials envelope of this agent is locked on this daemon.' })
   })
 
@@ -206,7 +207,7 @@ describe('credential values: local mode reads them, a remote daemon never sends 
 
     it('MCP_CREDENTIAL_GET answers __redacted__ for each readable value and never asks for values', async () => {
       stored()
-      expect(await remote(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, npmPackage: '@acme/server' })).toEqual({ credentials: { API_KEY: '__redacted__' } })
+      expect(await remote(IPC.MCP_CREDENTIAL_GET, { filePath: FILE, serverName: 'acme' })).toEqual({ credentials: { API_KEY: '__redacted__' } })
       expect(daemon.requests.some((r) => r.path === '/files/agent/identity/reveal')).toBe(false)
     })
 
@@ -214,21 +215,21 @@ describe('credential values: local mode reads them, a remote daemon never sends 
       stored()
       const bodies: unknown[] = []
       daemon.routes.set('PUT /files/agent/mcp/credentials', ({ body }) => { bodies.push(body); return { success: true } })
-      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
-      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: '__redacted__abc' })).toEqual({
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: '__redacted__' })).toEqual({ success: true })
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: '__redacted__abc' })).toEqual({
         success: false,
         error: 'The value of API_KEY was shown as a placeholder (a remote ADF daemon never sends stored values), so an edit of it cannot be saved. Clear the field and type the whole value.',
       })
-      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'RENAMED_KEY', value: '__redacted__' })).toEqual({
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'RENAMED_KEY', value: '__redacted__' })).toEqual({
         success: false,
         error: 'RENAMED_KEY has no stored value to keep: a remote ADF daemon never sends stored values, so its field showed a placeholder. Type the value for RENAMED_KEY.',
       })
       // Exact placeholder only (W4-B): a backspaced or mid-edited placeholder is refused too, never saved as the secret.
       for (const edited of ['__redacted_', '__redac', '__redaXcted__', '__redcted__', 'x__redacted__']) {
-        expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: edited }), edited).toMatchObject({ success: false, error: expect.stringMatching(/shown as a placeholder/) })
+        expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: edited }), edited).toMatchObject({ success: false, error: expect.stringMatching(/shown as a placeholder/) })
       }
-      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' })).toEqual({ success: true })
-      expect(bodies).toEqual([{ npmPackage: '@acme/server', envKey: 'API_KEY', value: 'k-2' }])
+      expect(await remote(IPC.MCP_CREDENTIAL_SET, { filePath: FILE, serverName: 'acme', envKey: 'API_KEY', value: 'k-2' })).toEqual({ success: true })
+      expect(bodies).toEqual([{ serverName: 'acme', envKey: 'API_KEY', value: 'k-2' }])
     })
 
     it('ADAPTER_CREDENTIAL_GET names the stored keys and sends no values', async () => {
@@ -240,14 +241,14 @@ describe('credential values: local mode reads them, a remote daemon never sends 
 })
 
 describe('attach and detach on agent files', () => {
-  it('MCP_ATTACH_SERVER sends the entry embedded builds; MCP_DETACH_SERVER the namespace', async () => {
+  it('MCP_ATTACH_SERVER sends the entry embedded builds; MCP_DETACH_SERVER the server name', async () => {
     const bodies: unknown[] = []
     daemon.routes.set('POST /files/agent/mcp/servers', ({ body, query }) => { bodies.push({ body, query }); return { success: true, alreadyAttached: false } })
     expect(await invoke(IPC.MCP_ATTACH_SERVER, { filePath: FILE, serverConfig: { name: 'acme', type: 'npm', npmPackage: '@acme/server', envKeys: ['API_KEY'] } }))
       .toEqual({ success: true, alreadyAttached: false })
     expect(bodies).toEqual([{ query: { path: FILE }, body: { server: expect.objectContaining({ name: 'acme', transport: 'stdio', npm_package: '@acme/server', source: 'npm:@acme/server' }) } }])
-    daemon.routes.set('DELETE /files/agent/mcp/servers/acme', ({ query }) => { expect(query).toEqual({ path: FILE, credentialNamespace: '@acme/server' }); return { success: true } })
-    expect(await invoke(IPC.MCP_DETACH_SERVER, { filePath: FILE, serverName: 'acme', credentialNamespace: '@acme/server' })).toEqual({ success: true })
+    daemon.routes.set('DELETE /files/agent/mcp/servers/acme', ({ query }) => { expect(query).toEqual({ path: FILE }); return { success: true } })
+    expect(await invoke(IPC.MCP_DETACH_SERVER, { filePath: FILE, serverName: 'acme' })).toEqual({ success: true })
   })
 
   it('MCP_ATTACH_SERVER of an OAuth server sends oauth in the entry (E3)', async () => {

@@ -238,7 +238,7 @@ describe('McpInstallTool attach mode (Settings registrations)', () => {
       { path: '/workspace/.config/new/keys.json', required: true },
     ])
     expect((workspace as any).setIdentitySealed).toHaveBeenCalledWith(
-      'mcp:@x/gcal:file:/workspace/.config/new/keys.json', expect.any(String),
+      'mcp:gcal:file:/workspace/.config/new/keys.json', expect.any(String),
     )
     expect(connect).not.toHaveBeenCalled() // no auth requested → no reconnect
   })
@@ -315,5 +315,74 @@ describe('McpInstallTool attach mode (Settings registrations)', () => {
     expect(result.isError).toBe(true)
     expect(content.error).toMatch(/locked.*refusing to store/s)
     expect(workspace.setIdentity).not.toHaveBeenCalled()
+  })
+})
+
+describe('McpInstallTool: one package, several named copies', () => {
+  const gmailRegs = () => [
+    { id: '1', name: 'gmail', type: 'npm' as const, npmPackage: '@x/gmail', runLocation: 'host' as const, agentVisible: true,
+      credentialFiles: [{ path: '~/.gmail-mcp/credentials.json' }] },
+    { id: '2', name: 'gmail-work', type: 'npm' as const, npmPackage: '@x/gmail', runLocation: 'host' as const, agentVisible: true,
+      credentialFiles: [{ path: '~/.gmail-mcp/credentials.json' }] },
+  ]
+
+  function ws() {
+    const config: any = { id: 'agent1', mcp: { servers: [] } }
+    return {
+      config,
+      workspace: {
+        getAgentConfig: vi.fn(() => config),
+        setAgentConfig: vi.fn(),
+        setIdentity: vi.fn(),
+        setIdentitySealed: vi.fn(),
+        getEnvelopeState: vi.fn(() => 'unlocked'),
+      },
+    }
+  }
+
+  it('attaches the registration the name picks', async () => {
+    const { config, workspace } = ws()
+    const tool = new McpInstallTool(vi.fn().mockResolvedValue({ toolsDiscovered: 4 }), gmailRegs)
+    const content = JSON.parse((await tool.execute({ package: '@x/gmail', type: 'npm', name: 'gmail-work' }, workspace as any)).content)
+    expect(content).toEqual(expect.objectContaining({ success: true, attached_existing: true, name: 'gmail-work' }))
+    expect(config.mcp.servers.map((s: any) => s.name)).toEqual(['gmail-work'])
+  })
+
+  it('without a name, refuses to guess between two registrations of one package and lists them', async () => {
+    const { config, workspace } = ws()
+    const connect = vi.fn()
+    const tool = new McpInstallTool(connect, gmailRegs)
+    const result = await tool.execute({ package: '@x/gmail', type: 'npm' }, workspace as any)
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content).error).toMatch(/more than once: "gmail", "gmail-work".*Pass name/s)
+    expect(config.mcp.servers).toHaveLength(0)
+    expect(connect).not.toHaveBeenCalled()
+  })
+
+  it('a new name installs the agent\'s own copy, with credentials stored under that name', async () => {
+    const { config, workspace } = ws()
+    const tool = new McpInstallTool(vi.fn().mockResolvedValue({ toolsDiscovered: 4 }), gmailRegs)
+    const content = JSON.parse((await tool.execute({
+      package: '@x/gmail', type: 'npm', name: 'gmail-mine', host: false,
+      env: { API_KEY: 'k' },
+      credential_files: [{ path: '~/.gmail-mcp/credentials.json', content: 'tokens' }],
+    }, workspace as any)).content)
+    expect(content.success).toBe(true)
+    expect(content.attached_existing).toBeUndefined()
+    expect(workspace.setIdentity).toHaveBeenCalledWith('mcp:gmail-mine:API_KEY', 'k')
+    expect(workspace.setIdentitySealed).toHaveBeenCalledWith('mcp:gmail-mine:file:~/.gmail-mcp/credentials.json', expect.any(String))
+    expect(config.mcp.servers[0]).toEqual(expect.objectContaining({ name: 'gmail-mine', npm_package: '@x/gmail' }))
+  })
+
+  it('refuses credential files for a server whose credentials the app stores', async () => {
+    const { workspace } = ws()
+    const tool = new McpInstallTool(vi.fn(), gmailRegs)
+    const result = await tool.execute({
+      package: '@x/gmail', type: 'npm', name: 'gmail',
+      credential_files: [{ path: '~/.gmail-mcp/credentials.json', content: 'tokens' }],
+    }, workspace as any)
+    expect(result.isError).toBe(true)
+    expect(JSON.parse(result.content).error).toMatch(/keeps its credentials in ADF Studio Settings/)
+    expect(workspace.setIdentitySealed).not.toHaveBeenCalled()
   })
 })

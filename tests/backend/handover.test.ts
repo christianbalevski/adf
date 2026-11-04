@@ -133,6 +133,8 @@ function daemonTokens(sub: (typeof SUBS)[number]) {
 }
 
 const MCP_URL = 'https://mcp.example.com/mcp'
+/** App-level sign-ins are stored by server name (the blob key handover moves verbatim). */
+const MCP_NAME = 'example'
 
 function studioMcp() {
   return {
@@ -205,7 +207,7 @@ describe('handover round trip (embedded → local → embedded)', () => {
       studio.write(auth.issue(sub.subject))
       studio.write(auth.refresh(sub.subject, studio.read().refresh_token))
     }
-    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioMcp().write({ [MCP_NAME]: mcpRecord(auth.issue('mcp-user')) })
 
     // Switch to local.
     const toLocal = await runHandover('local', deps())
@@ -238,8 +240,8 @@ describe('handover round trip (embedded → local → embedded)', () => {
       daemon.write(auth.refresh(sub.subject, daemon.read()!.refresh_token))
     }
     const mcp = daemonMcp()
-    const before = (await mcp.get(MCP_URL))!
-    await mcp.save(MCP_URL, mcpRecord(auth.refresh('mcp-user', before.tokens!.refresh_token!)))
+    const before = (await mcp.forServer(MCP_NAME).get(MCP_URL))!
+    await mcp.forServer(MCP_NAME).save(MCP_URL, mcpRecord(auth.refresh('mcp-user', before.tokens!.refresh_token!)))
 
     // A second boot in local mode moves nothing.
     expect((await runHandover('local', deps())).changed).toBe(false)
@@ -251,7 +253,7 @@ describe('handover round trip (embedded → local → embedded)', () => {
     expect(keychain.backend.get(account)).toBeNull()
     expect(existsSync(join(dir, 'studio-client-settings.json'))).toBe(false)
     expect(readSettings()).toMatchObject({ theme: 'dark', recentFiles: ['C:/agents/agent-1.adf'] })
-    expect(mcp.listServerUrls()).toEqual([])
+    expect(mcp.listServers()).toEqual([])
 
     // Studio refreshes every session: none was invalidated by a stale copy.
     for (const sub of SUBS) {
@@ -259,7 +261,7 @@ describe('handover round trip (embedded → local → embedded)', () => {
       expect(existsSync(daemonTokens(sub).path)).toBe(false)
       expect(() => studio.write(auth.refresh(sub.subject, studio.read().refresh_token))).not.toThrow()
     }
-    const back = studioMcp().read()[MCP_URL]
+    const back = studioMcp().read()[MCP_NAME]
     expect(() => auth.refresh('mcp-user', back.tokens!.refresh_token!)).not.toThrow()
   })
 
@@ -299,15 +301,15 @@ describe('crash mid-move', () => {
 
   it('a crash between the MCP write to the daemon and the removal from Studio keeps both; the resumed move keeps the newer record', async () => {
     const first = mcpRecord(auth.issue('mcp-user'))
-    studioMcp().write({ [MCP_URL]: first })
+    studioMcp().write({ [MCP_NAME]: first })
     await runHandover('local', deps({ beforeSourceDelete: (id) => { if (id === 'mcp-oauth') throw new Error('simulated crash') } }))
-    expect(studioMcp().read()[MCP_URL]).toBeDefined()
+    expect(studioMcp().read()[MCP_NAME]).toBeDefined()
     // The daemon refreshed in between (its copy is now the only valid one).
     const refreshed = { ...mcpRecord(auth.refresh('mcp-user', first.tokens!.refresh_token!)), updatedAt: Date.now() + 1000 }
-    await daemonMcp().save(MCP_URL, refreshed)
+    await daemonMcp().forServer(MCP_NAME).save(MCP_URL, refreshed)
     await runHandover('local', deps())
     expect(readSettings()).not.toHaveProperty(MCP_OAUTH_SETTINGS_KEY)
-    expect((await daemonMcp().get(MCP_URL))?.tokens?.refresh_token).toBe(refreshed.tokens!.refresh_token)
+    expect((await daemonMcp().forServer(MCP_NAME).get(MCP_URL))?.tokens?.refresh_token).toBe(refreshed.tokens!.refresh_token)
   })
 
   it('a corrupt adf-settings.json is never rewritten: the move fails and keeps it', async () => {
@@ -443,13 +445,13 @@ describe('auth.replaced.*.json lifetime (W5-D1, W5-F)', () => {
 describe('without a keychain the daemon can read (§5.3.1 fallback)', () => {
   it('MCP sign-ins and the runtime identity stay with Studio', async () => {
     writeStudioIdentity()
-    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioMcp().write({ [MCP_NAME]: mcpRecord(auth.issue('mcp-user')) })
     const noKeychain = deps({ daemonSecrets: null, daemonSecretsUnavailable: 'no OS keychain is usable on this machine' })
     const report = await runHandover('local', noKeychain)
     expect(report.failed).toBe(false)
     expect(report.items.find((i) => i.id === 'mcp-oauth')).toMatchObject({ outcome: 'kept' })
     expect(report.items.find((i) => i.id === 'runtime-identity')).toMatchObject({ outcome: 'kept' })
-    expect(studioMcp().read()[MCP_URL]).toBeDefined()
+    expect(studioMcp().read()[MCP_NAME]).toBeDefined()
   })
 })
 
@@ -491,14 +493,14 @@ describe('remote target', () => {
 
   it('never moves local credentials (W4-B): identity, MCP sign-ins and sessions stay where they are; client keys only', async () => {
     writeStudioIdentity()
-    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioMcp().write({ [MCP_NAME]: mcpRecord(auth.issue('mcp-user')) })
     studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
     const settingsBefore = JSON.parse(readFileSync(join(dir, 'adf-settings.json'), 'utf-8'))
     expect((await runHandover('remote', deps())).items.filter((i) => i.outcome !== 'unchanged').map((i) => i.id)).toEqual(['client-settings'])
     const settingsAfter = JSON.parse(readFileSync(join(dir, 'adf-settings.json'), 'utf-8'))
     for (const key of ['ownerMnemonic', 'runtimePrivateKey', 'runtimeDid']) expect(settingsAfter[key]).toEqual(settingsBefore[key])
     expect(studioTokens(SUBS[0]).exists()).toBe(true)
-    expect(daemonMcp().listServerUrls()).toEqual([])
+    expect(daemonMcp().listServers()).toEqual([])
   })
 
   it('remote mode\'s recent files (paths on the daemon\'s machine) never move into adf-settings.json; they wait in the client file for the next remote session (W5-D3)', async () => {
@@ -524,7 +526,7 @@ describe('what each boot handover changes, for every pair of modes (REM-19)', ()
   function studioHoldsEverything(): void {
     writeStudioIdentity()
     studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
-    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioMcp().write({ [MCP_NAME]: mcpRecord(auth.issue('mcp-user')) })
   }
   /** What a boot handover actually changed. */
   const changed = (report: Awaited<ReturnType<typeof runHandover>>) => report.items.filter((i) => ['moved', 'written', 'deleted'].includes(i.outcome)).map((i) => i.id).sort()
@@ -598,9 +600,9 @@ describe('what each boot handover changes, for every pair of modes (REM-19)', ()
 describe('the way back to embedded (review fixes)', () => {
   async function switchedToLocalWithMcp(): Promise<void> {
     writeStudioIdentity()
-    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioMcp().write({ [MCP_NAME]: mcpRecord(auth.issue('mcp-user')) })
     await runHandover('local', deps())
-    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+    expect(daemonMcp().listServers()).toEqual([MCP_NAME])
   }
 
   it('a keychain that cannot be opened keeps the marker at daemon: MCP and the runtime entry are retried, never dropped', async () => {
@@ -613,7 +615,7 @@ describe('the way back to embedded (review fixes)', () => {
     // The next start with the keychain finishes the move.
     const later = await runHandover('embedded', deps())
     expect(later.failed).toBe(false)
-    expect(studioMcp().read()[MCP_URL]).toBeDefined()
+    expect(studioMcp().read()[MCP_NAME]).toBeDefined()
     expect(await readCredentialHolder(dir)).toBe('studio')
   })
 
@@ -631,7 +633,7 @@ describe('the way back to embedded (review fixes)', () => {
     const report = await runHandover('embedded', deps({ studioSecrets: { ...studioCodec, available: () => false } }))
     expect(report.items.find((i) => i.id === 'mcp-oauth')).toMatchObject({ outcome: 'kept', pending: true })
     expect(await readCredentialHolder(dir)).toBe('daemon')
-    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+    expect(daemonMcp().listServers()).toEqual([MCP_NAME])
   })
 
   it('safeStorage that only obfuscates (Linux basic_text): MCP sign-ins move back as embedded stores them, with a note; sessions move back with the key-file cipher', async () => {
@@ -643,8 +645,8 @@ describe('the way back to embedded (review fixes)', () => {
     const mcp = report.items.find((i) => i.id === 'mcp-oauth')
     expect(mcp).toMatchObject({ outcome: 'moved' })
     expect(mcp?.detail).toContain('basic_text')
-    expect(studioMcp().read()[MCP_URL]).toBeDefined()
-    expect(daemonMcp().listServerUrls()).toEqual([])
+    expect(studioMcp().read()[MCP_NAME]).toBeDefined()
+    expect(daemonMcp().listServers()).toEqual([])
     expect(await readCredentialHolder(dir)).toBe('studio')
     const session = report.items.find((i) => i.id === 'chatgpt')
     expect(session).toMatchObject({ outcome: 'moved' })
@@ -709,27 +711,27 @@ describe('the way back to embedded (review fixes)', () => {
     // A CLI daemon had its own ChatGPT session and an MCP sign-in before the first switch.
     daemonTokens(SUBS[0]).write(auth.issue('acct-cli'))
     const cliUrl = 'https://cli-only.example.com/mcp'
-    await daemonMcp().save(cliUrl, { ...mcpRecord(auth.issue('cli-mcp')), serverUrl: cliUrl })
+    await daemonMcp().forServer('cli-only').save(cliUrl, { ...mcpRecord(auth.issue('cli-mcp')), serverUrl: cliUrl })
     // Studio had Grok and another MCP server.
     studioTokens(SUBS[1]).write(auth.issue(SUBS[1].subject))
-    studioMcp().write({ [MCP_URL]: mcpRecord(auth.issue('mcp-user')) })
+    studioMcp().write({ [MCP_NAME]: mcpRecord(auth.issue('mcp-user')) })
     await runHandover('local', deps())
-    expect(await readHandoverMarker(dir)).toMatchObject({ state: 'ok', marker: { daemonOwn: { sessions: { chatgpt: 'acct-cli' }, mcpServers: [cliUrl] }, moved: { sessions: { grok: SUBS[1].subject }, mcpServers: [MCP_URL] } } })
+    expect(await readHandoverMarker(dir)).toMatchObject({ state: 'ok', marker: { daemonOwn: { sessions: { chatgpt: 'acct-cli' }, mcpServers: ['cli-only'] }, moved: { sessions: { grok: SUBS[1].subject }, mcpServers: [MCP_NAME] } } })
 
     const report = await runHandover('embedded', deps())
     expect(report.failed).toBe(false)
     expect(daemonTokens(SUBS[0]).read()?.account_id).toBe('acct-cli')
     expect(studioTokens(SUBS[0]).exists()).toBe(false)
     expect(studioTokens(SUBS[1]).read().account_id).toBe(SUBS[1].subject)
-    expect(daemonMcp().listServerUrls()).toEqual([cliUrl])
-    expect(Object.keys(studioMcp().read())).toEqual([MCP_URL])
+    expect(daemonMcp().listServers()).toEqual(['cli-only'])
+    expect(Object.keys(studioMcp().read())).toEqual([MCP_NAME])
     expect(await readCredentialHolder(dir)).toBe('studio')
   })
 
   it.each([false, true])("a switch to local without the keychain keeps the daemon's own MCP sign-ins with it on the way back (review 4300792066; a later local launch with the keychain=%s)", async (laterWithKeychain) => {
     // A CLI daemon has its own MCP sign-in; Studio has a ChatGPT session and no MCP sign-ins.
     const cliUrl = 'https://cli-only.example.com/mcp'
-    await daemonMcp().save(cliUrl, { ...mcpRecord(auth.issue('cli-mcp')), serverUrl: cliUrl })
+    await daemonMcp().forServer('cli-only').save(cliUrl, { ...mcpRecord(auth.issue('cli-mcp')), serverUrl: cliUrl })
     // That daemon ran on these settings: it wrote its token beside them.
     writeFileSync(join(dir, 'daemon-token'), 't'.repeat(43))
     studioTokens(SUBS[0]).write(auth.issue(SUBS[0].subject))
@@ -741,8 +743,8 @@ describe('the way back to embedded (review fixes)', () => {
     }
     const report = await runHandover('embedded', deps())
     expect(report.failed).toBe(false)
-    expect(daemonMcp().listServerUrls()).toEqual([cliUrl])
-    expect(studioMcp().read()[cliUrl]).toBeUndefined()
+    expect(daemonMcp().listServers()).toEqual(['cli-only'])
+    expect(studioMcp().read()['cli-only']).toBeUndefined()
     expect(studioTokens(SUBS[0]).read().account_id).toBe(SUBS[0].subject)
   })
 
@@ -752,11 +754,11 @@ describe('the way back to embedded (review fixes)', () => {
     const read = await readHandoverMarker(dir)
     expect(read.state === 'ok' && read.marker.daemonOwnMcpUnknown).toBeFalsy()
     // Signed in while on This computer: it is Studio's, and goes back.
-    await daemonMcp().save(MCP_URL, mcpRecord(auth.issue('mcp-user')))
+    await daemonMcp().forServer(MCP_NAME).save(MCP_URL, mcpRecord(auth.issue('mcp-user')))
     const report = await runHandover('embedded', deps())
     expect(report.failed).toBe(false)
-    expect(Object.keys(studioMcp().read())).toEqual([MCP_URL])
-    expect(daemonMcp().listServerUrls()).toEqual([])
+    expect(Object.keys(studioMcp().read())).toEqual([MCP_NAME])
+    expect(daemonMcp().listServers()).toEqual([])
   })
 
   it('the session the conflict dialog did not keep is saved, encrypted, for one restore', async () => {
@@ -814,14 +816,14 @@ describe('the way back to embedded (review fixes)', () => {
 
   it('MCP sign-ins under the uncanonicalized scope of an earlier build are adopted into the canonical account', async () => {
     const legacy = new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount(settingsScope(settingsPath)))
-    await legacy.save(MCP_URL, mcpRecord(auth.issue('mcp-user')))
+    await legacy.forServer(MCP_NAME).save(MCP_URL, mcpRecord(auth.issue('mcp-user')))
     await runHandover('local', deps())
-    expect(daemonMcp().listServerUrls()).toEqual([MCP_URL])
+    expect(daemonMcp().listServers()).toEqual([MCP_NAME])
     // On Linux a real, existing path is its own canonical form (no case
     // folding): both builds used one account and there was nothing to move.
     const oneAccount = settingsScope(settingsPath) === studioRuntimeScope(settingsPath)
     expect(oneAccount).toBe(process.platform === 'linux')
-    expect(legacy.listServerUrls()).toEqual(oneAccount ? [MCP_URL] : [])
+    expect(legacy.listServers()).toEqual(oneAccount ? [MCP_NAME] : [])
   })
 })
 

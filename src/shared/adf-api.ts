@@ -411,9 +411,9 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.MCP_GET_SERVER_LOGS, args),
   getMcpRegistry: () =>
     ipcRenderer.invoke(IPC.MCP_REGISTRY_GET),
-  mcpOAuthSignOut: (args: { url: string }) =>
+  mcpOAuthSignOut: (args: { name: string }) =>
     ipcRenderer.invoke(IPC.MCP_OAUTH_SIGNOUT, args),
-  mcpOAuthStatus: (args: { url: string }) =>
+  mcpOAuthStatus: (args: { name: string; url: string }) =>
     ipcRenderer.invoke(IPC.MCP_OAUTH_STATUS, args),
   onMcpInstallProgress: (callback) => {
     const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onMcpInstallProgress']>) => callback(data)
@@ -494,15 +494,15 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.SANDBOX_LIST_INSTALLED),
 
   // MCP Credential management (multi-ADF)
-  setMcpCredential: (args: { filePath: string; npmPackage: string; envKey: string; value: string }) =>
+  setMcpCredential: (args: { filePath: string; serverName: string; envKey: string; value: string }) =>
     ipcRenderer.invoke(IPC.MCP_CREDENTIAL_SET, args),
-  getMcpCredentials: (args: { filePath: string; npmPackage: string }) =>
+  getMcpCredentials: (args: { filePath: string; serverName: string }) =>
     ipcRenderer.invoke(IPC.MCP_CREDENTIAL_GET, args),
-  listMcpCredentialFiles: (args: { mcpServerName: string; npmPackage: string }) =>
+  listMcpCredentialFiles: (args: { serverName: string }) =>
     ipcRenderer.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, args),
   attachMcpServer: (args: { filePath: string; serverConfig: { name: string; npmPackage?: string; command?: string; args?: string[]; envKeys?: string[]; runLocation?: 'host' | 'shared' } }) =>
     ipcRenderer.invoke(IPC.MCP_ATTACH_SERVER, args),
-  detachMcpServer: (args: { filePath: string; serverName: string; credentialNamespace: string }) =>
+  detachMcpServer: (args: { filePath: string; serverName: string }) =>
     ipcRenderer.invoke(IPC.MCP_DETACH_SERVER, args),
   pickAdfFile: () =>
     ipcRenderer.invoke(IPC.MCP_PICK_ADF_FILE),

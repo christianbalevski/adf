@@ -8,7 +8,7 @@ import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AgentRegistryServiceOptions } from '../../services/agent-registry.service'
 import type { McpAuthPreflightRunner } from '../../services/mcp-auth-preflight'
 import type { PythonRuntimeUv } from '../../services/mcp-connect-tests'
-import type { McpOAuthStore } from '../../services/mcp-oauth.types'
+import type { McpAppOAuthStore } from '../../services/mcp-oauth-store'
 import { UvManager } from '../../services/uv-manager'
 import type { DaemonRouteContext } from './index'
 
@@ -18,7 +18,7 @@ export interface GapRouteDeps {
    * "signed in" source of truth for Settings → MCP. Absent: status reads
    * signed out, sign-out and OAuth sign-in during a registration test refuse.
    */
-  mcpAppOAuthStore?: McpOAuthStore | null
+  mcpAppOAuthStore?: McpAppOAuthStore | null
   /** The daemon's UvManager (shared with the uvx resolver). Default: a private one. */
   uvManager?: PythonRuntimeUv
   /** The daemon's code sandbox, destroyed by emergency stop. Absent: emergency stop skips it. */
@@ -50,7 +50,7 @@ export function daemonGapRouteDeps(services: {
   codeSandboxService: CodeSandboxService
   meshServer: { stop(): Promise<void> }
   uvManager: PythonRuntimeUv
-  mcpAppOAuthStore?: McpOAuthStore | null
+  mcpAppOAuthStore?: McpAppOAuthStore | null
 }): GapRouteDeps {
   return {
     codeSandboxService: services.codeSandboxService,

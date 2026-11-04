@@ -43,7 +43,7 @@ const providerAndLists: ParityScenario = {
     const agent1 = ctx.agent('agent-1')
     const agent2 = ctx.agent('agent-2')
     editFile(agent2.filePath, (ws) => {
-      ws.setIdentity('mcp:@acme/server:API_KEY', 'mcp-secret')
+      ws.setIdentity('mcp:acme:API_KEY', 'mcp-secret')
       ws.setIdentity('adapter:telegram:BOT_TOKEN', 'bot-secret')
       ws.setIdentity(`provider:${MOCK_PROVIDER_ID}:apiKey`, 'provider-secret')
     })
@@ -58,8 +58,8 @@ const providerAndLists: ParityScenario = {
 
     // The open file comes first, then the tracked folder; values never.
     const sources = { knownFiles: [agent1.filePath], trackedDirs: [ctx.env.agentsDir] }
-    const mcp = await ctx.invoke<Res>(IPC.MCP_CREDENTIAL_LIST_FILES, { mcpServerName: 'acme', npmPackage: '@acme/server' })
-    expect(mcp).toEqual(listMcpCredentialFiles({ mcpServerName: 'acme', npmPackage: '@acme/server' }, sources))
+    const mcp = await ctx.invoke<Res>(IPC.MCP_CREDENTIAL_LIST_FILES, { serverName: 'acme' })
+    expect(mcp).toEqual(listMcpCredentialFiles({ serverName: 'acme' }, sources))
     expect(mcp.files).toEqual([{ filePath: agent2.filePath, fileName: 'agent-2.adf', hasCredentials: true, populatedKeys: ['API_KEY'] }])
     const adapters = await ctx.invoke<Res>(IPC.ADAPTER_CREDENTIAL_LIST_FILES, { adapterType: 'telegram' })
     expect(adapters).toEqual(listAdapterCredentialFiles('telegram', sources))
@@ -68,7 +68,7 @@ const providerAndLists: ParityScenario = {
     expect(providers).toEqual(listProviderCredentialFiles(MOCK_PROVIDER_ID, sources))
     expect((providers.files as Array<{ fileName: string }>).map((f) => f.fileName).sort()).toEqual(['agent-2.adf'])
     expect(JSON.stringify([mcp, adapters, providers])).not.toMatch(/secret/)
-    expect(await ctx.invoke<Res>(IPC.MCP_CREDENTIAL_LIST_FILES, { mcpServerName: 'acme' })).toEqual({ files: [] })
+    expect(await ctx.invoke<Res>(IPC.MCP_CREDENTIAL_LIST_FILES, { serverName: '' })).toEqual({ files: [] })
 
     // Bring a bundled registry agent home: into agentsFolder, no identity, the app default provider.
     expect(await ctx.invoke<Res>(IPC.AGENT_REGISTRY_BRING_HOME, { id: '' })).toEqual({ success: false, error: 'Missing registry id' })

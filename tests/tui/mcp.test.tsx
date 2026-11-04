@@ -4,7 +4,7 @@ import { App } from '../../src/main/tui/app/App'
 import { createTheme } from '../../src/main/tui/app/theme'
 import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
-import { mcpSourceRows, parseAddTarget, serverConfigFor, studioOnlyReason, validateMcpForm, credentialNamespace } from '../../src/main/tui/setup/mcp'
+import { mcpSourceRows, parseAddTarget, serverConfigFor, studioOnlyReason, validateMcpForm } from '../../src/main/tui/setup/mcp'
 import { parseEnvPairs } from '../../src/main/tui/setup/McpDialog'
 import { AGENT_1_ID, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
 import { createIdentityFetch, type IdentityMockOptions } from './fixtures/identity-daemon'
@@ -64,7 +64,6 @@ describe('mcp model', () => {
     expect(cfg).toMatchObject({ name: 'brave-search', transport: 'stdio', npm_package: '@brave/brave-search-mcp-server', env_keys: ['BRAVE_API_KEY'] })
     expect(cfg.run_location).toBeUndefined()
     expect(JSON.stringify(cfg)).not.toContain(SECRET)
-    expect(credentialNamespace(cfg)).toBe('@brave/brave-search-mcp-server')
     const http = serverConfigFor(parseAddTarget('https://example.test/mcp').row!, { name: 'example', source: 'https://example.test/mcp', args: '', runOn: 'container', env: { MCP_TOKEN: 't' } })
     expect(http).toMatchObject({ transport: 'http', url: 'https://example.test/mcp', bearer_token_env_var: 'MCP_TOKEN', env_keys: ['MCP_TOKEN'] })
     const host = serverConfigFor(parseAddTarget('npm:x-server').row!, { name: 'x', source: 'x-server', args: '--port 3', runOn: 'host', env: {} })
@@ -100,7 +99,7 @@ describe('/mcp', () => {
     await tui.waitFor(`${SECRET.length} chars`)
     await tui.press(KEY.ctrlS)
     await tui.waitFor(f => f.includes('3 tools') && f.includes('Sealing 1 credential'))
-    expect(setup.mcpCredentials.get(AGENT_1_ID)?.get('mcp:@brave/brave-search-mcp-server:BRAVE_API_KEY')).toBe(SECRET)
+    expect(setup.mcpCredentials.get(AGENT_1_ID)?.get('mcp:brave-search:BRAVE_API_KEY')).toBe(SECRET)
     expect(JSON.stringify(setup.mcpServers.get(AGENT_1_ID))).not.toContain(SECRET)
     expect(setup.mcpServers.get(AGENT_1_ID)?.[0]).toMatchObject({ env_keys: ['BRAVE_API_KEY'] })
     for (const f of tui.frames) expect(f).not.toContain(SECRET)
@@ -141,7 +140,7 @@ describe('/mcp', () => {
     await tui.press(KEY.enter)
     await tui.waitFor(f => f.includes('3 tools') && f.includes('Attaching brave-search'))
     expect(setup.credentialWrites.map(w => w.replace)).toEqual([false, false, true])
-    expect(setup.mcpCredentials.get(AGENT_1_ID)?.get('mcp:@brave/brave-search-mcp-server:BRAVE_API_KEY')).toBe(SECRET)
+    expect(setup.mcpCredentials.get(AGENT_1_ID)?.get('mcp:brave-search:BRAVE_API_KEY')).toBe(SECRET)
     for (const f of tui.frames) expect(f).not.toContain(SECRET)
   }, 20000)
 

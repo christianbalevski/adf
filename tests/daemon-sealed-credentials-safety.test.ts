@@ -315,7 +315,7 @@ describe('owner replace of a locked sealed credential (replace: true)', () => {
     const ref = await runtime.loadAgent(file, { enforceReviewGate: false })
     const cases: Array<{ url: string; payload: Record<string, unknown> }> = [
       { url: `/agents/${ref.id}/identity/${encodeURIComponent('custom:thing')}`, payload: { value: 'v1' } },
-      { url: `/agents/${ref.id}/mcp/credentials`, payload: { npmPackage: 'pkg', envKey: 'KEY', value: 'v2' } },
+      { url: `/agents/${ref.id}/mcp/credentials`, payload: { serverName: 'pkg', envKey: 'KEY', value: 'v2' } },
       { url: `/agents/${ref.id}/providers/openai-main/credential`, payload: { value: 'v3' } },
     ]
     for (const c of cases) {

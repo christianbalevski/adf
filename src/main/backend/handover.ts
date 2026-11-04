@@ -715,7 +715,7 @@ async function moveMcpOAuth(toDaemon: boolean, deps: HandoverDeps, marker: Hando
   try { back = reread ? JSON.parse(reread) as Record<string, McpOAuthRecord> : {} } catch { back = {} }
   if (urls.some((url) => !back[url])) return result('failed', 'Studio\'s settings do not hold every server after the write; the daemon\'s copy kept', true)
   await deps.beforeSourceDelete?.('mcp-oauth')
-  for (const url of urls) await store.invalidate(url, 'all')
+  for (const url of urls) store.writeRecord(url, undefined)
   return { item: { id: 'mcp-oauth', label, outcome: 'moved', detail: `${urls.length} server sign-in(s) moved back into Studio's settings${ownNote}${weak ? `; stored with safeStorage's basic_text obfuscation, as Studio stores them on this machine (${weak.replace(/\.$/, '')})` : ''}` }, movedUrls: urls }
 }
 
@@ -845,7 +845,7 @@ async function daemonSignIns(deps: HandoverDeps): Promise<Pick<HandoverMarker, '
   }
   const store = daemonOAuthStore(deps)
   if (store?.available()) {
-    own.mcpServers = store.listServerUrls()
+    own.mcpServers = store.listServers()
     return { daemonOwn: own }
   }
   // Not readable here: unknown only when a daemon may have written it (a fresh install has no daemon store).

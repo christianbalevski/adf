@@ -24,15 +24,20 @@ This path has no Composio dependency. Release builds of ADF Studio that ship a
 built-in Google OAuth client skip steps 1–3 and 5: Gmail has no **Credential
 file** step, and **Sign in to Gmail** writes the built-in client to
 `~/.gmail-mcp/gcp-oauth.keys.json` when no client file is chosen and none
-exists on the host. An existing file is kept, and your sign-in tokens stay in
-`~/.gmail-mcp/credentials.json`. If `credentials.json` already exists without
+exists yet. An existing file is kept, and your sign-in tokens stay in
+`~/.gmail-mcp/credentials.json`. Here `~` is the Gmail server's own home
+folder, not yours: `<ADF user data>/mcp-home/app/gmail` for the Settings
+server named `gmail` (see [One server, several accounts](../guides/mcp-integration.md#one-server-several-accounts)).
+To connect a second Gmail account, add Gmail again in Settings, name it (say
+`gmail-work`), and sign in with that account. If `credentials.json` already exists without
 a client file, the built-in client is not written (those tokens may come from
 another client): choose that client, or delete `credentials.json` and connect
 again. Agents store your tokens and any client you chose, never the built-in
 client. To use your own client instead, choose it under **Advanced → Use your
 own OAuth client** before the first Connect; it is written only when no client
 file exists yet. To switch clients later, delete
-`~/.gmail-mcp/gcp-oauth.keys.json` and `~/.gmail-mcp/credentials.json`, then
+`.gmail-mcp/gcp-oauth.keys.json` and `.gmail-mcp/credentials.json` in that
+folder, then
 connect again (with your own client chosen, or none for the built-in one).
 Agents that already stored Gmail tokens need a fresh sign-in, and agents that
 stored a client you chose earlier keep using it until you re-supply it in

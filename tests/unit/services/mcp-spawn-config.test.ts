@@ -412,7 +412,7 @@ describe('resolveMcpSpawnConfig', () => {
 })
 
 describe('resolveMcpEnvVars', () => {
-  it('resolves env vars for npm_package namespace', () => {
+  it('resolves env vars under the server name, not the npm package', () => {
     const serverCfg: McpServerConfig = {
       name: 'test',
       transport: 'stdio',
@@ -420,15 +420,16 @@ describe('resolveMcpEnvVars', () => {
       env_keys: ['API_KEY', 'SECRET']
     }
     const getDecrypted = (key: string) => {
-      if (key === 'mcp:my-server:API_KEY') return 'key123'
-      if (key === 'mcp:my-server:SECRET') return 'secret456'
+      if (key === 'mcp:test:API_KEY') return 'key123'
+      if (key === 'mcp:test:SECRET') return 'secret456'
+      if (key.startsWith('mcp:my-server:')) return 'package-keyed'
       return null
     }
     const result = resolveMcpEnvVars(serverCfg, getDecrypted)
     expect(result).toEqual({ API_KEY: 'key123', SECRET: 'secret456' })
   })
 
-  it('resolves env vars for pypi_package namespace', () => {
+  it('resolves env vars under the server name, not the pypi package', () => {
     const serverCfg: McpServerConfig = {
       name: 'test',
       transport: 'stdio',
@@ -436,7 +437,8 @@ describe('resolveMcpEnvVars', () => {
       env_keys: ['TOKEN']
     }
     const getDecrypted = (key: string) => {
-      if (key === 'mcp:python-server:TOKEN') return 'tok789'
+      if (key === 'mcp:test:TOKEN') return 'tok789'
+      if (key === 'mcp:python-server:TOKEN') return 'package-keyed'
       return null
     }
     const result = resolveMcpEnvVars(serverCfg, getDecrypted)
@@ -453,7 +455,7 @@ describe('resolveMcpEnvVars', () => {
     expect(result).toEqual({})
   })
 
-  it('falls back to server name when no package', () => {
+  it('uses the server name when there is no package', () => {
     const serverCfg: McpServerConfig = {
       name: 'test',
       transport: 'stdio',
@@ -510,7 +512,7 @@ describe('HTTP MCP helpers', () => {
         key: 'GITHUB_TOKEN',
         scope: 'app',
         required: true,
-        credential_ref: 'mcp:@modelcontextprotocol/server-github:GITHUB_TOKEN'
+        credential_ref: 'mcp:github:GITHUB_TOKEN'
       }
     ])
   })

@@ -39,6 +39,8 @@ import type { PodmanService } from '../services/podman.service'
 import type { WsConnectionManager } from '../services/ws-connection-manager'
 import { containerWorkspacePath, containerAgentHome } from '../services/podman.service'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
+import { mcpContainerHomeEnv, mcpCredentialFileStore, mcpCredentialOwner, mcpHostHomeEnv, mcpServerContainerHome, mcpServerHostHome } from '../services/mcp-server-home'
+import { inheritableEnv } from '../utils/child-env'
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { PodmanStdioTransport } from '../services/podman-stdio-transport'
@@ -1292,6 +1294,13 @@ export class BackgroundAgentManager extends EventEmitter {
     // config to use: the initial loop passes the start-time `config`; the
     // closures pass workspace.getAgentConfig() so post-start config changes are
     // never clobbered by a stale start-time snapshot.
+    // The agent's keystore as a credential-file store (mcp-credential-files.ts).
+    const agentCredentialStore = () => ({
+      getDecrypted: (p: string) => workspace.getIdentityDecrypted(p, derivedKey ?? null),
+      hasRow: (p: string) => workspace.getIdentityRow(p) !== null,
+      setIdentitySealed: (p: string, v: string) => workspace.setIdentitySealed(p, v),
+    })
+
     const connectOneServer = async (
       freshConfig: AgentConfig,
       serverName: string,
@@ -1312,6 +1321,8 @@ export class BackgroundAgentManager extends EventEmitter {
       const connCfg = reg
         ? pinServerConfigToRegistration(serverCfg, reg)
         : { ...serverCfg }
+      // Whose credentials it uses decides where they live (mcp-server-home.ts).
+      const owner = mcpCredentialOwner(reg, freshConfig.id)
 
       const appEnvKeys: string[] = []
       if (reg?.env?.length) {
@@ -1394,11 +1405,14 @@ export class BackgroundAgentManager extends EventEmitter {
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
         try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
-        // Materialize keystore-held credential files into the container before spawn.
+        // Materialize stored credential files into the server's home before spawn.
+        const agentHome = containerAgentHome(isolated, freshConfig.id)
+        const serverHome = mcpServerContainerHome(connCfg, agentHome)
+        if (serverHome !== agentHome) { try { await this.podmanService.ensureWorkspace(containerName, serverHome) } catch { /* ignore */ } }
         await materializeCredentialFiles(
-          { getDecrypted: (p) => workspace.getIdentityDecrypted(p, derivedKey ?? null), hasRow: (p) => workspace.getIdentityRow(p) !== null },
+          mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'container'),
           connCfg,
-          containerCredentialTarget(this.podmanService, containerName, containerAgentHome(isolated, freshConfig.id)),
+          containerCredentialTarget(this.podmanService, containerName, serverHome),
         )
         if (podmanBin) {
           // Browser-dependent MCP servers need the container's browser
@@ -1411,8 +1425,9 @@ export class BackgroundAgentManager extends EventEmitter {
               containerName,
               command: containerCmd.command,
               args: containerCmd.args,
-              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still wins.
-              env: { HOME: containerAgentHome(isolated, freshConfig.id), ...connCfg.env, ...browserEnv },
+              // Agent-scoped HOME first — an explicit serverCfg.env.HOME still
+              // wins, except a server's own home (mcp-server-home.ts), last.
+              env: { HOME: agentHome, ...connCfg.env, ...browserEnv, ...mcpContainerHomeEnv(connCfg, agentHome, connCfg.env) },
               cwd: containerWorkspacePath(isolated, freshConfig.id),
             }),
             linkedFileReader: containerLinkedFileReader(this.podmanService, containerName, containerWorkspacePath(isolated, freshConfig.id)),
@@ -1428,10 +1443,11 @@ export class BackgroundAgentManager extends EventEmitter {
         // host — a container-intended server (no podman service wired) must
         // never write credentials to the host filesystem.
         if (!willContainerize) {
+          connCfg.env = { ...connCfg.env, ...mcpHostHomeEnv(connCfg, owner, { ...inheritableEnv(), ...connCfg.env }) }
           await materializeCredentialFiles(
-            { getDecrypted: (p) => workspace.getIdentityDecrypted(p, derivedKey ?? null), hasRow: (p) => workspace.getIdentityRow(p) !== null },
+            mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'host'),
             connCfg,
-            { kind: 'host' },
+            { kind: 'host', home: mcpServerHostHome(connCfg, owner) },
           )
         }
         const spawn = resolveMcpSpawnConfig(connCfg, { npmResolver: this.mcpPackageResolver, uvxResolver: this.uvxPackageResolver ?? undefined, uvBinPath })
@@ -1489,6 +1505,8 @@ export class BackgroundAgentManager extends EventEmitter {
         // (if any) so a tampered .adf command/args can't run under auth.
         const authReg = getRegistrationsForAttach().find((r) => r.name === serverName)
         const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
+        const authCfg = { ...cfg }
+        const owner = mcpCredentialOwner(((this.settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []).find((r) => r.name === serverName), freshConfig.id)
         const resolvedEnv = resolveMcpEnvVars(cfg, (k) => workspace.getIdentityDecrypted(k, derivedKey ?? null))
         let uvBinPath: string | undefined
         if (cfg.pypi_package || cfg.command === 'uvx') {
@@ -1519,23 +1537,25 @@ export class BackgroundAgentManager extends EventEmitter {
             containerName: isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp',
             command: cc.command,
             args: cc.args,
-            home: containerAgentHome(isolated, freshConfig.id),
+            // The server's own home when it has credential files (mcp-server-home.ts).
+            home: mcpServerContainerHome(cfg, containerAgentHome(isolated, freshConfig.id)),
           }
           // The auth subcommand writes tokens into $HOME — make sure it exists.
           try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
         }
         const podmanSvc = this.podmanService
-        const credStore = { getDecrypted: (p: string) => workspace.getIdentityDecrypted(p, derivedKey ?? null), hasRow: (p: string) => workspace.getIdentityRow(p) !== null }
+        const credStore = mcpCredentialFileStore(cfg, owner, agentCredentialStore(), container ? 'container' : 'host')
+        if (!container && !willContainerize) authCfg.env = { ...authCfg.env, ...mcpHostHomeEnv(cfg, owner, { ...inheritableEnv(), ...cfg.env }) }
         // Host credential target ONLY when routing chose host — a
         // container-intended server without a podman service must not
         // materialize or capture credentials on the host.
         const credTarget: CredentialFileTarget | null = container && podmanSvc
           ? containerCredentialTarget(podmanSvc, container.containerName, container.home ?? '/root')
-          : (!willContainerize ? { kind: 'host' } : null)
+          : (!willContainerize ? { kind: 'host', home: mcpServerHostHome(cfg, owner) } : null)
         if (credTarget) await materializeCredentialFiles(credStore, cfg, credTarget)
-        await this.mcpAuthPreflight(cfg, { authArgs: installOptions.authArgs, resolvedEnv, uvBinPath, container, authPort: installOptions.authPort })
-        // Auth succeeded: capture files the flow stored (tokens) into the keystore.
-        if (credTarget) await writeBackCredentialFiles({ setIdentitySealed: (p, v) => workspace.setIdentitySealed(p, v) }, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
+        await this.mcpAuthPreflight(authCfg, { authArgs: installOptions.authArgs, resolvedEnv, uvBinPath, container, authPort: installOptions.authPort })
+        // Auth succeeded: capture files the flow stored (tokens) into the store.
+        if (credTarget) await writeBackCredentialFiles(credStore, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
       }
       return connectOneServer(freshConfig, serverName, 'Hot-load')
     }, getRegistrationsForAttach))

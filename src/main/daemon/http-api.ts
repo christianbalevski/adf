@@ -369,11 +369,7 @@ interface IdentityListQuery {
 }
 
 interface McpCredentialQuery {
-  npmPackage?: string
-}
-
-interface McpDetachQuery {
-  credentialNamespace?: string
+  serverName?: string
 }
 
 interface LoadAgentBody {
@@ -527,7 +523,7 @@ interface ProviderAttachBody {
 }
 
 interface McpCredentialBody {
-  npmPackage?: string
+  serverName?: string
   envKey?: string
   value?: string
   /** Owner override: discard a locked sealed value / store while locked (see RuntimeService.setIdentityValue). */
@@ -2237,12 +2233,12 @@ export function createDaemonHttpApi(
 
   server.put<{ Params: AgentIdParams; Body: McpCredentialBody }>('/agents/:id/mcp/credentials', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    const { npmPackage, envKey, value, replace } = request.body ?? {}
-    if (typeof npmPackage !== 'string') return badRequest(reply, 'npmPackage is required')
+    const { serverName, envKey, value, replace } = request.body ?? {}
+    if (typeof serverName !== 'string' || !serverName) return badRequest(reply, 'serverName is required')
     if (typeof envKey !== 'string') return badRequest(reply, 'envKey is required')
     if (typeof value !== 'string') return badRequest(reply, 'value is required')
     try {
-      return runtime.setAgentMcpCredential(request.params.id, npmPackage, envKey, value, { replace: replace === true })
+      return runtime.setAgentMcpCredential(request.params.id, serverName, envKey, value, { replace: replace === true })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }
@@ -2250,8 +2246,8 @@ export function createDaemonHttpApi(
 
   server.get<{ Params: AgentIdParams; Querystring: McpCredentialQuery }>('/agents/:id/mcp/credentials', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
-    if (!request.query.npmPackage) return badRequest(reply, 'npmPackage is required')
-    return runtime.getAgentMcpCredentials(request.params.id, request.query.npmPackage)
+    if (!request.query.serverName) return badRequest(reply, 'serverName is required')
+    return runtime.getAgentMcpCredentials(request.params.id, request.query.serverName)
   })
 
   server.post<{ Params: AgentIdParams; Body: McpAttachBody }>('/agents/:id/mcp/servers', async (request, reply) => {
@@ -2267,10 +2263,10 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.delete<{ Params: McpServerParams; Querystring: McpDetachQuery }>('/agents/:id/mcp/servers/:serverName', async (request, reply) => {
+  server.delete<{ Params: McpServerParams }>('/agents/:id/mcp/servers/:serverName', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     try {
-      return await runtime.detachAgentMcpServer(request.params.id, request.params.serverName, request.query.credentialNamespace)
+      return await runtime.detachAgentMcpServer(request.params.id, request.params.serverName)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

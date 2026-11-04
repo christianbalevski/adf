@@ -22,7 +22,6 @@ import type { OverlayProps } from '../views/types'
 import { channelsIdentityReady, identityFirst } from './open'
 import {
   MCP_OVERLAY,
-  credentialNamespace,
   defaultServerName,
   envKeysOf,
   joinArgs,
@@ -232,8 +231,7 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
     if (job.env.length) {
       steps[i] = { ...steps[i], status: 'running', ...(replace ? { note: 'replacing the locked value' } : {}) }; show()
       try {
-        const ns = credentialNamespace(server)
-        for (const [key, value] of job.env) await store.client.setMcpCredential(agentId, ns, key, value, replace ? { replace: true } : {})
+        for (const [key, value] of job.env) await store.client.setMcpCredential(agentId, server.name, key, value, replace ? { replace: true } : {})
         steps[i] = { ...steps[i], status: 'done' }
       } catch (err) {
         if (!replace && isCredentialsLocked(err)) {
@@ -281,7 +279,7 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
     setStep({ kind: 'env', name })
     const server = serverOf(name)
     if (!server) return
-    store.client.mcpCredentials(agentId, credentialNamespace(server))
+    store.client.mcpCredentials(agentId, server.name)
       .then(result => { if (alive.current) setStored(result.credentials ?? {}) })
       .catch(() => { /* older daemon: keep the generic placeholder */ })
   }
@@ -313,9 +311,8 @@ export function McpDialog({ overlay, close, width, height }: OverlayProps) {
   }
 
   const remove = async (name: string) => {
-    const server = serverOf(name)
     setStep({ kind: 'remove', name, busy: true })
-    const result = await store.actions.run(`Remove ${name}`, c => c.detachMcpServer(agentId, name, server ? credentialNamespace(server) : undefined))
+    const result = await store.actions.run(`Remove ${name}`, c => c.detachMcpServer(agentId, name))
     if (!alive.current) return
     if (result) {
       store.actions.toast(`${name} removed from ${who}${result.deletedCredentials ? ` (${result.deletedCredentials} credential${result.deletedCredentials === 1 ? '' : 's'} deleted)` : ''}`, 'success')

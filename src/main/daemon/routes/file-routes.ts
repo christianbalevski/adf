@@ -433,14 +433,14 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
   server.put<PathQ & { Body: unknown }>('/files/agent/mcp/credentials', async (request, reply) => {
     try { return await pathOps.setMcpCredential(request.query.path, request.body) } catch (err) { return fail(reply, err) }
   })
-  server.get<{ Querystring: { path?: string; npmPackage?: string } }>('/files/agent/mcp/credentials', async (request, reply) => {
-    try { return await pathOps.getMcpCredentials(request.query.path, request.query.npmPackage) } catch (err) { return fail(reply, err) }
+  server.get<{ Querystring: { path?: string; serverName?: string } }>('/files/agent/mcp/credentials', async (request, reply) => {
+    try { return await pathOps.getMcpCredentials(request.query.path, request.query.serverName) } catch (err) { return fail(reply, err) }
   })
   server.post<PathQ & { Body: unknown }>('/files/agent/mcp/servers', async (request, reply) => {
     try { return await pathOps.attachMcpServer(request.query.path, request.body) } catch (err) { return fail(reply, err) }
   })
-  server.delete<{ Querystring: { path?: string; credentialNamespace?: string }; Params: { serverName: string } }>('/files/agent/mcp/servers/:serverName', async (request, reply) => {
-    try { return await pathOps.detachMcpServer(request.query.path, request.params.serverName, request.query.credentialNamespace) } catch (err) { return fail(reply, err) }
+  server.delete<{ Querystring: { path?: string }; Params: { serverName: string } }>('/files/agent/mcp/servers/:serverName', async (request, reply) => {
+    try { return await pathOps.detachMcpServer(request.query.path, request.params.serverName) } catch (err) { return fail(reply, err) }
   })
   server.put<PathQ & { Body: unknown }>('/files/agent/adapters/credentials', async (request, reply) => {
     try { return await pathOps.setAdapterCredential(request.query.path, request.body) } catch (err) { return fail(reply, err) }

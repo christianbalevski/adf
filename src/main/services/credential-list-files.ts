@@ -126,12 +126,15 @@ async function collectAsync<T>(sources: CredentialFileSources, check: FileCheck<
   return results
 }
 
-/** `mcp:<npmPackage>:*` credentials, else the server named in the config. */
-function mcpCheck(args: { mcpServerName: string; npmPackage: string }): FileCheck<CredentialFileInfo> {
-  const prefix = `mcp:${args.npmPackage}:`
+/** `mcp:<serverName>:*` credentials, else the server named in the config. */
+function mcpCheck(args: { serverName: string }): FileCheck<CredentialFileInfo> {
+  const prefix = `mcp:${args.serverName}:`
   return (filePath) => {
-    const purposes = AdfDatabase.peekIdentityPurposes(filePath, prefix)
-    const populatedKeys = purposes.map((p) => p.slice(prefix.length))
+    // Env credentials only: the server's sealed OAuth token (`oauth`) and
+    // credential files (`file:<path>`) share the prefix.
+    const populatedKeys = AdfDatabase.peekIdentityPurposes(filePath, prefix)
+      .map((p) => p.slice(prefix.length))
+      .filter((key) => key !== 'oauth' && !key.startsWith('file:'))
 
     // Include if file has stored credentials for this server
     if (populatedKeys.length > 0) {
@@ -140,7 +143,7 @@ function mcpCheck(args: { mcpServerName: string; npmPackage: string }): FileChec
 
     // Also include if the file references this MCP server in its config (even without creds yet)
     const mcpNames = AdfDatabase.peekMcpServerNames(filePath)
-    if (mcpNames.includes(args.mcpServerName)) {
+    if (mcpNames.includes(args.serverName)) {
       return { filePath, fileName: basename(filePath), hasCredentials: false, populatedKeys: [] }
     }
     return null
@@ -194,9 +197,9 @@ function providerCheck(providerId: string): FileCheck<ProviderCredentialFileInfo
   }
 }
 
-/** Files holding `mcp:<npmPackage>:*` credentials or naming the server in their config. */
+/** Files holding `mcp:<serverName>:*` credentials or naming the server in their config. */
 export function listMcpCredentialFiles(
-  args: { mcpServerName: string; npmPackage: string },
+  args: { serverName: string },
   sources: CredentialFileSources,
 ): { files: CredentialFileInfo[] } {
   return { files: collectSync(sources, mcpCheck(args)) }
@@ -214,7 +217,7 @@ export function listProviderCredentialFiles(providerId: string, sources: Credent
 
 /** listMcpCredentialFiles without blocking the event loop (daemon). */
 export async function listMcpCredentialFilesAsync(
-  args: { mcpServerName: string; npmPackage: string },
+  args: { serverName: string },
   sources: CredentialFileSources,
 ): Promise<{ files: CredentialFileInfo[] }> {
   return { files: await collectAsync(sources, mcpCheck(args)) }

@@ -32,7 +32,7 @@ beforeAll(() => {
   const seed = join(root, 'seed.adf')
   const ws = AdfWorkspace.create(seed, { name: 'agent-1' })
   try {
-    ws.setIdentity('mcp:@acme/server:API_KEY', 'v')
+    ws.setIdentity('mcp:acme:API_KEY', 'v')
     ws.setIdentity('provider:anthropic:apiKey', 'v')
   } finally {
     ws.close()
@@ -110,7 +110,7 @@ describe('scans do not block the event loop', () => {
   }
 
   for (const [name, url, count] of [
-    ['MCP credential files', '/credentials/mcp/files?mcpServerName=acme&npmPackage=%40acme%2Fserver', FILES],
+    ['MCP credential files', '/credentials/mcp/files?serverName=acme', FILES],
     ['provider credential files', '/credentials/providers/files?providerId=anthropic', FILES],
     ['adapter credential files', '/credentials/adapters/files?adapterType=telegram', 0],
   ] as const) {

@@ -30,6 +30,15 @@ export async function revealValues(client: DaemonClient, filePath: string, prefi
   return out
 }
 
+/**
+ * The env credentials among a server's `mcp:<name>:*` rows, by key: its
+ * sealed OAuth token (`oauth`) and credential files (`file:<path>`) share the
+ * prefix and never leave the runtime (adf-workspace isReservedMcpRuntimePurpose).
+ */
+export function envCredentialsOnly<T>(byKey: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(byKey).filter(([key]) => key !== 'oauth' && !key.startsWith('file:')))
+}
+
 /** Edit distance, capped: `max + 1` once it is certainly larger. */
 function editDistance(a: string, b: string, max: number): number {
   if (Math.abs(a.length - b.length) > max) return max + 1

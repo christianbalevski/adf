@@ -1,27 +1,11 @@
 import type { McpEnvKeySchema, McpHeaderEnvSchema, McpServerConfig } from '../types/adf-v02.types'
 import type { McpServerRegistration } from '../types/ipc.types'
 
-type McpCredentialSource = Pick<McpServerConfig, 'name' | 'npm_package' | 'pypi_package'> | {
-  name: string
-  npmPackage?: string
-  pypiPackage?: string
-}
+type McpCredentialSource = Pick<McpServerConfig, 'name'>
 
-function sourcePackage(source: McpCredentialSource): string | undefined {
-  // Optional keys are often absent rather than undefined, so an `in` check on
-  // one of them cannot tell the two shapes apart: a pypi-only agent config has
-  // no npm_package key and would fall through to the server name, while the
-  // credential panel stored its keys under the pypi package.
-  const s = source as { npm_package?: string; pypi_package?: string; npmPackage?: string; pypiPackage?: string }
-  return s.npm_package ?? s.npmPackage ?? s.pypi_package ?? s.pypiPackage
-}
-
-export function mcpCredentialNamespace(source: McpCredentialSource): string {
-  return sourcePackage(source) ?? source.name
-}
-
+/** Where a server's credential `key` is stored: under the server's name, never its package. */
 export function mcpCredentialRef(source: McpCredentialSource, key: string): string {
-  return `mcp:${mcpCredentialNamespace(source)}:${key}`
+  return `mcp:${source.name}:${key}`
 }
 
 export function isSensitiveMcpHeader(header: string): boolean {

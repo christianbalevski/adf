@@ -1,7 +1,7 @@
 // Credential metadata across agent files: the Settings pages' "agents using
 // this" lists and the agent provider key-source badges.
 //
-//   GET  /credentials/mcp/files?mcpServerName=&npmPackage=
+//   GET  /credentials/mcp/files?serverName=
 //   GET  /credentials/adapters/files?adapterType=
 //   GET  /credentials/providers/files?providerId=
 //   POST /credentials/providers/key-sources   { filePath, providers: [{ id, type, baseUrl }] }
@@ -75,11 +75,10 @@ export function registerCredentialsRoutes(server: FastifyInstance, ctx: DaemonRo
     trackedDirs: (settings?.get('trackedDirectories') as string[] | undefined) ?? [],
   })
 
-  server.get<{ Querystring: { mcpServerName?: string; npmPackage?: string } }>('/credentials/mcp/files', async (request, reply) => {
-    const mcpServerName = stringParam(request.query.mcpServerName)
-    const npmPackage = stringParam(request.query.npmPackage)
-    if (!mcpServerName || !npmPackage) return badRequest(reply, 'mcpServerName and npmPackage are required')
-    return listMcpCredentialFilesAsync({ mcpServerName, npmPackage }, sources())
+  server.get<{ Querystring: { serverName?: string } }>('/credentials/mcp/files', async (request, reply) => {
+    const serverName = stringParam(request.query.serverName)
+    if (!serverName) return badRequest(reply, 'serverName is required')
+    return listMcpCredentialFilesAsync({ serverName }, sources())
   })
 
   server.get<{ Querystring: { adapterType?: string } }>('/credentials/adapters/files', async (request, reply) => {

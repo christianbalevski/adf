@@ -4803,22 +4803,22 @@
         "tags": [
           "Credentials"
         ],
-        "summary": "MCP credential metadata by package",
-        "description": "Metadata only.",
+        "summary": "MCP credential metadata by server name",
+        "description": "Metadata only. Env credentials: the server's sealed OAuth token and credential files are not listed.",
         "operationId": "getAgentMcpCredentials",
         "parameters": [
           {
             "$ref": "#/components/parameters/AgentIdPath"
           },
           {
-            "name": "npmPackage",
+            "name": "serverName",
             "in": "query",
             "required": true,
-            "description": "Package or server name",
+            "description": "Server name (`mcp:<serverName>:*`)",
             "schema": {
               "type": "string"
             },
-            "example": "@acme/mcp-server"
+            "example": "github"
           }
         ],
         "responses": {
@@ -4854,7 +4854,7 @@
           "Credentials"
         ],
         "summary": "Store an MCP credential",
-        "description": "Stored as `mcp:{npmPackage}:{envKey}`. Values go in, never out. While the agent's credentials envelope is locked (or foreign) on this daemon the write is refused with 409 `credentials_locked`: a plain write would destroy a sealed value it cannot read, or store a new one unsealed. Unlock the owner identity first, or send `replace: true` (the owner's override: a locked sealed value is discarded unread, the new value stored plain and sealed once the envelope unlocks, logged as `credential_replaced`; the response then has `replaced: true`). `replace` is refused for key material (`crypto:*`, 400). A write to an agent locked by a legacy whole-file identity password answers 500 (unlock it with POST …/identity/password/unlock).",
+        "description": "Stored as `mcp:{serverName}:{envKey}`. Values go in, never out. While the agent's credentials envelope is locked (or foreign) on this daemon the write is refused with 409 `credentials_locked`: a plain write would destroy a sealed value it cannot read, or store a new one unsealed. Unlock the owner identity first, or send `replace: true` (the owner's override: a locked sealed value is discarded unread, the new value stored plain and sealed once the envelope unlocks, logged as `credential_replaced`; the response then has `replaced: true`). `replace` is refused for key material (`crypto:*`, 400). A write to an agent locked by a legacy whole-file identity password answers 500 (unlock it with POST …/identity/password/unlock).",
         "operationId": "setAgentMcpCredential",
         "parameters": [
           {
@@ -5352,7 +5352,7 @@
           "MCP"
         ],
         "summary": "Detach an MCP server and delete its credentials",
-        "description": "Removes the server config and the matching `mcp:*` identity rows.",
+        "description": "Removes the server config and its `mcp:<serverName>:*` identity rows.",
         "operationId": "detachAgentMcpServer",
         "parameters": [
           {
@@ -5360,15 +5360,6 @@
           },
           {
             "$ref": "#/components/parameters/ServerNamePath"
-          },
-          {
-            "name": "credentialNamespace",
-            "in": "query",
-            "required": false,
-            "description": "Credential namespace to delete (default: the server's package or name)",
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -10792,19 +10783,10 @@
         "operationId": "listMcpCredentialFiles",
         "parameters": [
           {
-            "name": "mcpServerName",
+            "name": "serverName",
             "in": "query",
             "required": true,
-            "description": "Server name in agent configs",
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "npmPackage",
-            "in": "query",
-            "required": true,
-            "description": "Credential namespace (`mcp:<npmPackage>:*`)",
+            "description": "Server name: agent configs that name it, and `mcp:<serverName>:*` credentials",
             "schema": {
               "type": "string"
             }
@@ -11992,10 +11974,19 @@
         "operationId": "getMcpOAuthStatus",
         "parameters": [
           {
+            "name": "name",
+            "in": "query",
+            "required": false,
+            "description": "Settings registration name. App-level sign-ins are stored per server name.",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
             "name": "url",
             "in": "query",
             "required": false,
-            "description": "Remote server URL",
+            "description": "Remote server URL. A record is only reported for the URL it was minted for.",
             "schema": {
               "type": "string"
             }
@@ -12033,7 +12024,7 @@
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/McpOAuthUrlBody"
+                "$ref": "#/components/schemas/McpOAuthNameBody"
               }
             }
           }
@@ -14365,7 +14356,7 @@
             "example": "/home/me/agents/agent-1.adf"
           },
           {
-            "name": "npmPackage",
+            "name": "serverName",
             "in": "query",
             "required": true,
             "schema": {
@@ -14484,7 +14475,7 @@
           "Agent files"
         ],
         "summary": "Detach an MCP server from an agent file",
-        "description": "Also deletes its credentials (`mcp:{credentialNamespace}:*`, default the server name). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. Credentials are matched by exact prefix.",
+        "description": "Also deletes its credentials (`mcp:{serverName}:*`). A file that is not loaded is refused with 409 `agent_leased` while another runtime runs it. Credentials are matched by exact prefix.",
         "operationId": "detachAgentFileMcpServer",
         "parameters": [
           {
@@ -14499,14 +14490,6 @@
           },
           {
             "$ref": "#/components/parameters/ServerNamePath"
-          },
-          {
-            "name": "credentialNamespace",
-            "in": "query",
-            "required": false,
-            "schema": {
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -23692,14 +23675,14 @@
       "McpCredentialBody": {
         "type": "object",
         "required": [
-          "npmPackage",
+          "serverName",
           "envKey",
           "value"
         ],
         "properties": {
-          "npmPackage": {
+          "serverName": {
             "type": "string",
-            "description": "Package or server name the credential belongs to"
+            "description": "Name of the server the credential belongs to"
           },
           "envKey": {
             "type": "string"
@@ -23713,7 +23696,7 @@
           }
         },
         "example": {
-          "npmPackage": "@acme/mcp-server",
+          "serverName": "acme",
           "envKey": "ACME_TOKEN",
           "value": "…"
         }
@@ -23722,7 +23705,7 @@
         "type": "object",
         "required": [
           "agentId",
-          "npmPackage",
+          "serverName",
           "credentials"
         ],
         "properties": {
@@ -23731,7 +23714,7 @@
             "description": "Agent id",
             "example": "Xk3v9QpLm2"
           },
-          "npmPackage": {
+          "serverName": {
             "type": "string"
           },
           "credentials": {
@@ -23747,7 +23730,7 @@
         "type": "object",
         "required": [
           "agentId",
-          "npmPackage",
+          "serverName",
           "envKey",
           "success"
         ],
@@ -23757,7 +23740,7 @@
             "description": "Agent id",
             "example": "Xk3v9QpLm2"
           },
-          "npmPackage": {
+          "serverName": {
             "type": "string"
           },
           "envKey": {
@@ -29764,19 +29747,19 @@
         "properties": {
           "signedIn": {
             "type": "boolean",
-            "description": "A token is stored for the URL. The token itself is never returned."
+            "description": "A token is stored for the server name and URL. The token itself is never returned."
           }
         }
       },
-      "McpOAuthUrlBody": {
+      "McpOAuthNameBody": {
         "type": "object",
         "required": [
-          "url"
+          "name"
         ],
         "properties": {
-          "url": {
+          "name": {
             "type": "string",
-            "description": "The remote server URL"
+            "description": "The Settings registration name of the remote server"
           }
         }
       },

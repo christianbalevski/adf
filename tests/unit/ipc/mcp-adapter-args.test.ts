@@ -23,10 +23,11 @@ describe('MCP argument schemas (E1)', () => {
   })
 
   it('credential schemas require non-empty strings, value may be empty', () => {
-    expect(validateMcpArgs(McpCredentialSetArgs, { filePath: FILE, npmPackage: 'p', envKey: 'K', value: '' })).toEqual({ data: { filePath: FILE, npmPackage: 'p', envKey: 'K', value: '' } })
-    expect(validateMcpArgs(McpCredentialSetArgs, { filePath: FILE, npmPackage: 'p', envKey: '', value: 'v' })).toHaveProperty('error')
-    expect(validateMcpArgs(McpCredentialGetArgs, { filePath: FILE, npmPackage: 'p' })).toEqual({ data: { filePath: FILE, npmPackage: 'p' } })
-    expect(validateMcpArgs(McpCredentialListArgs, { mcpServerName: 's' })).toHaveProperty('error')
+    expect(validateMcpArgs(McpCredentialSetArgs, { filePath: FILE, serverName: 's', envKey: 'K', value: '' })).toEqual({ data: { filePath: FILE, serverName: 's', envKey: 'K', value: '' } })
+    expect(validateMcpArgs(McpCredentialSetArgs, { filePath: FILE, serverName: 's', envKey: '', value: 'v' })).toHaveProperty('error')
+    expect(validateMcpArgs(McpCredentialGetArgs, { filePath: FILE, serverName: 's' })).toEqual({ data: { filePath: FILE, serverName: 's' } })
+    expect(validateMcpArgs(McpCredentialListArgs, { serverName: 's' })).toEqual({ data: { serverName: 's' } })
+    expect(validateMcpArgs(McpCredentialListArgs, { serverName: '' })).toHaveProperty('error')
   })
 
   it('attach keeps the listed server fields (OAuth flags included) and strips the rest; url must be a URL', () => {
@@ -34,7 +35,7 @@ describe('MCP argument schemas (E1)', () => {
     expect(validateMcpArgs(McpAttachArgs, { filePath: FILE, serverConfig })).toEqual({ data: { filePath: FILE, serverConfig: { name: 'srv', type: 'http', url: 'https://mcp.example.com', oauth: true, oauthClientId: 'c', oauthScopes: ['a'], runLocation: 'host' } } })
     expect(validateMcpArgs(McpAttachArgs, { filePath: FILE, serverConfig: { name: 'srv', url: 'not a url' } })).toHaveProperty('error')
     expect(validateMcpArgs(McpAttachArgs, { filePath: FILE, serverConfig: { name: 'srv', type: 'docker' } })).toHaveProperty('error')
-    expect(validateMcpArgs(McpDetachArgs, { filePath: FILE, serverName: 'srv', credentialNamespace: 'mcp:srv' })).toEqual({ data: { filePath: FILE, serverName: 'srv', credentialNamespace: 'mcp:srv' } })
+    expect(validateMcpArgs(McpDetachArgs, { filePath: FILE, serverName: 'srv' })).toEqual({ data: { filePath: FILE, serverName: 'srv' } })
   })
 })
 

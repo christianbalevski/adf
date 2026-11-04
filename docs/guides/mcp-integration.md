@@ -183,6 +183,35 @@ Credentials stored at the application level (in Settings) are available to any a
 
 Credentials can also be stored in an individual agent's `adf_identity` table using the naming convention `mcp:<server>:<key>`. These are encrypted with the agent's password (if set) and travel with the `.adf` file. Agents can store these themselves from code — `await adf.set_identity({ purpose: 'mcp:<server>:<KEY>', value })` — mirroring the adapter credential pattern in [Channels](channels.md).
 
+### One server, several accounts
+
+A server is identified by its **name**, not its package or URL. Everything it stores is keyed by that name: env values (`mcp:<name>:<KEY>`), credential files (`mcp:<name>:file:<path>`), HTTP sign-ins, and its home folder. So one package can be installed several times, each copy with its own credentials, and each copy's tools carry its own prefix (`gmail_search_emails`, `gmail-work_search_emails`).
+
+**In Settings:** add Gmail, sign in with your personal account. Add Gmail again: the new entry is named `gmail-2`; rename it while adding (say `gmail-work`) and sign in with your work account. Both stay signed in. Whether a copy's credentials live in the app (one sign-in every agent shares) or per agent is set on each copy.
+
+**From an agent:** `mcp_install` attaches a Settings server by name. Without a name it attaches the package's server when exactly one is registered; when several are, it lists them and asks for one:
+
+```json
+{ "package": "@gongrzhe/server-gmail-autoauth-mcp", "name": "gmail-work" }
+```
+
+A name nobody uses installs the agent's own copy, with credentials only that agent holds:
+
+```json
+{ "package": "@gongrzhe/server-gmail-autoauth-mcp", "name": "gmail-team", "auth": true, "auth_args": ["auth"] }
+```
+
+**Home folders.** A server that declares credential files keeps them under `~`, so each copy runs with a home folder of its own and two copies never sign each other out:
+
+| Credentials stored | On the host | In a container |
+|---|---|---|
+| In the app (Settings) | `<ADF user data>/mcp-home/app/<name>` — the files live here | `<agent home>/.mcp-home/<name>`, copied from the app folder before each start and back after sign-in |
+| Per agent | `<ADF user data>/mcp-home/agents/<agent id>/<name>`, written from the agent's `.adf` before each start | `<agent home>/.mcp-home/<name>` |
+
+`<ADF user data>` is `~/Library/Application Support/ADF Studio` on macOS, `%APPDATA%\ADF Studio` on Windows and `~/.config/ADF Studio` on Linux. Servers without credential files keep your real home on the host (so `~/.gitconfig`, `~/.aws` and similar keep working) and the agent's home in a container.
+
+**Names are fixed once created.** The name is the key to a copy's credentials, so Settings shows it read-only after the server is added. To rename, add a copy under the new name, sign in or enter its credentials, and remove the old one. An agent renames its own servers the same way, and can script it in a lambda: `mcp_install` under the new name, copy the env values it can read (`adf.get_identity({ purpose: 'mcp:<old>:<KEY>' })` then `adf.set_identity({ purpose: 'mcp:<new>:<KEY>', value })`), call `mcp_install` with `auth: true` for anything that signs in, check that it connects, then `mcp_uninstall` the old name. Sealed credential files and sign-in tokens are never readable from agent code, so those are signed in again rather than copied.
+
 ### Credential Panel
 
 The credential panel (accessible from the MCP Status Dashboard) lets you:
@@ -215,7 +244,7 @@ When an agent installs an MCP server with `auth: true`, the runtime:
 4. **Waits for authorization**: Studio shows a "Complete authorization in your browser, then click Continue" dialog; headless runtimes wait for the auth command to exit on its own
 5. **Kills the preflight process** and connects via the normal MCP transport
 
-The server's OAuth flow saves credentials to disk (e.g., `~/.gmail-mcp/credentials.json`) — in the container's filesystem for containerized servers, which persists across restarts. Subsequent MCP connections use those saved credentials — no browser needed.
+The server's OAuth flow saves credentials to disk (e.g., `~/.gmail-mcp/credentials.json`) — in the server's own home folder (see [One server, several accounts](#one-server-several-accounts)), which persists across restarts. Subsequent MCP connections use those saved credentials — no browser needed.
 
 ### Agent-Side Usage
 
@@ -245,7 +274,7 @@ The agent calls `mcp_install` with the `auth` and `auth_args` parameters:
 Calling `mcp_install` again for a server that is already installed applies whatever you pass with it — nothing is silently dropped:
 
 - `env` — stores/replaces credentials in the identity keystore (the recovery route after a locked envelope is unlocked)
-- `credential_files` — merges declarations by path onto the server and seals any supplied `content`. The declared path is part of the credential identity (`mcp:<pkg>:file:<path>`), so a *renamed* path needs its content re-supplied at the new path — the sealed copy under the old path is not moved
+- `credential_files` — merges declarations by path onto the server and seals any supplied `content`. The declared path is part of the credential identity (`mcp:<name>:file:<path>`), so a *renamed* path needs its content re-supplied at the new path — the sealed copy under the old path is not moved
 - `auth: true` — re-runs the auth preflight and reconnects: the way to re-authorize an existing server without uninstalling it
 
 Only a bare re-install (none of the above) is an `already_installed` no-op. Credential-only updates land in config and keystore immediately but need `mcp_restart` to reach the running server.

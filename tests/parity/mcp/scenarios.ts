@@ -61,16 +61,16 @@ export const mcpAttachCredentialsScenario: ParityScenario = {
     await ctx.invoke(IPC.MCP_ATTACH_SERVER, { filePath: agent.filePath, serverConfig })
     await ctx.invoke(IPC.MCP_ATTACH_SERVER, { filePath: agent.filePath, serverConfig })
     await ctx.invoke(IPC.MCP_ATTACH_SERVER, { filePath: agent.filePath, serverConfig: { name: '' } })
-    await ctx.invoke(IPC.MCP_CREDENTIAL_SET, { filePath: agent.filePath, npmPackage: '@acme/server', envKey: 'API_KEY', value: 'parity-mcp-secret' })
-    await ctx.invoke(IPC.MCP_CREDENTIAL_GET, { filePath: agent.filePath, npmPackage: '@acme/server' })
-    await ctx.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, { mcpServerName: 'acme', npmPackage: '@acme/server' })
-    await ctx.invoke(IPC.MCP_OAUTH_STATUS, { url: 'https://mcp.example.test/mcp' })
-    await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { url: 'https://mcp.example.test/mcp' })
+    await ctx.invoke(IPC.MCP_CREDENTIAL_SET, { filePath: agent.filePath, serverName: 'acme', envKey: 'API_KEY', value: 'parity-mcp-secret' })
+    await ctx.invoke(IPC.MCP_CREDENTIAL_GET, { filePath: agent.filePath, serverName: 'acme' })
+    await ctx.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, { serverName: 'acme' })
+    await ctx.invoke(IPC.MCP_OAUTH_STATUS, { name: 'acme', url: 'https://mcp.example.test/mcp' })
+    await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { name: 'acme' })
     await ctx.invoke(IPC.MCP_GET_SERVER_STATUS)
     await ctx.invoke(IPC.MCP_RESTART_SERVER, { name: 'acme' })
-    await ctx.invoke(IPC.MCP_DETACH_SERVER, { filePath: agent.filePath, serverName: 'acme', credentialNamespace: '@acme/server' })
-    await ctx.invoke(IPC.MCP_CREDENTIAL_GET, { filePath: agent.filePath, npmPackage: '@acme/server' })
-    await ctx.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, { mcpServerName: 'acme', npmPackage: '@acme/server' })
+    await ctx.invoke(IPC.MCP_DETACH_SERVER, { filePath: agent.filePath, serverName: 'acme' })
+    await ctx.invoke(IPC.MCP_CREDENTIAL_GET, { filePath: agent.filePath, serverName: 'acme' })
+    await ctx.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, { serverName: 'acme' })
   },
 }
 
@@ -131,11 +131,12 @@ export function oauthConnectScenario(serverUrl: () => string): ParityScenario {
     quietMs: 500,
     async run(ctx) {
       const url = serverUrl()
-      await ctx.invoke(IPC.MCP_OAUTH_STATUS, { url })
-      await ctx.invoke(IPC.MCP_REGISTRATION_TEST, { registration: { id: 'fake-oauth', name: 'fake-oauth', type: 'http', url, oauth: true } })
-      await ctx.invoke(IPC.MCP_OAUTH_STATUS, { url })
-      await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { url })
-      await ctx.invoke(IPC.MCP_OAUTH_STATUS, { url })
+      const name = 'fake-oauth'
+      await ctx.invoke(IPC.MCP_OAUTH_STATUS, { name, url })
+      await ctx.invoke(IPC.MCP_REGISTRATION_TEST, { registration: { id: 'fake-oauth', name, type: 'http', url, oauth: true } })
+      await ctx.invoke(IPC.MCP_OAUTH_STATUS, { name, url })
+      await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { name })
+      await ctx.invoke(IPC.MCP_OAUTH_STATUS, { name, url })
     },
   }
 }
@@ -180,7 +181,7 @@ export function agentOAuthSignInScenario(serverUrl: () => string): ParityScenari
       await ctx.invoke(IPC.APPROVALS_RESOLVE, { filePath: entry.filePath, approvalId: entry.id, approved: true })
       await turn
       // The app-level copy of the sign-in goes (its record carries the time it was written).
-      await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { url: serverUrl() })
+      await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { name: 'docs' })
     },
   }
 }

@@ -79,18 +79,18 @@ describe('MCP OAuth routes with the daemon wiring', () => {
     servers.push(server)
 
     const url = 'https://mcp.example.test/mcp'
-    const q = `?url=${encodeURIComponent(url)}`
+    const q = `?name=remote&url=${encodeURIComponent(url)}`
     expect((await server.inject({ method: 'GET', url: `/admin/mcp/oauth/status${q}` })).json()).toEqual({ signedIn: false })
 
     const TOKEN = 'at-SECRET-wiring-1'
-    await identity.mcpOAuth.save(url, { tokens: { access_token: TOKEN, token_type: 'bearer', refresh_token: TOKEN }, serverUrl: url, updatedAt: Date.now() })
+    await identity.mcpOAuth.forServer('remote').save(url, { tokens: { access_token: TOKEN, token_type: 'bearer', refresh_token: TOKEN }, serverUrl: url, updatedAt: Date.now() })
     const status = await server.inject({ method: 'GET', url: `/admin/mcp/oauth/status${q}` })
     expect(status.json()).toEqual({ signedIn: true })
     expect(status.body).not.toContain(TOKEN)
 
-    expect((await server.inject({ method: 'POST', url: '/admin/mcp/oauth/signout', payload: { url } })).json()).toEqual({ success: true })
+    expect((await server.inject({ method: 'POST', url: '/admin/mcp/oauth/signout', payload: { name: 'remote' } })).json()).toEqual({ success: true })
     expect((await server.inject({ method: 'GET', url: `/admin/mcp/oauth/status${q}` })).json()).toEqual({ signedIn: false })
-    expect(await identity.mcpOAuth.get(url)).toBeUndefined()
+    expect(await identity.mcpOAuth.forServer('remote').get(url)).toBeUndefined()
   })
 
   it('daemon/index.ts passes ownerIdentity.mcpOAuth as mcpAppOAuthStore', () => {

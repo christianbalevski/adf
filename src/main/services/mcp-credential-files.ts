@@ -1,12 +1,15 @@
 /**
  * File-shaped MCP credentials through the agent identity keystore.
  *
- * OAuth client keys and token stores live in `adf_identity` (credentials
- * envelope) under `mcp:<pkg|name>:file:<declared path>`, are MATERIALIZED
- * into the server's runtime filesystem before every spawn, and CAPTURED back
- * after a successful auth preflight. The runtime filesystem (container or
- * host) is a disposable projection; the keystore is the source of truth once
- * populated — the .adf carries the grants when the agent moves.
+ * OAuth client keys and token stores live in a CredentialStore keyed
+ * `mcp:<server name>:file:<declared path>`, are MATERIALIZED into the
+ * server's runtime filesystem before every spawn, and CAPTURED back after a
+ * successful auth preflight. The store is where the server's credentials
+ * live (mcp-server-home.ts): the agent's `adf_identity` (credentials
+ * envelope) for agent credentials — the .adf carries the grants when the
+ * agent moves — or the registration's home folder for app credentials
+ * (folderCredentialStore). The runtime filesystem (container or host) is a
+ * disposable projection; the store is the source of truth once populated.
  *
  * Electron-free: usable from Studio, the daemon builder, and tests.
  * File content must never enter agent config, tool results, or exec argv —
@@ -71,7 +74,7 @@ export function containerCredentialTarget(svc: CredentialCopyService, containerN
 }
 
 export interface CredentialStore {
-  /** Decrypt an identity value, or null when absent OR its envelope is locked. */
+  /** Decrypt a stored value, or null when absent OR its envelope is locked. */
   getDecrypted: (purpose: string) => string | null
   /** Whether a row exists at all (distinguishes absent from locked-envelope). */
   hasRow: (purpose: string) => boolean
@@ -83,15 +86,47 @@ export interface CredentialStore {
 }
 
 /**
- * Purposes for a declared credential file, in READ order: package namespace
- * first, then server-name namespace — mirroring resolveMcpEnvVars. Writes
- * always use the first (package) purpose.
+ * Where a declared credential file is stored: under the server's name, like
+ * its env values (resolveMcpEnvVars), so two copies of one package keep
+ * separate files.
  */
-export function credentialFilePurposes(serverCfg: McpServerConfig, path: string): string[] {
-  const pkgNs = serverCfg.npm_package ?? serverCfg.pypi_package ?? serverCfg.name
-  const purposes = [`mcp:${pkgNs}:file:${path}`]
-  if (serverCfg.name !== pkgNs) purposes.push(`mcp:${serverCfg.name}:file:${path}`)
-  return purposes
+export function credentialFilePurpose(serverCfg: Pick<McpServerConfig, 'name'>, path: string): string {
+  return `mcp:${serverCfg.name}:file:${path}`
+}
+
+/** A store that holds nothing: the server's runtime folder is its only copy. */
+export const RUNTIME_ONLY_CREDENTIAL_STORE: CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void } = {
+  getDecrypted: () => null,
+  hasRow: () => false,
+  setIdentitySealed: () => {},
+}
+
+/**
+ * A store backed by a host folder (an app-credential server's home): the
+ * file a purpose names is that path under `home`. Used to materialize app
+ * credentials into a container and capture them back.
+ */
+export function folderCredentialStore(home: string): CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void } {
+  const fileOf = (purpose: string): string => {
+    const at = purpose.indexOf(':file:')
+    if (at < 0) throw new Error(`"${purpose}" does not name a credential file.`)
+    return expandCredentialPath(purpose.slice(at + ':file:'.length), { kind: 'host', home })
+  }
+  return {
+    getDecrypted: (purpose) => {
+      const file = fileOf(purpose)
+      if (!existsSync(file)) return null
+      const record: CredentialFileRecord = { encoding: 'base64', data: readFileSync(file).toString('base64'), mode: 0o600 }
+      return JSON.stringify(record)
+    },
+    hasRow: (purpose) => existsSync(fileOf(purpose)),
+    setIdentitySealed: (purpose, value) => {
+      const file = fileOf(purpose)
+      const { content, mode } = decodeRecord(purpose, value)
+      mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
+      writeFileSync(file, content, { mode })
+    },
+  }
 }
 
 /**
@@ -163,7 +198,7 @@ export function captureCredentialFile(
     mode: 0o600,
     captured_at: capturedAt,
   }
-  const purpose = credentialFilePurposes(serverCfg, path)[0]
+  const purpose = credentialFilePurpose(serverCfg, path)
   store.setIdentitySealed(purpose, JSON.stringify(record))
   store.setIdentityCodeAccess?.(purpose, false)
 }
@@ -200,15 +235,15 @@ export async function materializeCredentialFiles(
 ): Promise<void> {
   const declared = serverCfg.credential_files ?? []
   for (const file of declared) {
-    const purposes = credentialFilePurposes(serverCfg, file.path)
-    const found = purposes.map((p) => ({ p, raw: store.getDecrypted(p) })).find((r) => r.raw != null)
-    if (!found) {
+    const purpose = credentialFilePurpose(serverCfg, file.path)
+    const raw = store.getDecrypted(purpose)
+    if (raw == null) {
       // getDecrypted() is null both for an absent row AND a locked envelope —
       // distinguish via hasRow BEFORE the optional short-circuit, so a locked
       // envelope fails plainly even for optional files (most OAuth token/cache
       // files are optional; silently materializing nothing would strand the
       // captured grant behind an opaque server-side auth error).
-      const rowExists = purposes.some((p) => store.hasRow(p))
+      const rowExists = store.hasRow(purpose)
       // True bootstrap: nothing stored yet and the file is optional — the
       // server creates it (e.g. tokens.json before first auth).
       if (!rowExists && !file.required) continue
@@ -229,7 +264,7 @@ export async function materializeCredentialFiles(
       // — whatever order the files are declared in.
       if (!rowExists && target.kind === 'host') {
         const ownTokens = declared.some((f) => f.path === GMAIL_BUNDLED_TOKEN_PATH) &&
-          credentialFilePurposes(serverCfg, GMAIL_BUNDLED_TOKEN_PATH).some((p) => store.hasRow(p))
+          store.hasRow(credentialFilePurpose(serverCfg, GMAIL_BUNDLED_TOKEN_PATH))
         if (writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath, compiledGmailOAuthClient(), { ignoreTokenFile: ownTokens })) continue
       }
       // Present-but-locked (daemon without a runtime key): fail plainly for
@@ -244,18 +279,18 @@ export async function materializeCredentialFiles(
       // Only reachable for required files (optional + absent continued above).
       throw new Error(
         `Required credential file "${file.path}" for MCP server "${serverCfg.name}" is not in the identity keystore ` +
-        `(looked for ${purposes.map((p) => `"${p}"`).join(' and ')}) and connect cannot proceed without it. ${INGESTION_ROUTES} ` +
+        `(looked for "${purpose}") and connect cannot proceed without it. ${INGESTION_ROUTES} ` +
         'Note: the declared path is part of the credential identity — if this declaration\'s path was CHANGED, ' +
         'any previously sealed copy still lives under the old path; re-declare the old path or re-supply the content at the new one ' +
         '(mcp_install with credential_files applies to an already-installed server).',
       )
     }
-    const { content, mode } = decodeRecord(found.p, found.raw as string)
+    const { content, mode } = decodeRecord(purpose, raw)
     const destPath = expandCredentialPath(file.path, target)
     // Gmail tokens minted with the built-in client never land beside another
     // client on the host: the host's own sign-in is kept and used instead.
     if (target.kind === 'host' && keepHostTokensOverSealed(serverCfg.npm_package, file.path, destPath,
-      () => credentialFilePurposes(serverCfg, GMAIL_BUNDLED_CLIENT_PATH).some((p) => store.hasRow(p)))) continue
+      () => store.hasRow(credentialFilePurpose(serverCfg, GMAIL_BUNDLED_CLIENT_PATH)))) continue
     if (target.kind === 'host') {
       mkdirSync(dirname(destPath), { recursive: true })
       writeFileSync(destPath, content, { mode })
