@@ -4,8 +4,9 @@ import { IPC } from '../../../../shared/constants/ipc-channels'
 import { DaemonError } from '../../../../shared/daemon-client'
 import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
-import { atPath, envCredentialsOnly, errorText, isEditedPlaceholder, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
+import { atPath, errorText, isEditedPlaceholder, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
 import { awaitDaemonJob, startDaemonJob } from '../mcp/jobs'
+import { mcpEnvCredentialsOnly } from '../../../../shared/utils/mcp-config'
 import { runRegistrationTest } from '../mcp/registration-test'
 import {
   McpAttachArgs,
@@ -211,7 +212,7 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
     const prefix = `mcp:${v.data.serverName}:`
     try {
       const client = await ctx.ready()
-      if (ctx.mode === 'local') return { credentials: envCredentialsOnly(await revealValues(client, v.data.filePath, prefix)) }
+      if (ctx.mode === 'local') return { credentials: mcpEnvCredentialsOnly(prefix, await revealValues(client, v.data.filePath, prefix)) }
       const answer = await client.request<{ credentials: Record<string, CredentialMeta> }>(
         'GET', '/files/agent/mcp/credentials', { query: atPath(v.data.filePath, { serverName: v.data.serverName }) })
       const credentials: Record<string, string> = {}

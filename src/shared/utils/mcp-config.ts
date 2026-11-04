@@ -3,6 +3,18 @@ import type { McpServerRegistration } from '../types/ipc.types'
 
 type McpCredentialSource = Pick<McpServerConfig, 'name'>
 
+/**
+ * Why `name` cannot name a new MCP server, or null when it can. A server's
+ * name is its identity: its credentials and home folder are keyed by it, so
+ * it is one portable path segment — lowercase letters, digits, "_" and "-",
+ * and not a Windows device name.
+ */
+export function mcpServerNameProblem(name: string): string | null {
+  if (!/^[a-z0-9_-]+$/.test(name)) return `Server name "${name}" may use lowercase letters, digits, "_" and "-" only.`
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(name)) return `Server name "${name}" is reserved on Windows.`
+  return null
+}
+
 /** Where a server's credential `key` is stored: under the server's name, never its package. */
 export function mcpCredentialRef(source: McpCredentialSource, key: string): string {
   return `mcp:${source.name}:${key}`
@@ -366,4 +378,34 @@ export function reconcileHostApprovedRegistrations(
     if (!nextByName.has(name) && reg.runLocation === 'host') remove(name)
   }
   return { approved: result, sources }
+}
+
+/** Sealed OAuth token store purpose — `mcp:<name>:oauth`. */
+const MCP_OAUTH_PURPOSE_RE = /^mcp:[^:]+:oauth$/
+/** Credential-file purposes — `mcp:<name>:file:<declared path>`. */
+const MCP_CREDENTIAL_FILE_PURPOSE_RE = /^mcp:[^:]+:file:/
+
+/**
+ * MCP runtime-managed identity purposes: sealed OAuth token stores
+ * (`mcp:<name>:oauth`) and materialized credential files
+ * (`mcp:<name>:file:<path>`). These are written and read ONLY by the
+ * main-process MCP connect/refresh machinery. Agent access is LOCKED BY OWNER
+ * POLICY by default — no agent writes (set_identity poisoning) and no code
+ * reads (get_identity exfiltration), regardless of the row's code_access flag
+ * — but this is a policy lock, not a capability wall: see
+ * mcpRuntimeIdentityAccess for the sovereignty-track unlock semantics. Plain
+ * env-credential rows (`mcp:<name>:<KEY>`) are deliberately NOT matched — those
+ * stay legitimately code-readable for the agent's own sys_code.
+ */
+export function isReservedMcpRuntimePurpose(purpose: string): boolean {
+  return MCP_OAUTH_PURPOSE_RE.test(purpose) || MCP_CREDENTIAL_FILE_PURPOSE_RE.test(purpose)
+}
+
+/**
+ * A server's env credentials among its `mcp:<name>:*` rows (`byKey` keyed by
+ * what follows `prefix`): its sealed OAuth token and credential files share
+ * the prefix and never leave the runtime.
+ */
+export function mcpEnvCredentialsOnly<T>(prefix: string, byKey: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(byKey).filter(([key]) => !isReservedMcpRuntimePurpose(prefix + key)))
 }

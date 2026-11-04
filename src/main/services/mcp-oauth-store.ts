@@ -37,7 +37,7 @@ import type {
 import { canonicalizeServerUrl } from './mcp-oauth.types'
 
 /**
- * URL-binding guard shared by both stores' `get`. A record stamped with a
+ * URL-binding guard for the agent keystore store's `get`. A record stamped with a
  * `serverUrl` may only be returned for the endpoint it was minted for — a
  * mismatch throws a fail-plainly error rather than handing a live token to a
  * different origin (a tampered `.adf` that swaps a server's URL while keeping
@@ -85,14 +85,16 @@ export interface McpAppOAuthStore {
 
 /**
  * One server's view of an app store: the record is stored under the server
- * NAME and bound to the URL it was minted for (assertRecordUrlBinding), the
- * same contract as AgentKeystoreOAuthStore.
+ * NAME and bound to the URL it was minted for. The URL comes from the
+ * registration, which only the user edits, so a record minted for another URL
+ * is one the user moved away from: it reads as absent (signed out), and the
+ * next sign-in replaces it.
  */
-function serverOAuthView(records: OAuthRecordAccess, serverName: string, context: string): McpOAuthStore {
+function serverOAuthView(records: OAuthRecordAccess, serverName: string): McpOAuthStore {
   return {
     async get(serverUrl) {
       const record = records.readRecord(serverName)
-      if (record) assertRecordUrlBinding(record, serverUrl, `${context}(${serverName})`)
+      if (record?.serverUrl && canonicalizeServerUrl(record.serverUrl) !== canonicalizeServerUrl(serverUrl)) return undefined
       return record
     },
     async save(serverUrl, record) {
@@ -202,7 +204,7 @@ export class AppSettingsOAuthStore implements McpAppOAuthStore, OAuthRecordAcces
   }
 
   forServer(serverName: string): McpOAuthStore {
-    return serverOAuthView(this, serverName, 'AppSettingsOAuthStore')
+    return serverOAuthView(this, serverName)
   }
 }
 
@@ -454,7 +456,7 @@ export class DaemonAppOAuthStore implements McpAppOAuthStore, OAuthRecordAccess 
   }
 
   forServer(serverName: string): McpOAuthStore {
-    return serverOAuthView(this, serverName, 'DaemonAppOAuthStore')
+    return serverOAuthView(this, serverName)
   }
 
   /** Every record as Studio's `mcpOauthCredentials` blob (handover to embedded mode). */

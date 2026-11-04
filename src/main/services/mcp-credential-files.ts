@@ -20,8 +20,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
-import { compiledGmailOAuthClient, isBundledClientContent, keepHostTokensOverSealed, writeBundledClientIfAbsent } from './gmail-bundled-client'
-import { GMAIL_BUNDLED_CLIENT_PATH, GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
+import { compiledGmailOAuthClient, isBundledClientContent, writeBundledClientIfAbsent } from './gmail-bundled-client'
 
 /** Decoded size cap per credential file. Real targets are ~1 KB token files. */
 export const CREDENTIAL_FILE_MAX_BYTES = 256 * 1024
@@ -83,6 +82,8 @@ export interface CredentialStore {
    * (e.g. the daemon names its public-key file and the trusted-keys setting).
    */
   envelopeLockedHint?: string
+  /** How to supply a missing required file, when it is not the agent's routes (INGESTION_ROUTES). */
+  missingHint?: string
 }
 
 /**
@@ -94,19 +95,14 @@ export function credentialFilePurpose(serverCfg: Pick<McpServerConfig, 'name'>, 
   return `mcp:${serverCfg.name}:file:${path}`
 }
 
-/** A store that holds nothing: the server's runtime folder is its only copy. */
-export const RUNTIME_ONLY_CREDENTIAL_STORE: CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void } = {
-  getDecrypted: () => null,
-  hasRow: () => false,
-  setIdentitySealed: () => {},
-}
-
 /**
- * A store backed by a host folder (an app-credential server's home): the
- * file a purpose names is that path under `home`. Used to materialize app
- * credentials into a container and capture them back.
+ * A read-only store backed by a host folder (an app-credential server's
+ * home): the file a purpose names is that path under `home`. Materializing
+ * from it on the host leaves the folder as it is; in a container it copies
+ * the files in. Nothing is captured into it: app credentials are written
+ * only by a sign-in from Settings, which runs in the folder itself.
  */
-export function folderCredentialStore(home: string): CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void } {
+export function folderCredentialStore(home: string, missingHint?: string): CredentialStore {
   const fileOf = (purpose: string): string => {
     const at = purpose.indexOf(':file:')
     if (at < 0) throw new Error(`"${purpose}" does not name a credential file.`)
@@ -120,12 +116,7 @@ export function folderCredentialStore(home: string): CredentialStore & { setIden
       return JSON.stringify(record)
     },
     hasRow: (purpose) => existsSync(fileOf(purpose)),
-    setIdentitySealed: (purpose, value) => {
-      const file = fileOf(purpose)
-      const { content, mode } = decodeRecord(purpose, value)
-      mkdirSync(dirname(file), { recursive: true, mode: 0o700 })
-      writeFileSync(file, content, { mode })
-    },
+    missingHint,
   }
 }
 
@@ -257,16 +248,8 @@ export async function materializeCredentialFiles(
       if (presentInRuntime) continue
       // Nothing stored and nothing on the host: the Gmail server's built-in
       // OAuth client, when this build ships one (host only, write-if-absent).
-      // A host token file normally blocks it (it may be another client's), but
-      // not when this agent seals the tokens itself: with no sealed client
-      // beside them they were minted with the built-in client, and the token
-      // file on the host is (or, later in this loop, will be) the agent's own
-      // — whatever order the files are declared in.
-      if (!rowExists && target.kind === 'host') {
-        const ownTokens = declared.some((f) => f.path === GMAIL_BUNDLED_TOKEN_PATH) &&
-          store.hasRow(credentialFilePurpose(serverCfg, GMAIL_BUNDLED_TOKEN_PATH))
-        if (writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath, compiledGmailOAuthClient(), { ignoreTokenFile: ownTokens })) continue
-      }
+      if (!rowExists && target.kind === 'host' &&
+        writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath, compiledGmailOAuthClient())) continue
       // Present-but-locked (daemon without a runtime key): fail plainly for
       // optional and required files alike.
       if (rowExists) {
@@ -277,6 +260,9 @@ export async function materializeCredentialFiles(
         )
       }
       // Only reachable for required files (optional + absent continued above).
+      if (store.missingHint) {
+        throw new Error(`Required credential file "${file.path}" for MCP server "${serverCfg.name}" is missing. ${store.missingHint}`)
+      }
       throw new Error(
         `Required credential file "${file.path}" for MCP server "${serverCfg.name}" is not in the identity keystore ` +
         `(looked for "${purpose}") and connect cannot proceed without it. ${INGESTION_ROUTES} ` +
@@ -287,10 +273,6 @@ export async function materializeCredentialFiles(
     }
     const { content, mode } = decodeRecord(purpose, raw)
     const destPath = expandCredentialPath(file.path, target)
-    // Gmail tokens minted with the built-in client never land beside another
-    // client on the host: the host's own sign-in is kept and used instead.
-    if (target.kind === 'host' && keepHostTokensOverSealed(serverCfg.npm_package, file.path, destPath,
-      () => store.hasRow(credentialFilePurpose(serverCfg, GMAIL_BUNDLED_CLIENT_PATH)))) continue
     if (target.kind === 'host') {
       mkdirSync(dirname(destPath), { recursive: true })
       writeFileSync(destPath, content, { mode })

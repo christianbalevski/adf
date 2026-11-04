@@ -23,7 +23,9 @@
 
 import { basename } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
-import { AdfWorkspace, isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
+import { AdfWorkspace } from '../adf/adf-workspace'
+import { mcpEnvCredentialsOnly } from '../../shared/utils/mcp-config'
+import { removeMcpServerHome } from '../services/mcp-server-home'
 import { AdapterInstanceConfigSchema } from '../adf/adf-schema'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
 import { lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
@@ -379,8 +381,7 @@ export class PathAgentOps {
     if (t.loadedId) return { ...this.runtime.getAgentMcpCredentials(t.loadedId, serverName), filePath: t.filePath, loaded: true }
     const prefix = `mcp:${serverName}:`
     const peeked = peekCredentials(t.filePath, prefix)
-    // Env credentials only: the sealed OAuth token and credential files share the prefix.
-    const credentials = Object.fromEntries(Object.entries(peeked.credentials).filter(([key]) => !isReservedMcpRuntimePurpose(prefix + key)))
+    const credentials = mcpEnvCredentialsOnly(prefix, peeked.credentials)
     return { agentId: peeked.config.id, serverName, credentials, filePath: t.filePath, loaded: false }
   }
 
@@ -410,14 +411,18 @@ export class PathAgentOps {
       ...config,
       mcp: { ...(config.mcp ?? {}), servers: (config.mcp?.servers ?? []).filter(s => s.name !== serverName) },
     })
-    if (t.loadedId) return { ...(await this.detachLoaded(t, without, prefix)), serverName, success: true as const, filePath: t.filePath, loaded: true }
-    return this.writeClosed(t, ws => {
-      const config = ws.getAgentConfig()
-      const next = without(config)
-      writeConfig(ws, next)
-      const deletedCredentials = deleteCredentialsExact(ws, prefix)
-      return { agentId: config.id, serverName, success: true as const, deletedCredentials, config: next, filePath: t.filePath, loaded: false }
-    })
+    const result = t.loadedId
+      ? { ...(await this.detachLoaded(t, without, prefix)), serverName, success: true as const, filePath: t.filePath, loaded: true }
+      : await this.writeClosed(t, ws => {
+        const config = ws.getAgentConfig()
+        const next = without(config)
+        writeConfig(ws, next)
+        const deletedCredentials = deleteCredentialsExact(ws, prefix)
+        return { agentId: config.id, serverName, success: true as const, deletedCredentials, config: next, filePath: t.filePath, loaded: false }
+      })
+    // The server's host folder is a runtime copy of what was just deleted.
+    removeMcpServerHome(serverName, { kind: 'agent', agentId: result.agentId })
+    return result
   }
 
   // --- adapters ---

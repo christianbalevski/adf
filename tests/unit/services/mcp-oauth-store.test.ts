@@ -89,10 +89,13 @@ describe('AppSettingsOAuthStore', () => {
     expect((await store.forServer('notion-2').get(URL_B))?.tokens?.access_token).toBe('work')
   })
 
-  it('refuses a record for a URL other than the one it was minted for', async () => {
+  it('a record minted for another URL reads as signed out, and the next sign-in replaces it', async () => {
     const store = new AppSettingsOAuthStore(memSettings())
     await store.forServer('linear').save(URL_A, record())
-    await expect(store.forServer('linear').get(URL_B)).rejects.toThrow(/refusing to send credentials/i)
+    expect(await store.forServer('linear').get(URL_B)).toBeUndefined()
+    await store.forServer('linear').save(URL_B, record({ tokens: { access_token: 'new' } as McpOAuthRecord['tokens'] }))
+    expect((await store.forServer('linear').get(URL_B))?.tokens?.access_token).toBe('new')
+    expect(await store.forServer('linear').get(URL_A)).toBeUndefined()
   })
 
   it('stamps updatedAt when the record omits it', async () => {
@@ -352,13 +355,13 @@ describe('DaemonAppOAuthStore index', () => {
     expect(store.listServers()).toEqual(['linear', 'notion'])
   })
 
-  it('two servers of the same URL keep separate records; a different URL is refused', async () => {
+  it('two servers of the same URL keep separate records; a different URL reads as signed out', async () => {
     const store = new DaemonAppOAuthStore(memBackend(), ACCOUNT)
     await store.forServer('notion').save(URL_B, record({ tokens: { access_token: 'personal' } as McpOAuthRecord['tokens'] }))
     await store.forServer('notion-2').save(URL_B, record({ tokens: { access_token: 'work' } as McpOAuthRecord['tokens'] }))
     expect(store.listServers()).toEqual(['notion', 'notion-2'])
     expect((await store.forServer('notion').get(URL_B))?.tokens?.access_token).toBe('personal')
     expect((await store.forServer('notion-2').get(URL_B))?.tokens?.access_token).toBe('work')
-    await expect(store.forServer('notion').get(URL_A)).rejects.toThrow(/refusing to send credentials/i)
+    expect(await store.forServer('notion').get(URL_A)).toBeUndefined()
   })
 })

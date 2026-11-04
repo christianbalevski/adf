@@ -385,4 +385,26 @@ describe('McpInstallTool: one package, several named copies', () => {
     expect(JSON.parse(result.content).error).toMatch(/keeps its credentials in ADF Studio Settings/)
     expect(workspace.setIdentitySealed).not.toHaveBeenCalled()
   })
+
+  it('refuses an agent sign-in for a server whose credentials the app stores, fresh or already attached', async () => {
+    for (const installed of [false, true]) {
+      const { config, workspace } = ws()
+      if (installed) config.mcp = { servers: [{ name: 'gmail', transport: 'stdio', npm_package: '@x/gmail' }] }
+      const onInstalled = vi.fn()
+      const result = await new McpInstallTool(onInstalled, gmailRegs).execute({ package: '@x/gmail', type: 'npm', name: 'gmail', auth: true }, workspace as any)
+      expect(result.isError).toBe(true)
+      expect(JSON.parse(result.content).error).toMatch(/cannot sign it in/)
+      expect(onInstalled).not.toHaveBeenCalled()
+    }
+  })
+
+  it('refuses a new name that cannot name a folder, before anything is stored', async () => {
+    for (const name of ['Gmail', 'gmail.work', 'con']) {
+      const { workspace } = ws()
+      const result = await new McpInstallTool(vi.fn(), gmailRegs).execute({ package: '@x/gmail', type: 'npm', name, env: { API_KEY: 'k' } }, workspace as any)
+      expect(result.isError).toBe(true)
+      expect(JSON.parse(result.content).error).toMatch(/Server name/)
+      expect(workspace.setIdentity).not.toHaveBeenCalled()
+    }
+  })
 })

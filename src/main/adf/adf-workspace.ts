@@ -195,26 +195,8 @@ export function numberedPath(path: string, n: number): string {
   return `${path.slice(0, dot)}-${n}${path.slice(dot)}`
 }
 
-/** Sealed OAuth token store purpose — `mcp:<name>:oauth`. */
-const MCP_OAUTH_PURPOSE_RE = /^mcp:[^:]+:oauth$/
-/** Credential-file purposes — `mcp:<name>:file:<declared path>`. */
-const MCP_CREDENTIAL_FILE_PURPOSE_RE = /^mcp:[^:]+:file:/
-
-/**
- * MCP runtime-managed identity purposes: sealed OAuth token stores
- * (`mcp:<name>:oauth`) and materialized credential files
- * (`mcp:<name>:file:<path>`). These are written and read ONLY by the
- * main-process MCP connect/refresh machinery. Agent access is LOCKED BY OWNER
- * POLICY by default — no agent writes (set_identity poisoning) and no code
- * reads (get_identity exfiltration), regardless of the row's code_access flag
- * — but this is a policy lock, not a capability wall: see
- * mcpRuntimeIdentityAccess for the sovereignty-track unlock semantics. Plain
- * env-credential rows (`mcp:<name>:<KEY>`) are deliberately NOT matched — those
- * stay legitimately code-readable for the agent's own sys_code.
- */
-export function isReservedMcpRuntimePurpose(purpose: string): boolean {
-  return MCP_OAUTH_PURPOSE_RE.test(purpose) || MCP_CREDENTIAL_FILE_PURPOSE_RE.test(purpose)
-}
+import { isReservedMcpRuntimePurpose } from '../../shared/utils/mcp-config'
+export { isReservedMcpRuntimePurpose }
 
 /**
  * Owner-policy lock over agent access to a reserved MCP runtime identity

@@ -155,7 +155,7 @@ import { createScratchDir, removeScratchDir, purgeAllScratchDirs, scratchRootPat
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
-import { mcpContainerHomeEnv, mcpCredentialFileStore, mcpCredentialOwner, mcpHostHomeEnv, mcpServerContainerHome, mcpServerHostHome } from '../services/mcp-server-home'
+import { mcpContainerHomeEnv, mcpHostHomeEnv, mcpServerContainerHome, mcpServerCredentials, mcpServerHostHome, removeMcpServerHome } from '../services/mcp-server-home'
 import { inheritableEnv } from '../utils/child-env'
 import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, captureOAuthToAgent } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
@@ -4101,7 +4101,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         ? pinServerConfigToRegistration(serverCfg, reg)
         : { ...serverCfg }
       // Whose credentials it uses decides where they live (mcp-server-home.ts).
-      const owner = mcpCredentialOwner(reg, freshConfig.id)
+      const { owner, files: credFiles } = mcpServerCredentials(connCfg, reg, freshConfig.id, agentCredentialStore())
 
       const appEnvKeys: string[] = []
       if (reg?.env?.length) {
@@ -4161,7 +4161,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           const serverHome = mcpServerContainerHome(connCfg, agentHome)
           if (serverHome !== agentHome) { try { await podmanService.ensureWorkspace(containerName, serverHome) } catch { /* ignore */ } }
           await materializeCredentialFiles(
-            mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'container'),
+            credFiles,
             connCfg,
             containerCredentialTarget(podmanService, containerName, serverHome),
           )
@@ -4186,7 +4186,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           // Routing chose host: the server's home, and its stored credential files in it.
           connCfg.env = { ...connCfg.env, ...mcpHostHomeEnv(connCfg, owner, { ...inheritableEnv(), ...connCfg.env }) }
           await materializeCredentialFiles(
-            mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'host'),
+            credFiles,
             connCfg,
             { kind: 'host', home: mcpServerHostHome(connCfg, owner) },
           )
@@ -4313,7 +4313,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           // hot-load. The .adf's agent-scoped env values still apply.
           const hotReg = ((settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []).find((r) => r.name === serverName)
           const connCfg = hotReg ? pinServerConfigToRegistration(serverCfg, hotReg) : { ...serverCfg }
-          const owner = mcpCredentialOwner(hotReg, freshConfig.id)
+          const { owner, files: credFiles, capture: credCapture } = mcpServerCredentials(connCfg, hotReg, freshConfig.id, agentCredentialStore())
 
           // Resolve uv binary path for pypi packages
           let uvBinPath: string | undefined
@@ -4358,7 +4358,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               // The auth subcommand writes tokens into $HOME — make sure it exists.
               try { await podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* wrapper-less exec may still mkdir via server */ }
             }
-            const credStore = mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), container ? 'container' : 'host')
             const authCfg = !container && !willContainerize
               ? { ...connCfg, env: { ...connCfg.env, ...mcpHostHomeEnv(connCfg, owner, { ...inheritableEnv(), ...connCfg.env }) } }
               : connCfg
@@ -4368,10 +4367,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
             const credTarget: CredentialFileTarget | null = container
               ? containerCredentialTarget(podmanService, container.containerName, container.home ?? '/root')
               : (!willContainerize ? { kind: 'host', home: mcpServerHostHome(connCfg, owner) } : null)
-            if (credTarget) await materializeCredentialFiles(credStore, connCfg, credTarget)
+            if (credTarget) await materializeCredentialFiles(credFiles, connCfg, credTarget)
             await studioMcpAuthPreflight(authCfg, { authArgs: installOptions.authArgs, uvBinPath, container, authPort: installOptions.authPort })
             // Auth succeeded: capture files the flow stored (tokens) into the store.
-            if (credTarget) await writeBackCredentialFiles(credStore, connCfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { capturedWorkspace.insertLog('info', 'mcp', 'credential_writeback', connCfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
+            if (credTarget && credCapture) await writeBackCredentialFiles(credCapture, connCfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { capturedWorkspace.insertLog('info', 'mcp', 'credential_writeback', connCfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
           } else if (installOptions?.auth) {
             console.warn(`[MCP] Auth preflight skipped for HTTP server "${serverName}" — HTTP auth flows are configured through headers/env.`)
           }
@@ -4563,7 +4562,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               ? pinServerConfigToRegistration(serverCfg, reg)
               : { ...serverCfg }
             // Whose credentials it uses decides where they live (mcp-server-home.ts).
-            const owner = mcpCredentialOwner(reg, config.id)
+            const { owner, files: credFiles } = mcpServerCredentials(connCfg, reg, config.id, agentCredentialStore())
 
             // Merge app-wide credentials from Settings registration (env key/value pairs)
             const appEnvKeys: string[] = []
@@ -4609,7 +4608,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               const serverHome = mcpServerContainerHome(connCfg, agentHome)
               if (serverHome !== agentHome) { try { await podmanService.ensureWorkspace(containerName, serverHome) } catch { /* ignore */ } }
               await materializeCredentialFiles(
-                mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'container'),
+                credFiles,
                 connCfg,
                 containerCredentialTarget(podmanService, containerName, serverHome),
               )
@@ -4634,7 +4633,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
               // Routing chose host: the server's home, and its stored credential files in it.
               connCfg.env = { ...connCfg.env, ...mcpHostHomeEnv(connCfg, owner, { ...inheritableEnv(), ...connCfg.env }) }
               await materializeCredentialFiles(
-                mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'host'),
+                credFiles,
                 connCfg,
                 { kind: 'host', home: mcpServerHostHome(connCfg, owner) },
               )
@@ -7399,8 +7398,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         config.mcp.servers = config.mcp.servers.filter((s) => s.name !== args.serverName)
         ws.setAgentConfig(config)
       }
-      // Remove identity entries
+      // Remove identity entries, and the server's host folder (its runtime copy)
       ws.deleteIdentityByPrefix(prefix)
+      removeMcpServerHome(args.serverName, { kind: 'agent', agentId: config.id })
     }
 
     // Check foreground workspace

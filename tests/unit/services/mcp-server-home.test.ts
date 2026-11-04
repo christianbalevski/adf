@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync } from 'fs'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
@@ -7,9 +7,8 @@ const userData = mkdtempSync(join(tmpdir(), 'adf-mcphome-'))
 vi.mock('../../../src/main/utils/user-data-path', () => ({ getUserDataPath: () => userData }))
 
 const {
-  mcpContainerHomeEnv, mcpCredentialFileStore, mcpCredentialOwner, mcpHostHomeEnv, mcpServerContainerHome, mcpServerHostHome,
+  mcpContainerHomeEnv, mcpCredentialOwner, mcpHostHomeEnv, mcpServerContainerHome, mcpServerCredentials, mcpServerHostHome, removeMcpServerHome,
 } = await import('../../../src/main/services/mcp-server-home')
-const { RUNTIME_ONLY_CREDENTIAL_STORE } = await import('../../../src/main/services/mcp-credential-files')
 const { resolveMcpEnvVars } = await import('../../../src/main/services/mcp-spawn-utils')
 
 const withFiles = (name: string) => ({ name, credential_files: [{ path: '~/.gmail-mcp/credentials.json' }] })
@@ -69,19 +68,41 @@ describe('home folders', () => {
   })
 })
 
-describe('mcpCredentialFileStore', () => {
+describe('mcpServerCredentials', () => {
   const agentStore = { getDecrypted: () => null, hasRow: () => false, setIdentitySealed: vi.fn() }
 
-  it('agent credentials come from the agent keystore wherever the server runs', () => {
-    expect(mcpCredentialFileStore(withFiles('gmail'), agentA, agentStore, 'host')).toBe(agentStore)
-    expect(mcpCredentialFileStore(withFiles('gmail'), agentA, agentStore, 'container')).toBe(agentStore)
+  it('agent credentials: read from and captured into the agent keystore', () => {
+    for (const reg of [undefined, { credentialStorage: 'agent' as const }]) {
+      const creds = mcpServerCredentials(withFiles('gmail'), reg, 'agentA', agentStore)
+      expect(creds.owner).toEqual(agentA)
+      expect(creds.files).toBe(agentStore)
+      expect(creds.capture).toBe(agentStore)
+    }
   })
 
-  it('app credentials on the host are already in the folder the server runs in; in a container they come from it', () => {
-    expect(mcpCredentialFileStore(withFiles('gmail'), app, agentStore, 'host')).toBe(RUNTIME_ONLY_CREDENTIAL_STORE)
-    const inContainer = mcpCredentialFileStore(withFiles('gmail'), app, agentStore, 'container')
-    expect(inContainer).not.toBe(agentStore)
-    expect(inContainer.hasRow('mcp:gmail:file:~/.gmail-mcp/credentials.json')).toBe(false)
+  it('app credentials: read from the registration\'s folder, never captured from an agent', () => {
+    const creds = mcpServerCredentials(withFiles('gmail'), {}, 'agentA', agentStore)
+    expect(creds.owner).toEqual(app)
+    expect(creds.files).not.toBe(agentStore)
+    expect(creds.files.hasRow('mcp:gmail:file:~/.gmail-mcp/credentials.json')).toBe(false)
+    expect(creds.capture).toBeUndefined()
+  })
+})
+
+describe('removeMcpServerHome', () => {
+  it('deletes the folder so a server added later under the name starts signed out', () => {
+    for (const owner of [app, agentA]) {
+      mcpHostHomeEnv(withFiles('gmail-2'), owner)
+      const home = mcpServerHostHome(withFiles('gmail-2'), owner)
+      expect(existsSync(home)).toBe(true)
+      removeMcpServerHome('gmail-2', owner)
+      expect(existsSync(home)).toBe(false)
+    }
+  })
+
+  it('is a no-op for a folder that never existed or a name that cannot have one', () => {
+    expect(() => removeMcpServerHome('never-made', app)).not.toThrow()
+    expect(() => removeMcpServerHome('a/../b', app)).not.toThrow()
   })
 })
 

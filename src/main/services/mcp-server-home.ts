@@ -27,18 +27,24 @@
  *
  * A server's name is fixed once created: the folder and the stored
  * credentials are keyed by it, and renaming is adding a copy under the new
- * name and removing the old one.
+ * name and removing the old one. Removing a server deletes its folder
+ * (removeMcpServerHome), so a name used again starts signed out.
+ *
+ * The folder keeps two copies from signing each other out; it is not a
+ * security boundary. Every server on the host runs as the same user and can
+ * read every folder here, and an app sign-in used in a container is copied
+ * into that container, where the agent can read it.
  *
  * Electron-free.
  */
 
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'fs'
 import { homedir } from 'os'
 import { delimiter, join } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
-import { folderCredentialStore, RUNTIME_ONLY_CREDENTIAL_STORE, type CredentialStore } from './mcp-credential-files'
+import { folderCredentialStore, type CredentialStore } from './mcp-credential-files'
 
 /** Who owns a server's credentials: the app (one sign-in for every agent) or one agent. */
 export type McpCredentialOwner = { kind: 'app' } | { kind: 'agent'; agentId: string }
@@ -149,20 +155,40 @@ export function mcpContainerHomeEnv(cfg: HomeCfg, agentHome: string, base: Recor
   return homeEnv(mcpServerContainerHome(cfg, agentHome), base, { npm_config_cache: `${agentHome}/.npm` })
 }
 
+type AgentCredentialStore = CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void }
+
 /**
- * The store a server's credential files are read from and captured into:
- *  - agent credentials: the agent's keystore (`agentStore`);
- *  - app credentials on the host: none — the registration's folder is the
- *    server's home, so the files are already where it runs;
- *  - app credentials in a container: the registration's host folder.
+ * Where a server's credentials live, for one agent's connect:
+ *  - `owner`: who owns them (mcpCredentialOwner);
+ *  - `files`: the store its credential files are read from — the agent's
+ *    keystore, or the registration's host folder for app credentials;
+ *  - `capture`: the store an agent's sign-in captures files into — the
+ *    agent's keystore, and none for app credentials: only a sign-in from
+ *    Settings writes them (mcp_install refuses auth for them).
  */
-export function mcpCredentialFileStore<S extends CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void }>(
+export function mcpServerCredentials(
   cfg: HomeCfg,
-  owner: McpCredentialOwner,
-  agentStore: S,
-  where: 'host' | 'container',
-): CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void } {
-  if (owner.kind === 'agent') return agentStore
-  if (where === 'host') return RUNTIME_ONLY_CREDENTIAL_STORE
-  return folderCredentialStore(mcpOwnHostHome(cfg.name, owner))
+  registration: Pick<McpServerRegistration, 'credentialStorage'> | undefined,
+  agentId: string,
+  agentStore: AgentCredentialStore,
+): { owner: McpCredentialOwner; files: CredentialStore; capture?: AgentCredentialStore } {
+  const owner = mcpCredentialOwner(registration, agentId)
+  if (owner.kind === 'agent') return { owner, files: agentStore, capture: agentStore }
+  return {
+    owner,
+    files: folderCredentialStore(
+      mcpOwnHostHome(cfg.name, owner),
+      `Choose it again in ADF Studio Settings → MCP Servers → ${cfg.name}.`,
+    ),
+  }
+}
+
+/**
+ * Delete a server's host folder (its sign-in) when the server is removed:
+ * a later server given the same name starts signed out. No-op when absent.
+ */
+export function removeMcpServerHome(name: string, owner: McpCredentialOwner): void {
+  let home: string
+  try { home = mcpOwnHostHome(name, owner) } catch { return } // a name that never had a folder
+  rmSync(home, { recursive: true, force: true })
 }

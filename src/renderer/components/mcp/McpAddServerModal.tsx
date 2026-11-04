@@ -5,7 +5,7 @@ import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs,
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { bundledMcpServerForShape } from '../../../shared/utils/bundled-mcp-shape'
-import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
+import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, mcpServerNameProblem, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -503,7 +503,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const isPython = draft?.type === 'uvx' || draft?.type === 'pip'
   // The name is the server's identity: a new registration may not reuse one.
   const nameTaken = !editing && !!draft?.name && existingServers.some((s) => s.name === draft.name)
-  const canLaunch = !!draft && !!draft.name && !nameTaken && (
+  const nameReserved = !editing && !!draft?.name && !nameTaken && !!mcpServerNameProblem(draft.name)
+  const canLaunch = !!draft && !!draft.name && !nameTaken && !nameReserved && (
     isHttp ? !!draft.url : isCustom ? !!draft.command : isPython ? !!draft.pypiPackage : !!draft.npmPackage
   )
 
@@ -767,6 +768,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           className={inputCls}
         />
         {nameTaken && <p className="mt-1 text-[10px] text-red-500">Name already in use</p>}
+        {nameReserved && <p className="mt-1 text-[10px] text-red-500">Name reserved by Windows</p>}
       </div>
       <div>
         <label className={labelCls}>

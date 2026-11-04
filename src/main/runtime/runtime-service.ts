@@ -5,7 +5,9 @@ import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'nod
 import { readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
-import { AdfWorkspace, isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
+import { AdfWorkspace } from '../adf/adf-workspace'
+import { mcpEnvCredentialsOnly } from '../../shared/utils/mcp-config'
+import { removeMcpServerHome } from '../services/mcp-server-home'
 import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { templateFilePath } from '../adf/agent-templates'
@@ -3479,9 +3481,7 @@ export class RuntimeService extends EventEmitter {
   getAgentMcpCredentials(agentId: string, serverName: string): { agentId: string; serverName: string; credentials: Record<string, RuntimeIdentityMeta> } {
     const target = this.requireTarget(agentId)
     const prefix = `mcp:${serverName}:`
-    // Env credentials only: the sealed OAuth token and credential files share the prefix.
-    const credentials = Object.fromEntries(Object.entries(this.describeCredentials(target, prefix))
-      .filter(([key]) => !isReservedMcpRuntimePurpose(prefix + key)))
+    const credentials = mcpEnvCredentialsOnly(prefix, this.describeCredentials(target, prefix))
     return {
       agentId: target.id,
       serverName,
@@ -3509,6 +3509,7 @@ export class RuntimeService extends EventEmitter {
       mcp: { ...(target.config.mcp ?? {}), servers },
     })
     const deletedCredentials = target.workspace.deleteIdentityByPrefix(`mcp:${serverName}:`)
+    removeMcpServerHome(serverName, { kind: 'agent', agentId: target.id })
     return { agentId: target.id, serverName, success: true, deletedCredentials, config: result.config }
   }
 

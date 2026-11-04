@@ -971,7 +971,8 @@ describe('DaemonAppOAuthStore', () => {
     expect(SECRET_CHUNK_CHARS).toBeLessThan(1280)
     expect(await store.forServer('remote').get(url)).toEqual(big)
     expect(store.listServers()).toEqual(['remote', 'other'])
-    await expect(store.forServer('remote').get('https://evil.example.test/mcp')).rejects.toThrow(/refusing to send credentials/)
+    // Another URL than the one it was minted for reads as signed out: no token reaches it.
+    expect(await store.forServer('remote').get('https://evil.example.test/mcp')).toBeUndefined()
 
     // Handover shape = Studio's mcpOauthCredentials blob, both ways.
     const blob = store.exportBlob()
@@ -1049,12 +1050,12 @@ describe('DaemonAppOAuthStore', () => {
     expect(await store.forServer('remote').get(url)).toEqual(record)
   })
 
-  it('refuses a record pinned to another URL, and never writes while the file store is locked', async () => {
+  it('a record pinned to another URL reads as signed out, and nothing is written while the file store is locked', async () => {
     const keychain = fakeKeychain()
     const store = new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount('scope1'))
-    // Minted for another URL under the same server name: refused for `url`.
+    // Minted for another URL under the same server name: signed out for `url`.
     await store.forServer('remote').save('https://other.example.test/mcp', { tokens: { access_token: 'x', token_type: 'Bearer' }, updatedAt: 1 })
-    await expect(store.forServer('remote').get(url)).rejects.toThrow(/refusing to send credentials/)
+    expect(await store.forServer('remote').get(url)).toBeUndefined()
 
     const locked = new FileSecretBackend(join(h.userDataDir, 'owner-secrets.json'))
     const lockedStore = new DaemonAppOAuthStore(locked, daemonAppOAuthAccount('scope1'))

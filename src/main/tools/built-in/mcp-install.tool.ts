@@ -16,7 +16,7 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { McpServerConfig } from '../../../shared/types/adf-v02.types'
 import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries } from '../../services/mcp-spawn-utils'
-import { isSensitiveMcpHeader, buildMcpServerConfigFromRegistration, isRegistrationAgentVisible } from '../../../shared/utils/mcp-config'
+import { isSensitiveMcpHeader, buildMcpServerConfigFromRegistration, isRegistrationAgentVisible, mcpServerNameProblem } from '../../../shared/utils/mcp-config'
 import type { McpServerRegistration } from '../../../shared/types/ipc.types'
 import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
 import { captureCredentialFile } from '../../services/mcp-credential-files'
@@ -79,10 +79,10 @@ export class McpInstallTool implements Tool {
   readonly description =
     'Install an MCP server package, attach a custom server, or connect a Streamable HTTP MCP server. ' +
     'A server is identified by its name. If the name is configured in ADF Studio Settings and available to agents, ' +
-    'this tool ATTACHES that registration instead of installing a fresh copy — the user\'s configuration, credentials, and authorization come along. ' +
+    'this tool ATTACHES that registration instead of installing a fresh copy — the user\'s configuration, credentials, and authorization come along; when those credentials are kept in Settings, the user signs it in there (auth and credential_files are refused). ' +
     'Without a name, the package\'s (or URL\'s) registration is attached when exactly one exists; when several do, pass the name of the one you want. ' +
     'Pass a name nobody uses to install your own copy with your own credentials — one package can be installed several times under different names (e.g. one per account). ' +
-    'Names are fixed once installed: to rename, install under the new name, supply its credentials, and uninstall the old one. ' +
+    'Names use lowercase letters, digits, "_" and "-", and are fixed once installed: to rename, install under the new name, supply its credentials, and uninstall the old one. ' +
     'Provide package (name or command) for npm/pypi/custom, or url for type=http. ' +
     'Optionally pass env with credential values to store in agent identity, and credential_files for file-shaped credentials (OAuth keys/token stores) that are kept sealed in the keystore and materialized where the server runs. ' +
     'Set host=true to run on host (requires host_access). ' +
@@ -179,15 +179,15 @@ export class McpInstallTool implements Tool {
       config.compute = { ...config.compute, enabled: true, browser: true }
     }
 
-    // A server whose credentials the app stores reads its credential files
-    // from the registration's folder, never the agent's keystore: a sealed
-    // copy here would be ignored, so refuse it plainly.
-    const appCredentials = (this.getRegistrations?.() ?? []).find((r) => r.name === serverName)
-    if (appCredentials && mcpCredentialOwner(appCredentials, config.id).kind === 'app' && parsed.credential_files?.some((f) => f.content !== undefined)) {
+    // A server whose credentials the app stores is signed in from Settings
+    // only: every agent that attaches it uses that one sign-in, so no agent
+    // may replace it — not with credential files, nor with a sign-in of its own.
+    if (attachReg && mcpCredentialOwner(attachReg, config.id).kind === 'app' &&
+      (auth === true || parsed.credential_files?.some((f) => f.content !== undefined))) {
       return { content: JSON.stringify({
         success: false,
-        error: `"${serverName}" keeps its credentials in ADF Studio Settings, shared by every agent that attaches it — its credential files cannot be set from an agent. ` +
-          'Ask your principal to sign in from Settings → MCP Servers, or install your own copy under a new name with your own credential_files.',
+        error: `"${serverName}" keeps its credentials in ADF Studio Settings, shared by every agent that attaches it — an agent cannot sign it in or set its credential files. ` +
+          'Ask your principal to sign in from Settings → MCP Servers, or install your own copy under a new name and sign that in.',
       }), isError: true }
     }
 
@@ -303,6 +303,12 @@ export class McpInstallTool implements Tool {
           ? `Server "${serverName}" re-authorized and reconnected — ${reauthTools} tools available.`
           : `Server "${serverName}" auth flow ran but no tools were discovered. ${outcome?.error ? `Last error: ${outcome.error}` : `Call mcp_restart("${serverName}") to retry the connect.`}`,
       }), isError: false }
+    }
+
+    // A new server's name names its credentials and home folder.
+    const nameProblem = mcpServerNameProblem(serverName)
+    if (nameProblem) {
+      return { content: JSON.stringify({ success: false, error: `${nameProblem} Pass a name that does.` }), isError: true }
     }
 
     // Validate host access — attach mode is exempt: the registration's host

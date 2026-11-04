@@ -59,7 +59,7 @@ import { withDeadline } from '../utils/concurrency'
 import { createHeadlessMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { inheritableEnv } from '../utils/child-env'
-import { mcpContainerHomeEnv, mcpCredentialFileStore, mcpCredentialOwner, mcpHostHomeEnv, mcpServerContainerHome, mcpServerHostHome } from '../services/mcp-server-home'
+import { mcpContainerHomeEnv, mcpHostHomeEnv, mcpServerContainerHome, mcpServerCredentials, mcpServerHostHome } from '../services/mcp-server-home'
 import { AgentKeystoreOAuthStore, resolveOAuthStoreForConnect, type McpAppOAuthStore } from '../services/mcp-oauth-store'
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn, MCP_OAUTH_AUTHORIZE_APPROVAL } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
@@ -710,7 +710,7 @@ export class AgentRuntimeBuilder {
         ? pinServerConfigToRegistration(serverCfg, registration)
         : { ...serverCfg }
       // Whose credentials it uses decides where they live (mcp-server-home.ts).
-      const owner = mcpCredentialOwner(registration, freshConfig.id)
+      const { owner, files: credFiles } = mcpServerCredentials(connCfg, registration, freshConfig.id, agentCredentialStore())
 
       const appEnvKeys: string[] = []
       if (registration?.env?.length) {
@@ -782,7 +782,7 @@ export class AgentRuntimeBuilder {
         const serverHome = mcpServerContainerHome(connCfg, agentHome)
         if (serverHome !== agentHome) { try { await this.podmanService.ensureWorkspace(containerName, serverHome) } catch { /* ignore */ } }
         await materializeCredentialFiles(
-          mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'container'),
+          credFiles,
           connCfg,
           containerCredentialTarget(this.podmanService, containerName, serverHome),
         )
@@ -814,7 +814,7 @@ export class AgentRuntimeBuilder {
         if (!willContainerize) {
           connCfg.env = { ...connCfg.env, ...mcpHostHomeEnv(connCfg, owner, { ...inheritableEnv(), ...connCfg.env }) }
           await materializeCredentialFiles(
-            mcpCredentialFileStore(connCfg, owner, agentCredentialStore(), 'host'),
+            credFiles,
             connCfg,
             { kind: 'host', home: mcpServerHostHome(connCfg, owner) },
           )
@@ -1015,7 +1015,7 @@ export class AgentRuntimeBuilder {
           try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
         }
         const podmanSvc = this.podmanService
-        const owner = mcpCredentialOwner(authReg, freshConfig.id)
+        const { owner, files: credFiles, capture: credCapture } = mcpServerCredentials(cfg, authReg, freshConfig.id, agentCredentialStore())
         if (!container && !willContainerize) authCfg.env = { ...authCfg.env, ...mcpHostHomeEnv(cfg, owner, { ...inheritableEnv(), ...cfg.env }) }
         // Host credential target ONLY when routing chose host — a
         // container-intended server without a podman service must not
@@ -1023,11 +1023,10 @@ export class AgentRuntimeBuilder {
         const credTarget: CredentialFileTarget | null = container && podmanSvc
           ? containerCredentialTarget(podmanSvc, container.containerName, container.home ?? '/root')
           : (!willContainerize ? { kind: 'host', home: mcpServerHostHome(cfg, owner) } : null)
-        const credStore = mcpCredentialFileStore(cfg, owner, agentCredentialStore(), container ? 'container' : 'host')
-        if (credTarget) await materializeCredentialFiles(credStore, cfg, credTarget)
+        if (credTarget) await materializeCredentialFiles(credFiles, cfg, credTarget)
         await this.mcpAuthPreflight(authCfg, { authArgs: installOptions.authArgs, resolvedEnv, uvBinPath, container, authPort: installOptions.authPort })
         // Auth succeeded: capture files the flow stored (tokens) into the store.
-        if (credTarget) await writeBackCredentialFiles(credStore, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
+        if (credTarget && credCapture) await writeBackCredentialFiles(credCapture, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
       }
       return connectOneServer(freshConfig, serverName, 'Hot-load', { interactive: true })
     }, () => this.getMcpRegistrations()))

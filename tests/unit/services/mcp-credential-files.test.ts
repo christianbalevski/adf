@@ -67,30 +67,41 @@ describe('credentialFilePurpose', () => {
 })
 
 describe('folderCredentialStore', () => {
-  it('reads, reports and writes the declared path under its folder', () => {
+  it('reads and reports the declared path under its folder, and offers no way to write', () => {
     const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
     const store = folderCredentialStore(home)
     const purpose = 'mcp:gdrive:file:~/.config/gdrive/keys.json'
     expect(store.hasRow(purpose)).toBe(false)
     expect(store.getDecrypted(purpose)).toBeNull()
-    store.setIdentitySealed(purpose, record('{"k":1}'))
-    expect(readFileSync(join(home, '.config/gdrive/keys.json'), 'utf8')).toBe('{"k":1}')
+    mkdirSync(join(home, '.config/gdrive'), { recursive: true })
+    writeFileSync(join(home, '.config/gdrive/keys.json'), '{"k":1}')
     expect(store.hasRow(purpose)).toBe(true)
     expect(Buffer.from(JSON.parse(store.getDecrypted(purpose)!).data, 'base64').toString()).toBe('{"k":1}')
+    expect('setIdentitySealed' in store).toBe(false)
   })
 
-  it('round-trips a file into a container and back (app credentials in a container)', async () => {
+  it('copies app credentials into a container', async () => {
     const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
     mkdirSync(join(home, '.config/gdrive'), { recursive: true })
     writeFileSync(join(home, '.config/gdrive/keys.json'), 'app-sign-in')
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
-    const target = fsContainerTarget(root)
-    const store = folderCredentialStore(home)
-    await materializeCredentialFiles(store, server(), target)
+    await materializeCredentialFiles(folderCredentialStore(home), server(), fsContainerTarget(root))
     expect(readFileSync(`${root}/home/.config/gdrive/keys.json`, 'utf8')).toBe('app-sign-in')
-    writeFileSync(`${root}/home/.config/gdrive/keys.json`, 'refreshed')
-    await writeBackCredentialFiles(store, server(), target, NOW)
-    expect(readFileSync(join(home, '.config/gdrive/keys.json'), 'utf8')).toBe('refreshed')
+  })
+
+  it('on the host, materializing from the folder into itself leaves it as it is', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
+    mkdirSync(join(home, '.config/gdrive'), { recursive: true })
+    writeFileSync(join(home, '.config/gdrive/keys.json'), 'app-sign-in')
+    await materializeCredentialFiles(folderCredentialStore(home), server(), { kind: 'host', home })
+    expect(readFileSync(join(home, '.config/gdrive/keys.json'), 'utf8')).toBe('app-sign-in')
+  })
+
+  it('a missing required file names where to supply it, not the agent routes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
+    const cfg = server({ credential_files: [{ path: '~/.config/gdrive/keys.json', required: true }] })
+    await expect(materializeCredentialFiles(folderCredentialStore(home, 'Choose it again in Settings.'), cfg, { kind: 'host', home }))
+      .rejects.toThrow('Required credential file "~/.config/gdrive/keys.json" for MCP server "gdrive" is missing. Choose it again in Settings.')
   })
 })
 

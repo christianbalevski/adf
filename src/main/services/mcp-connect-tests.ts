@@ -20,10 +20,9 @@ import { z } from 'zod'
 import { McpClientManager } from './mcp-client-manager'
 import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
-import { mcpHostHomeEnv, mcpServerHostHome } from './mcp-server-home'
+import { mcpHostHomeEnv, mcpServerHostHome, removeMcpServerHome } from './mcp-server-home'
 import { inheritableEnv } from '../utils/child-env'
-import { bundledClientApplies, bundledTokenFileFor, writeBundledClientIfAbsent } from './gmail-bundled-client'
-import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
+import { writeBundledClientIfAbsent } from './gmail-bundled-client'
 import { resolveBundledMcpSpawn } from './bundled-mcp-servers'
 import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
@@ -333,14 +332,11 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
       // A declared file this build ships (the Gmail server's built-in OAuth
       // client), when none was chosen and the host has none: same
       // write-if-absent rule, so a chosen or existing client always wins.
-      // An existing token file without a client blocks it too.
       for (const f of reg.credentialFiles ?? []) {
         if (credentialFiles?.some((c) => c.path === f.path)) continue
         const dest = expandCredentialPath(f.path, hostTarget)
         if (writeBundledClientIfAbsent(reg.npmPackage, f.path, dest)) {
           notes.push(`Wrote the built-in OAuth client to ${f.path}.`)
-        } else if (bundledClientApplies(reg.npmPackage, f.path) && !existsSync(dest) && existsSync(bundledTokenFileFor(dest))) {
-          notes.push(`Did not write the built-in OAuth client: ${GMAIL_BUNDLED_TOKEN_PATH} already exists and may belong to another client. Choose that client, or delete the token file and connect again.`)
         }
       }
 
@@ -468,15 +464,17 @@ export async function mcpOAuthStatus(store: McpAppOAuthStore, rawArgs: unknown):
 }
 
 /**
- * Clear the stored token of a remote server, by its registration name
- * ("Sign out"). Clears the app-level store, the sign-in source of truth;
- * agent-sealed copies are re-captured on the next attach.
+ * Sign a Settings server out, by its registration name: clears its app-level
+ * OAuth record and deletes its folder (mcp-server-home.ts), which holds the
+ * sign-in of a server with credential files. Also run when a server is
+ * removed, so a server added later under the same name starts signed out.
  */
 export async function mcpOAuthSignOut(store: McpAppOAuthStore, rawArgs: unknown): Promise<{ success: boolean; error?: string }> {
   const name = (rawArgs as { name?: unknown } | null | undefined)?.name
   if (typeof name !== 'string' || !name) return { success: false, error: 'A server name is required to sign out.' }
   try {
     await store.forServer(name).invalidate('', 'all')
+    removeMcpServerHome(name, { kind: 'app' })
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }

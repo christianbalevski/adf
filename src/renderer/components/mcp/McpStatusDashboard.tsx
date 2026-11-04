@@ -230,6 +230,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
       }
     }
 
+    // Its sign-in goes with it: a server added later under this name starts signed out.
+    if (server) { try { await api?.mcpOAuthSignOut({ name: server.name }) } catch { /* best effort */ } }
     onServersChanged(mcpServersRef.current.filter((s) => s.id !== id))
   }
 
