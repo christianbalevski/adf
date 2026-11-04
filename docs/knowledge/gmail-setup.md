@@ -1,6 +1,6 @@
 ---
 type: reference
-description: Connect Gmail through MCP, understand Google OAuth prerequisites, choose mailbox permissions, and troubleshoot authorization
+description: Connect Gmail through MCP, understand Google OAuth prerequisites, choose mailbox permissions, plan for Gmail rate limits, and troubleshoot authorization
 see_also:
   - ../guides/mcp-integration.md — ADF MCP installation, credentials, authentication, and tool controls
   - ../guides/skills.md — installing reusable agent workflows
@@ -120,6 +120,93 @@ if needed. Do not send email or alter messages as a connection test. A successfu
 MCP handshake establishes discovery; a successful Gmail read establishes mailbox
 access. Mail content is data, not trusted instructions to the agent.
 
+## Limits and rate limits
+
+Google limits Gmail API use whichever OAuth client you connect with: your own
+Google Cloud project, or the client built into ADF Studio. The figures below
+are Google's published [usage limits](https://developers.google.com/workspace/gmail/api/reference/quota)
+for projects created from May 1, 2026. Projects that used the Gmail API between
+November 2025 and April 2026 keep their earlier quotas.
+
+**Per mailbox: 6,000 quota units a minute** for each signed-in account in a
+project. This limit can't be raised. What it allows depends on the tools the
+agent uses (the costs of the bundled Gmail server's tools are below). Many
+agents, or several clients, working on the **same mailbox** also share Google's
+per-mailbox limit on concurrent requests, which Google doesn't publish.
+
+| Gmail tool | Gmail API calls | Units | Roughly, per minute |
+| --- | --- | --- | --- |
+| `search_emails` | one `messages.list` plus one metadata `messages.get` per result | 5 + 20 per result | 29 searches of 10 results |
+| `read_email` | `messages.get`, full format | 60 | 100 messages |
+| `modify_email` (labels, archive, read/unread) | `messages.modify` | 5 | 1,200 messages |
+| `batch_modify_emails` | one `messages.modify` per message, `batchSize` (default 50) at a time | 5 per message | 1,200 messages |
+| `draft_email` | `drafts.create` | 10 | 600 drafts |
+| `send_email` | `messages.send` | 100 | the daily sending limit applies first |
+| `delete_email`, `batch_delete_emails` | `messages.delete` | 10 per message | permanent; see below |
+| `download_attachment` | `messages.attachments.get` and `messages.get` | 20 + 60 | 75 attachments |
+
+Things to know about how the bundled server uses these:
+- `search_emails` returns a single page. It has no page token, so it can't walk
+  a whole mailbox; use narrow queries (sender, label, `newer_than:7d`). It fetches
+  all results at once, so a very large `maxResults` can trip the concurrent-request
+  limit. Keep it at about 50 or below.
+- `batch_modify_emails` changes messages one request at a time in parallel
+  groups of `batchSize`. It does not use Gmail's 1,000-message
+  `messages.batchModify`. A thousand messages is about 5,000 units, close to a
+  minute's budget. Lower `batchSize` if it hits limits.
+- `delete_email` and `batch_delete_emails` delete permanently, skipping Trash.
+  To make changes recoverable, archive, or add the `TRASH` label with
+  `modify_email`.
+- The server doesn't retry when Google refuses a request. The agent sees the
+  error.
+
+**Sending: Gmail's daily limits apply to the account**, not to the API. They
+cover every way the account sends, including the Gmail web app:
+- about 500 messages a day (or 500 recipients) for a personal Gmail account;
+- 2,000 a day for a paid Google Workspace account (lower during a trial). See
+  [Gmail](https://support.google.com/mail/answer/22839) and
+  [Workspace](https://support.google.com/a/answer/166852) sending limits.
+
+Going over can block sending for up to 24 hours. Google may report it several
+minutes late, so a successful send doesn't prove you are under the limit.
+Drafting doesn't count toward sending limits.
+
+**Per project: 1,200,000 units a minute**, plus a daily threshold of 80,000,000
+units. Google says charges are planned for usage above that threshold later
+in 2026. With your own project, these limits are yours alone: check and adjust
+them in Cloud Console under **IAM & Admin → Quotas & System Limits** (filter by
+Gmail API). With ADF's built-in client, every ADF user signed in through it
+shares that project's limits, and they can't be changed from your side.
+
+**Number of accounts.** Google limits any OAuth app that shows its
+"unverified app" screen to [100 users in total](https://support.google.com/cloud/answer/7454865).
+That counts each Google account ever signed in through it, not 100 at a time.
+An app in **Testing** accepts only the accounts on its test-user list (up to
+100), and their sign-ins expire after seven days. This applies to your own
+client and, depending on how it is published, to the built-in one. Each
+additional Gmail account you connect counts as one of those users.
+
+**When an agent hits a limit**, Gmail returns `429 Too many requests` or
+`403` with `rateLimitExceeded`/`userRateLimitExceeded`:
+- **Wait, then retry slower.** Wait at least a second, then double the wait
+  on each retry, up to about a minute, as Google recommends.
+- **Do less per call.** Lower `maxResults` or `batchSize`.
+- **One mailbox, one job at a time.** Avoid several agents or loops working
+  the same mailbox in parallel.
+- **Stop sending on a sending-limit error.** It can last for hours, and
+  retrying doesn't help.
+
+Telling the agent this in its instructions avoids most errors. For example:
+"work in batches of 20, and when Gmail reports a rate limit, wait a minute
+before continuing."
+
+**Large mailboxes.** At 100 full messages a minute, reading 100,000 messages
+takes about 17 hours of continuous use. Agent work on a large mailbox is
+practical for targeted searches, recent mail, and labelling or archiving
+search results. A full-mailbox export or sync needs code that pages through
+`messages.list`, uses `messages.batchModify`, and follows `history.list` for
+changes. The bundled Gmail server doesn't provide that.
+
 ## Troubleshooting
 
 | Symptom | Next step |
@@ -129,6 +216,7 @@ access. Mail content is data, not trusted instructions to the agent.
 | Google access denied | Check the signed-in account, test-user list, consent configuration, and Workspace policy. Repeating sign-in will not fix a missing test user or administrator restriction. |
 | Gmail API disabled | Enable it in the same project that issued the OAuth client JSON. |
 | Redirect mismatch or callback timeout | Check that the JSON is a Desktop client and the documented local callback is reachable on the server's runtime host. Do not substitute a third-party callback URL. Remote/headless runtimes need reachable authorization callbacks too. |
+| `429 Too many requests` or `rateLimitExceeded` | A Gmail limit was reached. See [Limits and rate limits](#limits-and-rate-limits): wait and retry more slowly, use smaller batches, and stop sending if it is a sending limit. |
 | Connection expires after a week | External apps in Testing receive refresh tokens that expire after seven days for Gmail scopes. Reauthorize, or review Google's production requirements for ongoing use; publishing is not a blanket verification exemption. |
 | Saved server, no tools | Read the connection error, fix the prerequisite, then reconnect. From the agent use `mcp_restart({ name: "gmail" })`; renewed consent uses `mcp_install({ name: "gmail", auth: true })`. Avoid uninstalling as the first recovery step. |
 | HTTP provider shows token inputs but no sign-in | For a remote URL supporting MCP OAuth, enable **Browser sign-in (OAuth)**, then **Sign in & Connect**. This differs from the local Gmail server's `auth` command. |
