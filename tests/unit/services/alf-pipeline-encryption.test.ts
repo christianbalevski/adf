@@ -34,13 +34,12 @@ function ctx(
   agent: ReturnType<typeof makeAgent>,
   remoteDid: string,
   direction: 'egress' | 'ingress',
-  security: SecurityConfig,
-  isLocal = false
+  security: SecurityConfig
 ): MessagingPipelineContext {
-  return { direction, workspace: agent.workspace, localDid: agent.did, remoteDid, isLocal, security, derivedKey: null }
+  return { direction, workspace: agent.workspace, localDid: agent.did, remoteDid, security, derivedKey: null }
 }
 
-const LEVEL2: SecurityConfig = { allow_unsigned: true, level: 2 }
+const LEVEL2: SecurityConfig = { level: 2 }
 
 describe('default pipeline level 2 (sign + encrypt)', () => {
   it('encrypts on egress and the recipient round-trips it on ingress', async () => {
@@ -92,7 +91,7 @@ describe('default pipeline level 2 (sign + encrypt)', () => {
 
     const egress = await pipeline.processEgress(
       makeMessage(sender.did, recipient.did),
-      ctx(sender, recipient.did, 'egress', { allow_unsigned: true, level: 1 })
+      ctx(sender, recipient.did, 'egress', { level: 1 })
     )
     expect(egress.rejected).toBeUndefined()
     expect(isEncryptedPayload(egress.data.payload)).toBe(false)
@@ -100,17 +99,20 @@ describe('default pipeline level 2 (sign + encrypt)', () => {
     expect(egress.data.payload.signature).toMatch(/^ed25519:/)
   })
 
-  it('skips encryption for same-runtime local delivery', async () => {
+  it('require_encryption rejects a plaintext payload and accepts an encrypted one', async () => {
     const pipeline = createDefaultPipeline()
     const sender = makeAgent()
     const recipient = makeAgent()
+    const requireEnc: SecurityConfig = { level: 1, require_encryption: true }
 
-    const egress = await pipeline.processEgress(
-      makeMessage(sender.did, recipient.did),
-      ctx(sender, recipient.did, 'egress', LEVEL2, true)
-    )
-    expect(egress.rejected).toBeUndefined()
-    expect(isEncryptedPayload(egress.data.payload)).toBe(false)
+    const plain = await pipeline.processEgress(makeMessage(sender.did, recipient.did), ctx(sender, recipient.did, 'egress', { level: 1 }))
+    const rejected = await pipeline.processIngress(plain.data, ctx(recipient, sender.did, 'ingress', requireEnc))
+    expect(rejected.rejected).toMatchObject({ code: 403, reason: 'Encrypted payload required but missing' })
+
+    const sealed = await pipeline.processEgress(makeMessage(sender.did, recipient.did), ctx(sender, recipient.did, 'egress', LEVEL2))
+    const accepted = await pipeline.processIngress(sealed.data, ctx(recipient, sender.did, 'ingress', requireEnc))
+    expect(accepted.rejected).toBeUndefined()
+    expect(accepted.data.meta?.payload_encrypted).toBe(true)
   })
 
   it('passes non-DID recipients (channel adapters) through unencrypted', async () => {

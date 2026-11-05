@@ -216,7 +216,7 @@ Mitigations, applied only when inbound points are above 0:
 | Mitigation | Constant | Points | Rule |
 |------------|----------|--------|------|
 | Allow list | none | −inbound / 2 | `messaging.allow_list` is not empty |
-| Signed messages only | `REACH_POINTS.signedOnly` | -0.5 | `security.allow_unsigned` is false or `security.require_signature` is true |
+| Signed messages only | `REACH_POINTS.signedOnly` | -0.5 | `security.require_signature` is true |
 
 ### Autonomy
 

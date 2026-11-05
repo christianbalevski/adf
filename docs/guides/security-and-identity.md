@@ -221,9 +221,9 @@ This is the only situation where Studio prompts for a password on open. Envelope
 ## Message Security
 
 - `security.level` — new agents default to **1 (Signed)**: outbound messages carry an author payload signature and a sender message signature, verified on receipt. Level **2 (Encrypted)** additionally encrypts payloads to DID recipients end-to-end, deriving the encryption key from the recipient's DID itself — no key exchange needed. See [Messaging → Message Security](messaging.md#message-security).
-- `security.allow_unsigned: true` (default) accepts unsigned inbound messages — fine for local development and LAN. Internet-facing agents should set `allow_unsigned: false`; with mandatory identity, every agent can sign. This is a guard-system setting — **not agent-writable**; the owner changes it in the app UI, never the agent via `sys_update_config`.
-- `security.middleware.*` and `security.fetch_middleware` configure the [middleware](middleware.md) lambda chains for inbox/outbox/fetch pipelines. Like `allow_unsigned`, these are **owner-only** guard settings the agent cannot change through `sys_update_config`.
-- By contrast, `security.level`, `security.require_signature`, and `security.require_payload_signature` **are** agent-writable via [`sys_update_config`](tools.md#sys_update_config) — HIL-gated (your principal approves); only the guard switches above are hard-denied (see [Tool Access Control](security-architecture.md#tool-access-control)).
+- `security.require_signature`, `security.require_payload_signature` and `security.require_encryption` (all off by default) reject inbound messages without that protection, at any level. Off is fine for local development and LAN; internet-facing agents should turn on at least `require_signature` — with mandatory identity, every agent can sign.
+- `security.middleware.*` and `security.fetch_middleware` configure the [middleware](middleware.md) lambda chains for inbox/outbox/fetch pipelines. These are **owner-only** guard settings the agent cannot change through `sys_update_config`.
+- By contrast, `security.level` and the three `require_*` settings **are** agent-writable via [`sys_update_config`](tools.md#sys_update_config) — HIL-gated (your principal approves); only the guard switches above are hard-denied (see [Tool Access Control](security-architecture.md#tool-access-control)).
 
 - The inbox `owner` field and `sender_alias` are **unverified claims** carried in message meta — a sender sets them freely. Trust them only when the message is `message_verified`; otherwise the verified `from` DID is the sole authoritative identity. (Reserved aliases `owner`/`system`/`user` are stripped on ingress, but any other display name passes through unverified.)
 
@@ -261,7 +261,7 @@ Provider resolution is the same in Studio and the headless daemon. The agent's o
 1. **Back up your seed phrase immediately.** It is now the recovery root for both your identity *and* every envelope-sealed secret in your fleet.
 2. **Local development:** defaults are fine. Envelopes work silently; you should never see a password prompt.
 3. **Sharing an agent:** use the share-password flow — never strip protection to "make it easy." Remember the recipient keeps the credentials; revoke by rotating upstream keys.
-4. **Internet-facing agents:** set `allow_unsigned: false` (owner-only — not agent-writable; ask your principal) and publish attestations (`card.publish_attestations` — the agent can request this itself, HIL-gated) so peers can verify ownership.
+4. **Internet-facing agents:** turn on `security.require_signature` and publish attestations (`card.publish_attestations` — the agent can request this itself, HIL-gated) so peers can verify ownership.
 5. **API key management:** store keys via `set_identity` / the Identity panel, not in plain config — they're envelope-sealed automatically.
 6. **Agent spawning:** inject only the API keys the child needs (least privilege). The child gets its own identity and envelopes automatically, plus `adf_parent_did` lineage.
 7. **Trust between agents:** prefer peer attestations over shared secrets — certificates are verifiable, scoped, expirable, and revocable by expiry.

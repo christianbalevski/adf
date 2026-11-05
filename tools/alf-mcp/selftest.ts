@@ -34,8 +34,7 @@ function ctxFor(identity: Identity, remoteDid: string, direction: 'ingress' | 'e
     } as never,
     localDid: identity.did,
     remoteDid,
-    isLocal: false,
-    security: { allow_unsigned: false, level: 2, require_signature: true, require_payload_signature: true },
+    security: { level: 2, require_signature: true, require_payload_signature: true },
     derivedKey: null
   }
 }

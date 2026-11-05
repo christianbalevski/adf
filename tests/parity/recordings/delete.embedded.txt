@@ -90,7 +90,6 @@
       name: "agent-1"
       providers: []
       security:
-        allow_unsigned: true
         level: 1
       serving:
         api: []

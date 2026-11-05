@@ -44,7 +44,7 @@ async function dispatchCallingHilTool(fileAuthorized: boolean) {
     getAdfCallHandler: () => ({ handleCall }),
     getWorkspace: () => workspace,
     getToolConfig: () => ({ enabledTools: ['fs_delete'], hilTools: ['fs_delete'] }),
-    getAllowUnsigned: () => true,
+    requiresSignature: () => false,
   } as unknown as ConstructorParameters<typeof WsConnectionManager>[0]
 
   const manager = new WsConnectionManager(delegate)

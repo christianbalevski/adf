@@ -171,7 +171,7 @@ describe('power sections', () => {
     const base = scoreAccess({
       tools: [], autonomous: false, autostart: false,
       messaging: { receive: false, mode: 'listen_only', visibility: 'off', allowListCount: 0 },
-      security: { allowUnsigned: true, requireSignature: false },
+      security: { requireSignature: false },
       serving: { publicEnabled: false, apiRouteCount: 0, sharedEnabled: false },
       adapters: [], wsConnectionCount: 0, mcpServers: servers, npmPackageCount: 0, codeNetwork: false,
       compute: { enabled: false, hostAccess: false, allowedTargets: [] }, triggers: [], sideLoopCount: 0,

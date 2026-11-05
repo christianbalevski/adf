@@ -136,13 +136,13 @@ Connections use mutual DID authentication via Ed25519 signatures. See the [ALF p
 
 ### Inbound Auth
 
-The agent's `security.allow_unsigned` setting (owner-only — a guard path, not agent-writable; ask your principal) controls whether inbound clients must authenticate. When `allow_unsigned: true`, clients may optionally send an auth frame to claim a DID, but it is accepted without cryptographic verification and stamped as `identity_verified: false`. Messages from unverified connections show an amber "unverified" badge in the inbox UI.
+The agent's `security.require_signature` setting controls whether inbound clients must authenticate. When it is off (the default), clients may optionally send an auth frame to claim a DID, but it is accepted without cryptographic verification and stamped as `identity_verified: false`. Messages from unverified connections show an amber "unverified" badge in the inbox UI.
 
 ### Outbound Auth
 
-Outbound auth is controlled per-connection via the `auth` field (not by the agent's `allow_unsigned` setting):
+Outbound auth is controlled per-connection via the `auth` field (not by the agent's `require_signature` setting):
 
-- **`auto`** (default) — Authenticate if a private key is available. This ensures connections to auth-requiring servers work even if the local agent has `allow_unsigned: true`.
+- **`auto`** (default) — Authenticate if a private key is available. This ensures connections to auth-requiring servers work even if the local agent does not require signatures itself.
 - **`required`** — Always authenticate. Fails immediately if no private key is available.
 - **`none`** — Skip authentication entirely.
 

@@ -247,7 +247,7 @@ export class MeshManager extends EventEmitter {
         const h = this.registeredAgents.get(fp)?.adfCallHandler
         return h ? { enabledTools: h.getEnabledToolNames(), hilTools: h.getHilToolNames() } : null
       },
-      getAllowUnsigned: (fp) => this.registeredAgents.get(fp)?.config.security?.allow_unsigned ?? false
+      requiresSignature: (fp) => !!this.registeredAgents.get(fp)?.config.security?.require_signature
     }
   }
 
@@ -744,7 +744,7 @@ export class MeshManager extends EventEmitter {
    * Returns the pipeline result: `data` is the (verified, decrypted) message,
    * `rejected` carries an HTTP-style code + reason when a step fails.
    */
-  async runInboundCrypto(filePath: string, message: AlfMessage, isLocal: boolean): Promise<AlfPipelineResult> {
+  async runInboundCrypto(filePath: string, message: AlfMessage): Promise<AlfPipelineResult> {
     const reg = this.registeredAgents.get(filePath)
     if (!reg) return { data: message, rejected: { code: 404, reason: 'Recipient not registered' } }
     const ctx: AlfPipelineContext = {
@@ -752,8 +752,7 @@ export class MeshManager extends EventEmitter {
       workspace: reg.workspace,
       localDid: reg.workspace.getDid() ?? reg.config.id,
       remoteDid: typeof message.from === 'string' ? message.from : '',
-      isLocal,
-      security: reg.config.security ?? { allow_unsigned: true },
+      security: reg.config.security ?? {},
       derivedKey: this.derivedKeys.get(filePath) ?? null
     }
     return this.pipeline.processIngress(message, ctx)
@@ -779,7 +778,7 @@ export class MeshManager extends EventEmitter {
       const senderDid = message.from
 
       // Shared ingress crypto (verify + decrypt) — see runInboundCrypto.
-      const ingressResult = await this.runInboundCrypto(recipientFilePath, message, false)
+      const ingressResult = await this.runInboundCrypto(recipientFilePath, message)
       if (ingressResult.rejected) {
         return { success: false, error: `Ingress rejected: ${ingressResult.rejected.reason}`, statusCode: ingressResult.rejected.code }
       }
@@ -1085,8 +1084,7 @@ export class MeshManager extends EventEmitter {
       workspace: senderReg.workspace,
       localDid: senderDid,
       remoteDid: recipient,
-      isLocal: !!recipientLocal,
-      security: senderConfig.security ?? { allow_unsigned: true },
+      security: senderConfig.security ?? {},
       derivedKey: this.derivedKeys.get(fromFilePath) ?? null
     }
     const pipelineResult = await this.pipeline.processEgress(message, pipelineCtx)
@@ -1151,7 +1149,7 @@ export class MeshManager extends EventEmitter {
       try {
         // Shared ingress crypto (verify + decrypt) — enforce recipient's
         // security config on local delivery. See runInboundCrypto.
-        const ingressResult = await this.runInboundCrypto(recipientLocal.filePath, message, true)
+        const ingressResult = await this.runInboundCrypto(recipientLocal.filePath, message)
         if (ingressResult.rejected) {
           senderReg.workspace.updateOutboxStatus(outboxId, 'failed')
           return { success: false, error: `Recipient rejected: ${ingressResult.rejected.reason}` }

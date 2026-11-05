@@ -37,8 +37,6 @@ export interface MessagingPipelineContext {
   workspace: AdfWorkspace
   localDid: string
   remoteDid: string
-  /** Same-runtime delivery — may skip encryption */
-  isLocal: boolean
   security: SecurityConfig
   /** Derived key for accessing password-protected signing keys */
   derivedKey: Buffer | null
@@ -212,13 +210,11 @@ export const signMessageMiddleware: MessagingMiddlewareFn = (message, ctx) => {
  * EGRESS: Encrypt the payload to the recipient DID (level 2).
  * Runs after signPayload (the inner signature travels inside the ciphertext)
  * and before signMessage (the outer signature covers the encrypted form).
- * Skips local same-runtime delivery (never leaves the process) and non-DID
- * recipients (channel adapters — the platform is the transport, there is no
- * agent key to encrypt to).
+ * Skips non-DID recipients (channel adapters — the platform is the
+ * transport, there is no agent key to encrypt to).
  */
 export const encryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) => {
   if ((ctx.security.level ?? 0) < 2) return { data: message }
-  if (ctx.isLocal) return { data: message }
   if (typeof message.to !== 'string' || !message.to.startsWith('did:')) return { data: message }
 
   const sealed = encryptPayloadForDid(message.payload, message.to)
@@ -237,7 +233,12 @@ export const encryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) =>
 export const decryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) => {
   // Not encrypted — drop any wire-supplied `payload_encrypted` claim so the
   // stamp below is the only source of that flag.
-  if (!isEncryptedPayload(message.payload)) return { data: dropMeta(message, 'payload_encrypted') }
+  if (!isEncryptedPayload(message.payload)) {
+    if (ctx.security.require_encryption) {
+      return { data: message, rejected: { code: 403, reason: 'Encrypted payload required but missing' } }
+    }
+    return { data: dropMeta(message, 'payload_encrypted') }
+  }
 
   const keys = ctx.workspace.getSigningKeys(ctx.derivedKey)
   if (!keys) {
@@ -251,15 +252,6 @@ export const decryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) =>
 }
 
 /**
- * Whether ingress rejects messages without a valid DID message signature.
- * The single source of truth for both enforcement (below) and the agent
- * card's advertised `signing.receive` policy.
- */
-export function rejectsUnsignedInbound(security: SecurityConfig): boolean {
-  return !!security.require_signature && !security.allow_unsigned
-}
-
-/**
  * INGRESS: Verify the top-level message signature.
  * Extracts public key from the sender's DID.
  * Rejects if require_signature is set and no signature present.
@@ -270,7 +262,7 @@ export const verifyMessageSignatureMiddleware: MessagingMiddlewareFn = (message,
   // Signature verification is only meaningful when `from` is a DID.
   const senderIsDid = typeof message.from === 'string' && message.from.startsWith('did:')
   if (!message.signature || !senderIsDid) {
-    if (rejectsUnsignedInbound(ctx.security)) {
+    if (ctx.security.require_signature) {
       return { data: message, rejected: { code: 403, reason: 'Message signature required but missing' } }
     }
     // Stamp as not verified (no signature or unsigned-by-design sender)

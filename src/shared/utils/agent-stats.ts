@@ -479,13 +479,13 @@ export function scoreReach(inputs: AgentPowerInputs): PowerStat {
         configPath: 'messaging.allow_list'
       })
     }
-    if (!inputs.security.allowUnsigned || inputs.security.requireSignature) {
+    if (inputs.security.requireSignature) {
       factors.push({
         id: 'security:signed_only',
         label: 'Only accepts signed messages',
         points: REACH_POINTS.signedOnly,
         gated: false,
-        configPath: inputs.security.requireSignature ? 'security.require_signature' : 'security.allow_unsigned'
+        configPath: 'security.require_signature'
       })
     }
   }
@@ -794,7 +794,6 @@ export function powerInputsFromConfig(config: Partial<AgentConfig>, tables: Powe
       allowListCount: config.messaging?.allow_list?.length ?? 0
     },
     security: {
-      allowUnsigned: config.security?.allow_unsigned ?? true,
       requireSignature: !!config.security?.require_signature
     },
     serving: {

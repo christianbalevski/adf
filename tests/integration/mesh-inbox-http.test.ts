@@ -73,10 +73,10 @@ async function buildWireMessage(
     from: senderDid, to: recipientDid, reply_to: replyTo,
     payload: { content, content_type: 'text/plain', sent_at: new Date(0).toISOString() }
   }
-  const security: SecurityConfig = { allow_unsigned: false, level }
+  const security: SecurityConfig = { level }
   const ctx: MessagingPipelineContext = {
     direction: 'egress', workspace: senderWorkspace, localDid: senderDid, remoteDid: recipientDid,
-    isLocal: false, security, derivedKey: null
+    security, derivedKey: null
   }
   const result = await createDefaultPipeline().processEgress(message, ctx)
   if (result.rejected) throw new Error(`egress rejected: ${result.rejected.reason}`)

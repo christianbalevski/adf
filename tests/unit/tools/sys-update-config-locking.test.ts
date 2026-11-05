@@ -517,7 +517,6 @@ describe('sys_update_config (path-based)', () => {
 
   describe('guard-system hard deny', () => {
     const guardPaths = [
-      'security.allow_unsigned',
       'security.require_middleware_authorization',
       'security.fetch_middleware',
       'security.middleware.inbox'
@@ -537,7 +536,7 @@ describe('sys_update_config (path-based)', () => {
     it('hard-denies wholesale replacement of security', async () => {
       const config = makeConfig()
       const ws = mockWorkspace(config)
-      const result = await tool.execute({ path: 'security', value: { allow_unsigned: true } }, ws)
+      const result = await tool.execute({ path: 'security', value: { level: 0 } }, ws)
       expect(result.isError).toBe(true)
       expect(result.protection).toBeUndefined()
     })
@@ -974,10 +973,10 @@ describe('sys_update_config (path-based)', () => {
     it('hard-denies guard-system security fields', async () => {
       const config = makeConfig()
       const ws = mockWorkspace(config)
-      const result = await tool.execute({ path: 'security.allow_unsigned', value: false }, ws)
+      const result = await tool.execute({ path: 'security.require_middleware_authorization', value: false }, ws)
       expect(result.isError).toBe(true)
       expect(result.protection).toBeUndefined()
-      expect(config.security.allow_unsigned).not.toBe(false)
+      expect(config.security.require_middleware_authorization).not.toBe(false)
     })
 
     it('updates limits fields', async () => {

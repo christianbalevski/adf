@@ -27,7 +27,6 @@ const DENIED_SET = new Set<string>(DENIED_PATHS)
  */
 const GUARD_PATHS = [
   'security',                                  // wholesale replacement of the guard block
-  'security.allow_unsigned',                   // changes what counts as verified
   'security.require_middleware_authorization', // decides whether agent code needs authorization
   'security.middleware',                       // rewrites what the agent (and audit) sees
   'security.fetch_middleware'                  // rewrites what fetches return

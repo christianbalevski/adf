@@ -55,7 +55,7 @@ export interface WsManagerDelegate {
   getAdfCallHandler(agentFilePath: string): AdfCallHandler | null
   getWorkspace(agentFilePath: string): AdfWorkspace | null
   getToolConfig(agentFilePath: string): { enabledTools: string[]; hilTools: string[] } | null
-  getAllowUnsigned(agentFilePath: string): boolean
+  requiresSignature(agentFilePath: string): boolean
 }
 
 // =============================================================================
@@ -378,7 +378,7 @@ export class WsConnectionManager {
 
         // 'required' -> always auth (fail if no key)
         // 'none' -> never auth
-        // 'auto' -> auth if privateKey is available (regardless of allow_unsigned)
+        // 'auto' -> auth if privateKey is available (regardless of require_signature)
         const shouldAuth = authMode === 'required'
           || (authMode === 'auto' && privateKey != null)
 
@@ -601,8 +601,7 @@ export class WsConnectionManager {
 
     socket.on('pong', () => this.handlePong(conn))
 
-    const allowUnsigned = this.delegate.getAllowUnsigned(agentFilePath)
-    if (!allowUnsigned) {
+    if (this.delegate.requiresSignature(agentFilePath)) {
       // Set auth timeout
       conn.authTimeout = setTimeout(() => {
         detachAuthHandler()
@@ -655,7 +654,7 @@ export class WsConnectionManager {
     }
   }
 
-  private wireInboundEvents(conn: ManagedConnection, allowUnsigned = false): void {
+  private wireInboundEvents(conn: ManagedConnection, optionalAuth = false): void {
     this.startKeepalive(conn)
     this.log(conn.agentFilePath, 'info', 'ws_connect', null, `Inbound ${conn.id} connected`, { remote_did: conn.remoteDid })
 
@@ -668,8 +667,8 @@ export class WsConnectionManager {
       timestamp: Date.now()
     })
 
-    // When allow_unsigned, intercept optional auth frame from client (one-shot)
-    let authFrameHandled = !allowUnsigned
+    // Without require_signature, intercept an optional auth frame from the client (one-shot)
+    let authFrameHandled = !optionalAuth
 
     conn.socket.on('message', (data: Buffer | string, isBinary?: boolean) => {
       if (conn.closed) return

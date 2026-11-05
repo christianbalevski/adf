@@ -368,7 +368,6 @@ A small set of per-agent `security.*` fields are **guard toggles**: they decide 
 
 | Field | Default | Effect |
 |-------|---------|--------|
-| `security.allow_unsigned` | `true` | Whether inbound messages without a valid signature are accepted. |
 | `security.require_middleware_authorization` | `true` | Whether messaging/fetch middleware lambdas must come from authorized files. |
 | `security.middleware` | — | Inbox/outbox middleware pipeline lambdas. |
 | `security.fetch_middleware` | — | Middleware chain applied to `sys_fetch` requests. |

@@ -17,8 +17,8 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import type { ServableAgent } from '../../../src/main/runtime/mesh-manager'
 import type { SecurityConfig } from '../../../src/shared/types/adf-v02.types'
 
-// The card's signing policy must project what the runtime actually enforces:
-// `receive: 'required'` only when the ingress pipeline rejects unsigned input.
+// The card's policies must project what the runtime does: `send` what egress
+// produces, `receive` what ingress rejects.
 
 let dir: string
 let workspace: AdfWorkspace
@@ -52,24 +52,25 @@ function cardFor(security: SecurityConfig) {
 const signingPolicy = (security: SecurityConfig) =>
   cardFor(security).policies?.find(p => p.type === 'signing')
 
-describe('agent card signing policy', () => {
-  it('advertises receive optional when unsigned inbound is accepted', () => {
-    expect(signingPolicy({ level: 2, allow_unsigned: true })).toMatchObject({ send: 'required', receive: 'optional' })
-    expect(signingPolicy({ level: 1, allow_unsigned: true, require_signature: true })).toMatchObject({ receive: 'optional' })
-    expect(signingPolicy({ level: 1, allow_unsigned: false })).toMatchObject({ receive: 'optional' })
+const encryptionPolicy = (security: SecurityConfig) =>
+  cardFor(security).policies?.find(p => p.type === 'encryption')
+
+describe('agent card signing and encryption policies', () => {
+  it('signing: send follows the level, receive follows the require settings', () => {
+    expect(signingPolicy({ level: 1 })).toEqual({ type: 'signing', standard: 'ed25519', send: 'required', receive: 'optional' })
+    expect(signingPolicy({ level: 1, require_signature: true })).toMatchObject({ send: 'required', receive: 'required' })
+    expect(signingPolicy({ level: 1, require_payload_signature: true })).toMatchObject({ receive: 'required' })
+    expect(signingPolicy({ level: 0, require_signature: true })).toMatchObject({ send: 'optional', receive: 'required' })
+    expect(signingPolicy({ level: 0 })).toBeUndefined()
   })
 
-  it('advertises receive required when unsigned inbound is rejected', () => {
-    expect(signingPolicy({ level: 1, allow_unsigned: false, require_signature: true }))
-      .toEqual({ type: 'signing', standard: 'ed25519', send: 'required', receive: 'required' })
+  it('encryption: send at level 2, receive with require_encryption', () => {
+    expect(encryptionPolicy({ level: 1 })).toBeUndefined()
+    expect(encryptionPolicy({ level: 2 })).toMatchObject({ send: 'required', receive: 'optional' })
+    expect(encryptionPolicy({ level: 0, require_encryption: true })).toMatchObject({ send: 'optional', receive: 'required' })
   })
 
-  it('advertises receive required when a payload signature is required', () => {
-    expect(signingPolicy({ level: 1, allow_unsigned: true, require_payload_signature: true }))
-      .toMatchObject({ send: 'required', receive: 'required' })
-  })
-
-  it('falls back to accepting unsigned inbound when the agent has no security settings', () => {
+  it('an agent with no security settings advertises neither', () => {
     const config = { ...workspace.getAgentConfig() }
     delete (config as { security?: SecurityConfig }).security
     const agent: ServableAgent = {
@@ -77,14 +78,8 @@ describe('agent card signing policy', () => {
       triggerEvaluator: null, adfCallHandler: null, codeSandboxService: null,
       getSigningKey: () => workspace.getSigningKeys(null)?.privateKey ?? null
     }
-    expect(buildAgentCard(agent, '127.0.0.1', 7295).policies?.find(p => p.type === 'signing')).toBeUndefined()
-  })
-
-  it('at level 0, shows a signing policy only when inbound signatures are required', () => {
-    expect(signingPolicy({ level: 0, allow_unsigned: true })).toBeUndefined()
-    expect(signingPolicy({ level: 0, allow_unsigned: false, require_signature: true }))
-      .toMatchObject({ send: 'optional', receive: 'required' })
-    expect(signingPolicy({ level: 0, allow_unsigned: true, require_payload_signature: true }))
-      .toMatchObject({ send: 'optional', receive: 'required' })
+    const types = buildAgentCard(agent, '127.0.0.1', 7295).policies?.map(p => p.type) ?? []
+    expect(types).not.toContain('signing')
+    expect(types).not.toContain('encryption')
   })
 })
