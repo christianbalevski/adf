@@ -742,9 +742,14 @@ export class AgentExecutor extends EventEmitter {
   private providerValidated: boolean = false
   private bufferTimer: NodeJS.Timeout | null = null
   private readonly BATCH_WINDOW_MS = 50
-  // An owner chat reached this turn and nothing visible (text, say, ask) has
-  // followed it yet. See noteSilentTurn.
-  private ownerChatUnanswered = false
+  // Whether an owner chat reached this turn, and if so whether the owner has
+  // seen anything visible (text, say, ask) that answers it. Visible output
+  // shown before the agent has seen any tool results is a status line, not an
+  // answer. See noteSilentTurn.
+  private ownerChat: 'none' | 'unanswered' | 'answered' = 'none'
+  // The agent has called a work tool (anything but say, ask, sys_set_state)
+  // since the owner chat arrived, so it has seen tool results.
+  private turnDidWork = false
 
   // System prompt caching for performance
   private systemPromptCache: {
@@ -2449,7 +2454,8 @@ export class AgentExecutor extends EventEmitter {
       // or ones that arrived while this turn was being scheduled) join it as
       // consecutive user rows, in arrival order, before the first model call.
       if (!opts?.nested) {
-        this.ownerChatUnanswered = eventType === 'chat'
+        this.ownerChat = eventType === 'chat' ? 'unanswered' : 'none'
+        this.turnDidWork = false
         this.deliverQueuedChatsAtTurnStart()
       }
 
@@ -2885,9 +2891,17 @@ export class AgentExecutor extends EventEmitter {
           }
         )
 
-        if (response.content.some(b => (b.type === 'text' && b.text?.trim())
-          || (b.type === 'tool_use' && (b.name === 'say' || b.name === 'ask')))) {
-          this.ownerChatUnanswered = false
+        // The turn's first work tool: everything the owner saw so far, this
+        // response included, came before any tool results, so it was a status
+        // line. After that, visible output answers and later work keeps it.
+        if (this.ownerChat !== 'none') {
+          if (!this.turnDidWork && toolUseBlocks.some(b => b.name !== 'say' && b.name !== 'ask' && b.name !== 'sys_set_state')) {
+            this.ownerChat = 'unanswered'
+            this.turnDidWork = true
+          } else if (response.content.some(b => (b.type === 'text' && b.text?.trim())
+            || (b.type === 'tool_use' && (b.name === 'say' || b.name === 'ask')))) {
+            this.ownerChat = 'answered'
+          }
         }
 
         if (toolUseBlocks.length > 0) {
@@ -6429,7 +6443,7 @@ export class AgentExecutor extends EventEmitter {
    * like any other input, so it can reply. Returns whether the notice went in.
    */
   private noteSilentTurn(): boolean {
-    if (!this.ownerChatUnanswered) return false
+    if (this.ownerChat !== 'unanswered') return false
     if (this.getState() === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) return false
     try {
       this.session.getWorkspace().insertLog('warn', 'executor', 'silent_turn', null, 'Turn would have ended without a reply to the owner; asked the model to reply')
@@ -6470,7 +6484,12 @@ export class AgentExecutor extends EventEmitter {
    */
   private deliverQueuedChats(delivery: 'turn_start' | 'next_step'): number {
     const chats = this.takeQueuedChats(delivery)
-    if (chats.length > 0) this.ownerChatUnanswered = true
+    // A newly absorbed chat has not been worked on yet: the next status line
+    // shown for it does not answer it either.
+    if (chats.length > 0) {
+      this.ownerChat = 'unanswered'
+      this.turnDidWork = false
+    }
     for (const chat of chats) {
       if (this.preAppendedRowAlreadyInSession(chat)) continue
       const content = this.buildTriggerContent(chat)

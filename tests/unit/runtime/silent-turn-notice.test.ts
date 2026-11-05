@@ -29,7 +29,7 @@ function makeWorkspace(name: string) {
     name,
     provider: new MockLLMProvider(),
     createOptions: {
-      tools: ['sys_set_state', 'say'].map(n => ({ name: n, enabled: true, visible: true, restricted: false })),
+      tools: ['sys_set_state', 'say', 'fs_list'].map(n => ({ name: n, enabled: true, visible: true, restricted: false })),
     },
   })
   created.dispose()
@@ -148,6 +148,96 @@ describe('silent turn notice', () => {
   it('no notice when the agent turns itself off', async () => {
     const { provider } = await run('chat', [() => response([tool('sys_set_state', { state: 'off' })])])
     expect(provider.calls).toHaveLength(1)
+  })
+
+  // A status line is visible output shown before the agent has seen any tool
+  // results: it does not answer the chat. Work tools are anything but say,
+  // ask and sys_set_state.
+  const statusThenTools = () => response([text('Checking your files first.'), tool('fs_list', {})])
+
+  it('a status line, a tool round, then a thinking-only idle gets the notice', async () => {
+    const { provider, workspace } = await run('chat', [
+      statusThenTools,
+      () => response([thinking('The plan is an HN post on Oct 21.'), idle()]),
+      () => response([text('HN post on Oct 21.')]),
+    ])
+    expect(provider.calls).toHaveLength(3)
+    expect(sawNotice(provider.calls[2])).toBe(true)
+    expect(noticeRows(workspace)).toHaveLength(1)
+  })
+
+  it('no notice when a status line and tool round end with a say', async () => {
+    const { provider, workspace } = await run('chat', [
+      statusThenTools,
+      () => response([tool('say', { message: 'HN post on Oct 21.' }), idle()]),
+    ])
+    expect(provider.calls).toHaveLength(2)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  it('no notice when a say is followed by a bare sys_set_state in its own response', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('say', { message: 'HN post on Oct 21.' })]),
+      () => response([idle()]),
+    ])
+    expect(provider.calls).toHaveLength(2)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  it('a status say in its own response, a tool round, then a thinking-only idle gets the notice', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('say', { message: 'Checking your files first.' })]),
+      () => response([tool('fs_list', {})]),
+      () => response([thinking('The plan is an HN post on Oct 21.'), idle()]),
+      () => response([text('HN post on Oct 21.')]),
+    ])
+    expect(provider.calls).toHaveLength(4)
+    expect(sawNotice(provider.calls[3])).toBe(true)
+    expect(noticeRows(workspace)).toHaveLength(1)
+  })
+
+  // Work after the answer (an inbox check, a log write) does not undo it: only
+  // what the owner saw before the agent's first tool results was a status.
+  it('no notice when the answer follows work and more work follows the answer', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('fs_list', {})]),
+      () => response([tool('say', { message: 'HN post on Oct 21.' })]),
+      () => response([tool('fs_list', {})]),
+      () => response([idle()]),
+    ])
+    expect(provider.calls).toHaveLength(4)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  it('no notice when the answer after work is sent alongside more work', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('fs_list', {})]),
+      () => response([tool('say', { message: 'HN post on Oct 21.' }), tool('fs_list', {})]),
+      () => response([idle()]),
+    ])
+    expect(provider.calls).toHaveLength(3)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  // Accepted cost: a reply sent with the turn's first work reads as a status
+  // line, so a silent ending after that work gets the (once-per-turn) notice.
+  it('a reply sent with the first work of the turn, then a bare idle, gets the notice', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('say', { message: 'HN post on Oct 21.' }), tool('fs_list', {})]),
+      () => response([idle()]),
+    ])
+    expect(provider.calls).toHaveLength(3)
+    expect(sawNotice(provider.calls[2])).toBe(true)
+    expect(noticeRows(workspace)).toHaveLength(1)
+  })
+
+  it('no notice for a timer turn with a status line, a tool round and a silent idle', async () => {
+    const { provider, workspace } = await run('timer', [
+      statusThenTools,
+      () => response([thinking('nothing to report'), idle()]),
+    ])
+    expect(provider.calls).toHaveLength(2)
+    expect(noticeRows(workspace)).toHaveLength(0)
   })
 
   it('no notice for a turn nobody asked a question in (timer)', async () => {
