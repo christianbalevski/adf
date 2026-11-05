@@ -736,7 +736,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 11030
+      input: 11087
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
