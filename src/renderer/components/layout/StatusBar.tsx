@@ -10,6 +10,9 @@ import { useHomeRuntime } from '../home/home-runtime'
 import { Tooltip } from '../common/Tooltip'
 import { ContextMenu } from '../common/ContextMenu'
 import { IconButton } from '../ui/IconButton'
+import { Button } from '../ui'
+import { ReleaseNotesDialog } from '../common/ReleaseNotesDialog'
+import { bundledReleaseNotes, markReleaseNotesSeen, needsAction, seenReleaseNotesVersion } from '../../utils/release-notes'
 import { RemoteMark } from '../common/RemoteMark'
 import { LOCAL_LABEL } from '../../../shared/runtime-name'
 import { loopColor } from '../../utils/loop-color'
@@ -288,18 +291,7 @@ export function StatusBar() {
       <span className="ml-auto" />
       {!compact && <>
       <UpdateBadge />
-      <span
-        className="flex items-center gap-1 tabular-nums"
-        title={import.meta.env.DEV ? 'ADF Studio version (running from npm run dev)' : 'ADF Studio version'}
-      >
-        {appVersion ? `v${appVersion}` : ''}
-        {/* Dev builds look identical to the installed app; this tells them apart. */}
-        {import.meta.env.DEV && (
-          <span className="rounded px-1 text-[10px] font-semibold uppercase tracking-wider bg-[var(--status-draft-bg)] text-[var(--status-draft)]">
-            dev
-          </span>
-        )}
-      </span>
+      <VersionButton version={appVersion} />
       </>}
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
       {multi ? <FocusedRuntime runtimes={runtimes} compact={compact} /> : (
@@ -683,12 +675,60 @@ function UpdateIcon() {
 }
 
 /**
+ * The running version. A dot marks release notes not opened yet; a click
+ * opens them ("What's new in vX"). Notes with an "Action needed" section
+ * open by themselves once, on the first launch of that version, in the main
+ * window only.
+ */
+function VersionButton({ version }: { version: string }) {
+  const notes = version ? bundledReleaseNotes(version) : null
+  const [seen, setSeen] = useState(() => seenReleaseNotesVersion())
+  const [open, setOpen] = useState(false)
+  const unseen = !!notes && seen !== version
+  useEffect(() => {
+    if (unseen && !isAgentWindow && needsAction(notes!)) setOpen(true)
+    // Once per version: the first render that knows the version decides.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [version])
+  const openNotes = () => { setOpen(true); markReleaseNotesSeen(version); setSeen(version) }
+  const close = () => { setOpen(false); markReleaseNotesSeen(version); setSeen(version) }
+  const label = import.meta.env.DEV ? 'ADF Studio version (running from npm run dev)' : 'ADF Studio version'
+  const content = <>
+    {version ? `v${version}` : ''}
+    {unseen && <span aria-label="Release notes not read" className="h-1.5 w-1.5 rounded-full bg-[var(--status-info)]" />}
+    {/* Dev builds look identical to the installed app; this tells them apart. */}
+    {import.meta.env.DEV && (
+      <span className="rounded px-1 text-[10px] font-semibold uppercase tracking-wider bg-[var(--status-draft-bg)] text-[var(--status-draft)]">
+        dev
+      </span>
+    )}
+  </>
+  // Nothing to open: the plain version, as before notes existed.
+  if (!notes) return <span className="flex items-center gap-1 tabular-nums" title={label}>{content}</span>
+  return (
+    <>
+      <button
+        type="button"
+        onClick={openNotes}
+        className="flex items-center gap-1 tabular-nums hover:text-[var(--adf-ui-text)]"
+        title={`${label}: release notes`}
+      >
+        {content}
+      </button>
+      <ReleaseNotesDialog open={open} onClose={close} title={`What's new in v${version}`} notes={notes} />
+    </>
+  )
+}
+
+/**
  * Sits just left of the version number (so the version never shifts).
- * Invisible until main reports an update; one click downloads it (with a
- * percent readout) and the app restarts on its own once the download lands.
+ * Invisible until main reports an update. A click on an available update
+ * shows its release notes with Download and restart; the download shows a
+ * percent readout and the app restarts on its own once it lands.
  */
 function UpdateBadge() {
   const [update, setUpdate] = useState<AppUpdateState>({ status: 'idle' })
+  const [notesOpen, setNotesOpen] = useState(false)
   useEffect(() => {
     window.adfApi?.getUpdateState().then(setUpdate).catch(() => {})
     return window.adfApi?.onUpdateState(setUpdate)
@@ -698,7 +738,7 @@ function UpdateBadge() {
 
   const clickable = update.status === 'available' || update.status === 'error'
   const tip =
-    update.status === 'available' ? `v${update.version} is available — click to download and restart`
+    update.status === 'available' ? `v${update.version} is available — click for its release notes`
     : update.status === 'downloading' ? `Downloading v${update.version}…`
     : update.status === 'ready' || update.status === 'installing' ? `Restarting into v${update.version}…`
     : `Update failed: ${update.message}${update.version ? ' — click to retry' : ''}`
@@ -711,17 +751,26 @@ function UpdateBadge() {
     update.status === 'error' ? 'text-[var(--status-deprecated)] hover:bg-[var(--status-deprecated-bg)]'
     : 'text-[var(--status-info)] hover:bg-[var(--status-info-bg)]'
 
+  const download = () => { setNotesOpen(false); void window.adfApi.downloadUpdate() }
   return (
-    <Tooltip tip={tip}>
-      <button
-        onClick={clickable ? () => void window.adfApi.downloadUpdate() : undefined}
-        disabled={!clickable}
-        className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors ${tone} ${clickable ? '' : 'cursor-default'}`}
-      >
-        <UpdateIcon />
-        {label}
-      </button>
-    </Tooltip>
+    <>
+      <Tooltip tip={tip}>
+        <button
+          onClick={update.status === 'available' ? () => setNotesOpen(true) : clickable ? download : undefined}
+          disabled={!clickable}
+          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors ${tone} ${clickable ? '' : 'cursor-default'}`}
+        >
+          <UpdateIcon />
+          {label}
+        </button>
+      </Tooltip>
+      {update.status === 'available' && (
+        <ReleaseNotesDialog open={notesOpen} onClose={() => setNotesOpen(false)} title={`v${update.version} is available`} notes={update.notes ?? null}>
+          <Button variant="ghost" onClick={() => setNotesOpen(false)}>Later</Button>
+          <Button onClick={download}>Download and restart</Button>
+        </ReleaseNotesDialog>
+      )}
+    </>
   )
 }
 
