@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 344 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 345 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -37,7 +37,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Owner identity](#tag-owner-identity) (11)
 - [Credentials](#tag-credentials) (10)
 - [Channels](#tag-channels) (5)
-- [MCP](#tag-mcp) (14)
+- [MCP](#tag-mcp) (15)
 - [Providers & sign-in](#tag-providers-sign-in) (22)
 - [Tasks & approvals](#tag-tasks-approvals) (12)
 - [Timers](#tag-timers) (4)
@@ -6792,7 +6792,8 @@ MCP servers attached to an agent, their live state, and the daemon-wide registra
 | POST | [`/admin/mcp/probe`](#op-probemcpserver) | Probe an MCP server |
 | POST | [`/admin/mcp/registration-test`](#op-testmcpregistration) | Connect test for an MCP registration |
 | GET | [`/admin/mcp/interactions`](#op-getmcpinteractions) | Interactive steps of running MCP registration tests |
-| POST | [`/admin/mcp/interactions/{interactionId}/continue`](#op-continuemcpinteraction) | Answer an interactive step |
+| POST | [`/admin/mcp/interactions/{interactionId}/continue`](#op-continuemcpinteraction) | Acknowledge an authorization page |
+| POST | [`/admin/mcp/interactions/{interactionId}/cancel`](#op-cancelmcpinteraction) | Cancel a sign-in |
 | GET | [`/admin/mcp/logs/{serverName}`](#op-getmcpserverlogs) | MCP server logs |
 | GET | [`/admin/mcp/oauth/status`](#op-getmcpoauthstatus) | App-level MCP OAuth sign-in state |
 | POST | [`/admin/mcp/oauth/signout`](#op-signoutmcpoauth) | Sign out of an MCP OAuth remote |
@@ -7430,7 +7431,6 @@ Example 200 (`application/json`):
       "state": "pending",
       "serverName": "string",
       "url": "string",
-      "authUrlOpened": true,
       "message": "string",
       "createdAt": 0
     }
@@ -7442,11 +7442,44 @@ Example 200 (`application/json`):
 
 ### POST `/admin/mcp/interactions/{interactionId}/continue`
 
-**Answer an interactive step**
+**Acknowledge an authorization page**
 
-Removes an open_url step; lets a waiting confirm step continue. A timed-out step cannot be answered (404).
+Removes an open_url step once the client has opened its page. Any other step, or one that is gone, answers 404.
 
 Operation `continueMcpInteraction` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `interactionId` | path | string | yes | Interaction id |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessResponse](#schema-successresponse) | OK |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": true
+}
+```
+
+<a id="op-cancelmcpinteraction"></a>
+
+### POST `/admin/mcp/interactions/{interactionId}/cancel`
+
+**Cancel a sign-in**
+
+The user cancelled a sign_in step: the sign-in command is stopped and the connect test fails with "not signed in". A step that is gone (finished, cancelled, or its test ended) answers 404.
+
+Operation `cancelMcpInteraction` · bearer token
 
 **Parameters**
 
@@ -22617,11 +22650,10 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 |---|---|---|---|
 | `id` | string | yes |  |
 | `jobId` | string | yes | The registration-test job the step belongs to |
-| `kind` | `"open_url"` \| `"confirm"` | yes |  |
-| `state` | `"pending"` \| `"timed_out"` | yes | `timed_out`: a confirm nobody answered within 5 minutes; the test went on without it and its result says so |
+| `kind` | `"open_url"` \| `"sign_in"` | yes | `open_url`: a page for the client to open, then acknowledge (…/continue). `sign_in`: a stdio server's sign-in command is running; the client shows it until the step leaves the list, and …/cancel stops it |
+| `state` | `"pending"` | yes |  |
 | `serverName` | string |  |  |
-| `url` | string |  | open_url: the authorization page to open |
-| `authUrlOpened` | boolean |  |  |
+| `url` | string |  | The authorization page (sign_in: once the command has printed it) |
 | `message` | string | yes |  |
 | `createdAt` | number | yes |  |
 

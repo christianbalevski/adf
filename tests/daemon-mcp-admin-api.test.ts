@@ -113,54 +113,58 @@ describe('registration test as a job, with interactive steps', () => {
     expect((await server.inject({ method: 'GET', url: '/jobs/no-such-job' })).statusCode).toBe(404)
   })
 
-  it('the stdio auth preflight Continue prompt waits for the client', async () => {
+  it('a running sign-in is listed with its URL until the command finishes', async () => {
     const server = setup({ routes: { gaps: { uvManager } } })
-    let confirmed = false
-    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { confirm(i: { serverName: string; authUrlOpened: boolean }): Promise<void> }) => {
-      await io.confirm({ serverName: 'gh', authUrlOpened: true })
-      confirmed = true
+    const finished = new AbortController()
+    let url: string | null = null
+    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { waitForUser(i: { serverName: string; authUrl: () => string | null; signal: AbortSignal }): Promise<void> }) => {
+      const shown = io.waitForUser({ serverName: 'gh', authUrl: () => url, signal: finished.signal })
+      await shown // released when the command finishes
+    })
+    const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
+    await vi.waitFor(async () => {
+      const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
+      expect(list.interactions).toEqual([expect.objectContaining({ kind: 'sign_in', state: 'pending', serverName: 'gh' })])
+      expect(list.interactions[0].url).toBeUndefined()
+    })
+    url = 'https://auth.example.test/gh'
+    const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
+    expect(list.interactions[0].url).toBe('https://auth.example.test/gh')
+    // A sign-in step is not acknowledged like a page.
+    expect((await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${list.interactions[0].id}/continue` })).statusCode).toBe(404)
+    finished.abort()
+    const job = await awaitJob(server, jobId)
+    expect(job.result).toMatchObject({ success: true, location: 'host', authRan: true, notes: [] })
+    expect((await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json()).toEqual({ interactions: [] })
+  })
+
+  it('POST …/cancel ends a sign-in the user cancelled', async () => {
+    const server = setup({ routes: { gaps: { uvManager } } })
+    let cancelled = false
+    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { waitForUser(i: { serverName: string; authUrl: () => string | null; signal: AbortSignal }): Promise<void> }) => {
+      await io.waitForUser({ serverName: 'gh', authUrl: () => null, signal: new AbortController().signal })
+      cancelled = true
+      throw new Error('Sign-in to "gh" was cancelled. It is not signed in.')
     })
     const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
     let id = ''
     await vi.waitFor(async () => {
       const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
       expect(list.interactions).toHaveLength(1)
-      expect(list.interactions[0]).toMatchObject({ kind: 'confirm', state: 'pending', serverName: 'gh', authUrlOpened: true })
       id = list.interactions[0].id
     })
-    expect(confirmed).toBe(false)
-    await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${id}/continue` })
+    expect((await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${id}/cancel` })).json()).toEqual({ success: true })
     const job = await awaitJob(server, jobId)
-    expect(confirmed).toBe(true)
-    expect(job.result).toMatchObject({ success: true, location: 'host', authRan: true, notes: [] })
-  })
-
-  it('an unanswered confirm is kept as timed_out and named in the result', async () => {
-    const server = setup({ routes: { gaps: { uvManager, mcpConfirmTimeoutMs: 50 } } })
-    let afterConfirm!: () => void
-    const gate = new Promise<void>((r) => { afterConfirm = r })
-    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { confirm(i: { serverName: string; authUrlOpened: boolean }): Promise<void> }) => {
-      await io.confirm({ serverName: 'gh', authUrlOpened: false })
-      await gate // hold the run so the timed-out step can be observed
-    })
-    const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
-    await vi.waitFor(async () => {
-      const list = (await server.inject({ method: 'GET', url: `/admin/mcp/interactions?jobId=${jobId}` })).json()
-      expect(list.interactions).toEqual([expect.objectContaining({ kind: 'confirm', state: 'timed_out' })])
-      // A timed-out step cannot be answered any more.
-      expect((await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${list.interactions[0].id}/continue` })).statusCode).toBe(404)
-    })
-    afterConfirm()
-    const job = await awaitJob(server, jobId)
-    expect(job.result.notes).toEqual([expect.stringMatching(/^No one confirmed the authorization step for "gh"/)])
-    expect((await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json()).toEqual({ interactions: [] })
+    expect(cancelled).toBe(true)
+    expect(JSON.stringify(job)).toContain('was cancelled. It is not signed in.')
+    expect((await server.inject({ method: 'POST', url: `/admin/mcp/interactions/${id}/cancel` })).statusCode).toBe(404)
   })
 
   it('POST /jobs/:id/cancel stops a running test and releases its pending steps', async () => {
     const server = setup({ routes: { gaps: { uvManager } } })
     let preflightDone = false
-    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { confirm(i: { serverName: string; authUrlOpened: boolean }): Promise<void> }) => {
-      await io.confirm({ serverName: 'gh', authUrlOpened: true })
+    h.preflight.mockImplementation(async (_cfg: unknown, _opts: unknown, io: { waitForUser(i: { serverName: string; authUrl: () => string | null; signal: AbortSignal }): Promise<void> }) => {
+      await io.waitForUser({ serverName: 'gh', authUrl: () => null, signal: new AbortController().signal })
       preflightDone = true
     })
     const jobId = await startTest(server, { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } })
@@ -168,7 +172,7 @@ describe('registration test as a job, with interactive steps', () => {
     const cancel = await server.inject({ method: 'POST', url: `/jobs/${jobId}/cancel` })
     expect(cancel.json()).toMatchObject({ cancelled: true, job: { state: 'cancelled', error: 'Cancelled by the client' } })
     await vi.waitFor(async () => expect((await server.inject({ method: 'GET', url: '/admin/mcp/interactions' })).json().interactions).toEqual([]))
-    expect(preflightDone).toBe(true) // the waiting confirm was released
+    expect(preflightDone).toBe(true) // the waiting sign-in was released
     expect((await server.inject({ method: 'GET', url: `/jobs/${jobId}` })).json().state).toBe('cancelled')
     expect((await server.inject({ method: 'POST', url: `/jobs/${jobId}/cancel` })).json()).toMatchObject({ cancelled: false })
   })

@@ -352,7 +352,7 @@ export const CHANNEL_MAP = {
   // --- MCP -------------------------------------------------------------------
   [IPC.MCP_PROBE_SERVER]: proxied('invoke', ['POST /admin/mcp/probe']),
   [IPC.MCP_REGISTRATION_TEST]: variant('invoke', ['POST /admin/mcp/registration-test', 'GET /jobs/:jobId', 'POST /jobs/:jobId/cancel', 'GET /admin/mcp/interactions', 'POST /admin/mcp/interactions/:interactionId/continue', 'POST /oauth/relay'], 'OAuth sign-in: Studio main listens on the authorization URL\'s loopback redirect port on this computer and relays the callback to the daemon (remote/oauth-relay.ts, POST /oauth/relay); only https authorization pages are opened.', {
-    note: 'Starts a job and polls GET /jobs/:jobId. Meanwhile polls GET /admin/mcp/interactions?jobId=: opens each open_url step with shell.openExternal, shows the native Continue dialog for each confirm step, and answers with …/continue.',
+    note: 'Starts a job and polls GET /jobs/:jobId. Meanwhile polls GET /admin/mcp/interactions?jobId=: opens each open_url step with shell.openExternal and answers with …/continue; shows the sign-in dialog for each sign_in step until it leaves the list, posting …/cancel if the user cancels.',
   }),
   [IPC.MCP_INSTALL_PACKAGE]: proxied('invoke', ['POST /admin/mcp/packages/npm/jobs', 'GET /jobs/:jobId'], { note: 'Starts a job and polls GET /jobs/:jobId. Progress arrives as MCP_INSTALL_PROGRESS (mcp/install-progress.ts sends the ones the client stream cannot deliver).' }),
   [IPC.MCP_UNINSTALL_PACKAGE]: proxied('invoke', ['DELETE /admin/mcp/packages/npm']),

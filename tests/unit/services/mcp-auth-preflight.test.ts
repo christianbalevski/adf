@@ -50,44 +50,74 @@ describe('runMcpAuthPreflight', () => {
   })
 
   it('interactive: fails with stderr before showing the dialog when the auth command dies early', async () => {
-    const confirm = vi.fn(async () => {})
+    const waitForUser = vi.fn(async () => {})
     // The grace is an upper bound the preflight short-circuits on child exit,
     // so this stays fast; it only has to exceed the child's *startup* cost,
     // which under full-suite parallel load is well over 100ms.
-    const io = makeIO({ confirm, startupGraceMs: DIES_EARLY_GRACE_MS })
+    const io = makeIO({ waitForUser, startupGraceMs: DIES_EARLY_GRACE_MS })
     await expect(runMcpAuthPreflight(
       serverCfg('console.error("Credentials file not found: /root/.config/x.json"); process.exit(1)'),
       {},
       io,
     )).rejects.toThrow(/exited with code 1 before authorization completed.*Credentials file not found/s)
-    expect(confirm).not.toHaveBeenCalled()
+    expect(waitForUser).not.toHaveBeenCalled()
     expect(io.opened).toEqual([])
   })
 
   it('interactive: skips the dialog when the auth command completes on its own', async () => {
-    const confirm = vi.fn(async () => {})
-    const io = makeIO({ confirm, startupGraceMs: DIES_EARLY_GRACE_MS })
+    const waitForUser = vi.fn(async () => {})
+    const io = makeIO({ waitForUser, startupGraceMs: DIES_EARLY_GRACE_MS })
     await runMcpAuthPreflight(
       serverCfg('console.log("already authorized"); process.exit(0)'),
       {},
       io,
     )
-    expect(confirm).not.toHaveBeenCalled()
+    expect(waitForUser).not.toHaveBeenCalled()
   })
 
-  it('interactive: fails after the dialog if the auth command died nonzero while it was up', async () => {
-    // Child lives past the grace, then dies while "the dialog is open".
-    // The exit is only noticed once confirm resolves, so the dialog has to stay
-    // up past the child's startup latency plus its 400ms life, not just 400ms.
-    const confirm = vi.fn(() => new Promise<void>((r) => setTimeout(r, 3000)))
-    const io = makeIO({ confirm, startupGraceMs: 100 })
+  it('interactive: closing the dialog while the command still runs is a cancelled sign-in, not a sign-in', async () => {
+    const waitForUser = vi.fn(async () => {})
+    const io = makeIO({ waitForUser, startupGraceMs: 100 })
+    const start = Date.now()
     await expect(runMcpAuthPreflight(
-      serverCfg('console.error("late failure"); setTimeout(() => process.exit(2), 400)'),
+      serverCfg('console.log("https://example.com/auth"); setTimeout(() => {}, 60000)'),
+      {},
+      io,
+    )).rejects.toThrow('Sign-in to "auth_test" was cancelled. It is not signed in.')
+    expect(waitForUser).toHaveBeenCalledOnce()
+    // The child is killed, not waited out.
+    expect(Date.now() - start).toBeLessThan(20_000)
+  }, 30_000)
+
+  it('interactive: the dialog closes itself when the command exits 0; the server opens its own page', async () => {
+    let sawUrl: string | null = null
+    const waitForUser = vi.fn((info: { authUrl: () => string | null; signal: AbortSignal }) => new Promise<void>((resolve) => {
+      sawUrl = info.authUrl()
+      info.signal.addEventListener('abort', () => resolve(), { once: true })
+    }))
+    const io = makeIO({ waitForUser, startupGraceMs: 100 })
+    await runMcpAuthPreflight(
+      serverCfg('console.log("Visit https://example.com/auth?x=1."); setTimeout(() => process.exit(0), 1500)'),
+      {},
+      io,
+    )
+    expect(waitForUser).toHaveBeenCalledOnce()
+    expect(sawUrl).toBe('https://example.com/auth?x=1')
+    expect(io.opened).toEqual([])
+  }, 30_000)
+
+  it('interactive: fails as soon as the command exits nonzero while the dialog is up', async () => {
+    const waitForUser = vi.fn((info: { signal: AbortSignal }) => new Promise<void>((resolve) => {
+      info.signal.addEventListener('abort', () => resolve(), { once: true })
+    }))
+    const io = makeIO({ waitForUser, startupGraceMs: 100 })
+    await expect(runMcpAuthPreflight(
+      serverCfg('console.error("late failure"); setTimeout(() => process.exit(2), 1500)'),
       {},
       io,
     )).rejects.toThrow(/exited with code 2 before authorization completed/)
-    expect(confirm).toHaveBeenCalledOnce()
-  })
+    expect(waitForUser).toHaveBeenCalledOnce()
+  }, 30_000)
 
   it('headless: resolves on clean exit and opens the scraped URL with trailing punctuation stripped', async () => {
     // Child survives the startup grace (URL opens), then exits cleanly.
@@ -132,25 +162,6 @@ describe('runMcpAuthPreflight', () => {
     await expect(runMcpAuthPreflight(cfg, {}, makeIO()))
       .rejects.toThrow(/failed to spawn/)
   })
-
-  it('interactive: resolves once confirm resolves and kills the long-running child', async () => {
-    const confirm = vi.fn(async (info: { serverName: string; authUrlOpened: boolean }) => {
-      expect(info.serverName).toBe('auth_test')
-      expect(info.authUrlOpened).toBe(true)
-    })
-    const io = makeIO({ confirm })
-    const start = Date.now()
-    // Child would run for 60s — interactive mode must not wait for exit.
-    await runMcpAuthPreflight(
-      serverCfg('console.log("https://example.com/interactive"); setTimeout(() => {}, 60000)'),
-      {},
-      io,
-    )
-    expect(confirm).toHaveBeenCalledOnce()
-    expect(io.opened).toEqual(['https://example.com/interactive'])
-    // 3s spawn grace + margin, but nowhere near the child's 60s lifetime.
-    expect(Date.now() - start).toBeLessThan(20_000)
-  }, 30_000)
 
   it('appends authArgs to the spawned command', async () => {
     const io = makeIO()

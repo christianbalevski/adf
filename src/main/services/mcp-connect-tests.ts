@@ -207,7 +207,7 @@ export interface McpRegistrationTestDeps {
   appOAuthStore: McpAppOAuthStore | null
   /** Opens the authorization URL (Studio: the OS browser). */
   oauthIO: McpHttpOAuthIO
-  /** Interactive stdio auth preflight (Studio: browser + Continue dialog). */
+  /** Interactive stdio auth preflight (Studio: the sign-in dialog). */
   authPreflight: McpAuthPreflightRunner
   onLog: McpLogSink
   /**

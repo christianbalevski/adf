@@ -154,6 +154,7 @@ import { AgentRegistryService } from '../services/agent-registry.service'
 import { createScratchDir, removeScratchDir, purgeAllScratchDirs, scratchRootPath } from '../utils/scratch-dir'
 import { killAllTracked } from '../utils/child-registry'
 import { runMcpAuthPreflight, type McpAuthPreflightRunner } from '../services/mcp-auth-preflight'
+import { showMcpSignInDialog } from '../services/mcp-sign-in-dialog'
 import { materializeCredentialFiles, writeBackCredentialFiles, containerCredentialTarget, type CredentialFileTarget } from '../services/mcp-credential-files'
 import { mcpContainerHomeEnv, mcpHostHomeEnv, mcpServerContainerHome, mcpServerCredentials, mcpServerHostHome, removeMcpServerHome } from '../services/mcp-server-home'
 import { inheritableEnv } from '../utils/child-env'
@@ -628,21 +629,7 @@ const studioMcpAuthPreflight: McpAuthPreflightRunner = (serverCfg, opts) =>
   runMcpAuthPreflight(serverCfg, opts, {
     openUrl: (url) => { shell.openExternal(url) },
     log: (msg) => console.log(msg),
-    confirm: async ({ serverName, authUrlOpened }) => {
-      // Show dialog — blocks until user clicks Continue
-      const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined
-      await dialog.showMessageBox({
-        ...(win ? { window: win } : {}),
-        type: 'info',
-        title: `MCP Authorization — ${serverName}`,
-        message: 'Complete authorization in your browser, then click Continue.',
-        detail: authUrlOpened
-          ? `An authorization page has been opened in your browser for "${serverName}". Complete the authorization flow, then click Continue.`
-          : `The "${serverName}" MCP server is running for interactive authorization. If a browser window opened, complete the flow and click Continue. If no browser opened, check the logs for an authorization URL.`,
-        buttons: ['Continue'],
-        defaultId: 0,
-      })
-    },
+    waitForUser: (info) => showMcpSignInDialog({ dialog, BrowserWindow }, { ...info, openUrl: (url) => shell.openExternal(url) }),
   })
 
 /**
@@ -6787,8 +6774,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- MCP Registration Connect Test (Settings "Connect" button) ---
   // Body in services/mcp-connect-tests.ts (shared with the daemon). Studio
-  // supplies the interactive pieces: the OS browser for OAuth and the native
-  // Continue dialog of the stdio auth preflight.
+  // supplies the interactive pieces: the OS browser for OAuth and the sign-in
+  // dialog of the stdio auth preflight.
   ipcMain.handle(IPC.MCP_REGISTRATION_TEST, async (_event, rawArgs: unknown) =>
     runMcpRegistrationTest(rawArgs, {
       computeSettings: () => (settings.get('compute') ?? { hostAccessEnabled: false, hostApproved: [] }) as ComputeSettings,

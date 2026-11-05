@@ -328,30 +328,32 @@ describe('the open agent and registries', () => {
 })
 
 describe('MCP_REGISTRATION_TEST interactive steps', () => {
-  it('opens the authorization page, shows the Continue dialog, answers both, and resolves with the job result', async () => {
-    const result = { success: true, tools: [{ name: 'search' }], location: 'host', authRan: true, oauthRan: false, notes: [] }
+  it('opens an authorization page, shows the sign-in dialog, and posts cancel when the user cancels it', async () => {
+    const result = { success: false, tools: [], location: 'host', authRan: true, oauthRan: false, notes: [], error: 'Sign-in to "gh" was cancelled. It is not signed in.' }
     const bodies = scriptJob('POST /admin/mcp/registration-test', 'job-test', [{ state: 'running' }, { state: 'running' }, { state: 'running' }, { state: 'succeeded', result }])
     const interactions = [
       { id: 'i-1', jobId: 'job-test', kind: 'open_url', state: 'pending', serverName: 'gh', url: 'https://auth.example.test/authorize?x=1', message: 'm', createdAt: 1 },
-      { id: 'i-2', jobId: 'job-test', kind: 'confirm', state: 'pending', serverName: 'gh', authUrlOpened: true, message: 'm', createdAt: 2 },
+      { id: 'i-2', jobId: 'job-test', kind: 'sign_in', state: 'pending', serverName: 'gh', url: 'https://auth.example.test/gh', message: 'm', createdAt: 2 },
     ]
     daemon.routes.set('GET /admin/mcp/interactions', ({ query }) => { expect(query).toEqual({ jobId: 'job-test' }); return { interactions } })
     const answered: string[] = []
-    daemon.routes.set('POST /admin/mcp/interactions/i-1/continue', () => { answered.push('i-1'); return { success: true } })
-    daemon.routes.set('POST /admin/mcp/interactions/i-2/continue', () => { answered.push('i-2'); interactions.length = 0; return { success: true } })
+    daemon.routes.set('POST /admin/mcp/interactions/i-1/continue', () => { answered.push('continue i-1'); return { success: true } })
+    daemon.routes.set('POST /admin/mcp/interactions/i-2/cancel', () => { answered.push('cancel i-2'); interactions.length = 0; return { success: true } })
     const args = { registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', auth: true } }
     expect(await invoke(IPC.MCP_REGISTRATION_TEST, args)).toEqual(result)
     expect(bodies).toEqual([args])
+    // The page step is opened; the sign-in page is the server's to open on this computer.
     expect(openExternal).toHaveBeenCalledWith('https://auth.example.test/authorize?x=1')
-    expect(answered.sort()).toEqual(['i-1', 'i-2'])
+    expect(openExternal).not.toHaveBeenCalledWith('https://auth.example.test/gh')
+    expect(answered.sort()).toEqual(['cancel i-2', 'continue i-1'])
     const box = electronStub.calls.find((c) => c.api === 'dialog.showMessageBox')?.args[0] as Record<string, unknown>
     expect(box).toMatchObject({
       type: 'info',
-      title: 'MCP Authorization — gh',
-      message: 'Complete authorization in your browser, then click Continue.',
-      detail: 'An authorization page has been opened in your browser for "gh". Complete the authorization flow, then click Continue.',
-      buttons: ['Continue'],
-      defaultId: 0,
+      title: 'Sign in — gh',
+      message: 'Finish signing in to gh in your browser.',
+      detail: 'This closes by itself when sign-in is done. If no sign-in page opened, choose Open sign-in page.',
+      buttons: ['Cancel', 'Open sign-in page'],
+      cancelId: 0,
     })
   })
 

@@ -11,35 +11,37 @@ import { trackChild, killTree } from '../utils/child-registry'
 import { bundledMcpSpawnEnv, resolveBundledMcpSpawn } from './bundled-mcp-servers'
 
 /**
- * Interactive-auth preflight for stdio MCP servers (OAuth etc.): spawn the
- * server once in its auth mode, surface the authorization URL to the user,
- * and wait for authorization to finish before the real connect.
+ * Sign-in preflight for stdio MCP servers (OAuth etc.): run the server's
+ * sign-in command once and wait for it to finish before the real connect.
+ * Signed in means that command exited 0 — it exits after storing its token.
+ * Nothing else counts: a closed browser tab or a dismissed dialog is not a
+ * sign-in.
  *
  * Runtime-agnostic core — MUST NOT import 'electron'. Each runtime supplies
  * its IO:
- *  - Studio (foreground AND background agents) passes an interactive IO whose
- *    `confirm` shows the dialog and whose `openUrl` is shell.openExternal.
+ *  - Studio passes `waitForUser`, a dialog that stays up while the command
+ *    runs and lets the user cancel or open the sign-in page again.
  *  - Headless runtimes (daemon/CLI) use createHeadlessMcpAuthPreflight():
- *    best-effort browser open, log the URL, and wait for the auth subcommand
- *    to exit on its own (most OAuth `auth` subcommands exit after storing
- *    tokens), failing plainly on nonzero exit or timeout.
+ *    the sign-in URL is opened best-effort and logged.
  */
 export interface McpAuthPreflightIO {
-  /** Open the scraped authorization URL (e.g. shell.openExternal). */
+  /** Open the scraped sign-in URL (e.g. shell.openExternal). */
   openUrl: (url: string) => void | Promise<void>
   /**
-   * Interactive mode: block until the user confirms authorization completed.
-   * When absent, headless mode: wait for the child to exit instead.
+   * Studio: shown once the startup grace has passed, while the sign-in
+   * command runs. `signal` aborts when the command finishes; resolving before
+   * that means the user cancelled. A server running on this computer opens
+   * the browser itself, so with this IO the core opens the URL only for a
+   * container (which cannot reach the browser); the dialog offers it again.
    */
-  confirm?: (info: { serverName: string; authUrlOpened: boolean }) => Promise<void>
+  waitForUser?: (info: { serverName: string; authUrl: () => string | null; signal: AbortSignal }) => Promise<void>
   log?: (msg: string) => void
-  /** Headless mode only: max wait for the auth subcommand to exit. */
+  /** Max wait for the sign-in command to finish (default 5 minutes). */
   waitForExitTimeoutMs?: number
   /**
-   * Startup grace (default 3s). No scraped URL is opened before it elapses —
-   * an auth command that exits first fails the install with its stderr
-   * instead of sending the browser to a link from error text. Interactive
-   * mode also waits this long before showing the confirm dialog.
+   * Startup grace (default 3s). No scraped URL is opened and no dialog is
+   * shown before it elapses — a command that exits first fails with its
+   * stderr instead of sending the browser to a link from error text.
    */
   startupGraceMs?: number
 }
@@ -401,9 +403,7 @@ export async function runMcpAuthPreflight(
     }
   }
 
-  // Track the child finishing on its own. Gates URL opening below, and lets
-  // interactive mode skip a dead-end "click Continue" dialog for an auth
-  // command that already failed (or already succeeded) before the user acts.
+  // Track the child finishing. Gates URL opening and the dialog below.
   const processState: { earlyExit: { code: number | null; signal: NodeJS.Signals | null } | null } = { earlyExit: null }
   // podman reads --env-file at exec launch, so reaping it on child close is
   // safe; this is the always-fires path (a killed child closes too).
@@ -416,14 +416,16 @@ export async function runMcpAuthPreflight(
   // (which routinely embeds documentation links, e.g. a missing-credentials
   // error pointing at the provider console), and the install fails with that
   // text so the agent can walk the user through the fix.
-  // Child-process `open` may not work from the runtime context, so browser
-  // opening goes through io.openUrl.
+  // Opened through io.openUrl: always from a container (the server cannot
+  // reach the browser) and headless; on this computer with a dialog, the
+  // server opens the browser itself and the dialog offers the link again.
+  const autoOpen = !!opts.container || !io.waitForUser
   let authUrlOpened = false
   let scrapedUrl: string | null = null
   let graceElapsed = false
   const stderrTail: string[] = []
   const maybeOpenAuthUrl = () => {
-    if (authUrlOpened || !scrapedUrl || !graceElapsed || processState.earlyExit) return
+    if (!autoOpen || authUrlOpened || !scrapedUrl || !graceElapsed || processState.earlyExit) return
     {
       authUrlOpened = true
       const url = scrapedUrl
@@ -482,105 +484,60 @@ export async function runMcpAuthPreflight(
   const graceTimer = setTimeout(() => { graceElapsed = true; maybeOpenAuthUrl() }, graceMs)
   graceTimer.unref?.()
 
-  if (io.confirm) {
-    // --- Interactive mode (Studio) ---
-    // (Spawn errors are logged by the always-on 'error' listener above.)
-    const failFromExit = (exit: { code: number | null; signal: NodeJS.Signals | null }): never => {
-      throw new Error(
-        `MCP auth preflight for "${serverName}" exited with ${exit.signal ? `signal ${exit.signal}` : `code ${exit.code}`} before authorization completed.${stderrHint()}`,
-      )
-    }
-
-    // Give the process a moment to start and potentially open the browser
-    // itself — but stop waiting the instant it settles on its own. The grace
-    // is an upper bound, not a fixed sleep: on a loaded machine a child that
-    // failed fast could otherwise still be mid-teardown when the grace
-    // elapses, and this branch would show a dead-end dialog for an auth
-    // command that had already exited. ('close' fires after the stdio pipes
-    // flush, so stderrTail is complete, and the 'close' listener registered
-    // above has already set processState.earlyExit by the time this one runs.)
-    await new Promise<void>((r) => {
-      const timer = setTimeout(() => { preflight.off('close', onClose); r() }, graceMs)
-      function onClose(): void { clearTimeout(timer); r() }
-      if (processState.earlyExit) { clearTimeout(timer); r(); return }
-      preflight.once('close', onClose)
-    })
-
-    // Auth command already finished: skip the pointless dialog. Exit 0 means
-    // it stored its tokens (or was already authorized); nonzero means the
-    // flow failed — surface the stderr instead of success-with-no-auth.
-    if (processState.earlyExit) {
-      closeTunnel()
-      killTree(preflight)
-      cleanupEnvFile()
-      if (processState.earlyExit.code === 0) {
-        log(`[MCP] Auth preflight for "${serverName}" completed on its own — proceeding to connect`)
-        return
-      }
-      failFromExit(processState.earlyExit)
-    }
-
-    try {
-      // Blocks until the user confirms completion (e.g. dialog "Continue")
-      await io.confirm({ serverName, authUrlOpened })
-      // The dialog cannot be retracted once shown; if the auth command died
-      // with an error while it was up, fail after the click rather than
-      // pretending authorization happened.
-      if (processState.earlyExit && processState.earlyExit.code !== 0) failFromExit(processState.earlyExit)
-    } finally {
-      closeTunnel()
-      // Kill the preflight process tree (grandchildren included — a plain
-      // .kill() leaves npx/cmd.exe grandchildren orphaned on Windows)
-      killTree(preflight)
-      cleanupEnvFile()
-    }
-    log(`[MCP] Auth preflight for "${serverName}" complete — proceeding to connect`)
-    return
-  }
-
-  // --- Headless mode (daemon/CLI) ---
-  // No UI to confirm completion: wait for the auth subcommand to exit on its
-  // own. Most OAuth `auth` subcommands exit after storing tokens; a server
-  // that keeps serving hits the timeout and fails plainly with the URL.
   const timeoutMs = io.waitForExitTimeoutMs ?? DEFAULT_WAIT_FOR_EXIT_TIMEOUT_MS
-  await new Promise<void>((resolve, reject) => {
-    let settled = false
-    const settle = (fn: () => void) => {
-      if (settled) return
-      settled = true
-      clearTimeout(timer)
-      closeTunnel()
-      cleanupEnvFile()
-      fn()
-    }
-    const timer = setTimeout(() => {
-      killTree(preflight)
-      const urlHint = scrapedUrl
-        ? ` Authorization URL: ${scrapedUrl} — complete it in a browser, then call mcp_restart.`
-        : ''
-      settle(() => reject(new Error(
-        `Interactive MCP authorization timed out after ${Math.round(timeoutMs / 1000)}s for "${serverName}".${urlHint}` +
-        ' Alternatively authorize once from ADF Studio, then call mcp_restart.',
-      )))
-    }, timeoutMs)
-    preflight.on('error', (err) => {
-      settle(() => reject(new Error(`MCP auth preflight for "${serverName}" failed to spawn: ${err instanceof Error ? err.message : String(err)}`)))
-    })
-    // 'close' rather than 'exit': it fires after the stdio streams flush, so a
-    // fast-exiting child's final stdout/stderr chunk (auth URL, error detail)
-    // is scraped before we settle. The timeout above still bounds the wait if
-    // a grandchild holds the pipes open.
-    preflight.on('close', (code, signal) => {
-      if (code === 0) {
-        log(`[MCP] Auth preflight for "${serverName}" exited cleanly — proceeding to connect`)
-        settle(resolve)
-      } else {
-        settle(() => reject(new Error(
-          `MCP auth preflight for "${serverName}" exited with ${signal ? `signal ${signal}` : `code ${code}`}.${stderrHint()}`,
-        )))
+  const finished = new AbortController()
+  try {
+    await new Promise<void>((resolve, reject) => {
+      let settled = false
+      const settle = (fn: () => void) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        clearTimeout(dialogTimer)
+        finished.abort()
+        closeTunnel()
+        killTree(preflight)
+        cleanupEnvFile()
+        fn()
       }
+      const timer = setTimeout(() => {
+        const minutes = Math.round(timeoutMs / 60_000)
+        const urlHint = scrapedUrl && !io.waitForUser
+          ? ` Authorization URL: ${scrapedUrl} — complete it in a browser, then call mcp_restart.`
+          : ''
+        settle(() => reject(new Error(io.waitForUser
+          ? `Sign-in to "${serverName}" did not finish within ${minutes} minutes. It is not signed in; try again.`
+          : `Interactive MCP authorization timed out after ${Math.round(timeoutMs / 1000)}s for "${serverName}".${urlHint}` +
+            ' Alternatively authorize once from ADF Studio, then call mcp_restart.',
+        )))
+      }, timeoutMs)
+      // The dialog appears once the command has survived the startup grace.
+      const dialogTimer = setTimeout(() => {
+        if (!io.waitForUser || settled) return
+        void io.waitForUser({ serverName, authUrl: () => scrapedUrl, signal: finished.signal })
+          .catch((err) => log(`[MCP] Sign-in dialog for "${serverName}" failed: ${err instanceof Error ? err.message : String(err)}`))
+          .then(() => settle(() => reject(new Error(`Sign-in to "${serverName}" was cancelled. It is not signed in.`))))
+      }, graceMs)
+      preflight.on('error', (err) => {
+        settle(() => reject(new Error(`MCP auth preflight for "${serverName}" failed to spawn: ${err instanceof Error ? err.message : String(err)}`)))
+      })
+      // 'close' rather than 'exit': it fires after the stdio streams flush, so a
+      // fast-exiting child's final stdout/stderr chunk (auth URL, error detail)
+      // is scraped before we settle.
+      preflight.on('close', (code, signal) => {
+        if (code === 0) {
+          log(`[MCP] Auth preflight for "${serverName}" finished — proceeding to connect`)
+          settle(resolve)
+        } else {
+          settle(() => reject(new Error(
+            `MCP auth preflight for "${serverName}" exited with ${signal ? `signal ${signal}` : `code ${code}`} before authorization completed.${stderrHint()}`,
+          )))
+        }
+      })
     })
-  })
+  } finally {
+    finished.abort()
+  }
 }
 
 /**
