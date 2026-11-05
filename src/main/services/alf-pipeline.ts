@@ -251,6 +251,15 @@ export const decryptPayloadMiddleware: MessagingMiddlewareFn = (message, ctx) =>
 }
 
 /**
+ * Whether ingress rejects messages without a valid DID message signature.
+ * The single source of truth for both enforcement (below) and the agent
+ * card's advertised `signing.receive` policy.
+ */
+export function rejectsUnsignedInbound(security: SecurityConfig): boolean {
+  return !!security.require_signature && !security.allow_unsigned
+}
+
+/**
  * INGRESS: Verify the top-level message signature.
  * Extracts public key from the sender's DID.
  * Rejects if require_signature is set and no signature present.
@@ -261,7 +270,7 @@ export const verifyMessageSignatureMiddleware: MessagingMiddlewareFn = (message,
   // Signature verification is only meaningful when `from` is a DID.
   const senderIsDid = typeof message.from === 'string' && message.from.startsWith('did:')
   if (!message.signature || !senderIsDid) {
-    if (ctx.security.require_signature && !ctx.security.allow_unsigned) {
+    if (rejectsUnsignedInbound(ctx.security)) {
       return { data: message, rejected: { code: 403, reason: 'Message signature required but missing' } }
     }
     // Stamp as not verified (no signature or unsigned-by-design sender)
