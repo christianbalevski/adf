@@ -4,6 +4,7 @@ import type { McpRegistrationTestResult } from '../../../../shared/types/ipc.typ
 import { enc, type DaemonModeContext } from '../context'
 import { errorText } from './common'
 import { awaitDaemonJob, startDaemonJob } from './jobs'
+import { showMcpSignInDialog } from '../../../services/mcp-sign-in-dialog'
 
 /**
  * MCP_REGISTRATION_TEST (Settings → MCP "Connect") on the daemon: W1-D's job
@@ -13,10 +14,10 @@ import { awaitDaemonJob, startDaemonJob } from './jobs'
  * - `open_url` (an OAuth authorization page, or the URL the stdio auth
  *   preflight found): opened with shell.openExternal, as embedded Studio's
  *   OAuth IO and preflight do, then acknowledged;
- * - `confirm` (the stdio auth preflight's "complete authorization in your
- *   browser, then Continue"): the same native dialog as embedded
- *   (ipc/index.ts studioMcpAuthPreflight), answered when the user clicks
- *   Continue.
+ * - `sign_in` (a stdio server's sign-in command is running): the same
+ *   dialog as embedded (services/mcp-sign-in-dialog.ts), closed when the step
+ *   leaves the list; Cancel posts …/cancel. The server opens the browser on
+ *   its own computer, so a remote daemon's page is opened here at once.
  *
  * The renderer awaits one promise; it resolves with the job's result, which
  * is the embedded handler's McpRegistrationTestResult. An OAuth sign-in waits
@@ -28,11 +29,10 @@ const POLL_MS = 300
 
 interface McpInteraction {
   id: string
-  kind: 'open_url' | 'confirm'
-  state: 'pending' | 'timed_out'
+  kind: 'open_url' | 'sign_in'
+  state: 'pending'
   serverName?: string
   url?: string
-  authUrlOpened?: boolean
 }
 
 /** Only a web page is opened. */
@@ -51,22 +51,6 @@ function failedResult(rawArgs: unknown, error: string): McpRegistrationTestResul
   const location: McpRegistrationTestResult['location'] =
     reg?.type === 'http' || typeof reg?.url === 'string' ? 'remote http' : reg?.runLocation === 'host' ? 'host' : 'shared container'
   return { success: false, tools: [], error, location, authRan: false, notes: [] } as McpRegistrationTestResult
-}
-
-/** The embedded preflight's Continue dialog, word for word. */
-async function showContinueDialog(serverName: string, authUrlOpened: boolean): Promise<void> {
-  const win = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0] ?? undefined
-  await dialog.showMessageBox({
-    ...(win ? { window: win } : {}),
-    type: 'info',
-    title: `MCP Authorization — ${serverName}`,
-    message: 'Complete authorization in your browser, then click Continue.',
-    detail: authUrlOpened
-      ? `An authorization page has been opened in your browser for "${serverName}". Complete the authorization flow, then click Continue.`
-      : `The "${serverName}" MCP server is running for interactive authorization. If a browser window opened, complete the flow and click Continue. If no browser opened, check the logs for an authorization URL.`,
-    buttons: ['Continue'],
-    defaultId: 0,
-  } as Electron.MessageBoxOptions)
 }
 
 /** The page opened, but its callback is not relayed (a port in use here): said where the user started the sign-in. */
@@ -91,6 +75,8 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
     return failedResult(rawArgs, errorText(err))
   }
   const handled = new Set<string>()
+  /** sign_in steps whose dialog is up: closed when the step leaves the list. */
+  const open = new Map<string, { controller: AbortController; url?: string }>()
   /** Remote mode: the sign-in page was not opened; the test is cancelled and ends with this reason. */
   let stoppedBecause: string | null = null
 
@@ -103,7 +89,43 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
     }
   }
 
+  /** Opens a sign-in page; a remote daemon's goes through the relay. */
+  const openPage = async (url: string, serverName: string): Promise<void> => {
+    if (ctx.mode === 'remote' && ctx.remote) {
+      const result = await ctx.remote.oauth.open(url, `Sign-in for "${serverName}"`)
+      if (!result.opened) ctx.log.warn(`[MCP] Sign-in for "${serverName}": the page was not opened: ${result.reason ?? 'refused'}`)
+      else if (result.reason) void showRelayWarning(serverName, result.reason)
+      return
+    }
+    if (isWebUrl(url)) await shell.openExternal(url)
+  }
+
+  const signIn = async (entry: McpInteraction): Promise<void> => {
+    const serverName = entry.serverName ?? 'server'
+    const state = { controller: new AbortController(), url: entry.url }
+    open.set(entry.id, state)
+    try {
+      if (ctx.mode === 'remote' && state.url) await openPage(state.url, serverName).catch(() => {})
+      await showMcpSignInDialog({ dialog, BrowserWindow }, {
+        serverName,
+        authUrl: () => state.url ?? null,
+        openUrl: (url) => openPage(url, serverName),
+        signal: state.controller.signal,
+      })
+      if (!state.controller.signal.aborted) {
+        try {
+          await (await ctx.ready()).request('POST', `/admin/mcp/interactions/${enc(entry.id)}/cancel`)
+        } catch (err) {
+          if (!(err instanceof DaemonError && err.status === 404)) ctx.log.warn(`[MCP] Could not cancel the sign-in: ${err instanceof Error ? err.message : String(err)}`)
+        }
+      }
+    } finally {
+      open.delete(entry.id)
+    }
+  }
+
   const step = async (entry: McpInteraction): Promise<void> => {
+    if (entry.kind === 'sign_in') return signIn(entry)
     if (entry.kind === 'open_url') {
       // Remote mode: the page's loopback callback is on the daemon's machine;
       // the relay takes it on this computer and hands it over (§9.3, W4-B).
@@ -135,10 +157,7 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
         ctx.log.warn(`[MCP] Connect test for "${entry.serverName ?? 'server'}": the authorization URL is not a web page; not opened`)
       }
       await answer(entry.id)
-      return
     }
-    await showContinueDialog(entry.serverName ?? 'server', entry.authUrlOpened === true)
-    await answer(entry.id)
   }
 
   const outcome = await awaitDaemonJob(() => ctx.ready(), jobId, {
@@ -156,7 +175,11 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
       } catch {
         return // the next poll tries again; the job poll reports a lost daemon
       }
+      const listed = new Set(list.interactions.map((entry) => entry.id))
+      for (const [id, state] of open) if (!listed.has(id)) state.controller.abort()
       for (const entry of list.interactions) {
+        const shown = open.get(entry.id)
+        if (shown && entry.url) shown.url = entry.url
         if (entry.state !== 'pending' || handled.has(entry.id)) continue
         handled.add(entry.id)
         // A dialog waits for the user; the job keeps being polled meanwhile.
@@ -164,6 +187,7 @@ export async function runRegistrationTest(ctx: DaemonModeContext, rawArgs: unkno
       }
     },
   })
+  for (const state of open.values()) state.controller.abort()
   if (stoppedBecause) return failedResult(rawArgs, stoppedBecause)
   if (outcome.kind === 'lost') return failedResult(rawArgs, outcome.reason)
   const { job } = outcome

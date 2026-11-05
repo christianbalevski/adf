@@ -11880,9 +11880,51 @@
         "tags": [
           "MCP"
         ],
-        "summary": "Answer an interactive step",
-        "description": "Removes an open_url step; lets a waiting confirm step continue. A timed-out step cannot be answered (404).",
+        "summary": "Acknowledge an authorization page",
+        "description": "Removes an open_url step once the client has opened its page. Any other step, or one that is gone, answers 404.",
         "operationId": "continueMcpInteraction",
+        "parameters": [
+          {
+            "name": "interactionId",
+            "in": "path",
+            "required": true,
+            "description": "Interaction id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SuccessResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          }
+        }
+      }
+    },
+    "/admin/mcp/interactions/{interactionId}/cancel": {
+      "post": {
+        "tags": [
+          "MCP"
+        ],
+        "summary": "Cancel a sign-in",
+        "description": "The user cancelled a sign_in step: the sign-in command is stopped and the connect test fails with \"not signed in\". A step that is gone (finished, cancelled, or its test ended) answers 404.",
+        "operationId": "cancelMcpInteraction",
         "parameters": [
           {
             "name": "interactionId",
@@ -29681,26 +29723,22 @@
             "type": "string",
             "enum": [
               "open_url",
-              "confirm"
-            ]
+              "sign_in"
+            ],
+            "description": "`open_url`: a page for the client to open, then acknowledge (…/continue). `sign_in`: a stdio server's sign-in command is running; the client shows it until the step leaves the list, and …/cancel stops it"
           },
           "state": {
             "type": "string",
             "enum": [
-              "pending",
-              "timed_out"
-            ],
-            "description": "`timed_out`: a confirm nobody answered within 5 minutes; the test went on without it and its result says so"
+              "pending"
+            ]
           },
           "serverName": {
             "type": "string"
           },
           "url": {
             "type": "string",
-            "description": "open_url: the authorization page to open"
-          },
-          "authUrlOpened": {
-            "type": "boolean"
+            "description": "The authorization page (sign_in: once the command has printed it)"
           },
           "message": {
             "type": "string"
