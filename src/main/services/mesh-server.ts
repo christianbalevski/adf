@@ -44,7 +44,7 @@ import {
   didToPublicKey,
   rawPublicKeyToSpki
 } from '../crypto/identity-crypto'
-import { canonicalJsonStringify } from './alf-pipeline'
+import { canonicalJsonStringify, rejectsUnsignedInbound } from './alf-pipeline'
 import { ApiResponseCache } from './api-response-cache'
 import { executeMiddlewareChain } from './middleware-executor'
 import { classifyRemote, permits, denialReason, type Scope } from '../runtime/scope-resolver'
@@ -1202,15 +1202,18 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   const resolution = cardOverrides?.resolution
     ?? { method: 'self', endpoint: endpoints.card }
 
-  // Build policies from security config
-  const securityLevel = config.security?.level ?? 0
+  // Build policies from security config. `send` mirrors egress (level >= 1
+  // always signs or refuses to send); `receive` mirrors ingress enforcement,
+  // which accepts unsigned messages unless it is configured to reject them.
+  const security = config.security ?? { allow_unsigned: true }
+  const securityLevel = security.level ?? 0
   const policies: AlfAgentCard['policies'] = []
   if (securityLevel >= 1) {
     policies.push({
       type: 'signing',
       standard: 'ed25519',
       send: 'required',
-      receive: 'required'
+      receive: rejectsUnsignedInbound(security) ? 'required' : 'optional'
     })
   }
 
