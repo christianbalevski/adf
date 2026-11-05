@@ -754,22 +754,24 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     </div>
   ) : null
 
-  const identityFields = draft ? (
-    <div className="grid grid-cols-2 gap-2">
-      <div>
-        <label className={labelCls}>Name</label>
-        {/* Fixed once added: credentials and agent attachments are keyed by it. */}
-        <input
-          type="text"
-          value={draft.name}
-          disabled={!!editing}
-          onChange={(e) => patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') })}
-          placeholder="e.g. my_server"
-          className={inputCls}
-        />
-        {nameTaken && <p className="mt-1 text-[10px] text-red-500">Name already in use</p>}
-        {nameReserved && <p className="mt-1 text-[10px] text-red-500">Name reserved by Windows</p>}
-      </div>
+  // Fixed once added: credentials, sign-ins and agent attachments are keyed by it.
+  const nameField = draft ? (
+    <div>
+      <label className={labelCls}>Name</label>
+      <input
+        type="text"
+        value={draft.name}
+        disabled={!!editing}
+        onChange={(e) => patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') })}
+        placeholder="e.g. my_server"
+        className={inputCls}
+      />
+      {nameTaken && <p className="mt-1 text-[10px] text-red-500">Name already in use</p>}
+      {nameReserved && <p className="mt-1 text-[10px] text-red-500">Name reserved by Windows</p>}
+    </div>
+  ) : null
+
+  const sourceField = draft ? (
       <div>
         <label className={labelCls}>
           {isHttp ? 'URL' : isCustom ? 'Command' : isPython ? 'PyPI package' : 'npm package'}
@@ -784,6 +786,12 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           <input type="text" value={draft.npmPackage ?? ''} onChange={(e) => patch({ npmPackage: e.target.value })} placeholder="@scope/mcp-package" className={inputCls} />
         )}
       </div>
+  ) : null
+
+  const identityFields = draft ? (
+    <div className="grid grid-cols-2 gap-2">
+      {nameField}
+      {sourceField}
     </div>
   ) : null
 
@@ -976,6 +984,19 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             </div>
           )}
 
+          {/* A catalog server's name is the one thing to choose up front: a
+              second copy of a server (another account) is told apart by it. */}
+          {catalogEntry && (
+            <div>
+              {nameField}
+              <p className="mt-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
+                {editing
+                  ? `Agents attach this server by name; its tools are named mcp_${draft.name}_….`
+                  : `Can't be changed after adding. Agents attach this server by name, and its tools are named mcp_${draft.name || '<name>'}_…. Add the same server again under another name for another account.`}
+              </p>
+            </div>
+          )}
+
           {/* Location comes first: it decides where the server is installed,
               where credential files land, and what Connect tests. A catalog
               entry already picked the location its setup works in. */}
@@ -1135,7 +1156,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
             <Disclosure label="Advanced" open={showAdvanced} onToggle={() => setShowAdvanced(!showAdvanced)}>
               {catalogEntry && (
                 <>
-                  {identityFields}
+                  {sourceField}
                   {registrationSourceLine(draft, bundledServers, hostAccessEnabled, mcpOnHost) && (
                     <p className="text-[10px] font-mono text-[var(--adf-ui-text-subtle)] truncate">{registrationSourceLine(draft, bundledServers, hostAccessEnabled, mcpOnHost)}</p>
                   )}

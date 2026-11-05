@@ -73,7 +73,7 @@ The app bundles the same document as its offline fallback, so what you fetch is 
 4. **Connect** (or **Sign in**) runs the real pipeline: credential files land where the server runs, the OAuth browser flow runs when declared, and the step shows the discovered tool count (or the server's own error output, verbatim)
 5. **Done** saves the server. Before a connect succeeds the button reads **Save without connecting**, and the row shows **Not verified** until one does. Managed npm/pypi packages download in the background into `~/.adf-studio/mcp-servers/<package>/` (npm ones need Node.js on the host). Servers ADF Studio ships itself (today the Gmail catalog server, unedited) download nothing when they run on the host: there they run with Studio's own executable, and **Advanced** shows them as *built into ADF Studio*
 
-Everything else a known server prefills — name, package, args, extra environment variables, headers, optional credential files, the sign-in command, the tool timeout — is under **Advanced**.
+A known server's **Name** is shown first, filled in with the server's own name (or the next free one, `gmail-2`, when that is taken). Change it before adding if you want a name that says which account it is; it can't be changed afterwards. Everything else a known server prefills — package, args, extra environment variables, headers, optional credential files, the sign-in command, the tool timeout — is under **Advanced**.
 
 Each server row afterwards has **Configure** (same form), **Reconnect** (or **Re-authorize** for OAuth servers), **Logs**, and **Remove**.
 
@@ -187,7 +187,7 @@ Credentials can also be stored in an individual agent's `adf_identity` table usi
 
 A server is identified by its **name**, not its package or URL. Everything it stores is keyed by that name: env values (`mcp:<name>:<KEY>`), credential files (`mcp:<name>:file:<path>`), HTTP sign-ins, and its home folder. So one package can be installed several times, each copy with its own credentials, and each copy's tools carry its own prefix (`gmail_search_emails`, `gmail-work_search_emails`).
 
-**In Settings:** add Gmail, sign in with your personal account. Add Gmail again: the new entry is named `gmail-2`; rename it while adding (say `gmail-work`) and sign in with your work account. Both stay signed in. Names use lowercase letters, digits, `_` and `-`. Whether a copy's credentials live in the app (one sign-in every agent shares) or per agent is set on each copy. A copy whose credentials live in the app is signed in from Settings only: an agent that attaches it uses that sign-in and cannot replace it (`mcp_install` refuses `auth` and `credential_files` for it).
+**In Settings:** add Gmail, sign in with your personal account. Add Gmail again: its **Name** is filled in as `gmail-2`; change it while adding (say `gmail-work`) and sign in with your work account. The name is fixed once added; to rename, remove the server and add it again, then sign in again. Both stay signed in. Names use lowercase letters, digits, `_` and `-`. Whether a copy's credentials live in the app (one sign-in every agent shares) or per agent is set on each copy. A copy whose credentials live in the app is signed in from Settings only: an agent that attaches it uses that sign-in and cannot replace it (`mcp_install` refuses `auth` and `credential_files` for it).
 
 **From an agent:** `mcp_install` attaches a Settings server by name. Without a name it attaches the package's server when exactly one is registered; when several are, it lists them and asks for one:
 
