@@ -28,7 +28,7 @@ function buildInputSchema(maxTimeout: number) {
       .optional()
       .default(true)
       .describe(
-        'Whether to clear the sandbox state before executing. Defaults to true (fresh environment each call). Set to false to preserve variables and functions from previous calls.'
+        'Whether to clear the sandbox state before executing. Defaults to true (fresh environment each call). Set to false to preserve variables and functions from previous calls. Use false for multi-step investigative work that reuses loaded data or helpers across calls.'
       )
   })
 }
@@ -50,7 +50,7 @@ export class SysCodeTool implements Tool {
     'Allowed modules: crypto, buffer, url, querystring, path, util, string_decoder, punycode, assert, events, stream, zlib. ' +
     'Standard library packages (always available): xlsx, pdf-lib, mupdf, docx, jszip, sql.js, cheerio, yaml, date-fns, jimp. ' +
     'Additional packages can be installed via npm_install (pure JS only, no native addons). ' +
-    'Set clear_state to false to preserve variables between calls.'
+    'Set clear_state to false to preserve variables between calls. For multi-step investigations, load data once into a variable and pass clear_state: false on every follow-up call instead of re-fetching; any call with the default (true) wipes saved state.'
   readonly inputSchema: ReturnType<typeof buildInputSchema>
   readonly category = 'external' as const
 
