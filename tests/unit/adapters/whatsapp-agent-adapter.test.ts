@@ -218,6 +218,8 @@ describe('WhatsAppAgentAdapter (against the mock Agent Platform API)', () => {
       await startConnected(second)
       await until(() => second.ingested.length === 2)
       expect(second.ingested.map((m) => m.payload)).toEqual(['while offline 1', 'while offline 2'])
+      // The catch-up phase ends after the batch is ingested.
+      await until(() => second.catchUp.end > 0)
       expect(second.catchUp).toEqual({ begin: 1, end: 1 })
     })
 

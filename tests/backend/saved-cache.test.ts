@@ -61,6 +61,9 @@ describe('SavedConnectionsCache', () => {
     caches.push(cache)
     await cache.refresh()
     cache.watch()
+    // macOS FSEvents can miss a write made within milliseconds of the watch
+    // starting (CI flake); in the app the watch is up long before any edit.
+    await new Promise((r) => setTimeout(r, 200))
     await updateRemotes(env, (f) => { f.remotes.desk = entry('DESK-2345') })
     await until(() => Object.keys(cache.get()).includes('desk'))
     expect(changed).toHaveBeenCalled()
