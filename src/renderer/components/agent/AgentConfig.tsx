@@ -3638,12 +3638,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {/* Security */}
         <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted', 'Advanced'] as const)[local.security?.level ?? 0]}>
           <div className="flex items-center justify-between mb-0.5">
-            <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level<InfoHint tip="Open: no signing. Signed: messages are cryptographically signed. Encrypted: signed, and payloads to DID recipients are encrypted end-to-end (encryption key derived from the recipient’s DID). Local same-runtime and channel-adapter messages are not encrypted." /></label>
+            <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level<InfoHint tip="Open: no signing. Signed: messages are cryptographically signed. Encrypted: signed, and payloads to DID recipients are encrypted end-to-end (encryption key derived from the recipient’s DID). Channel-adapter messages are not encrypted." /></label>
             {!isSectionLocked('security') && (
               <LockButton
                 locked={isSectionLocked('security.level')}
                 size="xs"
-                onClick={() => toggleFieldLock('security.level', ['security.allow_unsigned', 'security.require_signature', 'security.require_payload_signature'])}
+                onClick={() => toggleFieldLock('security.level', ['security.require_signature', 'security.require_payload_signature', 'security.require_encryption'])}
               />
             )}
           </div>
@@ -3660,20 +3660,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                         ? 'bg-[var(--adf-ui-accent-subtle)] text-[var(--adf-ui-text)]'
                         : 'bg-white dark:bg-neutral-800 text-neutral-500 dark:text-neutral-400 hover:bg-neutral-50 dark:hover:bg-neutral-700'
                     } ${i > 0 ? 'border-l border-neutral-200 dark:border-neutral-700' : ''}`}
-                    onClick={() => {
-                      const requireSig = lvl === 0 ? false : (local.security?.require_signature ?? false)
-                      const requirePayloadSig = lvl === 0 ? false : (local.security?.require_payload_signature ?? false)
-                      save({
-                        ...local,
-                        security: {
-                          ...local.security,
-                          level: lvl,
-                          allow_unsigned: lvl === 0 ? true : !requireSig,
-                          require_signature: requireSig,
-                          require_payload_signature: requirePayloadSig
-                        }
-                      })
-                    }}
+                    onClick={() => save({ ...local, security: { ...local.security, level: lvl } })}
                   >
                     {labels[lvl]}
                   </button>
@@ -3696,50 +3683,20 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </div>
           )}
 
-          {(local.security?.level ?? 0) >= 1 && (
-            <>
-              <label className="flex items-center justify-between text-xs mt-2">
-                <span className="text-neutral-700 dark:text-neutral-300">Require message signature<InfoHint tip="Reject incoming messages without a valid message signature." /></span>
-                <input
-                  type="checkbox"
-                  checked={local.security?.require_signature ?? false}
-                  onChange={(e) => {
-                    const requireSig = e.target.checked
-                    save({
-                      ...local,
-                      security: {
-                        ...local.security,
-                        level: local.security?.level ?? 1,
-                        allow_unsigned: !requireSig,
-                        require_signature: requireSig,
-                        require_payload_signature: local.security?.require_payload_signature ?? false
-                      }
-                    })
-                  }}
-                />
-              </label>
-
-              <label className="flex items-center justify-between text-xs mt-2">
-                <span className="text-neutral-700 dark:text-neutral-300">Require payload signature<InfoHint tip="Reject incoming messages without a valid payload signature." /></span>
-                <input
-                  type="checkbox"
-                  checked={local.security?.require_payload_signature ?? false}
-                  onChange={(e) => {
-                    save({
-                      ...local,
-                      security: {
-                        ...local.security,
-                        level: local.security?.level ?? 1,
-                        allow_unsigned: !(local.security?.require_signature ?? false),
-                        require_signature: local.security?.require_signature ?? false,
-                        require_payload_signature: e.target.checked
-                      }
-                    })
-                  }}
-                />
-              </label>
-            </>
-          )}
+          {([
+            ['require_signature', 'Require message signature', 'Reject incoming messages without a valid message signature.'],
+            ['require_payload_signature', 'Require payload signature', 'Reject incoming messages without a valid payload signature.'],
+            ['require_encryption', 'Require encryption', 'Reject incoming messages whose payload is not encrypted to this agent.']
+          ] as const).map(([field, label, tip]) => (
+            <label key={field} className="flex items-center justify-between text-xs mt-2">
+              <span className="text-neutral-700 dark:text-neutral-300">{label}<InfoHint tip={tip} /></span>
+              <input
+                type="checkbox"
+                checked={local.security?.[field] ?? false}
+                onChange={(e) => save({ ...local, security: { ...local.security, [field]: e.target.checked } })}
+              />
+            </label>
+          ))}
           </div>
 
           {/* Attestations — send-side disclosure; receive-side enforcement will join here */}

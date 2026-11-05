@@ -33,7 +33,7 @@ function defaultConfig(overrides: Partial<AgentConfig> = {}): Partial<AgentConfi
     autonomous: false,
     tools: DEFAULT_TOOLS.map((t) => ({ ...t })),
     messaging: { receive: true, mode: 'proactive', visibility: 'localhost', inbox_mode: true },
-    security: { allow_unsigned: true, level: 1 },
+    security: { level: 1 },
     triggers: {
       on_inbox: { enabled: true, targets: [{ scope: 'agent' }] },
       on_chat: { enabled: true, targets: [{ scope: 'agent' }] },
@@ -375,7 +375,7 @@ describe('Reach', () => {
 
   it('signed-only and allow lists are mitigations', () => {
     const open = scoreReach(inputs({ messaging: { receive: true, mode: 'listen_only', visibility: 'lan' } })).rawPoints
-    const signed = scoreReach(inputs({ messaging: { receive: true, mode: 'listen_only', visibility: 'lan' }, security: { allow_unsigned: false } }))
+    const signed = scoreReach(inputs({ messaging: { receive: true, mode: 'listen_only', visibility: 'lan' }, security: { require_signature: true } }))
     const listed = scoreReach(inputs({ messaging: { receive: true, mode: 'listen_only', visibility: 'lan', allow_list: ['did:key:z6Mk1'] } }))
     expect(signed.rawPoints).toBeLessThan(open)
     expect(signed.factors.find((f) => f.id === 'security:signed_only')?.points).toBeLessThan(0)

@@ -164,7 +164,7 @@ describe('runtime → alf-mcp', () => {
     }
     const ctx: MessagingPipelineContext = {
       direction: 'egress', workspace: agent.workspace, localDid: agentDid, remoteDid: identity.did,
-      isLocal: false, security: { allow_unsigned: false, level: 2 }, derivedKey: null,
+      security: { level: 2 }, derivedKey: null,
     }
     const egress = await createDefaultPipeline().processEgress(outbound, ctx)
     if (egress.rejected) throw new Error(`egress rejected: ${egress.rejected.reason}`)

@@ -77,7 +77,6 @@ Configured in the agent's `security` section:
 ```json
 {
   "security": {
-    "allow_unsigned": true,
     "middleware": {
       "inbox": [
         { "lambda": "lib/middleware.ts:validateContent" },
@@ -101,7 +100,7 @@ Configured in the agent's `security` section:
 | `security.fetch_middleware` | `MiddlewareRef[]` | Middleware chain for `sys_fetch` requests |
 | `security.allow_local_fetch` | `boolean` | Escape hatch (default `false`) that relaxes the `sys_fetch` SSRF egress guard, permitting private/LAN/CGNAT fetches (loopback is allowed by default; the daemon control API and link-local/cloud-metadata addresses stay blocked regardless). Locked by default in the runtime — an agent's write surfaces as a protection request the owner can approve as a one-time override. |
 
-> **Owner-only.** The guard paths `security.allow_unsigned`, `security.require_middleware_authorization`, `security.middleware.*`, and `security.fetch_middleware` are **not agent-writable** via `sys_update_config` — the tool hard-denies them with a plain error (no HIL, no override). Only the owner changes them, in the app UI. This keeps the agent from configuring the middleware chain that is supposed to police it. (`security.allow_local_fetch` sits one tier down: locked by default rather than hard-denied — a write surfaces as a request the owner can approve as a one-time override.)
+> **Owner-only.** The guard paths `security.require_middleware_authorization`, `security.middleware.*`, and `security.fetch_middleware` are **not agent-writable** via `sys_update_config` — the tool hard-denies them with a plain error (no HIL, no override). Only the owner changes them, in the app UI. This keeps the agent from configuring the middleware chain that is supposed to police it. (`security.allow_local_fetch` sits one tier down: locked by default rather than hard-denied — a write surfaces as a request the owner can approve as a one-time override.)
 
 ### Route Middleware
 

@@ -735,7 +735,6 @@ A string segment on an array is resolved by matching the element whose `name` eq
 **Guard-system config is not agent-writable (hard error).** The switches that decide what needs approval in the first place are off-limits to the agent entirely — not HIL-gated, not overridable. Writing any of these **hard-errors** with no approval path and no one-time override:
 
 - `security` (wholesale replacement of the guard block)
-- `security.allow_unsigned`
 - `security.require_middleware_authorization`
 - `security.middleware.*` / `security.fetch_middleware`
 

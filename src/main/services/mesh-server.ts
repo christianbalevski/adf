@@ -1202,17 +1202,17 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
   const resolution = cardOverrides?.resolution
     ?? { method: 'self', endpoint: endpoints.card }
 
-  // Build policies from security config
-  const securityLevel = config.security?.level ?? 0
+  // Policies project the security config: `send` is what egress does
+  // (level 1 signs, level 2 also encrypts, or refuses to send), `receive` is
+  // what ingress rejects. A policy with nothing required is left out.
+  const security = config.security ?? {}
+  const level = security.level ?? 0
   const policies: AlfAgentCard['policies'] = []
-  if (securityLevel >= 1) {
-    policies.push({
-      type: 'signing',
-      standard: 'ed25519',
-      send: 'required',
-      receive: 'required'
-    })
+  const pushPolicy = (type: string, standard: string, send: boolean, receive: boolean) => {
+    if (send || receive) policies.push({ type, standard, send: send ? 'required' : 'optional', receive: receive ? 'required' : 'optional' })
   }
+  pushPolicy('signing', 'ed25519', level >= 1, !!security.require_signature || !!security.require_payload_signature)
+  pushPolicy('encryption', 'x25519-hkdf-aes256gcm', level >= 2, !!security.require_encryption)
 
   // Attestations are published only when the agent opts in — an unpublished
   // agent stays unlinkable to its owner by card inspection. Filter to certs

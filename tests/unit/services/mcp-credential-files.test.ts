@@ -362,7 +362,7 @@ describe('credential_files schema parity', () => {
       tools: [],
       triggers: {},
       messaging: { send: true, receive: true },
-      security: { allow_unsigned: true },
+      security: {},
       limits: {},
       metadata: { author: 'test', created_at: '2026-01-01', updated_at: '2026-01-01', version: '1' },
       mcp: {

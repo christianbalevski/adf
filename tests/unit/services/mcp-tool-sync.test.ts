@@ -13,7 +13,7 @@ function configWithTools(tools: AgentConfig['tools']): AgentConfig {
     start_in: 'idle',
     model: { provider: 'test', model_id: 'test' },
     tools,
-    security: { allow_unsigned: true },
+    security: {},
     code: {
       model_invoke: false,
       sys_lambda: false,

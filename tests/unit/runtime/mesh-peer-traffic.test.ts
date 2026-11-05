@@ -84,7 +84,7 @@ describe('B4: an arrival names its sender only when the sender was verified', ()
       payload: { content: 'hello', content_type: 'text/plain', sent_at: '2026-10-21T00:00:00Z' },
     }
     if (sign) {
-      const ctx = { direction: 'egress', workspace: { getSigningKeys: () => keys }, localDid: did, remoteDid: message.to, isLocal: false, security: { level: 1 }, derivedKey: null }
+      const ctx = { direction: 'egress', workspace: { getSigningKeys: () => keys }, localDid: did, remoteDid: message.to, security: { level: 1 }, derivedKey: null }
       message = (await signMessageMiddleware(message, ctx as never)).data
     }
     try {

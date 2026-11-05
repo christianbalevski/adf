@@ -82,11 +82,11 @@ The mesh server, WebSocket connections, and channel adapters accept input from t
 **Controls:**
 - Mesh server binds to `127.0.0.1` by default — LAN exposure requires explicit `meshLan` setting
 - Ed25519 message signature verification (envelope and payload)
-- Configurable `allow_unsigned` (default: true for local dev, should be false for internet-facing agents)
+- Inbound requirements `require_signature`, `require_payload_signature` and `require_encryption` (all off by default; turn them on for internet-facing agents)
 - Allow/block lists for message senders (by DID)
 - Inbox middleware pipeline — user-defined lambdas can inspect and reject messages before storage
 
-**What this means:** Network-sourced messages go through signature verification, allow/block filtering, and middleware before reaching the agent. With `allow_unsigned: false` and proper identity setup, only verified senders can deliver messages.
+**What this means:** Network-sourced messages go through signature verification, allow/block filtering, and middleware before reaching the agent. With `require_signature` on, only verified senders can deliver messages.
 
 ### 4. External Process Boundary
 
@@ -131,7 +131,7 @@ Security relies on multiple independent layers rather than any single control:
 | Tool enablement | Unauthorized tool use from code | Config manipulation via `sys_update_config` (gated by lock fields). Agents cannot modify `restricted`/`restricted_methods` — owner only |
 | `restricted` (HIL) | Autonomous execution of dangerous tools | Cannot be bypassed from unauthorized code — returns `REQUIRES_AUTHORIZED_CODE` |
 | `require_middleware_authorization` | Untrusted middleware modifying messages | Unauthorized middleware silently skipped (default on) |
-| Signature verification | Spoofed network messages | `allow_unsigned: true` disables this check |
+| Signature verification | Spoofed network messages | Unsigned messages are accepted unless `require_signature` is on |
 | Fetch middleware | SSRF and unauthorized outbound requests | Only effective if configured |
 | SQL sanitizer | Access to system tables from `db_query`/`db_execute` | Validated against allowlist after stripping comments/literals |
 
@@ -163,15 +163,14 @@ When a tool is `enabled` and `restricted`, LLM loop calls automatically get a hu
 
 **Guard-system config is hard-denied.** The switches that decide *what needs approval in the first place* are not agent-reachable at all through `sys_update_config` — they return a plain error with no `ProtectionDenial`, so there is no HIL prompt and no one-time override path. These guard paths are:
 
-- `security.allow_unsigned`
 - `security.require_middleware_authorization`
 - `security.middleware.*`
 - `security.fetch_middleware`
 - a wholesale `set` of `security` (replacing the entire guard block)
 
-The membership criterion: a switch is a guard only when changing it would weaken the mechanism that gates the agent — approval-deciding (`allow_unsigned`, `require_middleware_authorization`) or self-blinding (the middleware chains, which rewrite what the agent and its audit trail see).
+The membership criterion: a switch is a guard only when changing it would weaken the mechanism that gates the agent — approval-deciding (`require_middleware_authorization`) or self-blinding (the middleware chains, which rewrite what the agent and its audit trail see).
 
-Contrast this with the agent's own **capability toggles** — `code_execution.*`, tool enable/disable, `limits.*`. Those remain requestable: the agent may ask for any change a human could make, and a locked one surfaces as an HIL approval the owner can grant or deny. To *hard-enforce* a capability toggle (not just gate it behind HIL), add it to `locked_fields`. Dangerous-but-ordinary capability toggles — `security.allow_local_fetch` and the `stream_bind` gates — are locked by default in the runtime (for every agent), so enabling them is a deliberate one-time override the owner grants, not a free write and not an unreachable wall. The rule: guards that govern the approval machinery are never agent-writable; the capabilities that machinery protects are HIL-gated and requestable. An instruction like "set `security.allow_unsigned: false`" is therefore an **app UI / owner-console** action, never a `sys_update_config` call.
+Contrast this with the agent's own **capability toggles** — `code_execution.*`, tool enable/disable, `limits.*`. Those remain requestable: the agent may ask for any change a human could make, and a locked one surfaces as an HIL approval the owner can grant or deny. To *hard-enforce* a capability toggle (not just gate it behind HIL), add it to `locked_fields`. Dangerous-but-ordinary capability toggles — `security.allow_local_fetch` and the `stream_bind` gates — are locked by default in the runtime (for every agent), so enabling them is a deliberate one-time override the owner grants, not a free write and not an unreachable wall. The rule: guards that govern the approval machinery are never agent-writable; the capabilities that machinery protects are HIL-gated and requestable. An instruction like "set `security.require_middleware_authorization: false`" is therefore an **app UI / owner-console** action, never a `sys_update_config` call.
 
 Additionally, these tools are **excluded from code execution** entirely:
 - `say` — prevents code from monopolizing chat output
@@ -272,7 +271,7 @@ Out of the box, ADF Studio ships with a conservative default configuration:
 - **Messaging receive:** off — no inbound messages accepted
 - **Mesh server:** binds to `127.0.0.1` only
 - **Dangerous tools** (`adf_shell`, `ws_*`): disabled by default. `sys_fetch` is enabled but confined by the egress guard (loopback/link-local/private destinations blocked)
-- **allow_unsigned:** true (appropriate for local development)
+- **Inbound requirements:** off — unsigned and unencrypted messages are accepted (appropriate for local development)
 - **Identity encryption:** optional, activated by setting a password
 
 ## Operational Recommendations
@@ -284,10 +283,9 @@ Leave defaults. No password needed. Unsigned messages are fine on localhost.
 Defaults still work. Consider marking tools with side effects as `restricted` if agents interact with untrusted data.
 
 ### Internet-facing agents
-1. Set `security.allow_unsigned: false` **via the app UI / owner console** — it is a guard-system setting the agent cannot change through `sys_update_config` (every agent has identity keys since v24)
+1. Turn on **Require message signature** and **Require payload signature**, and **Require encryption** if peers send at level 2 (`security.require_signature` / `require_payload_signature` / `require_encryption` — agent-writable via `sys_update_config`, HIL-gated; every agent has identity keys since v24)
 2. Configure allow/block lists for message senders (`messaging.allow_list` / `messaging.block_list` — agent-writable via `sys_update_config`, HIL-gated)
-3. Enable `require_signature` and `require_payload_signature` (`security.require_signature` / `security.require_payload_signature` — agent-writable, HIL-gated)
-4. Configure fetch middleware to restrict outbound URLs (`security.fetch_middleware.*` — owner-only guard path, like #1)
+3. Configure fetch middleware to restrict outbound URLs (`security.fetch_middleware.*` — owner-only guard path)
 5. Review all enabled tools — disable anything not needed
 6. Consider publishing the owner attestation so peers can verify ownership
 

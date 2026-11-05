@@ -305,7 +305,7 @@ function wsManager(security?: { allow_local_fetch?: boolean }): WsConnectionMana
     getAdfCallHandler: () => null,
     getWorkspace: () => ws,
     getToolConfig: () => null,
-    getAllowUnsigned: () => true,
+    requiresSignature: () => false,
   } satisfies WsManagerDelegate
   return new WsConnectionManager(delegate)
 }

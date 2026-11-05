@@ -184,8 +184,6 @@ export const TABLE_PROTECTION_LEVELS = ['none', 'append_only', 'authorized'] as 
 export type TableProtectionLevel = (typeof TABLE_PROTECTION_LEVELS)[number]
 
 export interface SecurityConfig {
-  /** Accept messages without signatures. Default true (Level 0). */
-  allow_unsigned: boolean
   /**
    * Security level controlling egress middleware behavior.
    * 0 = open (no signing/encryption), 1 = signed, 2 = signed+encrypted, 3 = advanced (custom middleware).
@@ -193,10 +191,12 @@ export interface SecurityConfig {
    * created before the flip keep their stored level.
    */
   level?: 0 | 1 | 2 | 3
-  /** Require incoming messages to have valid message signature. */
+  /** Reject incoming messages without a valid message signature. */
   require_signature?: boolean
-  /** Require incoming messages to have valid payload signature. */
+  /** Reject incoming messages without a valid payload signature. */
   require_payload_signature?: boolean
+  /** Reject incoming messages whose payload is not encrypted to this agent. */
+  require_encryption?: boolean
   /** Custom middleware for messaging pipelines */
   middleware?: {
     inbox?: MiddlewareRef[]
@@ -1747,10 +1747,9 @@ export const AGENT_DEFAULTS = {
     on_startup: { enabled: false, targets: [] }
   } as TriggersConfigV3,
   security: {
-    allow_unsigned: true,
     // Signed by default: D1 guarantees every agent has keys, so the old
     // "signing would reject keyless agents" reason for level 0 is gone.
-    // Unsigned inbound is still accepted (allow_unsigned) for mixed fleets.
+    // Unsigned inbound is still accepted (no require_*) for mixed fleets.
     level: 1
   } as SecurityConfig,
   limits: {

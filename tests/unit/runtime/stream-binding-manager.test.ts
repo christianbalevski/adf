@@ -305,7 +305,7 @@ function createWsManager(): WsConnectionManager {
       insertLog: () => {}
     } as never),
     getToolConfig: () => null,
-    getAllowUnsigned: () => true
+    requiresSignature: () => false
   }
   return new WsConnectionManager(delegate)
 }

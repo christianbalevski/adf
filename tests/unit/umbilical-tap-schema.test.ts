@@ -16,7 +16,7 @@ function baseConfig(): Record<string, unknown> {
     tools: [],
     triggers: {},
     messaging: { send: true, receive: true },
-    security: { allow_unsigned: true },
+    security: {},
     limits: {},
     metadata: { author: 'test', created_at: new Date().toISOString(), updated_at: new Date().toISOString(), version: '1' },
   }

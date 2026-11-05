@@ -6,7 +6,6 @@ function workspaceWithProtections(tableProtections: Record<string, 'none' | 'app
   return {
     getAgentConfig: () => ({
       security: {
-        allow_unsigned: true,
         table_protections: tableProtections
       }
     }),

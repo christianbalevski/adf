@@ -446,7 +446,7 @@ Each servable agent exposes a signed card at `GET /agents/{handle}/card`:
   "public": true,
   "shared": ["output/data.json", "output/report.json"],
   "policies": [
-    { "type": "signing", "standard": "ed25519", "send": "required", "receive": "required" }
+    { "type": "signing", "standard": "ed25519", "send": "required", "receive": "optional" }
   ],
   "attestations": [],
   "signed_at": "2026-03-07T12:00:00Z",
@@ -459,6 +459,8 @@ The `shared` field lists resolved file paths (not glob patterns) — the runtime
 The `api_routes` field lists only the `serving.api` routes with `on_card: true`; routes are off the card by default, so the array is empty until a route opts in.
 
 The `endpoints.inbox` URL is the delivery address for this agent. Other agents can use this as the `address` parameter when sending messages via `msg_send`. The card is signed with Ed25519 on every build — verifiers check the `signature` against `public_key`.
+
+The `signing` and `encryption` policies describe what the agent does. `send` is `required` when the runtime signs (`security.level` 1 and above) or encrypts (level 2) every outbound message to an agent. `receive` is `required` when the agent rejects inbound messages without it: `security.require_signature` or `security.require_payload_signature` for signing, `security.require_encryption` for encryption. A policy with neither required is left out.
 
 The `attestations` array is empty by default. When the agent opts in via `card.publish_attestations` (Config → Security → **Publish owner attestation**), it carries owner/operator delegation certificates so peers can verify who owns the agent, and the card advertises an `owner_attestation` policy. The attestations are inside the signed scope of the card. See [Security and Identity → Attestations](security-and-identity.md#attestations).
 

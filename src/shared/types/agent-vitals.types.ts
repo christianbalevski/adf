@@ -121,7 +121,7 @@ export interface AgentPowerInputs {
     visibility: Visibility
     allowListCount: number
   }
-  security: { allowUnsigned: boolean; requireSignature: boolean }
+  security: { requireSignature: boolean }
   serving: { publicEnabled: boolean; apiRouteCount: number; sharedEnabled: boolean }
   /** Enabled channel adapters. `restrictedDm` when the DM policy is allowlist or none. */
   adapters: Array<{ type: string; restrictedDm: boolean }>

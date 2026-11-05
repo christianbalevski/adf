@@ -146,10 +146,10 @@ const InputSchema = z.object({
   }).optional().describe('Trigger configuration overrides per trigger type.'),
 
   security: z.object({
-    allow_unsigned: z.boolean().optional(),
     level: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
     require_signature: z.boolean().optional(),
     require_payload_signature: z.boolean().optional(),
+    require_encryption: z.boolean().optional(),
     middleware: z.object({
       inbox: z.array(MiddlewareRefSchema).optional(),
       outbox: z.array(MiddlewareRefSchema).optional()

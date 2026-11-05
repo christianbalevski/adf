@@ -115,7 +115,7 @@ function makeDelegate() {
     getAdfCallHandler: () => null,
     getWorkspace: () => workspace,
     getToolConfig: () => null,
-    getAllowUnsigned: () => true,
+    requiresSignature: () => false,
   } as unknown as ConstructorParameters<typeof WsConnectionManager>[0]
 }
 

@@ -571,10 +571,10 @@ export const AgentConfigSchema = z.object({
   tools: z.array(ToolDeclarationSchema).default([]),
   triggers: TriggersConfigV3Schema,
   security: z.object({
-    allow_unsigned: z.boolean().default(true),
     level: z.union([z.literal(0), z.literal(1), z.literal(2), z.literal(3)]).optional(),
     require_signature: z.boolean().optional(),
     require_payload_signature: z.boolean().optional(),
+    require_encryption: z.boolean().optional(),
     middleware: z.object({
       inbox: z.array(MiddlewareRefSchema).optional(),
       outbox: z.array(MiddlewareRefSchema).optional()
