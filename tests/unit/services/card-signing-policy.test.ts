@@ -64,8 +64,27 @@ describe('agent card signing policy', () => {
       .toEqual({ type: 'signing', standard: 'ed25519', send: 'required', receive: 'required' })
   })
 
-  it('omits the signing policy at level 0', () => {
+  it('advertises receive required when a payload signature is required', () => {
+    expect(signingPolicy({ level: 1, allow_unsigned: true, require_payload_signature: true }))
+      .toMatchObject({ send: 'required', receive: 'required' })
+  })
+
+  it('falls back to accepting unsigned inbound when the agent has no security settings', () => {
+    const config = { ...workspace.getAgentConfig() }
+    delete (config as { security?: SecurityConfig }).security
+    const agent: ServableAgent = {
+      handle: 'card-signing-test', filePath: workspace.getFilePath(), config, workspace,
+      triggerEvaluator: null, adfCallHandler: null, codeSandboxService: null,
+      getSigningKey: () => workspace.getSigningKeys(null)?.privateKey ?? null
+    }
+    expect(buildAgentCard(agent, '127.0.0.1', 7295).policies?.find(p => p.type === 'signing')).toBeUndefined()
+  })
+
+  it('at level 0, shows a signing policy only when inbound signatures are required', () => {
     expect(signingPolicy({ level: 0, allow_unsigned: true })).toBeUndefined()
-    expect(signingPolicy({ level: 0, allow_unsigned: false, require_signature: true })).toBeUndefined()
+    expect(signingPolicy({ level: 0, allow_unsigned: false, require_signature: true }))
+      .toMatchObject({ send: 'optional', receive: 'required' })
+    expect(signingPolicy({ level: 0, allow_unsigned: true, require_payload_signature: true }))
+      .toMatchObject({ send: 'optional', receive: 'required' })
   })
 })
