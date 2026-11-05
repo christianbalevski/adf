@@ -671,7 +671,7 @@ in; they never come out. Every read returns metadata only:
 | Credential | Write | Read (metadata) |
 |------------|-------|-----------------|
 | Channel | `PUT /agents/:id/adapters/credentials {adapterType, envKey, value}` | `GET /agents/:id/adapters/credentials?adapterType=` |
-| MCP server | `PUT /agents/:id/mcp/credentials {npmPackage, envKey, value}` | `GET /agents/:id/mcp/credentials?npmPackage=` |
+| MCP server | `PUT /agents/:id/mcp/credentials {serverName, envKey, value}` | `GET /agents/:id/mcp/credentials?serverName=` |
 | Agent's own provider key | `PUT /agents/:id/providers/:providerId/credential {value}` | `GET /agents/:id/providers/:providerId/credentials` |
 | Any purpose | `PUT /agents/:id/identity/:purpose {value}` | `GET /agents/:id/identity/:purpose`, `GET /agents/:id/identity/entries` |
 

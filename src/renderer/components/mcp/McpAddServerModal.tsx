@@ -5,7 +5,7 @@ import { REGISTRY_ARG_PLACEHOLDER_RE, findEntryIn, hasUnresolvedPlaceholderArgs,
 import type { McpRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { bundledMcpServerForShape } from '../../../shared/utils/bundled-mcp-shape'
-import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
+import { MCP_EXECUTABLE_IDENTITY_FIELDS, buildMcpServerConfigFromRegistration, isSensitiveMcpHeader, isRegistrationAgentVisible, mcpServerNameProblem, sameExecutableIdentity, suggestedAgentVisible } from '../../../shared/utils/mcp-config'
 import { Dialog } from '../common/Dialog'
 import { Tooltip } from '../common/Tooltip'
 import { DocsLink, InfoHint } from '../common/DocsLink'
@@ -97,21 +97,26 @@ export function filterRegistryEntries(
 }
 
 /**
- * Entries the quick-add grid offers: deprecated entries are excluded (they
+ * Entries the quick-add grid offers: every entry except deprecated ones (they
  * stay valid data for lookups on existing installs, but must not be installed
- * fresh), as is anything already registered.
+ * fresh). An entry already registered is offered again: each registration is
+ * its own server, named apart (nextFreeServerName), with its own credentials.
  */
-export function availableRegistryEntries(
-  entries: McpRegistryEntry[],
-  existingServers: McpServerRegistration[],
-): McpRegistryEntry[] {
-  return entries.filter(
-    (entry) => !entry.deprecated && !existingServers.some((s) =>
-      (entry.npmPackage && s.npmPackage === entry.npmPackage) ||
-      (entry.pypiPackage && s.pypiPackage === entry.pypiPackage) ||
-      (entry.url && s.url === entry.url)
-    )
-  )
+export function availableRegistryEntries(entries: McpRegistryEntry[]): McpRegistryEntry[] {
+  return entries.filter((entry) => !entry.deprecated)
+}
+
+/**
+ * `name` when no registration uses it, else the first free `<name>-2`,
+ * `<name>-3`, ... The name is a server's identity (its credentials and home
+ * folder are keyed by it), so two registrations never share one.
+ */
+export function nextFreeServerName(name: string, existingServers: Pick<McpServerRegistration, 'name'>[]): string {
+  const taken = new Set(existingServers.map((s) => s.name))
+  if (!taken.has(name)) return name
+  let n = 2
+  while (taken.has(`${name}-${n}`)) n++
+  return `${name}-${n}`
 }
 
 /**
@@ -477,8 +482,8 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   }, [draft, registryEntries])
 
   const availableEntries = useMemo(
-    () => availableRegistryEntries(registryEntries, existingServers),
-    [registryEntries, existingServers]
+    () => availableRegistryEntries(registryEntries),
+    [registryEntries]
   )
   const availableCategories = useMemo(
     () => REGISTRY_CATEGORIES.filter((c) => availableEntries.some((e) => e.category === c)),
@@ -496,7 +501,10 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const isDualMode = isHttp && isDualModeOAuthEntry(draft, registryEntry)
   const isCustom = draft?.type === 'custom'
   const isPython = draft?.type === 'uvx' || draft?.type === 'pip'
-  const canLaunch = !!draft && !!draft.name && (
+  // The name is the server's identity: a new registration may not reuse one.
+  const nameTaken = !editing && !!draft?.name && existingServers.some((s) => s.name === draft.name)
+  const nameReserved = !editing && !!draft?.name && !nameTaken && !!mcpServerNameProblem(draft.name)
+  const canLaunch = !!draft && !!draft.name && !nameTaken && !nameReserved && (
     isHttp ? !!draft.url : isCustom ? !!draft.command : isPython ? !!draft.pypiPackage : !!draft.npmPackage
   )
 
@@ -750,13 +758,17 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
     <div className="grid grid-cols-2 gap-2">
       <div>
         <label className={labelCls}>Name</label>
+        {/* Fixed once added: credentials and agent attachments are keyed by it. */}
         <input
           type="text"
           value={draft.name}
+          disabled={!!editing}
           onChange={(e) => patch({ name: e.target.value.replace(/[^a-z0-9_-]/g, '') })}
           placeholder="e.g. my_server"
           className={inputCls}
         />
+        {nameTaken && <p className="mt-1 text-[10px] text-red-500">Name already in use</p>}
+        {nameReserved && <p className="mt-1 text-[10px] text-red-500">Name reserved by Windows</p>}
       </div>
       <div>
         <label className={labelCls}>
@@ -855,7 +867,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 return (
                   <button
                     key={entry.name}
-                    onClick={() => { const d = registrationFromRegistryEntry(entry, newId()); setDraft(d); setFilePayloads({}); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
+                    onClick={() => { const d = { ...registrationFromRegistryEntry(entry, newId()), name: nextFreeServerName(entry.name, existingServers) }; setDraft(d); setFilePayloads({}); setAuthArgsText((d.authArgs ?? []).join(' ')); setMode('form') }}
                     className="text-left p-2.5 rounded-md border border-neutral-200 dark:border-neutral-700 hover:border-blue-400 dark:hover:border-blue-500 transition-colors"
                   >
                     <div className="flex items-center gap-1.5">

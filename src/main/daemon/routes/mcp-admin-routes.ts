@@ -229,13 +229,13 @@ export function registerMcpAdminRoutes(server: FastifyInstance, ctx: DaemonRoute
     return { logs: logCache.get(name) ?? [] }
   })
 
-  server.get<{ Querystring: { url?: string } }>('/admin/mcp/oauth/status', async (request) => {
+  server.get<{ Querystring: { name?: string; url?: string } }>('/admin/mcp/oauth/status', async (request) => {
     const store = gapDeps(ctx).mcpAppOAuthStore
     if (!store) return { signedIn: false }
-    return mcpOAuthStatus(store, { url: request.query.url })
+    return mcpOAuthStatus(store, { name: request.query.name, url: request.query.url })
   })
 
-  server.post<{ Body: { url?: unknown } | null }>('/admin/mcp/oauth/signout', async (request) => {
+  server.post<{ Body: { name?: unknown } | null }>('/admin/mcp/oauth/signout', async (request) => {
     const store = gapDeps(ctx).mcpAppOAuthStore
     if (!store) return { success: false, error: 'MCP OAuth sign-in is not available on this daemon: it has no app-level OAuth token store.' }
     const result = await mcpOAuthSignOut(store, request.body)

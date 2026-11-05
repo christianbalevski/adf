@@ -5,7 +5,8 @@ import { join } from 'path'
 import {
   CREDENTIAL_FILE_MAX_BYTES,
   captureCredentialFile,
-  credentialFilePurposes,
+  credentialFilePurpose,
+  folderCredentialStore,
   expandCredentialPath,
   materializeCredentialFiles,
   writeBackCredentialFiles,
@@ -58,16 +59,49 @@ function fsContainerTarget(root: string): CredentialContainerTarget & { copies: 
   }
 }
 
-describe('credentialFilePurposes', () => {
-  it('reads package namespace first, then server name', () => {
-    expect(credentialFilePurposes(server(), '~/.config/gdrive/keys.json')).toEqual([
-      'mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json',
-      'mcp:gdrive:file:~/.config/gdrive/keys.json',
-    ])
+describe('credentialFilePurpose', () => {
+  it('keys a file by the server name, never the package (two copies of one package stay apart)', () => {
+    expect(credentialFilePurpose(server(), '~/.config/gdrive/keys.json')).toBe('mcp:gdrive:file:~/.config/gdrive/keys.json')
+    expect(credentialFilePurpose(server({ name: 'gdrive-work' }), '~/.config/gdrive/keys.json')).toBe('mcp:gdrive-work:file:~/.config/gdrive/keys.json')
+  })
+})
+
+describe('folderCredentialStore', () => {
+  it('reads and reports the declared path under its folder, and offers no way to write', () => {
+    const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
+    const store = folderCredentialStore(home)
+    const purpose = 'mcp:gdrive:file:~/.config/gdrive/keys.json'
+    expect(store.hasRow(purpose)).toBe(false)
+    expect(store.getDecrypted(purpose)).toBeNull()
+    mkdirSync(join(home, '.config/gdrive'), { recursive: true })
+    writeFileSync(join(home, '.config/gdrive/keys.json'), '{"k":1}')
+    expect(store.hasRow(purpose)).toBe(true)
+    expect(Buffer.from(JSON.parse(store.getDecrypted(purpose)!).data, 'base64').toString()).toBe('{"k":1}')
+    expect('setIdentitySealed' in store).toBe(false)
   })
 
-  it('collapses to a single purpose when the name is the namespace', () => {
-    expect(credentialFilePurposes(server({ npm_package: undefined }), 'x')).toEqual(['mcp:gdrive:file:x'])
+  it('copies app credentials into a container', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
+    mkdirSync(join(home, '.config/gdrive'), { recursive: true })
+    writeFileSync(join(home, '.config/gdrive/keys.json'), 'app-sign-in')
+    const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
+    await materializeCredentialFiles(folderCredentialStore(home), server(), fsContainerTarget(root))
+    expect(readFileSync(`${root}/home/.config/gdrive/keys.json`, 'utf8')).toBe('app-sign-in')
+  })
+
+  it('on the host, materializing from the folder into itself leaves it as it is', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
+    mkdirSync(join(home, '.config/gdrive'), { recursive: true })
+    writeFileSync(join(home, '.config/gdrive/keys.json'), 'app-sign-in')
+    await materializeCredentialFiles(folderCredentialStore(home), server(), { kind: 'host', home })
+    expect(readFileSync(join(home, '.config/gdrive/keys.json'), 'utf8')).toBe('app-sign-in')
+  })
+
+  it('a missing required file names where to supply it, not the agent routes', async () => {
+    const home = mkdtempSync(join(tmpdir(), 'adf-credfolder-'))
+    const cfg = server({ credential_files: [{ path: '~/.config/gdrive/keys.json', required: true }] })
+    await expect(materializeCredentialFiles(folderCredentialStore(home, 'Choose it again in Settings.'), cfg, { kind: 'host', home }))
+      .rejects.toThrow('Required credential file "~/.config/gdrive/keys.json" for MCP server "gdrive" is missing. Choose it again in Settings.')
   })
 })
 
@@ -104,11 +138,11 @@ describe('expandCredentialPath', () => {
 })
 
 describe('captureCredentialFile', () => {
-  it('seals a base64 JSON record under the package-namespace purpose', () => {
+  it('seals a base64 JSON record under the server-name purpose', () => {
     const writes: Array<[string, string]> = []
     captureCredentialFile({ setIdentitySealed: (p, v) => writes.push([p, v]) }, server(), '~/.config/gdrive/keys.json', Buffer.from('{"k":1}'), NOW)
     expect(writes).toHaveLength(1)
-    expect(writes[0][0]).toBe('mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json')
+    expect(writes[0][0]).toBe('mcp:gdrive:file:~/.config/gdrive/keys.json')
     const rec = JSON.parse(writes[0][1])
     expect(rec).toMatchObject({ encoding: 'base64', mode: 0o600, captured_at: NOW })
     expect(Buffer.from(rec.data, 'base64').toString()).toBe('{"k":1}')
@@ -131,7 +165,7 @@ describe('materializeCredentialFiles', () => {
   it('writes a keystore-held file into the container via copy (content never on argv) and verifies it', async () => {
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
     const target = fsContainerTarget(root)
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json': record('{"client":"id"}') })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/keys.json': record('{"client":"id"}') })
     await materializeCredentialFiles(store, server(), target)
     const dest = `${root}/home/.config/gdrive/keys.json`
     expect(target.copies).toEqual([dest])
@@ -141,22 +175,14 @@ describe('materializeCredentialFiles', () => {
   it('fails plainly when the container write did not land', async () => {
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
     const target = { ...fsContainerTarget(root), copyToContainer: async () => {}, fileExists: async () => false }
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json': record('x') })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/keys.json': record('x') })
     await expect(materializeCredentialFiles(store, server(), target))
       .rejects.toThrow(/podman cp did not produce the file/)
   })
 
-  it('falls back to the server-name namespace on read', async () => {
-    const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
-    const target = fsContainerTarget(root)
-    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/keys.json': record('legacy') })
-    await materializeCredentialFiles(store, server(), target)
-    expect(readFileSync(`${root}/home/.config/gdrive/keys.json`, 'utf8')).toBe('legacy')
-  })
-
   it('writes host files with 0600 and ~ expansion against the host home', async () => {
     const home = mkdtempSync(join(tmpdir(), 'adf-credhome-'))
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json': record('host-copy') })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/keys.json': record('host-copy') })
     await materializeCredentialFiles(store, server(), { kind: 'host', home })
     const dest = join(home, '.config/gdrive/keys.json')
     expect(readFileSync(dest, 'utf8')).toBe('host-copy')
@@ -169,7 +195,7 @@ describe('materializeCredentialFiles', () => {
   it('fails plainly for a required file missing from the keystore, naming purpose, path, and routes', async () => {
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
     await expect(materializeCredentialFiles(memStore(), server(), fsContainerTarget(root)))
-      .rejects.toThrow(/Required credential file "~\/.config\/gdrive\/keys.json".*"mcp:@example\/gdrive-mcp:file:~\/.config\/gdrive\/keys.json".*mcp_install credential_files.*fs_transfer/s)
+      .rejects.toThrow(/Required credential file "~\/.config\/gdrive\/keys.json".*"mcp:gdrive:file:~\/.config\/gdrive\/keys.json".*mcp_install credential_files.*fs_transfer/s)
   })
 
   it('does not name the unbuilt Studio credential panel as an ingestion route', async () => {
@@ -197,13 +223,13 @@ describe('materializeCredentialFiles', () => {
     const dest = `${root}/home/.config/gdrive/keys.json`
     mkdirSync(join(dest, '..'), { recursive: true })
     writeFileSync(dest, 'x')
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json': null })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/keys.json': null })
     await expect(materializeCredentialFiles(store, server(), target)).resolves.toBeUndefined()
   })
 
   it('names the locked envelope when the row exists but cannot decrypt (daemon case)', async () => {
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/keys.json': null })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/keys.json': null })
     await expect(materializeCredentialFiles(store, server(), fsContainerTarget(root)))
       .rejects.toThrow(/credentials envelope is locked in this runtime.*ADF Studio once.*daemon runtime key/s)
   })
@@ -220,7 +246,7 @@ describe('materializeCredentialFiles', () => {
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
     const cfg = server({ credential_files: [{ path: '~/.config/gdrive/tokens.json' }] })
     // Row exists but decrypts to null: locked envelope, NOT bootstrap.
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json': null })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/tokens.json': null })
     await expect(materializeCredentialFiles(store, cfg, fsContainerTarget(root)))
       .rejects.toThrow(/credentials envelope is locked in this runtime.*ADF Studio once.*daemon runtime key/s)
   })
@@ -229,7 +255,7 @@ describe('materializeCredentialFiles', () => {
     const root = mkdtempSync(join(tmpdir(), 'adf-credfiles-'))
     const cfg = server({ credential_files: [{ path: '~/.config/gdrive/tokens.json' }] })
     const store = {
-      ...memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json': null }),
+      ...memStore({ 'mcp:gdrive:file:~/.config/gdrive/tokens.json': null }),
       envelopeLockedHint: 'Daemon: trust runtime-enc-key.pub in Studio.',
     }
     await expect(materializeCredentialFiles(store, cfg, fsContainerTarget(root)))
@@ -243,7 +269,7 @@ describe('materializeCredentialFiles', () => {
     const dest = `${root}/home/.config/gdrive/tokens.json`
     mkdirSync(join(dest, '..'), { recursive: true })
     writeFileSync(dest, '{"tok":"runtime"}')
-    const store = memStore({ 'mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json': null })
+    const store = memStore({ 'mcp:gdrive:file:~/.config/gdrive/tokens.json': null })
     await expect(materializeCredentialFiles(store, cfg, target)).resolves.toBeUndefined()
     expect(target.copies).toEqual([])                       // runtime copy kept, nothing overwritten
     expect(readFileSync(dest, 'utf8')).toBe('{"tok":"runtime"}')
@@ -268,7 +294,7 @@ describe('writeBackCredentialFiles', () => {
     const writes: string[] = []
     const sealer = { setIdentitySealed: vi.fn((p: string) => { writes.push(p) }) }
     await writeBackCredentialFiles(sealer, cfg, target, NOW)
-    expect(writes).toEqual(['mcp:@example/gdrive-mcp:file:~/.config/gdrive/tokens.json'])
+    expect(writes).toEqual(['mcp:gdrive:file:~/.config/gdrive/tokens.json'])
     const rec = JSON.parse(sealer.setIdentitySealed.mock.calls[0][1])
     expect(Buffer.from(rec.data, 'base64').toString()).toBe('{"refresh":"tok"}')
   })

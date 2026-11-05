@@ -13,7 +13,7 @@ import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
 import { matchBundledMcpServer } from '../../../src/main/services/bundled-mcp-servers'
 import { buildMcpServerConfigFromRegistration } from '../../../src/shared/utils/mcp-config'
-import { availableRegistryEntries, blankDraft, bundledServerFor, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, nextFreeServerName, blankDraft, bundledServerFor, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -441,23 +441,29 @@ describe('availableRegistryEntries (quick-add offering)', () => {
     mk({ name: 'sunset', npmPackage: '@x/sunset', deprecated: 'Superseded by @x/fresh' }),
   ]
 
-  it('excludes deprecated entries and everything already registered', () => {
-    const existing = [
-      reg({ name: 'a', npmPackage: '@x/installed' }),
-      reg({ name: 'b', type: 'uvx', pypiPackage: 'x-installed' }),
-      reg({ name: 'c', type: 'http', url: 'https://x.example/mcp' }),
-    ]
-    expect(availableRegistryEntries(entries, existing).map((e) => e.name)).toEqual(['fresh'])
-  })
-
-  it('deprecated entries are excluded even with nothing installed', () => {
-    expect(availableRegistryEntries(entries, []).map((e) => e.name)).toEqual([
+  it('offers every entry except deprecated ones, registered or not (each copy is its own server)', () => {
+    expect(availableRegistryEntries(entries).map((e) => e.name)).toEqual([
       'fresh', 'installed-npm', 'installed-py', 'installed-http',
     ])
   })
 
   it('deprecated entries still resolve via lookup (existing installs keep their metadata)', () => {
     expect(findEntryIn(entries, { npmPackage: '@x/sunset' })?.name).toBe('sunset')
+  })
+})
+
+describe('nextFreeServerName (adding a catalog entry again)', () => {
+  it('keeps the name when no registration uses it', () => {
+    expect(nextFreeServerName('gmail', [{ name: 'github' }])).toBe('gmail')
+  })
+
+  it('numbers a taken name from 2, skipping numbers in use', () => {
+    expect(nextFreeServerName('gmail', [{ name: 'gmail' }])).toBe('gmail-2')
+    expect(nextFreeServerName('gmail', [{ name: 'gmail' }, { name: 'gmail-2' }, { name: 'gmail-4' }])).toBe('gmail-3')
+  })
+
+  it('only the exact name counts as taken', () => {
+    expect(nextFreeServerName('gmail', [{ name: 'gmail-work' }])).toBe('gmail')
   })
 })
 

@@ -180,10 +180,10 @@ export function createSetupFetch(options: SetupMockOptions = {}, next: typeof fe
       return json(200, { agentId, adapterType: type, credentials: describe([...credsOf(agentId, type).entries()]) })
     }
     if (sub === 'mcp/credentials' && method === 'GET') {
-      const ns = url.searchParams.get('npmPackage') ?? ''
-      const prefix = `mcp:${ns}:`
+      const serverName = url.searchParams.get('serverName') ?? ''
+      const prefix = `mcp:${serverName}:`
       const entries = [...(mcpCredentials.get(agentId)?.entries() ?? [])].filter(([k]) => k.startsWith(prefix)).map(([k, v]) => [k.slice(prefix.length), v] as [string, string])
-      return json(200, { agentId, npmPackage: ns, credentials: describe(entries) })
+      return json(200, { agentId, serverName, credentials: describe(entries) })
     }
     if (sub === 'adapters' && method === 'POST') {
       log()
@@ -229,21 +229,20 @@ export function createSetupFetch(options: SetupMockOptions = {}, next: typeof fe
       mcpServers.set(agentId, serversOf(agentId).filter(s => s.name !== parts[4]))
       statesOf(agentId).delete(parts[4])
       mcpTools.set(agentId, toolsOf(agentId).filter(t => !t.name.startsWith(`mcp_${parts[4]}_`)))
-      const ns = url.searchParams.get('credentialNamespace') ?? parts[4]
       const creds = mcpCredentials.get(agentId)
       let deleted = 0
-      for (const key of [...(creds?.keys() ?? [])]) if (key.startsWith(`mcp:${ns}:`)) { creds!.delete(key); deleted++ }
+      for (const key of [...(creds?.keys() ?? [])]) if (key.startsWith(`mcp:${parts[4]}:`)) { creds!.delete(key); deleted++ }
       return json(200, { agentId, serverName: parts[4], success: true, deletedCredentials: deleted })
     }
     if (sub === 'mcp/credentials' && method === 'PUT') {
       log()
-      const { npmPackage, envKey, value } = body as { npmPackage?: string; envKey?: string; value?: string }
-      if (!npmPackage || !envKey || typeof value !== 'string') return json(400, { error: 'npmPackage, envKey and value are required' })
+      const { serverName, envKey, value } = body as { serverName?: string; envKey?: string; value?: string }
+      if (!serverName || !envKey || typeof value !== 'string') return json(400, { error: 'serverName, envKey and value are required' })
       const refused = lockedCredential(url.pathname, body)
       if (refused) return refused
       const creds = mcpCredentials.get(agentId) ?? mcpCredentials.set(agentId, new Map()).get(agentId)!
-      creds.set(`mcp:${npmPackage}:${envKey}`, value)
-      return json(200, { agentId, npmPackage, envKey, success: true })
+      creds.set(`mcp:${serverName}:${envKey}`, value)
+      return json(200, { agentId, serverName, envKey, success: true })
     }
     if ((sub === 'runtime/mcp' || sub === 'mcp') && method === 'GET') {
       const servers = serversOf(agentId)

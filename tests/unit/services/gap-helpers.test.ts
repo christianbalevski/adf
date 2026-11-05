@@ -71,20 +71,24 @@ describe('python runtime and MCP OAuth status', () => {
     expect(await ensurePythonRuntime(uv)).toEqual({ success: false, error: 'Error: offline', uvAvailable: false, pythonAvailable: false })
   })
 
-  it('status is a signed-in flag only; sign-out clears the whole record', async () => {
+  it('status is a signed-in flag only; sign-out clears the whole record (by server name)', async () => {
     const SECRET = 'at-SECRET-1'
-    const store = { get: vi.fn(async () => ({ tokens: { access_token: SECRET, token_type: 'bearer' }, updatedAt: 1 })), save: vi.fn(), invalidate: vi.fn(async () => {}) }
-    const status = await mcpOAuthStatus(store, { url: 'https://mcp.example.test/mcp' })
+    const view = { get: vi.fn(async () => ({ tokens: { access_token: SECRET, token_type: 'bearer' }, updatedAt: 1 })), save: vi.fn(), invalidate: vi.fn(async () => {}) }
+    const store = { forServer: vi.fn(() => view) }
+    const status = await mcpOAuthStatus(store, { name: 'remote', url: 'https://mcp.example.test/mcp' })
     expect(status).toEqual({ signedIn: true })
+    expect(store.forServer).toHaveBeenCalledWith('remote')
+    expect(view.get).toHaveBeenCalledWith('https://mcp.example.test/mcp')
     expect(JSON.stringify(status)).not.toContain(SECRET)
     expect(await mcpOAuthStatus(store, {})).toEqual({ signedIn: false })
-    store.get.mockRejectedValueOnce(new Error('locked'))
     expect(await mcpOAuthStatus(store, { url: 'https://mcp.example.test/mcp' })).toEqual({ signedIn: false })
-    expect(await mcpOAuthSignOut(store, { url: 'https://mcp.example.test/mcp' })).toEqual({ success: true })
-    expect(store.invalidate).toHaveBeenCalledWith('https://mcp.example.test/mcp', 'all')
-    expect(await mcpOAuthSignOut(store, { url: '' })).toEqual({ success: false, error: 'A server url is required to sign out.' })
-    store.invalidate.mockRejectedValueOnce(new Error('cannot write'))
-    expect(await mcpOAuthSignOut(store, { url: 'https://mcp.example.test/mcp' })).toEqual({ success: false, error: 'cannot write' })
+    view.get.mockRejectedValueOnce(new Error('locked'))
+    expect(await mcpOAuthStatus(store, { name: 'remote', url: 'https://mcp.example.test/mcp' })).toEqual({ signedIn: false })
+    expect(await mcpOAuthSignOut(store, { name: 'remote' })).toEqual({ success: true })
+    expect(view.invalidate).toHaveBeenCalledWith('', 'all')
+    expect(await mcpOAuthSignOut(store, { name: '' })).toEqual({ success: false, error: 'A server name is required to sign out.' })
+    view.invalidate.mockRejectedValueOnce(new Error('cannot write'))
+    expect(await mcpOAuthSignOut(store, { name: 'remote' })).toEqual({ success: false, error: 'cannot write' })
   })
 })
 

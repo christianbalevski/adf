@@ -900,11 +900,11 @@ Grouped by area, then category.
 - **Runtime-only decryption** — credentials decrypted only when connecting the server process; defensive copy blocks write-back of plaintext.
 - **Env vars scoped to server process** — never passed to the agent itself.
 - **`sys_get_config` redaction** — MCP `env`/`headers` values return `__redacted__`, keys stay visible.
-- **Namespace-drift-aware resolution** — env vars resolved by package namespace first, then server name, mirroring install-time writes.
+- **Name-keyed resolution** — env vars resolved from `mcp:<server name>:<KEY>`, the purpose install-time writes use; two copies of one package keep separate values.
 
 ### Credential Files in the Identity Keystore
 - **`credential_files` declaration** — file-shaped OAuth creds (`path`, `required`, `write_back`) on `McpServerConfig` / `mcp_install`.
-- **Sealed keystore storage** — `mcp:<pkg>:file:<path>` purpose, base64 JSON payload, 256 KiB decoded cap, sealed in the `credentials` envelope.
+- **Sealed keystore storage** — `mcp:<server name>:file:<path>` purpose, base64 JSON payload, 256 KiB decoded cap, sealed in the `credentials` envelope.
 - **Sealed-or-fail capture** — refuses to write plaintext when the envelope DEK isn't cached (unlike ordinary `set_identity`).
 - **Materialization before every spawn** — keystore copy written into container (via `podman cp` of 0600 temp files) or host FS before connect/auth.
 - **Write-back after auth preflight** — server-written token files captured back into the keystore on successful auth (v1: preflight-success only, no rotation tracking).

@@ -74,9 +74,6 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   const isDualMode = isDualModeOAuthEntry(server, registryEntry)
   const oauthOnly = isOAuth && !isDualMode
 
-  // Credential namespace: npmPackage or pypiPackage for managed, server name for custom
-  const credentialNamespace = server.npmPackage || server.pypiPackage || server.name
-
   // Env keys: from registry for managed servers, from server.env for custom
   const httpEnvKeys = [
     ...(server.bearerTokenEnvVar ? [server.bearerTokenEnvVar] : []),
@@ -126,20 +123,17 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
 
   // Load known ADF files when in per-agent mode
   const loadAdfFiles = useCallback(async () => {
-    if (storageMode !== 'agent' || !credentialNamespace) return
+    if (storageMode !== 'agent' || !server.name) return
     setLoadingFiles(true)
     try {
-      const result = await api?.listMcpCredentialFiles({
-        mcpServerName: server.name,
-        npmPackage: credentialNamespace
-      })
+      const result = await api?.listMcpCredentialFiles({ serverName: server.name })
       setAdfFiles(result?.files ?? [])
     } catch {
       // Ignore
     } finally {
       setLoadingFiles(false)
     }
-  }, [storageMode, server.name, credentialNamespace])
+  }, [storageMode, server.name])
 
   useEffect(() => {
     loadAdfFiles()
@@ -179,12 +173,9 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
 
   // Load credentials for a specific ADF file
   const loadCredentialsForFile = async (filePath: string) => {
-    if (!credentialNamespace) return
+    if (!server.name) return
     try {
-      const result = await api?.getMcpCredentials({
-        filePath,
-        npmPackage: credentialNamespace
-      })
+      const result = await api?.getMcpCredentials({ filePath, serverName: server.name })
       if (result?.credentials) {
         setAdfCredentials((prev) => ({ ...prev, [filePath]: result.credentials }))
       }
@@ -213,7 +204,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
   }
 
   const handleSaveAdfCredentials = async (filePath: string) => {
-    if (!credentialNamespace) return
+    if (!server.name) return
     setSavingFor(filePath)
     setSaveStatus((prev) => { const next = { ...prev }; delete next[filePath]; return next })
     try {
@@ -240,7 +231,7 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
       for (const [envKey, value] of keysToSave) {
         const result = await api?.setMcpCredential({
           filePath,
-          npmPackage: credentialNamespace,
+          serverName: server.name,
           envKey,
           value
         })
@@ -325,12 +316,8 @@ export function McpCredentialPanel({ server, registryEntry, onServerUpdate, show
 
   const handleRemoveAdfFile = async (filePath: string) => {
     // Detach: remove server config + credentials from the ADF
-    if (credentialNamespace) {
-      await api?.detachMcpServer({
-        filePath,
-        serverName: server.name,
-        credentialNamespace
-      })
+    if (server.name) {
+      await api?.detachMcpServer({ filePath, serverName: server.name })
     }
     setManualAdfFiles((prev) => prev.filter((f) => f.filePath !== filePath))
     setAdfFiles((prev) => prev.filter((f) => f.filePath !== filePath))

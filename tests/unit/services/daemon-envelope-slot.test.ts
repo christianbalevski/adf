@@ -127,7 +127,7 @@ describe('trusted daemon envelope slots (mcp-credential-identity Phase C)', () =
     const ws = AdfWorkspace.create(path, { name: 'd' })
     try {
       svc.ensureWorkspaceIdentity(ws)
-      ws.setIdentitySealed('mcp:@x/drive:file:~/.config/x/keys.json', JSON.stringify({ encoding: 'base64', data: 'QQ==', mode: 384 }))
+      ws.setIdentitySealed('mcp:drive:file:~/.config/x/keys.json', JSON.stringify({ encoding: 'base64', data: 'QQ==', mode: 384 }))
     } finally {
       ws.close()
     }

@@ -37,7 +37,7 @@
 6. invoke adf:mcp:oauth-signout  [pushes 26→26]
   args:
     -
-      url: "http://127.0.0.1:<FAKE_MCP_PORT>/oauth-mcp"
+      name: "docs"
   result:
     success: true
 7. shutdown  [pushes 26→26]

@@ -49,8 +49,11 @@ afterEach(() => {
 describe('listMcpCredentialFiles', () => {
   it('lists files with stored credentials or the server in config, known files first', () => {
     const known = makeAgent(join(outside, 'agent-1.adf'), 'agent-1', (ws) => {
-      ws.setIdentity('mcp:@acme/server:API_KEY', SECRET)
-      ws.setIdentity('mcp:@acme/server:REGION', 'eu')
+      ws.setIdentity('mcp:acme:API_KEY', SECRET)
+      ws.setIdentity('mcp:acme:REGION', 'eu')
+      // The server's sealed OAuth token and credential files share the prefix; they are not env keys.
+      ws.setIdentity('mcp:acme:oauth', SECRET)
+      ws.setIdentity('mcp:acme:file:~/.acme/token.json', SECRET)
     })
     const configured = makeAgent(join(tracked, 'a', 'agent-2.adf'), 'agent-2', (ws) => {
       const config = ws.getAgentConfig()
@@ -58,20 +61,20 @@ describe('listMcpCredentialFiles', () => {
       ws.setAgentConfig(config)
     })
     makeAgent(join(tracked, 'agent-3.adf'), 'agent-3', () => {})
-    makeAgent(join(tracked, '.hidden', 'agent-4.adf'), 'agent-4', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
-    makeAgent(join(tracked, 'node_modules', 'agent-5.adf'), 'agent-5', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
-    const depth3 = makeAgent(join(tracked, 'a', 'b', 'c', 'agent-6.adf'), 'agent-6', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
-    makeAgent(join(tracked, 'a', 'b', 'c', 'd', 'agent-7.adf'), 'agent-7', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
+    makeAgent(join(tracked, '.hidden', 'agent-4.adf'), 'agent-4', (ws) => ws.setIdentity('mcp:acme:API_KEY', SECRET))
+    makeAgent(join(tracked, 'node_modules', 'agent-5.adf'), 'agent-5', (ws) => ws.setIdentity('mcp:acme:API_KEY', SECRET))
+    const depth3 = makeAgent(join(tracked, 'a', 'b', 'c', 'agent-6.adf'), 'agent-6', (ws) => ws.setIdentity('mcp:acme:API_KEY', SECRET))
+    makeAgent(join(tracked, 'a', 'b', 'c', 'd', 'agent-7.adf'), 'agent-7', (ws) => ws.setIdentity('mcp:acme:API_KEY', SECRET))
     writeFileSync(join(tracked, 'broken.adf'), 'not a database')
 
     const result = listMcpCredentialFiles(
-      { mcpServerName: 'acme', npmPackage: '@acme/server' },
+      { serverName: 'acme' },
       { knownFiles: [known, known], trackedDirs: [tracked, join(root, 'missing')] },
     )
 
     const byPath = new Map(result.files.map((f) => [f.filePath, f]))
     expect(result.files[0].filePath).toBe(known)
-    expect(byPath.get(known)).toEqual({ filePath: known, fileName: 'agent-1.adf', hasCredentials: true, populatedKeys: expect.arrayContaining(['API_KEY', 'REGION']) })
+    expect(byPath.get(known)).toEqual({ filePath: known, fileName: 'agent-1.adf', hasCredentials: true, populatedKeys: ['API_KEY', 'REGION'] })
     expect(byPath.get(configured)).toEqual({ filePath: configured, fileName: 'agent-2.adf', hasCredentials: false, populatedKeys: [] })
     expect(byPath.get(depth3)?.hasCredentials).toBe(true)
     expect(result.files.map((f) => f.fileName).sort()).toEqual(['agent-1.adf', 'agent-2.adf', 'agent-6.adf'])
@@ -131,15 +134,15 @@ describe('unreadable files', () => {
   it('a file whose peek throws is skipped and the scan goes on (sync and async walks)', async () => {
     const { AdfDatabase } = await import('../../../src/main/adf/adf-database')
     const { listMcpCredentialFilesAsync } = await import('../../../src/main/services/credential-list-files')
-    const bad = makeAgent(join(tracked, 'agent-1.adf'), 'agent-1', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
-    const good = makeAgent(join(tracked, 'agent-2.adf'), 'agent-2', (ws) => ws.setIdentity('mcp:@acme/server:API_KEY', SECRET))
+    const bad = makeAgent(join(tracked, 'agent-1.adf'), 'agent-1', (ws) => ws.setIdentity('mcp:acme:API_KEY', SECRET))
+    const good = makeAgent(join(tracked, 'agent-2.adf'), 'agent-2', (ws) => ws.setIdentity('mcp:acme:API_KEY', SECRET))
     const real = AdfDatabase.peekIdentityPurposes.bind(AdfDatabase)
     const spy = vi.spyOn(AdfDatabase, 'peekIdentityPurposes').mockImplementation((filePath: string, prefix: string) => {
       if (filePath === bad) throw new Error('SQLITE_CORRUPT')
       return real(filePath, prefix)
     })
     try {
-      const args = { mcpServerName: 'acme', npmPackage: '@acme/server' }
+      const args = { serverName: 'acme' }
       const sources = { knownFiles: [bad], trackedDirs: [tracked] }
       expect(listMcpCredentialFiles(args, sources).files.map((f) => f.filePath)).toEqual([good])
       expect((await listMcpCredentialFilesAsync(args, sources)).files.map((f) => f.filePath)).toEqual([good])

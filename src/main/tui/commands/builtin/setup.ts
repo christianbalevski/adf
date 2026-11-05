@@ -145,9 +145,7 @@ export const mcpCommand: SlashCommand = {
       }
       const ok = await ctx.actions.confirm({ title: `Remove ${name}`, message: `Remove ${name} from ${agentLabel(ctx, agentId)}? Its tools go away and its stored credentials are deleted from the agent.`, confirmLabel: 'Remove', danger: true })
       if (!ok) return
-      const server = ctx.state().agents[agentId]?.config?.mcp?.servers?.find(s => s.name === name)
-      const ns = server?.npm_package ?? server?.pypi_package ?? name
-      const result = await ctx.actions.run(`Remove ${name}`, c => c.detachMcpServer(agentId, name, ns))
+      const result = await ctx.actions.run(`Remove ${name}`, c => c.detachMcpServer(agentId, name))
       if (!result) return
       ctx.print(`${name} removed`, 'success')
       void ctx.actions.loadConfig(agentId)

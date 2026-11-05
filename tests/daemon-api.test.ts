@@ -1603,7 +1603,7 @@ describe('daemon HTTP API', () => {
     const mcpCredential = await server.inject({
       method: 'PUT',
       url: `/agents/${ref.id}/mcp/credentials`,
-      payload: { npmPackage: mcpPackage, envKey: 'GITHUB_TOKEN', value: 'gh-secret' },
+      payload: { serverName: 'github', envKey: 'GITHUB_TOKEN', value: 'gh-secret' },
     })
     expect(mcpCredential.statusCode).toBe(200)
     const mcpAttach = await server.inject({
@@ -1622,7 +1622,7 @@ describe('daemon HTTP API', () => {
     expect(mcpAttach.statusCode).toBe(200)
     const mcpCredentials = await server.inject({
       method: 'GET',
-      url: `/agents/${ref.id}/mcp/credentials?npmPackage=${encodeURIComponent(mcpPackage)}`,
+      url: `/agents/${ref.id}/mcp/credentials?serverName=github`,
     })
     expect(mcpCredentials.json()).toEqual(expect.objectContaining({
       credentials: { GITHUB_TOKEN: expect.objectContaining({ present: true, storage: 'plain', length: 9 }) },
@@ -1668,7 +1668,7 @@ describe('daemon HTTP API', () => {
     expect(adapterDetach.json()).toEqual(expect.objectContaining({ deletedCredentials: 1 }))
     const mcpDetach = await server.inject({
       method: 'DELETE',
-      url: `/agents/${ref.id}/mcp/servers/github?credentialNamespace=${encodeURIComponent(mcpPackage)}`,
+      url: `/agents/${ref.id}/mcp/servers/github`,
     })
     expect(mcpDetach.statusCode).toBe(200)
     expect(mcpDetach.json()).toEqual(expect.objectContaining({ deletedCredentials: 1 }))

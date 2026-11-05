@@ -305,7 +305,7 @@ describe('OpenAPI response conformance', () => {
       await call('GET', `${A}/loops/{name}`, `${a}/loops/main`)
       await call('GET', `${A}/identity/{purpose}`, `${a}/identity/provider:x:apiKey`)
       await call('GET', `${A}/providers/{providerId}/credentials`, `${a}/providers/anthropic/credentials`)
-      await call('GET', `${A}/mcp/credentials`, `${a}/mcp/credentials?npmPackage=@acme/server`)
+      await call('GET', `${A}/mcp/credentials`, `${a}/mcp/credentials?serverName=acme`)
       await call('GET', `${A}/adapters/credentials`, `${a}/adapters/credentials?adapterType=telegram`)
 
       await call('POST', `${A}/loops`, `${a}/loops`, { name: 'critic', goal: 'Review drafts.', autostart: false })

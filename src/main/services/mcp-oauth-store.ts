@@ -7,7 +7,10 @@
  *
  *  - `AppSettingsOAuthStore` — the Studio "signed-in" source of truth. Every
  *    server's record lives in ONE safeStorage-encrypted settings secret,
- *    `mcpOauthCredentials`, shaped `Record<serverUrl, McpOAuthRecord>`.
+ *    `mcpOauthCredentials`, shaped `Record<serverName, McpOAuthRecord>`.
+ *    App stores are keyed by the Settings registration NAME, so two
+ *    registrations of one URL hold separate sign-ins; `forServer(name)` is the
+ *    McpOAuthStore view of one server (URL-bound like the agent store).
  *  - `AgentKeystoreOAuthStore` — the per-agent sealed copy. One
  *    envelope-sealed row per server in `adf_identity` under
  *    `mcp:<serverName>:oauth`, so the grant travels with the `.adf` and a
@@ -34,7 +37,7 @@ import type {
 import { canonicalizeServerUrl } from './mcp-oauth.types'
 
 /**
- * URL-binding guard shared by both stores' `get`. A record stamped with a
+ * URL-binding guard for the agent keystore store's `get`. A record stamped with a
  * `serverUrl` may only be returned for the endpoint it was minted for — a
  * mismatch throws a fail-plainly error rather than handing a live token to a
  * different origin (a tampered `.adf` that swaps a server's URL while keeping
@@ -64,6 +67,50 @@ export const MCP_OAUTH_SETTINGS_KEY = 'mcpOauthCredentials'
 
 /** Blob shape stored under MCP_OAUTH_SETTINGS_KEY. */
 type OAuthBlob = Record<string, McpOAuthRecord>
+
+/**
+ * Record-level access an app store exposes, keyed by server name. Used by
+ * `forServer` and by handover (which moves records verbatim, key-agnostic).
+ */
+export interface OAuthRecordAccess {
+  readRecord(key: string): McpOAuthRecord | undefined
+  /** `undefined` removes the record. */
+  writeRecord(key: string, record: McpOAuthRecord | undefined): void
+}
+
+/** An app-level store: one McpOAuthStore view per server name. */
+export interface McpAppOAuthStore {
+  forServer(serverName: string): McpOAuthStore
+}
+
+/**
+ * One server's view of an app store: the record is stored under the server
+ * NAME and bound to the URL it was minted for. The URL comes from the
+ * registration, which only the user edits, so a record minted for another URL
+ * is one the user moved away from: it reads as absent (signed out), and the
+ * next sign-in replaces it.
+ */
+function serverOAuthView(records: OAuthRecordAccess, serverName: string): McpOAuthStore {
+  return {
+    async get(serverUrl) {
+      const record = records.readRecord(serverName)
+      if (record?.serverUrl && canonicalizeServerUrl(record.serverUrl) !== canonicalizeServerUrl(serverUrl)) return undefined
+      return record
+    },
+    async save(serverUrl, record) {
+      records.writeRecord(serverName, { ...record, serverUrl: canonicalizeServerUrl(serverUrl), updatedAt: record.updatedAt || Date.now() })
+    },
+    async invalidate(_serverUrl, scope = 'all') {
+      if (scope === 'all') {
+        records.writeRecord(serverName, undefined)
+        return
+      }
+      const existing = records.readRecord(serverName)
+      if (!existing) return
+      records.writeRecord(serverName, applyInvalidateScope(existing, scope))
+    },
+  }
+}
 
 /** A record with no surviving material is dropped from the blob/keystore. */
 function isEmptyRecord(record: McpOAuthRecord): boolean {
@@ -105,10 +152,10 @@ export interface OAuthSettingsHandle {
 
 /**
  * App-level (Studio) store. The sign-in source of truth: one safeStorage
- * secret holds every server's record. Reads parse the blob; writes merge one
- * URL's record and rewrite the whole blob.
+ * secret holds every server's record, keyed by server name. Reads parse the
+ * blob; writes merge one server's record and rewrite the whole blob.
  */
-export class AppSettingsOAuthStore implements McpOAuthStore {
+export class AppSettingsOAuthStore implements McpAppOAuthStore, OAuthRecordAccess {
   constructor(private readonly settings: OAuthSettingsHandle) {}
 
   private readBlob(forUpdate = false): OAuthBlob {
@@ -144,26 +191,20 @@ export class AppSettingsOAuthStore implements McpOAuthStore {
     this.settings.setSecret(MCP_OAUTH_SETTINGS_KEY, JSON.stringify(blob))
   }
 
-  async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
-    const record = this.readBlob()[serverUrl]
-    if (record) assertRecordUrlBinding(record, serverUrl, 'AppSettingsOAuthStore.get')
-    return record
+  readRecord(key: string): McpOAuthRecord | undefined {
+    return this.readBlob()[key]
   }
 
-  async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
+  writeRecord(key: string, record: McpOAuthRecord | undefined): void {
     const blob = this.readBlob(true)
-    blob[serverUrl] = { ...record, updatedAt: record.updatedAt || Date.now() }
+    if (record) blob[key] = record
+    else if (key in blob) delete blob[key]
+    else return
     this.writeBlob(blob)
   }
 
-  async invalidate(serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
-    const blob = this.readBlob(true)
-    const existing = blob[serverUrl]
-    if (!existing) return
-    const next = applyInvalidateScope(existing, scope)
-    if (next) blob[serverUrl] = next
-    else delete blob[serverUrl]
-    this.writeBlob(blob)
+  forServer(serverName: string): McpOAuthStore {
+    return serverOAuthView(this, serverName)
   }
 }
 
@@ -182,23 +223,23 @@ export interface OAuthSecretBackendHandle {
  * Daemon secret-backend accounts for the app-level MCP OAuth records of one
  * settings file (`scope` = settingsScope(settingsPath)):
  *
- *  - index  `mcp-oauth-credentials:<scope>`: `{"v":1,"servers":[<serverUrl>…]}`
+ *  - index  `mcp-oauth-credentials:<scope>`: `{"v":1,"servers":[<serverName>…]}`
  *  - record `mcp-oauth-credentials:<scope>:<serverKey>`: one McpOAuthRecord as
- *    JSON, `serverKey` = first 16 hex of sha256(serverUrl) (the exact blob key)
+ *    JSON, `serverKey` = first 16 hex of sha256(serverName) (the exact blob key)
  *
  * Every value is chunked (`chunkedSecret*`): Windows Credential Manager caps a
  * credential at 2560 bytes (1280 UTF-16 characters), less than one access +
  * refresh JWT pair. Handover mapping (design daemon-backend.md §11): Studio's
- * `mcpOauthCredentials` blob `Record<serverUrl, McpOAuthRecord>` is
+ * `mcpOauthCredentials` blob `Record<serverName, McpOAuthRecord>` is
  * `exportBlob()` / `importBlob()`, one record per blob key, verbatim.
  */
 export function daemonAppOAuthAccount(scope: string): string {
   return `mcp-oauth-credentials:${scope}`
 }
 
-/** Record account for one server URL under `indexAccount`. */
-export function daemonAppOAuthRecordAccount(indexAccount: string, serverUrl: string): string {
-  return `${indexAccount}:${createHash('sha256').update(serverUrl).digest('hex').slice(0, 16)}`
+/** Record account for one server (by name) under `indexAccount`. */
+export function daemonAppOAuthRecordAccount(indexAccount: string, serverKey: string): string {
+  return `${indexAccount}:${createHash('sha256').update(serverKey).digest('hex').slice(0, 16)}`
 }
 
 /** Characters per keychain value; under the Windows 1280-character cap with room for the account metadata. */
@@ -333,7 +374,7 @@ export function chunkedSecretDelete(backend: OAuthSecretBackendHandle, account: 
  * (FileSecretBackend.set throws), so a token is never stored anywhere
  * unencrypted.
  */
-export class DaemonAppOAuthStore implements McpOAuthStore {
+export class DaemonAppOAuthStore implements McpAppOAuthStore, OAuthRecordAccess {
   constructor(
     private readonly backend: OAuthSecretBackendHandle,
     private readonly account: string,
@@ -363,8 +404,8 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
     }
   }
 
-  /** Every server URL with a stored record (metadata only, for status listings). */
-  listServerUrls(): string[] {
+  /** Every server name with a stored record (metadata only, for status listings). */
+  listServers(): string[] {
     const index = this.readJson(this.account) as { v?: unknown; servers?: unknown } | null
     return index?.v === 1 && Array.isArray(index.servers) ? index.servers.filter((s): s is string => typeof s === 'string') : []
   }
@@ -374,8 +415,8 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
     else chunkedSecretWrite(this.backend, this.account, JSON.stringify({ v: 1, servers }))
   }
 
-  private readRecord(serverUrl: string): McpOAuthRecord | undefined {
-    const record = this.readJson(daemonAppOAuthRecordAccount(this.account, serverUrl))
+  readRecord(key: string): McpOAuthRecord | undefined {
+    const record = this.readJson(daemonAppOAuthRecordAccount(this.account, key))
     return record && typeof record === 'object' && !Array.isArray(record) ? record as McpOAuthRecord : undefined
   }
 
@@ -400,42 +441,30 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
    * and a rewrite from nothing would leave them stored but unlisted (export,
    * handover and legacy adoption find records through the index).
    */
-  private writeRecord(serverUrl: string, record: McpOAuthRecord | undefined): void {
+  writeRecord(key: string, record: McpOAuthRecord | undefined): void {
     const servers = this.readIndex()
     if (servers === null) {
       console.warn(`[MCP][oauth] DaemonAppOAuthStore: the sign-in index ${this.account} cannot be read; the record is ${record ? 'saved' : 'removed'} but the index is left as it is`)
     }
     if (record) {
-      chunkedSecretWrite(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl), JSON.stringify(record))
-      if (servers && !servers.includes(serverUrl)) this.writeIndex([...servers, serverUrl])
+      chunkedSecretWrite(this.backend, daemonAppOAuthRecordAccount(this.account, key), JSON.stringify(record))
+      if (servers && !servers.includes(key)) this.writeIndex([...servers, key])
     } else {
-      chunkedSecretDelete(this.backend, daemonAppOAuthRecordAccount(this.account, serverUrl))
-      if (servers?.includes(serverUrl)) this.writeIndex(servers.filter((s) => s !== serverUrl))
+      chunkedSecretDelete(this.backend, daemonAppOAuthRecordAccount(this.account, key))
+      if (servers?.includes(key)) this.writeIndex(servers.filter((s) => s !== key))
     }
   }
 
-  async get(serverUrl: string): Promise<McpOAuthRecord | undefined> {
-    const record = this.readRecord(serverUrl)
-    if (record) assertRecordUrlBinding(record, serverUrl, 'DaemonAppOAuthStore.get')
-    return record
-  }
-
-  async save(serverUrl: string, record: McpOAuthRecord): Promise<void> {
-    this.writeRecord(serverUrl, { ...record, updatedAt: record.updatedAt || Date.now() })
-  }
-
-  async invalidate(serverUrl: string, scope: McpOAuthInvalidateScope = 'all'): Promise<void> {
-    const existing = this.readRecord(serverUrl)
-    if (!existing) return
-    this.writeRecord(serverUrl, applyInvalidateScope(existing, scope))
+  forServer(serverName: string): McpOAuthStore {
+    return serverOAuthView(this, serverName)
   }
 
   /** Every record as Studio's `mcpOauthCredentials` blob (handover to embedded mode). */
   exportBlob(): OAuthBlob {
     const blob: OAuthBlob = {}
-    for (const url of this.listServerUrls()) {
-      const record = this.readRecord(url)
-      if (record) blob[url] = record
+    for (const key of this.listServers()) {
+      const record = this.readRecord(key)
+      if (record) blob[key] = record
     }
     return blob
   }
@@ -450,11 +479,11 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
     if (legacyAccount === this.account || !this.backend.isUnlocked()) return 0
     const legacy = new DaemonAppOAuthStore(this.backend, legacyAccount)
     let moved = 0
-    for (const url of legacy.listServerUrls()) {
-      const record = legacy.readRecord(url)
-      if (record && !this.readRecord(url)) this.writeRecord(url, record)
-      if (record && !this.readRecord(url)) continue
-      legacy.writeRecord(url, undefined)
+    for (const key of legacy.listServers()) {
+      const record = legacy.readRecord(key)
+      if (record && !this.readRecord(key)) this.writeRecord(key, record)
+      if (record && !this.readRecord(key)) continue
+      legacy.writeRecord(key, undefined)
       moved++
     }
     if (moved > 0) console.log(`[MCP][oauth] Moved ${moved} app-level sign-in(s) from ${legacyAccount} to ${this.account}`)
@@ -463,8 +492,8 @@ export class DaemonAppOAuthStore implements McpOAuthStore {
 
   /** Store every record of a Studio `mcpOauthCredentials` blob (handover to local mode). */
   importBlob(blob: OAuthBlob): void {
-    for (const [url, record] of Object.entries(blob)) {
-      if (record && typeof record === 'object') this.writeRecord(url, record)
+    for (const [key, record] of Object.entries(blob)) {
+      if (record && typeof record === 'object') this.writeRecord(key, record)
     }
   }
 }
@@ -577,13 +606,14 @@ export class AgentKeystoreOAuthStore implements McpOAuthStore {
 }
 
 /**
- * Capture-on-attach: read the Settings-level record for `serverUrl` and seal a
- * copy into the agent keystore (mirrors captureCredentialFile). This is the
- * hybrid glue — a Studio sign-in becomes a portable, daemon-capable agent
- * grant. Returns false (no-op) when the app store holds nothing for the url.
+ * Capture-on-attach: read the Settings-level record of one server (the app
+ * store's `forServer(name)` view) and seal a copy into the agent keystore
+ * (mirrors captureCredentialFile). This is the hybrid glue — a Studio sign-in
+ * becomes a portable, daemon-capable agent grant. Returns false (no-op) when
+ * the app store holds nothing for the server.
  */
 export async function captureOAuthToAgent(
-  appStore: AppSettingsOAuthStore,
+  appStore: McpOAuthStore,
   agentStore: AgentKeystoreOAuthStore,
   serverUrl: string,
 ): Promise<boolean> {
@@ -608,7 +638,8 @@ export async function captureOAuthToAgent(
  */
 export function resolveOAuthStoreForConnect(opts: {
   agentStore?: AgentKeystoreOAuthStore
-  appStore?: AppSettingsOAuthStore
+  /** The app store's view of this server (`forServer(name)`). */
+  appStore?: McpOAuthStore
 }): McpOAuthStore | undefined {
   return opts.agentStore ?? opts.appStore
 }

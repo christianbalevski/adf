@@ -746,9 +746,9 @@ describe('daemon file routes: path-addressed agent operations', () => {
 
     const attach = await server.inject({ method: 'POST', url: `/files/agent/mcp/servers?path=${p}`, payload: { server: { name: 'fs', transport: 'stdio', command: 'node' } } })
     expect(attach.json()).toMatchObject({ agentId: a.id, serverName: 'fs', alreadyAttached: false, loaded: false })
-    const set = await server.inject({ method: 'PUT', url: `/files/agent/mcp/credentials?path=${p}`, payload: { npmPackage: 'fs', envKey: 'TOKEN', value: 'secret-1' } })
+    const set = await server.inject({ method: 'PUT', url: `/files/agent/mcp/credentials?path=${p}`, payload: { serverName: 'fs', envKey: 'TOKEN', value: 'secret-1' } })
     expect(set.json()).toMatchObject({ success: true, loaded: false })
-    const got = (await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&npmPackage=fs` })).json()
+    const got = (await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&serverName=fs` })).json()
     expect(got.credentials.TOKEN).toMatchObject({ present: true, length: 8 })
     expect(JSON.stringify(got)).not.toContain('secret-1')
 
@@ -952,7 +952,7 @@ describe('daemon file routes: leases and read-only reads', () => {
       // Reads open the file read-only: nothing written.
       const mtime = statSync(a.filePath).mtimeMs
       expect((await server.inject({ method: 'GET', url: `/files/agent/tables?path=${p}` })).statusCode).toBe(200)
-      expect((await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&npmPackage=fs` })).statusCode).toBe(200)
+      expect((await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&serverName=fs` })).statusCode).toBe(200)
       expect(statSync(a.filePath).mtimeMs).toBe(mtime)
     } finally {
       await other.close()
@@ -964,11 +964,11 @@ describe('daemon file routes: leases and read-only reads', () => {
     const a = seedAgent(root, 'agent-1')
     const { server, runtime } = setup({ trackedDirectories: [root] })
     const p = q(a.filePath)
-    const put = (npmPackage: string) => server.inject({ method: 'PUT', url: `/files/agent/mcp/credentials?path=${p}`, payload: { npmPackage, envKey: 'KEY', value: 'v' } })
-    for (const pkg of ['a_b', 'aXb', 'A_B', 'a%b']) await put(pkg)
+    const put = (serverName: string) => server.inject({ method: 'PUT', url: `/files/agent/mcp/credentials?path=${p}`, payload: { serverName, envKey: 'KEY', value: 'v' } })
+    for (const name of ['a_b', 'aXb', 'A_B', 'a%b']) await put(name)
     const detached = (await server.inject({ method: 'DELETE', url: `/files/agent/mcp/servers/a_b?path=${p}` })).json()
     expect(detached.deletedCredentials).toBe(1)
-    const left = async (pkg: string) => Object.keys((await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&npmPackage=${encodeURIComponent(pkg)}` })).json().credentials)
+    const left = async (name: string) => Object.keys((await server.inject({ method: 'GET', url: `/files/agent/mcp/credentials?path=${p}&serverName=${encodeURIComponent(name)}` })).json().credentials)
     expect(await left('aXb')).toEqual(['KEY'])
     expect(await left('A_B')).toEqual(['KEY'])
     expect(await left('a_b')).toEqual([])

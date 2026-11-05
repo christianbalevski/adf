@@ -488,11 +488,11 @@ export interface AdfApi {
     Promise<{ logs: McpServerLogEntry[] }>
   getMcpRegistry: () =>
     Promise<McpRegistryGetResult>
-  /** Phase 4 HTTP OAuth: clear the stored token for a remote server URL. */
-  mcpOAuthSignOut: (args: { url: string }) =>
+  /** Phase 4 HTTP OAuth: clear the app-level sign-in of a remote server (by registration name). */
+  mcpOAuthSignOut: (args: { name: string }) =>
     Promise<{ success: boolean; error?: string }>
-  /** Phase 4 HTTP OAuth: whether a valid token is stored for a remote server URL. */
-  mcpOAuthStatus: (args: { url: string }) =>
+  /** Phase 4 HTTP OAuth: whether a valid token is stored for a remote server (by registration name, bound to its URL). */
+  mcpOAuthStatus: (args: { name: string; url: string }) =>
     Promise<{ signedIn: boolean }>
   onMcpInstallProgress: (callback: (event: McpInstallProgress) => void) => () => void
   onMcpServerStatusChanged: (callback: (event: McpServerStatusEvent) => void) => () => void
@@ -527,11 +527,11 @@ export interface AdfApi {
     Promise<{ packages: Array<{ name: string; version: string; installedAt: number; size_mb: number; installedBy?: string }> }>
 
   // MCP Credential management (multi-ADF)
-  setMcpCredential: (args: { filePath: string; npmPackage: string; envKey: string; value: string }) =>
+  setMcpCredential: (args: { filePath: string; serverName: string; envKey: string; value: string }) =>
     Promise<{ success: boolean; error?: string }>
-  getMcpCredentials: (args: { filePath: string; npmPackage: string }) =>
+  getMcpCredentials: (args: { filePath: string; serverName: string }) =>
     Promise<{ credentials: Record<string, string>; error?: string }>
-  listMcpCredentialFiles: (args: { mcpServerName: string; npmPackage: string }) =>
+  listMcpCredentialFiles: (args: { serverName: string }) =>
     Promise<{ files: McpCredentialFileInfo[] }>
   attachMcpServer: (args: {
     filePath: string
@@ -555,7 +555,6 @@ export interface AdfApi {
   detachMcpServer: (args: {
     filePath: string
     serverName: string
-    credentialNamespace: string
   }) => Promise<{ success: boolean; error?: string }>
   pickAdfFile: () =>
     Promise<{ filePath: string | null; fileName?: string }>

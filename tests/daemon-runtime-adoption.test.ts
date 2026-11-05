@@ -965,27 +965,28 @@ describe('DaemonAppOAuthStore', () => {
     const keychain = fakeKeychain()
     const store = new DaemonAppOAuthStore(keychain.backend, index())
     const big = { tokens: { access_token: 'a'.repeat(3000), refresh_token: 'r'.repeat(2500), token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 }
-    await store.save(url, big)
-    await store.save('https://other.example.test/mcp', { tokens: { access_token: 'b', token_type: 'Bearer' }, serverUrl: 'https://other.example.test/mcp', updatedAt: 2 })
+    await store.forServer('remote').save(url, big)
+    await store.forServer('other').save('https://other.example.test/mcp', { tokens: { access_token: 'b', token_type: 'Bearer' }, serverUrl: 'https://other.example.test/mcp', updatedAt: 2 })
     for (const value of keychain.store.values()) expect(value.length).toBeLessThanOrEqual(SECRET_CHUNK_CHARS)
     expect(SECRET_CHUNK_CHARS).toBeLessThan(1280)
-    expect(await store.get(url)).toEqual(big)
-    expect(store.listServerUrls()).toEqual([url, 'https://other.example.test/mcp'])
-    await expect(store.get('https://evil.example.test/mcp')).resolves.toBeUndefined()
+    expect(await store.forServer('remote').get(url)).toEqual(big)
+    expect(store.listServers()).toEqual(['remote', 'other'])
+    // Another URL than the one it was minted for reads as signed out: no token reaches it.
+    expect(await store.forServer('remote').get('https://evil.example.test/mcp')).toBeUndefined()
 
     // Handover shape = Studio's mcpOauthCredentials blob, both ways.
     const blob = store.exportBlob()
-    expect(Object.keys(blob)).toEqual([url, 'https://other.example.test/mcp'])
+    expect(Object.keys(blob)).toEqual(['remote', 'other'])
     const other = new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount('scope2'))
     other.importBlob(blob)
-    expect(await other.get(url)).toEqual(big)
+    expect(await other.forServer('remote').get(url)).toEqual(big)
 
     // A shorter rewrite leaves no stale chunks; invalidating everything leaves nothing.
-    await store.save(url, { tokens: { access_token: 'short', token_type: 'Bearer' }, serverUrl: url, updatedAt: 3 })
-    expect((await store.get(url))?.tokens?.access_token).toBe('short')
-    await store.invalidate(url, 'all')
-    await store.invalidate('https://other.example.test/mcp', 'tokens')
-    expect(store.listServerUrls()).toEqual([])
+    await store.forServer('remote').save(url, { tokens: { access_token: 'short', token_type: 'Bearer' }, serverUrl: url, updatedAt: 3 })
+    expect((await store.forServer('remote').get(url))?.tokens?.access_token).toBe('short')
+    await store.forServer('remote').invalidate(url, 'all')
+    await store.forServer('other').invalidate('https://other.example.test/mcp', 'tokens')
+    expect(store.listServers()).toEqual([])
     expect([...keychain.store.keys()].filter((k) => k.includes(index()))).toEqual([])
   })
 
@@ -994,15 +995,15 @@ describe('DaemonAppOAuthStore', () => {
     const recordB = { tokens: { access_token: 'B'.repeat(1700), refresh_token: 'b'.repeat(1700), token_type: 'Bearer' }, serverUrl: url, updatedAt: 2 }
     // Count the backend operations of one complete rewrite, then crash after each of them.
     const probe = fakeKeychain()
-    await new DaemonAppOAuthStore(probe.backend, index()).save(url, recordA)
+    await new DaemonAppOAuthStore(probe.backend, index()).forServer('remote').save(url, recordA)
     let ops = 0
     const counting = { ...probe.backend, isUnlocked: () => true, get: (a: string) => probe.backend.get(a), set: (a: string, v: string) => { ops++; probe.backend.set(a, v) }, delete: (a: string) => { ops++; probe.backend.delete(a) } }
-    await new DaemonAppOAuthStore(counting, index()).save(url, recordB)
+    await new DaemonAppOAuthStore(counting, index()).forServer('remote').save(url, recordB)
     expect(ops).toBeGreaterThan(4)
 
     for (let crashAfter = 0; crashAfter < ops; crashAfter++) {
       const keychain = fakeKeychain()
-      await new DaemonAppOAuthStore(keychain.backend, index()).save(url, recordA)
+      await new DaemonAppOAuthStore(keychain.backend, index()).forServer('remote').save(url, recordA)
       let done = 0
       const crashing = {
         isUnlocked: () => true,
@@ -1010,13 +1011,13 @@ describe('DaemonAppOAuthStore', () => {
         set: (a: string, v: string) => { if (done++ >= crashAfter) throw new Error('crash'); keychain.backend.set(a, v) },
         delete: (a: string) => { if (done++ >= crashAfter) throw new Error('crash'); keychain.backend.delete(a) },
       }
-      await expect(new DaemonAppOAuthStore(crashing, index()).save(url, recordB)).rejects.toThrow('crash')
+      await expect(new DaemonAppOAuthStore(crashing, index()).forServer('remote').save(url, recordB)).rejects.toThrow('crash')
       const store = new DaemonAppOAuthStore(keychain.backend, index())
-      const after = await store.get(url)
+      const after = await store.forServer('remote').get(url)
       expect([JSON.stringify(recordA), JSON.stringify(recordB)]).toContain(JSON.stringify(after))
       // A later complete write leaves exactly one generation per account.
-      await store.save(url, recordA)
-      expect(await store.get(url)).toEqual(recordA)
+      await store.forServer('remote').save(url, recordA)
+      expect(await store.forServer('remote').get(url)).toEqual(recordA)
       const chunkGens = new Set([...keychain.store.keys()].filter((k) => k.includes('#')).map((k) => k.slice(0, k.lastIndexOf(':'))))
       expect(chunkGens.size).toBe(2) // the index and the record, one generation each
     }
@@ -1025,11 +1026,11 @@ describe('DaemonAppOAuthStore', () => {
   it('a chunk whose bytes do not match the head checksum reads as absent', async () => {
     const keychain = fakeKeychain()
     const store = new DaemonAppOAuthStore(keychain.backend, index())
-    await store.save(url, { tokens: { access_token: 'x'.repeat(2500), token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 })
+    await store.forServer('remote').save(url, { tokens: { access_token: 'x'.repeat(2500), token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 })
     const chunk = [...keychain.store.keys()].find((k) => k.includes(':') && k.endsWith(':1') && k.includes('#'))!
     keychain.store.set(chunk, 'tampered')
     vi.spyOn(console, 'warn').mockImplementation(() => {})
-    expect(await store.get(url)).toBeUndefined()
+    expect(await store.forServer('remote').get(url)).toBeUndefined()
   })
 
   it('chunks never split a surrogate pair', async () => {
@@ -1045,21 +1046,22 @@ describe('DaemonAppOAuthStore', () => {
     const keychain = fakeKeychain()
     const store = new DaemonAppOAuthStore(keychain.backend, index())
     const record = { tokens: { access_token: value, token_type: 'Bearer' }, serverUrl: url, updatedAt: 1 }
-    await store.save(url, record)
-    expect(await store.get(url)).toEqual(record)
+    await store.forServer('remote').save(url, record)
+    expect(await store.forServer('remote').get(url)).toEqual(record)
   })
 
-  it('refuses a record pinned to another URL, and never writes while the file store is locked', async () => {
+  it('a record pinned to another URL reads as signed out, and nothing is written while the file store is locked', async () => {
     const keychain = fakeKeychain()
     const store = new DaemonAppOAuthStore(keychain.backend, daemonAppOAuthAccount('scope1'))
-    await store.save(url, { tokens: { access_token: 'x', token_type: 'Bearer' }, serverUrl: 'https://other.example.test/mcp', updatedAt: 1 })
-    await expect(store.get(url)).rejects.toThrow(/refusing to send credentials/)
+    // Minted for another URL under the same server name: signed out for `url`.
+    await store.forServer('remote').save('https://other.example.test/mcp', { tokens: { access_token: 'x', token_type: 'Bearer' }, updatedAt: 1 })
+    expect(await store.forServer('remote').get(url)).toBeUndefined()
 
     const locked = new FileSecretBackend(join(h.userDataDir, 'owner-secrets.json'))
     const lockedStore = new DaemonAppOAuthStore(locked, daemonAppOAuthAccount('scope1'))
     expect(lockedStore.available()).toBe(false)
-    await expect(lockedStore.get(url)).resolves.toBeUndefined()
-    await expect(lockedStore.save(url, { updatedAt: 1, serverUrl: url, tokens: { access_token: 'y', token_type: 'Bearer' } })).rejects.toThrow(/locked/)
+    await expect(lockedStore.forServer('remote').get(url)).resolves.toBeUndefined()
+    await expect(lockedStore.forServer('remote').save(url, { updatedAt: 1, serverUrl: url, tokens: { access_token: 'y', token_type: 'Bearer' } })).rejects.toThrow(/locked/)
     expect(existsSync(join(h.userDataDir, 'owner-secrets.json'))).toBe(false)
   })
 })

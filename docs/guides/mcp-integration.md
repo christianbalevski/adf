@@ -183,6 +183,39 @@ Credentials stored at the application level (in Settings) are available to any a
 
 Credentials can also be stored in an individual agent's `adf_identity` table using the naming convention `mcp:<server>:<key>`. These are encrypted with the agent's password (if set) and travel with the `.adf` file. Agents can store these themselves from code — `await adf.set_identity({ purpose: 'mcp:<server>:<KEY>', value })` — mirroring the adapter credential pattern in [Channels](channels.md).
 
+### One server, several accounts
+
+A server is identified by its **name**, not its package or URL. Everything it stores is keyed by that name: env values (`mcp:<name>:<KEY>`), credential files (`mcp:<name>:file:<path>`), HTTP sign-ins, and its home folder. So one package can be installed several times, each copy with its own credentials, and each copy's tools carry its own prefix (`gmail_search_emails`, `gmail-work_search_emails`).
+
+**In Settings:** add Gmail, sign in with your personal account. Add Gmail again: the new entry is named `gmail-2`; rename it while adding (say `gmail-work`) and sign in with your work account. Both stay signed in. Names use lowercase letters, digits, `_` and `-`. Whether a copy's credentials live in the app (one sign-in every agent shares) or per agent is set on each copy. A copy whose credentials live in the app is signed in from Settings only: an agent that attaches it uses that sign-in and cannot replace it (`mcp_install` refuses `auth` and `credential_files` for it).
+
+**From an agent:** `mcp_install` attaches a Settings server by name. Without a name it attaches the package's server when exactly one is registered; when several are, it lists them and asks for one:
+
+```json
+{ "package": "@gongrzhe/server-gmail-autoauth-mcp", "name": "gmail-work" }
+```
+
+A name nobody uses installs the agent's own copy, with credentials only that agent holds:
+
+```json
+{ "package": "@gongrzhe/server-gmail-autoauth-mcp", "name": "gmail-team", "auth": true, "auth_args": ["auth"] }
+```
+
+**Home folders.** A server that declares credential files keeps them under `~`, so each copy runs with a home folder of its own and two copies never sign each other out:
+
+| Credentials stored | On the host | In a container |
+|---|---|---|
+| In the app (Settings) | `<ADF user data>/mcp-home/app/<name>` — the files live here | `<agent home>/.mcp-home/<name>`, copied from the app folder before each start |
+| Per agent | `<ADF user data>/mcp-home/agents/<agent id>/<name>`, written from the agent's `.adf` before each start | `<agent home>/.mcp-home/<name>` |
+
+`<ADF user data>` is `~/Library/Application Support/ADF Studio` on macOS, `%APPDATA%\ADF Studio` on Windows and `~/.config/ADF Studio` on Linux (a development build, `ADF_INSTANCE` or `ADF_USER_DATA_DIR` uses its own folder, so it keeps its own sign-ins). Servers without credential files keep your real home on the host (so `~/.gitconfig`, `~/.aws` and similar keep working) and the agent's home in a container.
+
+Removing a server deletes its folder: removing it in Settings (or signing it out) clears the app folder and its HTTP sign-in, and removing it from an agent clears that agent's folder along with its stored credentials. A server added later under the same name starts signed out.
+
+The folders keep copies apart; they are not a security boundary. Every server on the host runs as you and can read every folder, and an app sign-in used by a server in a container is copied into that container, where the agent can read it.
+
+**Names are fixed once created.** The name is the key to a copy's credentials, so Settings shows it read-only after the server is added. To rename, add a copy under the new name, sign in or enter its credentials, and remove the old one. An agent renames its own servers the same way, and can script it in a lambda: `mcp_install` under the new name, copy each env value (`adf.get_identity({ purpose: 'mcp:<old>:<KEY>' })` then pass it as `env` to that `mcp_install`), call it again with `auth: true` for anything that signs in, check that it connects, then `mcp_uninstall` the old name. `adf.get_identity` reads a value only when you allow code access to it (the agent's Identity panel); values given to `mcp_install` or entered in the credential panel start without it, so either allow it first or have the script supply them. Sealed credential files and sign-in tokens are never readable from agent code, so those are signed in again rather than copied.
+
 ### Credential Panel
 
 The credential panel (accessible from the MCP Status Dashboard) lets you:
@@ -215,7 +248,7 @@ When an agent installs an MCP server with `auth: true`, the runtime:
 4. **Waits for authorization**: Studio shows a "Complete authorization in your browser, then click Continue" dialog; headless runtimes wait for the auth command to exit on its own
 5. **Kills the preflight process** and connects via the normal MCP transport
 
-The server's OAuth flow saves credentials to disk (e.g., `~/.gmail-mcp/credentials.json`) — in the container's filesystem for containerized servers, which persists across restarts. Subsequent MCP connections use those saved credentials — no browser needed.
+The server's OAuth flow saves credentials to disk (e.g., `~/.gmail-mcp/credentials.json`) — in the server's own home folder (see [One server, several accounts](#one-server-several-accounts)), which persists across restarts. Subsequent MCP connections use those saved credentials — no browser needed.
 
 ### Agent-Side Usage
 
@@ -245,7 +278,7 @@ The agent calls `mcp_install` with the `auth` and `auth_args` parameters:
 Calling `mcp_install` again for a server that is already installed applies whatever you pass with it — nothing is silently dropped:
 
 - `env` — stores/replaces credentials in the identity keystore (the recovery route after a locked envelope is unlocked)
-- `credential_files` — merges declarations by path onto the server and seals any supplied `content`. The declared path is part of the credential identity (`mcp:<pkg>:file:<path>`), so a *renamed* path needs its content re-supplied at the new path — the sealed copy under the old path is not moved
+- `credential_files` — merges declarations by path onto the server and seals any supplied `content`. The declared path is part of the credential identity (`mcp:<name>:file:<path>`), so a *renamed* path needs its content re-supplied at the new path — the sealed copy under the old path is not moved
 - `auth: true` — re-runs the auth preflight and reconnects: the way to re-authorize an existing server without uninstalling it
 
 Only a bare re-install (none of the above) is an `already_installed` no-op. Credential-only updates land in config and keystore immediately but need `mcp_restart` to reach the running server.
@@ -283,13 +316,14 @@ securely provisioned into the existing identity credential store and declare
 credential contents in model-visible arguments. If secure provisioning is not
 available, use Studio's file picker instead.
 
-For container installs, `auth: true` with `auth_args: ["auth"]` runs the auth
-command in that container, forwards its loopback callback to the host browser,
-and captures declared token files into the identity store after authorization.
-Later spawns materialize these files again. Revoked or expired grants can still
-require renewed consent. For a Settings host registration, the preflight and
-files live in the host home instead; attachment captures declared files into the
-agent identity store. Host credential paths must be `~/`-relative.
+For an agent's own server in a container, `auth: true` with `auth_args: ["auth"]`
+runs the auth command in that container, forwards its loopback callback to the
+host browser, and captures declared token files into the agent's identity store
+after authorization. Later spawns materialize these files again. Revoked or
+expired grants can still require renewed consent. A Settings server whose
+credentials live in the app is signed in from Settings, and its files stay in
+its app folder; agents that attach it read them from there and capture nothing.
+Host credential paths must be `~/`-relative.
 
 **Migration note (agent-scoped home)**: containerized servers now get an agent-scoped `$HOME` instead of the container root's `/root`. Two consequences for installs that predate this:
 - **One-time re-auth**: tokens previously stored under `/root/...` are no longer read, so each agent authorizes once more; from then on the keystore carries the grant across rebuilds and machines.

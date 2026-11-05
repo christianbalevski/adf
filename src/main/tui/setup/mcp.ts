@@ -15,7 +15,7 @@ import type { McpServerConfig } from '../api/types'
 import { cjs } from '../interop'
 
 const { MCP_REGISTRY, registrationFromRegistryEntry, hasUnresolvedPlaceholderArgs, REGISTRY_ARG_PLACEHOLDER_RE } = cjs(registryNs)
-const { buildMcpServerConfigFromRegistration, mcpCredentialNamespace } = cjs(mcpConfigNs)
+const { buildMcpServerConfigFromRegistration } = cjs(mcpConfigNs)
 
 export const MCP_OVERLAY = 'mcp'
 
@@ -186,11 +186,6 @@ export function registrationFor(row: McpSourceRow, form: McpAddForm): McpServerR
 
 export function serverConfigFor(row: McpSourceRow, form: McpAddForm): McpServerConfig {
   return buildMcpServerConfigFromRegistration(registrationFor(row, form))
-}
-
-/** Where `mcp:<namespace>:<KEY>` credentials of this server live. */
-export function credentialNamespace(server: Pick<McpServerConfig, 'name' | 'npm_package' | 'pypi_package'>): string {
-  return mcpCredentialNamespace(server)
 }
 
 /** The package to install before attaching, if any. */

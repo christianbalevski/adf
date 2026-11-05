@@ -20,12 +20,13 @@ import { z } from 'zod'
 import { McpClientManager } from './mcp-client-manager'
 import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
-import { bundledClientApplies, bundledTokenFileFor, writeBundledClientIfAbsent } from './gmail-bundled-client'
-import { GMAIL_BUNDLED_TOKEN_PATH } from '../../shared/utils/gmail-oauth-client'
+import { mcpHostHomeEnv, mcpServerHostHome, removeMcpServerHome } from './mcp-server-home'
+import { inheritableEnv } from '../utils/child-env'
+import { writeBundledClientIfAbsent } from './gmail-bundled-client'
 import { resolveBundledMcpSpawn } from './bundled-mcp-servers'
 import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
-import type { McpOAuthStore } from './mcp-oauth.types'
+import type { McpAppOAuthStore } from './mcp-oauth-store'
 import { PodmanStdioTransport } from './podman-stdio-transport'
 import { prepareMcpContainer, ComputeUnavailableError } from './mcp-container-ready'
 import type { ComputeSettings } from './container-routing'
@@ -200,10 +201,10 @@ export interface McpRegistrationTestDeps {
   podmanAvailability?: () => Promise<PodmanAvailability>
   /**
    * The app-level OAuth store: a Settings-only test has no agent context, so
-   * the app store IS the token store. Null: no store on this host, and an
-   * OAuth remote cannot be signed in to.
+   * the app store IS the token store (the registration's record, by name).
+   * Null: no store on this host, and an OAuth remote cannot be signed in to.
    */
-  appOAuthStore: McpOAuthStore | null
+  appOAuthStore: McpAppOAuthStore | null
   /** Opens the authorization URL (Studio: the OS browser). */
   oauthIO: McpHttpOAuthIO
   /** Interactive stdio auth preflight (Studio: browser + Continue dialog). */
@@ -252,7 +253,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
   // The connect factory attaches the token stored by the interactive flow
   // below; it returns undefined for non-oauth servers, so it is harmless on
   // the host/container branches.
-  const appOAuthStore = deps.appOAuthStore
+  const appOAuthStore = deps.appOAuthStore?.forServer(reg.name) ?? null
   const tempManager = new McpClientManager(undefined, buildOAuthProviderFactory(
     () => appOAuthStore ?? undefined,
   ))
@@ -309,32 +310,33 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
     }
 
     if (plan.location === 'host') {
-      // Materialize provided credential files into the real host home —
-      // for a host-located server the host FS IS the runtime credential
-      // store, so these persist (write-if-absent: never clobber existing
-      // credentials). Paths are ~-confined by expandCredentialPath.
+      // The registration's home: its own folder when it declares credential
+      // files (mcp-server-home.ts), where agents that attach it find the
+      // sign-in. Materialize provided credential files there — for a
+      // host-located server that folder IS the credential store, so these
+      // persist (write-if-absent: never clobber existing credentials).
+      // Paths are ~-confined by expandCredentialPath.
+      const hostTarget = { kind: 'host' as const, home: mcpServerHostHome(serverCfg, { kind: 'app' }) }
+      Object.assign(env, mcpHostHomeEnv(serverCfg, { kind: 'app' }, { ...inheritableEnv(), ...env }))
       for (const f of credentialFiles ?? []) {
-        const dest = expandCredentialPath(f.path, { kind: 'host' })
-        if (existsSync(dest)) { notes.push(`${f.path} already exists on the host — kept the existing file.`); continue }
+        const dest = expandCredentialPath(f.path, hostTarget)
+        if (existsSync(dest)) { notes.push(`${f.path} already exists — kept the existing file.`); continue }
         const content = Buffer.from(f.contentB64, 'base64')
         if (content.length > CREDENTIAL_FILE_MAX_BYTES) {
           return finish({ success: false, tools: [], error: `Credential file ${f.path} exceeds the ${Math.round(CREDENTIAL_FILE_MAX_BYTES / 1024)}KiB cap.` })
         }
         mkdirSync(dirname(dest), { recursive: true })
         writeFileSync(dest, content, { mode: 0o600 })
-        notes.push(`Wrote ${f.path} to the host home.`)
+        notes.push(`Wrote ${f.path}.`)
       }
       // A declared file this build ships (the Gmail server's built-in OAuth
       // client), when none was chosen and the host has none: same
       // write-if-absent rule, so a chosen or existing client always wins.
-      // An existing token file without a client blocks it too.
       for (const f of reg.credentialFiles ?? []) {
         if (credentialFiles?.some((c) => c.path === f.path)) continue
-        const dest = expandCredentialPath(f.path, { kind: 'host' })
+        const dest = expandCredentialPath(f.path, hostTarget)
         if (writeBundledClientIfAbsent(reg.npmPackage, f.path, dest)) {
           notes.push(`Wrote the built-in OAuth client to ${f.path}.`)
-        } else if (bundledClientApplies(reg.npmPackage, f.path) && !existsSync(dest) && existsSync(bundledTokenFileFor(dest))) {
-          notes.push(`Did not write the built-in OAuth client: ${GMAIL_BUNDLED_TOKEN_PATH} already exists and may belong to another client. Choose that client, or delete the token file and connect again.`)
         }
       }
 
@@ -446,14 +448,15 @@ export async function ensurePythonRuntime(uvManager: PythonRuntimeUv) {
 }
 
 /**
- * Whether a valid token is stored (app store) for a remote server URL: lets
- * the client show a "signed in" indicator. Never returns the token.
+ * Whether a valid token is stored (app store) for a remote server, by its
+ * registration name and URL: lets the client show a "signed in" indicator.
+ * Never returns the token.
  */
-export async function mcpOAuthStatus(store: Pick<McpOAuthStore, 'get'>, rawArgs: unknown): Promise<{ signedIn: boolean }> {
-  const url = (rawArgs as { url?: unknown } | null | undefined)?.url
-  if (typeof url !== 'string' || !url) return { signedIn: false }
+export async function mcpOAuthStatus(store: McpAppOAuthStore, rawArgs: unknown): Promise<{ signedIn: boolean }> {
+  const { name, url } = (rawArgs ?? {}) as { name?: unknown; url?: unknown }
+  if (typeof name !== 'string' || !name || typeof url !== 'string' || !url) return { signedIn: false }
   try {
-    const record = await store.get(url)
+    const record = await store.forServer(name).get(url)
     return { signedIn: !!record?.tokens }
   } catch {
     return { signedIn: false }
@@ -461,15 +464,17 @@ export async function mcpOAuthStatus(store: Pick<McpOAuthStore, 'get'>, rawArgs:
 }
 
 /**
- * Clear the stored token for a remote server URL ("Sign out"). Clears the
- * app-level store, the sign-in source of truth; agent-sealed copies are
- * re-captured on the next attach.
+ * Sign a Settings server out, by its registration name: clears its app-level
+ * OAuth record and deletes its folder (mcp-server-home.ts), which holds the
+ * sign-in of a server with credential files. Also run when a server is
+ * removed, so a server added later under the same name starts signed out.
  */
-export async function mcpOAuthSignOut(store: Pick<McpOAuthStore, 'invalidate'>, rawArgs: unknown): Promise<{ success: boolean; error?: string }> {
-  const url = (rawArgs as { url?: unknown } | null | undefined)?.url
-  if (typeof url !== 'string' || !url) return { success: false, error: 'A server url is required to sign out.' }
+export async function mcpOAuthSignOut(store: McpAppOAuthStore, rawArgs: unknown): Promise<{ success: boolean; error?: string }> {
+  const name = (rawArgs as { name?: unknown } | null | undefined)?.name
+  if (typeof name !== 'string' || !name) return { success: false, error: 'A server name is required to sign out.' }
   try {
-    await store.invalidate(url, 'all')
+    await store.forServer(name).invalidate('', 'all')
+    removeMcpServerHome(name, { kind: 'app' })
     return { success: true }
   } catch (error) {
     return { success: false, error: error instanceof Error ? error.message : String(error) }

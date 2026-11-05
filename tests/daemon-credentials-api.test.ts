@@ -56,7 +56,7 @@ describe('credential list-files routes', () => {
   it('match the shared scan over loaded agents and tracked dirs, never carrying a value', async () => {
     const { tracked, outside, runtime, server } = setup()
     const loadedPath = agentFile(outside, 'agent-1', (ws) => {
-      ws.setIdentity('mcp:@acme/server:API_KEY', SECRET)
+      ws.setIdentity('mcp:acme:API_KEY', SECRET)
       ws.setIdentity('adapter:telegram:BOT_TOKEN', SECRET)
     })
     agentFile(tracked, 'agent-2', (ws) => {
@@ -70,9 +70,9 @@ describe('credential list-files routes', () => {
     await runtime.loadAgent(loadedPath)
     const sources = { knownFiles: runtime.listAgents().map((a) => a.filePath!), trackedDirs: [tracked] }
 
-    const mcp = await server.inject({ method: 'GET', url: '/credentials/mcp/files?mcpServerName=acme&npmPackage=%40acme%2Fserver' })
+    const mcp = await server.inject({ method: 'GET', url: '/credentials/mcp/files?serverName=acme' })
     expect(mcp.statusCode).toBe(200)
-    expect(mcp.json()).toEqual(JSON.parse(JSON.stringify(listMcpCredentialFiles({ mcpServerName: 'acme', npmPackage: '@acme/server' }, sources))))
+    expect(mcp.json()).toEqual(JSON.parse(JSON.stringify(listMcpCredentialFiles({ serverName: 'acme' }, sources))))
     expect(mcp.json().files).toHaveLength(2)
 
     const adapters = await server.inject({ method: 'GET', url: '/credentials/adapters/files?adapterType=telegram' })
@@ -85,7 +85,7 @@ describe('credential list-files routes', () => {
 
     for (const res of [mcp, adapters, providers]) expect(res.body).not.toContain(SECRET)
 
-    expect((await server.inject({ method: 'GET', url: '/credentials/mcp/files?mcpServerName=acme' })).statusCode).toBe(400)
+    expect((await server.inject({ method: 'GET', url: '/credentials/mcp/files' })).statusCode).toBe(400)
     expect((await server.inject({ method: 'GET', url: '/credentials/adapters/files' })).statusCode).toBe(400)
     expect((await server.inject({ method: 'GET', url: '/credentials/providers/files' })).statusCode).toBe(400)
   })

@@ -91,7 +91,7 @@ async function startTest(server: Server, payload: unknown): Promise<string> {
 
 describe('registration test as a job, with interactive steps', () => {
   it('an OAuth authorization URL is handed to the client while the test runs; the result arrives on the job', async () => {
-    const store = { get: vi.fn(async () => undefined), save: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }
+    const store = { forServer: () => ({ get: vi.fn(async () => undefined), save: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }) }
     const server = setup({ routes: { gaps: { mcpAppOAuthStore: store, uvManager } } })
     let release!: () => void
     h.oauthFlow.mockImplementation(async (_url: string, _store: unknown, io: { openUrl(u: string): void }) => {
@@ -174,7 +174,7 @@ describe('registration test as a job, with interactive steps', () => {
   })
 
   it('cancel also stops the work in flight: the OAuth flow gets the signal (its listener closes)', async () => {
-    const store = { get: vi.fn(async () => undefined), save: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }
+    const store = { forServer: () => ({ get: vi.fn(async () => undefined), save: vi.fn(async () => {}), invalidate: vi.fn(async () => {}) }) }
     const server = setup({ routes: { gaps: { mcpAppOAuthStore: store, uvManager } } })
     let flowSignal: AbortSignal | undefined
     h.oauthFlow.mockImplementation(async (_url: string, _store: unknown, _io: unknown, opts: { signal?: AbortSignal }) => {
@@ -209,22 +209,25 @@ describe('registration test as a job, with interactive steps', () => {
 
 describe('OAuth status and sign-out', () => {
   it('status is a flag only; sign-out clears the store record', async () => {
-    const store = { get: vi.fn(async () => ({ tokens: { access_token: TOKEN, token_type: 'bearer', refresh_token: TOKEN }, updatedAt: 1 })), save: vi.fn(), invalidate: vi.fn(async () => {}) }
+    const view = { get: vi.fn(async () => ({ tokens: { access_token: TOKEN, token_type: 'bearer', refresh_token: TOKEN }, updatedAt: 1 })), save: vi.fn(), invalidate: vi.fn(async () => {}) }
+    const store = { forServer: vi.fn(() => view) }
     const server = setup({ routes: { gaps: { mcpAppOAuthStore: store } } })
-    const status = await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?url=https%3A%2F%2Fmcp.example.test%2Fmcp' })
+    const status = await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?name=remote&url=https%3A%2F%2Fmcp.example.test%2Fmcp' })
     expect(status.json()).toEqual({ signedIn: true })
     expect(status.body).not.toContain(TOKEN)
-    expect(store.get).toHaveBeenCalledWith('https://mcp.example.test/mcp')
+    expect(store.forServer).toHaveBeenCalledWith('remote')
+    expect(view.get).toHaveBeenCalledWith('https://mcp.example.test/mcp')
     expect((await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status' })).json()).toEqual({ signedIn: false })
-    const out = await server.inject({ method: 'POST', url: '/admin/mcp/oauth/signout', payload: { url: 'https://mcp.example.test/mcp' } })
+    const out = await server.inject({ method: 'POST', url: '/admin/mcp/oauth/signout', payload: { name: 'remote' } })
     expect(out.json()).toEqual({ success: true })
-    expect(store.invalidate).toHaveBeenCalledWith('https://mcp.example.test/mcp', 'all')
+    expect(store.forServer).toHaveBeenLastCalledWith('remote')
+    expect(view.invalidate).toHaveBeenCalledWith('', 'all')
   })
 
   it('without a store: signed out, and sign-out refuses', async () => {
     const server = setup()
-    expect((await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?url=https%3A%2F%2Fx.test' })).json()).toEqual({ signedIn: false })
-    expect((await server.inject({ method: 'POST', url: '/admin/mcp/oauth/signout', payload: { url: 'https://x.test' } })).json().success).toBe(false)
+    expect((await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?name=x&url=https%3A%2F%2Fx.test' })).json()).toEqual({ signedIn: false })
+    expect((await server.inject({ method: 'POST', url: '/admin/mcp/oauth/signout', payload: { name: 'x' } })).json().success).toBe(false)
   })
 })
 

@@ -24,6 +24,8 @@
 import { basename } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { mcpEnvCredentialsOnly } from '../../shared/utils/mcp-config'
+import { removeMcpServerHome } from '../services/mcp-server-home'
 import { AdapterInstanceConfigSchema } from '../adf/adf-schema'
 import { envelopeFromAlgo } from '../crypto/envelope-crypto'
 import { lockedCredentialWrite, replaceLockedCredential } from '../services/locked-credential'
@@ -361,24 +363,26 @@ export class PathAgentOps {
 
   async setMcpCredential(input: unknown, body: unknown) {
     const t = await this.target(input, true)
-    const { npmPackage, envKey, value } = isRecord(body) ? body : {} as Record<string, unknown>
-    if (typeof npmPackage !== 'string') throw new FileOpError('npmPackage is required', 400, 'bad_request')
+    const { serverName, envKey, value } = isRecord(body) ? body : {} as Record<string, unknown>
+    if (typeof serverName !== 'string' || !serverName) throw new FileOpError('serverName is required', 400, 'bad_request')
     if (typeof envKey !== 'string') throw new FileOpError('envKey is required', 400, 'bad_request')
     if (typeof value !== 'string') throw new FileOpError('value is required', 400, 'bad_request')
     const replace = isRecord(body) && body.replace === true
-    if (t.loadedId) return { ...this.runtime.setAgentMcpCredential(t.loadedId, npmPackage, envKey, value, { replace }), filePath: t.filePath, loaded: true }
+    if (t.loadedId) return { ...this.runtime.setAgentMcpCredential(t.loadedId, serverName, envKey, value, { replace }), filePath: t.filePath, loaded: true }
     return this.writeClosed(t, ws => {
-      const replaced = setCredentialIn(ws, `mcp:${npmPackage}:${envKey}`, value, { replace })
-      return { agentId: ws.getAgentConfig().id, npmPackage, envKey, success: true as const, ...(replaced ? { replaced } : {}), filePath: t.filePath, loaded: false }
+      const replaced = setCredentialIn(ws, `mcp:${serverName}:${envKey}`, value, { replace })
+      return { agentId: ws.getAgentConfig().id, serverName, envKey, success: true as const, ...(replaced ? { replaced } : {}), filePath: t.filePath, loaded: false }
     })
   }
 
-  async getMcpCredentials(input: unknown, npmPackage: unknown) {
+  async getMcpCredentials(input: unknown, serverName: unknown) {
     const t = await this.target(input)
-    if (typeof npmPackage !== 'string' || !npmPackage) throw new FileOpError('npmPackage is required', 400, 'bad_request')
-    if (t.loadedId) return { ...this.runtime.getAgentMcpCredentials(t.loadedId, npmPackage), filePath: t.filePath, loaded: true }
-    const { config, credentials } = peekCredentials(t.filePath, `mcp:${npmPackage}:`)
-    return { agentId: config.id, npmPackage, credentials, filePath: t.filePath, loaded: false }
+    if (typeof serverName !== 'string' || !serverName) throw new FileOpError('serverName is required', 400, 'bad_request')
+    if (t.loadedId) return { ...this.runtime.getAgentMcpCredentials(t.loadedId, serverName), filePath: t.filePath, loaded: true }
+    const prefix = `mcp:${serverName}:`
+    const peeked = peekCredentials(t.filePath, prefix)
+    const credentials = mcpEnvCredentialsOnly(prefix, peeked.credentials)
+    return { agentId: peeked.config.id, serverName, credentials, filePath: t.filePath, loaded: false }
   }
 
   async attachMcpServer(input: unknown, body: unknown) {
@@ -400,21 +404,25 @@ export class PathAgentOps {
     })
   }
 
-  async detachMcpServer(input: unknown, serverName: string, credentialNamespace?: string) {
+  async detachMcpServer(input: unknown, serverName: string) {
     const t = await this.target(input, true)
-    const prefix = `mcp:${credentialNamespace || serverName}:`
+    const prefix = `mcp:${serverName}:`
     const without = (config: AgentConfig): AgentConfig => ({
       ...config,
       mcp: { ...(config.mcp ?? {}), servers: (config.mcp?.servers ?? []).filter(s => s.name !== serverName) },
     })
-    if (t.loadedId) return { ...(await this.detachLoaded(t, without, prefix)), serverName, success: true as const, filePath: t.filePath, loaded: true }
-    return this.writeClosed(t, ws => {
-      const config = ws.getAgentConfig()
-      const next = without(config)
-      writeConfig(ws, next)
-      const deletedCredentials = deleteCredentialsExact(ws, prefix)
-      return { agentId: config.id, serverName, success: true as const, deletedCredentials, config: next, filePath: t.filePath, loaded: false }
-    })
+    const result = t.loadedId
+      ? { ...(await this.detachLoaded(t, without, prefix)), serverName, success: true as const, filePath: t.filePath, loaded: true }
+      : await this.writeClosed(t, ws => {
+        const config = ws.getAgentConfig()
+        const next = without(config)
+        writeConfig(ws, next)
+        const deletedCredentials = deleteCredentialsExact(ws, prefix)
+        return { agentId: config.id, serverName, success: true as const, deletedCredentials, config: next, filePath: t.filePath, loaded: false }
+      })
+    // The server's host folder is a runtime copy of what was just deleted.
+    removeMcpServerHome(serverName, { kind: 'agent', agentId: result.agentId })
+    return result
   }
 
   // --- adapters ---

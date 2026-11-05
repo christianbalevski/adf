@@ -4,6 +4,7 @@
 1. invoke adf:mcp:oauth-status  [pushes 0→0]
   args:
     -
+      name: "fake-oauth"
       url: "http://127.0.0.1:<FAKE_MCP_PORT>/oauth-mcp"
   result:
     signedIn: false
@@ -36,18 +37,20 @@
 3. invoke adf:mcp:oauth-status  [pushes 0→0]
   args:
     -
+      name: "fake-oauth"
       url: "http://127.0.0.1:<FAKE_MCP_PORT>/oauth-mcp"
   result:
     signedIn: true
 4. invoke adf:mcp:oauth-signout  [pushes 0→0]
   args:
     -
-      url: "http://127.0.0.1:<FAKE_MCP_PORT>/oauth-mcp"
+      name: "fake-oauth"
   result:
     success: true
 5. invoke adf:mcp:oauth-status  [pushes 0→0]
   args:
     -
+      name: "fake-oauth"
       url: "http://127.0.0.1:<FAKE_MCP_PORT>/oauth-mcp"
   result:
     signedIn: false

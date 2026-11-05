@@ -378,9 +378,9 @@ track the real shapes.
   type)` (also deletes its credentials); live state: `agentAdapters`
 - MCP servers (per agent): `attachMcpServer(id, server)` · `restartMcpServer(id,
   name)` (connects it now; the outcome has tools found or the error) ·
-  `detachMcpServer(id, name, credentialNamespace?)` · `setMcpCredential(id,
-  namespace, key, value, {replace?})` (sealed, `mcp:<package or name>:<KEY>`) ·
-  `mcpCredentials(id, namespace)` (metadata only, like `adapterCredentials`) ·
+  `detachMcpServer(id, name)` · `setMcpCredential(id,
+  name, key, value, {replace?})` (sealed, `mcp:<name>:<KEY>`) ·
+  `mcpCredentials(id, name)` (metadata only, like `adapterCredentials`) ·
   `installMcpPackage('npm'|'python', pkg)` (long timeout); live state:
   `agentMcp`
 - locked credentials: a credential save answers 409 `credentials_locked`

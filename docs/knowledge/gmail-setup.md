@@ -24,15 +24,18 @@ This path has no Composio dependency. Release builds of ADF Studio that ship a
 built-in Google OAuth client skip steps 1–3 and 5: Gmail has no **Credential
 file** step, and **Sign in to Gmail** writes the built-in client to
 `~/.gmail-mcp/gcp-oauth.keys.json` when no client file is chosen and none
-exists on the host. An existing file is kept, and your sign-in tokens stay in
-`~/.gmail-mcp/credentials.json`. If `credentials.json` already exists without
-a client file, the built-in client is not written (those tokens may come from
-another client): choose that client, or delete `credentials.json` and connect
-again. Agents store your tokens and any client you chose, never the built-in
-client. To use your own client instead, choose it under **Advanced → Use your
+exists yet. An existing file is kept, and your sign-in tokens stay in
+`~/.gmail-mcp/credentials.json`. Here `~` is the Gmail server's own home
+folder, not yours: `<ADF user data>/mcp-home/app/gmail` for the Settings
+server named `gmail` (see [One server, several accounts](../guides/mcp-integration.md#one-server-several-accounts)).
+To connect a second Gmail account, add Gmail again in Settings, name it (say
+`gmail-work`), and sign in with that account. Agents that attach a Settings
+server use its sign-in; an agent's own Gmail server stores its tokens and any
+client you chose in the agent, never the built-in client. To use your own client instead, choose it under **Advanced → Use your
 own OAuth client** before the first Connect; it is written only when no client
 file exists yet. To switch clients later, delete
-`~/.gmail-mcp/gcp-oauth.keys.json` and `~/.gmail-mcp/credentials.json`, then
+`.gmail-mcp/gcp-oauth.keys.json` and `.gmail-mcp/credentials.json` in that
+folder, then
 connect again (with your own client chosen, or none for the built-in one).
 Agents that already stored Gmail tokens need a fresh sign-in, and agents that
 stored a client you chose earlier keep using it until you re-supply it in
@@ -94,10 +97,10 @@ same computer. The built-in server accepts the sign-in callback on
    mcp_install({ name: "gmail" })
    ```
 
-Studio's host setup writes the credential files under the host home. Attaching
-captures declared credentials into the agent's existing encrypted identity store;
-the local server still needs materialized files while it runs. These files are
-sensitive even though a portable copy is encrypted. Do not put them in ordinary
+Studio's host setup writes the credential files in the server's own folder
+(`<ADF user data>/mcp-home/app/<name>`), and every agent that attaches the server
+uses them from there; they are not copied into the agent's file. Removing the
+server in Settings deletes the folder. These files are sensitive. Do not put them in ordinary
 config, docs, or source control. Agent-created container installs use a different
 runtime home; see [MCP authorization](../guides/mcp-integration.md#interactive-authentication-oauth).
 
@@ -218,7 +221,7 @@ changes. The bundled Gmail server doesn't provide that.
 | Redirect mismatch or callback timeout | Check that the JSON is a Desktop client and the documented local callback is reachable on the server's runtime host. Do not substitute a third-party callback URL. Remote/headless runtimes need reachable authorization callbacks too. |
 | `429 Too many requests` or `rateLimitExceeded` | A Gmail limit was reached. See [Limits and rate limits](#limits-and-rate-limits): wait and retry more slowly, use smaller batches, and stop sending if it is a sending limit. |
 | Connection expires after a week | External apps in Testing receive refresh tokens that expire after seven days for Gmail scopes. Reauthorize, or review Google's production requirements for ongoing use; publishing is not a blanket verification exemption. |
-| Saved server, no tools | Read the connection error, fix the prerequisite, then reconnect. From the agent use `mcp_restart({ name: "gmail" })`; renewed consent uses `mcp_install({ name: "gmail", auth: true })`. Avoid uninstalling as the first recovery step. |
+| Saved server, no tools | Read the connection error, fix the prerequisite, then reconnect. From the agent use `mcp_restart({ name: "gmail" })`; renewed consent is a new sign-in from Settings (for an agent's own Gmail server, `mcp_install({ name: "<its name>", auth: true })`). Avoid uninstalling as the first recovery step. |
 | HTTP provider shows token inputs but no sign-in | For a remote URL supporting MCP OAuth, enable **Browser sign-in (OAuth)**, then **Sign in & Connect**. This differs from the local Gmail server's `auth` command. |
 
 See Google's [refresh-token expiration rules](https://developers.google.com/identity/protocols/oauth2#expiration).

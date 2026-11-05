@@ -83,7 +83,7 @@ describe('no keychain and no plain-text choice', () => {
     for (const key of [...SECRET_KEYS, ownerMnemonicSupersededKey('did:key:zOld')]) {
       expect(() => settings.setSecret(key, 'value')).toThrow(SecretStorageRefusedError)
     }
-    await expect(new AppSettingsOAuthStore(settings).save('https://mcp.example/mcp', record())).rejects.toThrow(/Cannot store MCP OAuth tokens/)
+    await expect(new AppSettingsOAuthStore(settings).forServer('mcp').save('https://mcp.example/mcp', record())).rejects.toThrow(/Cannot store MCP OAuth tokens/)
     expect(() => settings.getOwnerIdentity().importMnemonic(generateMnemonic())).toThrow(SecretStorageRefusedError)
     expect(Object.keys(disk()).filter((k) => SECRET_KEYS.includes(k) || k.startsWith('ownerMnemonicSuperseded:') || k === 'legacyOwnerDids')).toEqual([])
   })
@@ -116,7 +116,7 @@ describe('the plain-text choice', () => {
     h.available = true
     const settings = new SettingsService()
     const original = record()
-    await new AppSettingsOAuthStore(settings).save(original.serverUrl!, original)
+    await new AppSettingsOAuthStore(settings).forServer('original').save(original.serverUrl!, original)
     const sealed = disk()[MCP_OAUTH_SETTINGS_KEY]
     expect(sealed).toMatch(/^safe:/)
 
@@ -125,13 +125,15 @@ describe('the plain-text choice', () => {
     h.available = state !== 'unavailable'
     h.decryptThrows = state === 'denied'
     const later = new SettingsService()
-    const store = new AppSettingsOAuthStore(later)
+    const app = new AppSettingsOAuthStore(later)
+    const store = app.forServer('original')
+    const nextStore = app.forServer('next')
     const bytes = readFileSync(settingsPath(), 'utf-8')
     const next = { ...record(), serverUrl: 'https://new.example/mcp' }
     expect(later.secretWriteRefusal()).toBeNull()
     expect(later.secretStatus(MCP_OAUTH_SETTINGS_KEY)).toBe('locked')
     await expect(store.get(original.serverUrl!)).resolves.toBeUndefined()
-    await expect(store.save(next.serverUrl, next)).rejects.toThrow(/existing.*locked/i)
+    await expect(nextStore.save(next.serverUrl, next)).rejects.toThrow(/existing.*locked/i)
     await expect(store.invalidate(original.serverUrl!)).rejects.toThrow(/existing.*locked/i)
     expect(readFileSync(settingsPath(), 'utf-8')).toBe(bytes)
     expect(disk()[MCP_OAUTH_SETTINGS_KEY]).toBe(sealed)
@@ -139,9 +141,9 @@ describe('the plain-text choice', () => {
     h.available = true
     h.decryptThrows = false
     await expect(store.get(original.serverUrl!)).resolves.toEqual(original)
-    await store.save(next.serverUrl, next)
+    await nextStore.save(next.serverUrl, next)
     await expect(store.get(original.serverUrl!)).resolves.toEqual(original)
-    await expect(store.get(next.serverUrl)).resolves.toEqual(next)
+    await expect(nextStore.get(next.serverUrl)).resolves.toEqual(next)
   })
 
   it('stores secrets as plain text, is remembered across restarts, and stays visible while the keychain works', () => {
@@ -256,7 +258,7 @@ describe('keychain chosen, then unavailable (Continue Without Keychain)', () => 
     expect(later.ensureRuntimeIdentity()).toEqual(ids) // locked: reported, nothing minted
     expect(later.getOwnerIdentity().getStatus().mnemonicLocked).toBe(true)
     expect(() => later.setSecret('runtimePrivateKey', 'replacement')).toThrow(SecretStorageRefusedError)
-    await expect(new AppSettingsOAuthStore(later).save('https://mcp.example/mcp', record())).rejects.toThrow(/Cannot store MCP OAuth tokens/)
+    await expect(new AppSettingsOAuthStore(later).forServer('mcp').save('https://mcp.example/mcp', record())).rejects.toThrow(/Cannot store MCP OAuth tokens/)
     expect(readFileSync(settingsPath(), 'utf-8')).toBe(bytes)
 
     // The keychain is back: the same identity reads again.

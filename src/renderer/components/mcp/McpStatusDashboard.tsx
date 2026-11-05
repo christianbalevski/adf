@@ -114,7 +114,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
     const oauthRows = mcpServersRef.current.filter((s) => s.type === 'http' && !!s.url && oauthEntryFor(s))
     const results = await Promise.all(oauthRows.map(async (s) => {
       try {
-        const r = await api?.mcpOAuthStatus({ url: s.url! })
+        const r = await api?.mcpOAuthStatus({ name: s.name, url: s.url! })
         return [s.id, r?.signedIn] as const
       } catch {
         return [s.id, undefined] as const
@@ -137,7 +137,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const handleOAuthSignOut = async (reg: McpServerRegistration) => {
     if (!reg.url) return
     try {
-      await api?.mcpOAuthSignOut({ url: reg.url })
+      await api?.mcpOAuthSignOut({ name: reg.name })
     } catch {
       // Low-stakes: re-sign-in is one click. Surface nothing on failure.
     }
@@ -230,6 +230,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
       }
     }
 
+    // Its sign-in goes with it: a server added later under this name starts signed out.
+    if (server) { try { await api?.mcpOAuthSignOut({ name: server.name }) } catch { /* best effort */ } }
     onServersChanged(mcpServersRef.current.filter((s) => s.id !== id))
   }
 

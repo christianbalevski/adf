@@ -961,9 +961,9 @@ export class DaemonClient {
     return this.post(`/agents/${enc(agentId)}/mcp/servers`, { server })
   }
 
-  /** Remove it and delete its stored credentials (`mcp:<namespace>:*`; the package, else the server name). */
-  detachMcpServer(agentId: string, serverName: string, credentialNamespace?: string): Promise<{ agentId: string; serverName: string; success: true; deletedCredentials: number }> {
-    return this.request('DELETE', `/agents/${enc(agentId)}/mcp/servers/${enc(serverName)}`, { query: { credentialNamespace } })
+  /** Remove it and delete its stored credentials (`mcp:<serverName>:*`). */
+  detachMcpServer(agentId: string, serverName: string): Promise<{ agentId: string; serverName: string; success: true; deletedCredentials: number }> {
+    return this.request('DELETE', `/agents/${enc(agentId)}/mcp/servers/${enc(serverName)}`)
   }
 
   /** (Re)connect one server of a running agent now; the outcome carries tools found or the error. */
@@ -971,14 +971,14 @@ export class DaemonClient {
     return this.request('POST', `/agents/${enc(agentId)}/mcp/servers/${enc(serverName)}/restart`, { timeoutMs: 180_000 })
   }
 
-  /** Store one env value for an MCP server in the agent's identity store (`mcp:<namespace>:<key>`, sealed). */
-  setMcpCredential(agentId: string, namespace: string, envKey: string, value: string, opts: CredentialWriteOptions = {}): Promise<{ success: true; replaced?: boolean }> {
-    return this.put(`/agents/${enc(agentId)}/mcp/credentials`, { npmPackage: namespace, envKey, value, ...(opts.replace ? { replace: true } : {}) })
+  /** Store one env value for an MCP server in the agent's identity store (`mcp:<serverName>:<key>`, sealed). */
+  setMcpCredential(agentId: string, serverName: string, envKey: string, value: string, opts: CredentialWriteOptions = {}): Promise<{ success: true; replaced?: boolean }> {
+    return this.put(`/agents/${enc(agentId)}/mcp/credentials`, { serverName, envKey, value, ...(opts.replace ? { replace: true } : {}) })
   }
 
   /** What is stored for an MCP server's env keys: metadata only, never values. */
-  mcpCredentials(agentId: string, namespace: string): Promise<CredentialMetaResult> {
-    return this.get(`/agents/${enc(agentId)}/mcp/credentials`, { npmPackage: namespace })
+  mcpCredentials(agentId: string, serverName: string): Promise<CredentialMetaResult> {
+    return this.get(`/agents/${enc(agentId)}/mcp/credentials`, { serverName })
   }
 
   /** Install an MCP server package on the daemon host (npm or Python). Synchronous: can take a minute. */

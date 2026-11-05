@@ -17,8 +17,6 @@
 export const GMAIL_BUNDLED_CLIENT_NPM_PACKAGE = '@gongrzhe/server-gmail-autoauth-mcp'
 /** The declared credential file the built-in client fills. */
 export const GMAIL_BUNDLED_CLIENT_PATH = '~/.gmail-mcp/gcp-oauth.keys.json'
-/** The server's token file, next to the client file. */
-export const GMAIL_BUNDLED_TOKEN_PATH = '~/.gmail-mcp/credentials.json'
 /** Build-time environment variable carrying the client JSON. */
 export const GMAIL_OAUTH_CLIENT_ENV = 'ADF_GMAIL_OAUTH_CLIENT_JSON'
 

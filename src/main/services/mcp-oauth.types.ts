@@ -56,10 +56,11 @@ export function canonicalizeServerUrl(url: string): string {
 export type McpOAuthInvalidateScope = 'all' | 'tokens' | 'client'
 
 /**
- * Persistence for OAuth material, keyed by the server's canonical URL (the
- * URL is executable-identity-pinned, so a tampered `.adf` can't redirect a
- * stored token to a different endpoint). Implementations seal at rest and
- * never expose values to renderer/agent-reachable surfaces.
+ * One server's OAuth material. Every store keys it by the server's NAME (so
+ * two servers on one URL keep separate sign-ins) and binds it to the URL it
+ * was minted for: `get` refuses a record for any other endpoint, so a
+ * tampered `.adf` can't redirect a stored token. Implementations seal at
+ * rest and never expose values to renderer/agent-reachable surfaces.
  */
 export interface McpOAuthStore {
   get(serverUrl: string): Promise<McpOAuthRecord | undefined>

@@ -143,18 +143,17 @@ describe('host fallback', () => {
     expect(existsSync(join(home, KEYS_REL))).toBe(false)
   })
 
-  it('an existing token file without a client blocks the built-in client (tokens may be another client\'s)', async () => {
+  it('a token file in the server\'s own folder does not block the built-in client (each server has its own folder)', async () => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
     mkdirSync(join(home, '.gmail-mcp'))
-    writeFileSync(join(home, TOKENS_REL), 'other-client-tokens')
-    expect(writeBundledClientIfAbsent(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH, join(home, KEYS_REL), CLIENT_JSON)).toBe(false)
-    await expect(materializeCredentialFiles(emptyStore, gmailServer(), { kind: 'host', home })).rejects.toThrow(/Required credential file "~\/.gmail-mcp\/gcp-oauth.keys.json"/)
-    expect(existsSync(join(home, KEYS_REL))).toBe(false)
-    expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('other-client-tokens')
+    writeFileSync(join(home, TOKENS_REL), 'earlier-tokens')
+    await materializeCredentialFiles(emptyStore, gmailServer(), { kind: 'host', home })
+    expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe(CLIENT_JSON)
+    expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('earlier-tokens')
   })
 
   describe('tokens sealed in the agent keystore without a client (minted with the built-in client)', () => {
-    const tokensPurpose = `mcp:${GMAIL_BUNDLED_CLIENT_NPM_PACKAGE}:file:~/.gmail-mcp/credentials.json`
+    const tokensPurpose = `mcp:gmail:file:~/.gmail-mcp/credentials.json`
     const TOKENS = '{"refresh_token":"synthetic-agent-refresh"}'
     const tokensOnly: CredentialStore = {
       getDecrypted: (p) => p === tokensPurpose ? JSON.stringify({ encoding: 'base64', data: Buffer.from(TOKENS).toString('base64') }) : null,
@@ -181,15 +180,15 @@ describe('host fallback', () => {
       expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
     })
 
-    it('another client on the host: neither file is replaced, the host sign-in is kept (either order)', async () => {
+    it('another client in the folder: it is kept and the sealed tokens are written (the keystore is the source)', async () => {
       vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
       for (const cfg of [gmailServer(), reversed()]) {
         mkdirSync(join(home, '.gmail-mcp'), { recursive: true })
         writeFileSync(join(home, KEYS_REL), 'own-client')
-        writeFileSync(join(home, TOKENS_REL), 'own-tokens')
+        writeFileSync(join(home, TOKENS_REL), 'stale-tokens')
         await materializeCredentialFiles(tokensOnly, cfg, { kind: 'host', home })
         expect(readFileSync(join(home, KEYS_REL), 'utf-8')).toBe('own-client')
-        expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('own-tokens')
+        expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
       }
     })
 
@@ -200,19 +199,6 @@ describe('host fallback', () => {
       writeFileSync(join(home, TOKENS_REL), 'stale-tokens')
       await materializeCredentialFiles(tokensOnly, reversed(), { kind: 'host', home })
       expect(readFileSync(join(home, TOKENS_REL)).equals(Buffer.from(TOKENS))).toBe(true)
-    })
-
-    it('no token row in the keystore + credentials.json already on the host: client NOT written (either order)', async () => {
-      vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
-      // A keystore with rows, just not the token row.
-      const otherRows: CredentialStore = { getDecrypted: () => null, hasRow: (p) => p === 'mcp:gmail:env:UNRELATED' }
-      for (const cfg of [gmailServer(), reversed()]) {
-        mkdirSync(join(home, '.gmail-mcp'), { recursive: true })
-        writeFileSync(join(home, TOKENS_REL), 'foreign-tokens')
-        await expect(materializeCredentialFiles(otherRows, cfg, { kind: 'host', home })).rejects.toThrow(/Required credential file "~\/.gmail-mcp\/gcp-oauth.keys.json"/)
-        expect(existsSync(join(home, KEYS_REL))).toBe(false)
-        expect(readFileSync(join(home, TOKENS_REL), 'utf-8')).toBe('foreign-tokens')
-      }
     })
   })
 
@@ -252,8 +238,8 @@ describe('write-back never stores the built-in client', () => {
     await writeBackCredentialFiles({ setIdentitySealed: (p, v) => { sealed[p] = v } }, gmailServer(), target, '2026-11-02T00:00:00Z')
     return Object.fromEntries(Object.entries(sealed).map(([p, v]) => [p, Buffer.from(JSON.parse(v).data, 'base64').toString('utf-8')]))
   }
-  const keysPurpose = `mcp:${GMAIL_BUNDLED_CLIENT_NPM_PACKAGE}:file:${GMAIL_BUNDLED_CLIENT_PATH}`
-  const tokensPurpose = `mcp:${GMAIL_BUNDLED_CLIENT_NPM_PACKAGE}:file:~/.gmail-mcp/credentials.json`
+  const keysPurpose = `mcp:gmail:file:${GMAIL_BUNDLED_CLIENT_PATH}`
+  const tokensPurpose = `mcp:gmail:file:~/.gmail-mcp/credentials.json`
 
   it('skips the built-in client file the host fallback wrote; still captures the tokens', async () => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)

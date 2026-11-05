@@ -1,10 +1,10 @@
 import { delimiter, isAbsolute, join } from 'path'
 import { existsSync } from 'fs'
 import type { McpEnvKeySchema, McpInstalledPackage, McpServerConfig } from '../../shared/types/adf-v02.types'
-import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef } from '../../shared/utils/mcp-config'
+import { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialRef } from '../../shared/utils/mcp-config'
 import { resolveBundledMcpSpawn, type BundledMcpRuntime } from './bundled-mcp-servers'
 
-export { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialNamespace, mcpCredentialRef }
+export { buildEnvSchemaFromKeys, buildHeaderEnvSchemaFromEntries, mcpCredentialRef }
 
 export type McpRuntime = 'npm' | 'npx' | 'uvx' | 'pip' | 'custom'
 
@@ -232,22 +232,17 @@ function agentScopedEnvKeys(serverCfg: McpServerConfig): string[] {
 }
 
 /**
- * Resolve env vars from the identity keystore for an MCP server.
- * Handles both npm_package and pypi_package credential namespaces.
+ * Resolve env vars from the identity keystore for an MCP server: each key is
+ * stored under the server's name, `mcp:<name>:<KEY>`, so two copies of one
+ * package keep separate values.
  */
 export function resolveMcpEnvVars(
   serverCfg: McpServerConfig,
   getDecrypted: (key: string) => string | null
 ): Record<string, string> {
-  const keys = agentScopedEnvKeys(serverCfg)
-  if (!keys.length) return {}
-  const pkg = serverCfg.npm_package ?? serverCfg.pypi_package
-
   const resolved: Record<string, string> = {}
-  for (const key of keys) {
-    let val: string | null = null
-    if (pkg) val = getDecrypted(`mcp:${pkg}:${key}`)
-    if (!val && serverCfg.name) val = getDecrypted(`mcp:${serverCfg.name}:${key}`)
+  for (const key of agentScopedEnvKeys(serverCfg)) {
+    const val = getDecrypted(`mcp:${serverCfg.name}:${key}`)
     if (val) resolved[key] = val
   }
   return resolved

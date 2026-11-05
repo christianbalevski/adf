@@ -90,6 +90,8 @@ describe('probeMcpServer', () => {
   })
 })
 
+const appServerOAuthStore = { get: async () => undefined, save: async () => {}, invalidate: async () => {} }
+
 function deps(over: Partial<McpRegistrationTestDeps> = {}): McpRegistrationTestDeps {
   return {
     computeSettings: () => ({ hostAccessEnabled: true, hostApproved: [] }),
@@ -100,7 +102,7 @@ function deps(over: Partial<McpRegistrationTestDeps> = {}): McpRegistrationTestD
       ensureWorkspace: vi.fn(async () => {}),
       execInContainer: vi.fn(async () => ({ stdout: '', stderr: '', exitCode: 0 })),
     },
-    appOAuthStore: { get: async () => undefined, save: async () => {}, invalidate: async () => {} },
+    appOAuthStore: { forServer: () => appServerOAuthStore },
     oauthIO: { openUrl: () => {} },
     authPreflight: vi.fn(async () => {}),
     onLog: () => {},
@@ -120,7 +122,7 @@ describe('runMcpRegistrationTest', () => {
   it('remote http with OAuth runs the sign-in first, then connects', async () => {
     const d = deps()
     const result = await runMcpRegistrationTest({ registration: { name: 'r', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true, oauthScopes: ['read'] } }, d)
-    expect(h.oauthFlow).toHaveBeenCalledWith('https://mcp.example.test/mcp', d.appOAuthStore, d.oauthIO, { clientId: undefined, scopes: ['read'] })
+    expect(h.oauthFlow).toHaveBeenCalledWith('https://mcp.example.test/mcp', appServerOAuthStore, d.oauthIO, { clientId: undefined, scopes: ['read'] })
     expect(result).toEqual({
       success: true, tools: [{ name: 'search', description: 'Search' }], location: 'remote http', authRan: true, oauthRan: true,
       notes: ['Interactive OAuth sign-in runs in a browser during this test.'], serverVersion: '1.2.3',
@@ -195,20 +197,22 @@ describe('appendMcpLog', () => {
 })
 
 describe('runMcpRegistrationTest: host credential files', () => {
-  it('writes a missing file under ~ and never overwrites an existing one', async () => {
-    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } = await import('node:fs')
-    const { tmpdir, homedir } = await import('node:os')
+  it('writes a missing file under the registration\'s own ~ and never overwrites an existing one', async () => {
+    const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync } = await import('node:fs')
+    const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
-    const home = mkdtempSync(join(tmpdir(), 'adf-mcp-test-home-'))
-    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
-    process.env.HOME = home
-    process.env.USERPROFILE = home
+    const root = mkdtempSync(join(tmpdir(), 'adf-mcp-test-home-'))
+    // The server's ~ is its own folder under the user data dir, not the user's home.
+    const home = join(root, 'mcp-home', 'app', 'gh')
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, ADF_USER_DATA_DIR: process.env.ADF_USER_DATA_DIR }
+    process.env.HOME = root
+    process.env.USERPROFILE = root
+    process.env.ADF_USER_DATA_DIR = root
     try {
-      expect(homedir()).toBe(home)
       mkdirSync(join(home, '.config', 'gh'), { recursive: true })
       writeFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'old-token')
       const result = await runMcpRegistrationTest({
-        registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host' },
+        registration: { name: 'gh', type: 'npm', npmPackage: '@acme/gh', runLocation: 'host', credentialFiles: [{ path: '~/.config/gh/hosts.yml' }, { path: '~/.config/gh/config.yml' }] },
         credentialFiles: [
           { path: '~/.config/gh/hosts.yml', contentB64: Buffer.from('new-token').toString('base64') },
           { path: '~/.config/gh/config.yml', contentB64: Buffer.from('fresh').toString('base64') },
@@ -217,16 +221,14 @@ describe('runMcpRegistrationTest: host credential files', () => {
       expect(result.success).toBe(true)
       expect(readFileSync(join(home, '.config', 'gh', 'hosts.yml'), 'utf-8')).toBe('old-token')
       expect(readFileSync(join(home, '.config', 'gh', 'config.yml'), 'utf-8')).toBe('fresh')
+      expect(existsSync(join(root, '.config', 'gh', 'config.yml'))).toBe(false)
       expect(result.notes).toEqual([
-        '~/.config/gh/hosts.yml already exists on the host — kept the existing file.',
-        'Wrote ~/.config/gh/config.yml to the host home.',
+        '~/.config/gh/hosts.yml already exists — kept the existing file.',
+        'Wrote ~/.config/gh/config.yml.',
       ])
     } finally {
-      process.env.HOME = saved.HOME
-      process.env.USERPROFILE = saved.USERPROFILE
-      if (saved.HOME === undefined) delete process.env.HOME
-      if (saved.USERPROFILE === undefined) delete process.env.USERPROFILE
-      rmSync(home, { recursive: true, force: true })
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
+      rmSync(root, { recursive: true, force: true })
     }
   })
 })
@@ -243,17 +245,20 @@ describe('runMcpRegistrationTest: Gmail built-in OAuth client', () => {
     const fs = await import('node:fs')
     const { tmpdir } = await import('node:os')
     const { join } = await import('node:path')
-    const home = fs.mkdtempSync(join(tmpdir(), 'adf-mcp-gmail-home-'))
-    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE }
-    process.env.HOME = home
-    process.env.USERPROFILE = home
+    const root = fs.mkdtempSync(join(tmpdir(), 'adf-mcp-gmail-home-'))
+    // The Settings server's ~ is its own folder (mcp-server-home.ts).
+    const home = join(root, 'mcp-home', 'app', 'gmail')
+    fs.mkdirSync(home, { recursive: true })
+    const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, ADF_USER_DATA_DIR: process.env.ADF_USER_DATA_DIR }
+    process.env.HOME = root
+    process.env.USERPROFILE = root
+    process.env.ADF_USER_DATA_DIR = root
     try {
       await fn(home, fs, join)
     } finally {
-      if (saved.HOME === undefined) delete process.env.HOME; else process.env.HOME = saved.HOME
-      if (saved.USERPROFILE === undefined) delete process.env.USERPROFILE; else process.env.USERPROFILE = saved.USERPROFILE
+      for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v }
       vi.unstubAllGlobals()
-      fs.rmSync(home, { recursive: true, force: true })
+      fs.rmSync(root, { recursive: true, force: true })
     }
   }
 
@@ -278,7 +283,7 @@ describe('runMcpRegistrationTest: Gmail built-in OAuth client', () => {
     }, deps())
     expect(result.success).toBe(true)
     expect(fs.readFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'utf-8')).toBe('own-client')
-    expect(result.notes).toEqual([`Wrote ${KEYS} to the host home.`])
+    expect(result.notes).toEqual([`Wrote ${KEYS}.`])
   }))
 
   it('an existing host client and token file are never modified', () => withHome(async (home, fs, join) => {
@@ -301,14 +306,13 @@ describe('runMcpRegistrationTest: Gmail built-in OAuth client', () => {
     expect(JSON.stringify(result.notes)).not.toContain('built-in')
   }))
 
-  it('an existing token file with no client: does not write the client, says why, leaves the tokens byte-identical', () => withHome(async (home, fs, join) => {
+  it('an existing token file in the server\'s folder: writes the client beside it, leaves the tokens byte-identical', () => withHome(async (home, fs, join) => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', BUILT_IN)
     fs.mkdirSync(join(home, '.gmail-mcp'))
     fs.writeFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'existing-tokens')
     const result = await runMcpRegistrationTest({ registration: gmail }, deps())
-    expect(fs.existsSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'))).toBe(false)
+    expect(fs.readFileSync(join(home, '.gmail-mcp', 'gcp-oauth.keys.json'), 'utf-8')).toBe(BUILT_IN)
     expect(fs.readFileSync(join(home, '.gmail-mcp', 'credentials.json'), 'utf-8')).toBe('existing-tokens')
-    expect(result.notes).toEqual([expect.stringMatching(/^Did not write the built-in OAuth client: ~\/.gmail-mcp\/credentials.json already exists/)])
     expect(JSON.stringify(result)).not.toContain('synthetic')
   }))
 

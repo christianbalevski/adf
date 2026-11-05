@@ -6,6 +6,7 @@ import { enc, isNotFound, type DaemonHandlerTable } from '../context'
 import { DaemonModeUnavailableError } from '../errors'
 import { atPath, errorText, isEditedPlaceholder, placeholderWrite, refusalText, REDACTED_VALUE, revealValues, runInstallJob, singleInstallEnds, type CredentialMeta, type InstallAnswer } from '../mcp/common'
 import { awaitDaemonJob, startDaemonJob } from '../mcp/jobs'
+import { mcpEnvCredentialsOnly } from '../../../../shared/utils/mcp-config'
 import { runRegistrationTest } from '../mcp/registration-test'
 import {
   McpAttachArgs,
@@ -60,8 +61,8 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
 
   [IPC.MCP_OAUTH_STATUS]: async (ctx, _event, rawArgs: unknown) => {
     const client = await ctx.ready()
-    const url = (rawArgs as { url?: unknown } | null)?.url
-    return client.request('GET', '/admin/mcp/oauth/status', { query: { url: typeof url === 'string' ? url : undefined } })
+    const { name, url } = (rawArgs ?? {}) as { name?: unknown; url?: unknown }
+    return client.request('GET', '/admin/mcp/oauth/status', { query: { name: typeof name === 'string' ? name : undefined, url: typeof url === 'string' ? url : undefined } })
   },
 
   // --- packages ------------------------------------------------------------------
@@ -182,17 +183,17 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
   [IPC.MCP_CREDENTIAL_SET]: async (ctx, _event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpCredentialSetArgs, rawArgs)
     if ('error' in v) return { success: false, error: v.error }
-    const { filePath, npmPackage, envKey, value } = v.data
+    const { filePath, serverName, envKey, value } = v.data
     try {
       const client = await ctx.ready()
       // Remote mode read placeholders, not values: see placeholderWrite.
       if (ctx.mode === 'remote' && (value === REDACTED_VALUE || isEditedPlaceholder(value))) {
-        const meta = await client.request<{ credentials: Record<string, CredentialMeta> }>('GET', '/files/agent/mcp/credentials', { query: atPath(filePath, { npmPackage }) })
+        const meta = await client.request<{ credentials: Record<string, CredentialMeta> }>('GET', '/files/agent/mcp/credentials', { query: atPath(filePath, { serverName }) })
         const outcome = placeholderWrite(value, meta.credentials?.[envKey]?.present === true, envKey)
         if (outcome && 'keep' in outcome) return { success: true }
         if (outcome) return { success: false, error: outcome.error }
       }
-      await client.request('PUT', '/files/agent/mcp/credentials', { query: atPath(filePath), body: { npmPackage, envKey, value } })
+      await client.request('PUT', '/files/agent/mcp/credentials', { query: atPath(filePath), body: { serverName, envKey, value } })
       return { success: true }
     } catch (error) {
       return { success: false, error: refusalText(error) }
@@ -208,12 +209,12 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
   [IPC.MCP_CREDENTIAL_GET]: async (ctx, _event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpCredentialGetArgs, rawArgs)
     if ('error' in v) return { credentials: {} }
-    const prefix = `mcp:${v.data.npmPackage}:`
+    const prefix = `mcp:${v.data.serverName}:`
     try {
       const client = await ctx.ready()
-      if (ctx.mode === 'local') return { credentials: await revealValues(client, v.data.filePath, prefix) }
+      if (ctx.mode === 'local') return { credentials: mcpEnvCredentialsOnly(prefix, await revealValues(client, v.data.filePath, prefix)) }
       const answer = await client.request<{ credentials: Record<string, CredentialMeta> }>(
-        'GET', '/files/agent/mcp/credentials', { query: atPath(v.data.filePath, { npmPackage: v.data.npmPackage }) })
+        'GET', '/files/agent/mcp/credentials', { query: atPath(v.data.filePath, { serverName: v.data.serverName }) })
       const credentials: Record<string, string> = {}
       for (const [envKey, meta] of Object.entries(answer.credentials ?? {})) {
         if (meta.present && !meta.locked) credentials[envKey] = REDACTED_VALUE
@@ -227,7 +228,7 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
   [IPC.MCP_CREDENTIAL_LIST_FILES]: async (ctx, _event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpCredentialListArgs, rawArgs)
     if ('error' in v) return { files: [] }
-    return (await ctx.ready()).request('GET', '/credentials/mcp/files', { query: { mcpServerName: v.data.mcpServerName, npmPackage: v.data.npmPackage } })
+    return (await ctx.ready()).request('GET', '/credentials/mcp/files', { query: { serverName: v.data.serverName } })
   },
 
   [IPC.MCP_ATTACH_SERVER]: async (ctx, _event, rawArgs: unknown) => {
@@ -247,9 +248,9 @@ export const MCP_HANDLERS: DaemonHandlerTable = {
   [IPC.MCP_DETACH_SERVER]: async (ctx, _event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpDetachArgs, rawArgs)
     if ('error' in v) return { success: false, error: v.error }
-    const { filePath, serverName, credentialNamespace } = v.data
+    const { filePath, serverName } = v.data
     try {
-      await (await ctx.ready()).request('DELETE', `/files/agent/mcp/servers/${enc(serverName)}`, { query: atPath(filePath, { credentialNamespace }) })
+      await (await ctx.ready()).request('DELETE', `/files/agent/mcp/servers/${enc(serverName)}`, { query: atPath(filePath) })
       return { success: true }
     } catch (error) {
       return { success: false, error: errorText(error) }

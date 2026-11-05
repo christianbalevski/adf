@@ -16,17 +16,16 @@ export const McpUninstallArgs = z.object({ package: z.string().min(1) })
 export const McpNameArgs = z.object({ name: z.string().min(1) })
 export const McpCredentialSetArgs = z.object({
   filePath: z.string().min(1),
-  npmPackage: z.string().min(1),
+  serverName: z.string().min(1),
   envKey: z.string().min(1),
   value: z.string()
 })
 export const McpCredentialGetArgs = z.object({
   filePath: z.string().min(1),
-  npmPackage: z.string().min(1)
+  serverName: z.string().min(1)
 })
 export const McpCredentialListArgs = z.object({
-  mcpServerName: z.string().min(1),
-  npmPackage: z.string().min(1)
+  serverName: z.string().min(1)
 })
 export const McpAttachArgs = z.object({
   filePath: z.string().min(1),
@@ -54,8 +53,7 @@ export const McpAttachArgs = z.object({
 })
 export const McpDetachArgs = z.object({
   filePath: z.string().min(1),
-  serverName: z.string().min(1),
-  credentialNamespace: z.string().min(1)
+  serverName: z.string().min(1)
 })
 
 /** Validate IPC args against a Zod schema, returning parsed data or an error response. */
