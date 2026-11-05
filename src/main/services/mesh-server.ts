@@ -1203,17 +1203,18 @@ export function buildAgentCard(agent: ServableAgent, servingHost: string, port: 
     ?? { method: 'self', endpoint: endpoints.card }
 
   // Build policies from security config. `send` mirrors egress (level >= 1
-  // always signs or refuses to send); `receive` mirrors ingress enforcement,
-  // which accepts unsigned messages unless it is configured to reject them.
+  // always signs or refuses to send); `receive` mirrors ingress, which rejects
+  // a message missing either signature it is configured to require.
   const security = config.security ?? { allow_unsigned: true }
-  const securityLevel = security.level ?? 0
+  const signsOutbound = (security.level ?? 0) >= 1
+  const requiresSignedInbound = rejectsUnsignedInbound(security) || !!security.require_payload_signature
   const policies: AlfAgentCard['policies'] = []
-  if (securityLevel >= 1) {
+  if (signsOutbound || requiresSignedInbound) {
     policies.push({
       type: 'signing',
       standard: 'ed25519',
-      send: 'required',
-      receive: rejectsUnsignedInbound(security) ? 'required' : 'optional'
+      send: signsOutbound ? 'required' : 'optional',
+      receive: requiresSignedInbound ? 'required' : 'optional'
     })
   }
 
