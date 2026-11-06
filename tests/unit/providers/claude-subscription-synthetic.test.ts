@@ -15,7 +15,7 @@ import type { LLMMessage } from '../../../src/shared/types/provider.types'
  * as provider context. The SDK is mocked: these are fixtures, not a live CLI.
  */
 
-type Options = { sessionStore: { append: (key: unknown, batch: unknown[]) => Promise<void>; load: () => Promise<unknown> }; resume?: string }
+type Options = { sessionStore: { append: (key: unknown, batch: unknown[]) => Promise<void>; load: () => Promise<unknown> }; resume?: string; env?: Record<string, string> }
 
 const sdk = vi.hoisted(() => ({ turns: [] as Array<(o: unknown) => Promise<unknown[]> | unknown[]>, onResume: null as null | ((o: unknown) => Promise<void>) }))
 
@@ -195,6 +195,17 @@ describe('claude-subscription synthetic assistant messages', () => {
     })
     await expect(provider().createMessage({ system: 's', messages: [{ role: 'user', content: 'hi' }] }))
       .rejects.toMatchObject({ status: 429 })
+  })
+
+  it('turns off Claude Code\'s own reminders in the env it starts the CLI with', async () => {
+    let env: Record<string, string> | undefined
+    sdk.turns.push((o) => { env = (o as Options).env; return [...streamed('msg_env', 'OK'), success] })
+    await provider().createMessage({ system: 's', messages: [{ role: 'user', content: 'hi' }] })
+
+    expect(env).toMatchObject({
+      CLAUDE_CODE_SILENT_TURN_REMINDER: 'off',
+      CLAUDE_CODE_TOTAL_TOKENS_REMINDER: 'off',
+    })
   })
 
   it('keeps the tool bridge working when a synthetic row precedes a tool call', async () => {
