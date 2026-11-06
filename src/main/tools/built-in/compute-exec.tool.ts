@@ -21,6 +21,7 @@ import type { ContainerPhase } from '../../../shared/types/compute.types'
 import { availableTargets, resolveTarget, type ComputeCapabilities, type ComputeTarget } from './compute-target'
 import { hostExec, ensureHostWorkspace } from '../../services/host-exec.service'
 import { ExternalExecutionService } from '../../services/external-execution.service'
+import { clampTimerDelay } from '../../utils/timer-delay'
 
 const MAX_OUTPUT_BYTES = 512 * 1024 // 512 KB per stream
 const DEFAULT_TIMEOUT_MS = 30_000
@@ -115,9 +116,10 @@ export class ComputeExecTool implements Tool {
 
     // Resolve effective timeout: per-call, bounded by the agent's limit
     const ceiling = this.ceiling
-    const effectiveTimeout = timeout_ms
+    // Every backend arms a timer with it (hostExec, execFile's timeout).
+    const effectiveTimeout = clampTimerDelay(timeout_ms
       ? Math.min(timeout_ms, ceiling)
-      : Math.min(DEFAULT_TIMEOUT_MS, ceiling)
+      : Math.min(DEFAULT_TIMEOUT_MS, ceiling))
 
     try {
       let result: { stdout: string; stderr: string; code: number; timedOut?: boolean }

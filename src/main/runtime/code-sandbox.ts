@@ -1,5 +1,6 @@
 import { getSandboxHost, readAllowlist, type RemoteWorker } from './sandbox-host'
 import { cpus } from 'os'
+import { clampTimerDelay } from '../utils/timer-delay'
 
 export interface CodeResult {
   result?: string
@@ -24,6 +25,8 @@ export interface ToolConfig {
 }
 
 const DEFAULT_TIMEOUT = 10_000
+/** The host-side worker guard fires this long after the in-worker timeout. */
+const WORKER_GUARD_BUFFER_MS = 2000
 
 /**
  * Transform import statements to await __require() calls.
@@ -408,7 +411,8 @@ export class CodeSandboxService {
     options?: ExecuteOptions
   ): Promise<CodeResult> {
     // No ceiling here: callers pass the agent's limits.execution_timeout_ms.
-    const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT
+    // Only Node's timer range bounds it (the worker guard adds its buffer).
+    const effectiveTimeout = clampTimerDelay(timeout ?? DEFAULT_TIMEOUT, WORKER_GUARD_BUFFER_MS)
     const ephemeral = options?.ephemeral ?? false
     if (options?.signal?.aborted) {
       return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
@@ -518,7 +522,7 @@ export class CodeSandboxService {
           errorCode: 'TIMEOUT'
         })
         this.destroyWorker(agentId)
-      }, effectiveTimeout + 2000) // Extra buffer for async RPC round-trips
+      }, effectiveTimeout + WORKER_GUARD_BUFFER_MS) // Extra buffer for async RPC round-trips
 
       // The worker can die while we await its creation — registering on a dead
       // one would wait out the guard timer for nothing.

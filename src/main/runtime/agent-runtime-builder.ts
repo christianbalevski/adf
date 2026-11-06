@@ -66,6 +66,7 @@ import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-o
 import { canonicalizeServerUrl, type McpOAuthStore } from '../services/mcp-oauth.types'
 import { ensureCoreToolDeclarations } from './core-tool-declarations'
 import { emitAgentConfigChanged, emitAgentDerivedKeyChanged } from './agent-runtime-signals'
+import { liveExecutionTimeout } from './live-execution-timeout'
 
 /**
  * Per-agent budget for connecting all MCP servers. A hung server previously
@@ -547,7 +548,7 @@ export class AgentRuntimeBuilder {
   ): void {
     const sandbox = this.codeSandboxService
     if (!sandbox) return
-    const timeoutLimit = () => workspace.getAgentConfig().limits?.execution_timeout_ms
+    const timeoutLimit = liveExecutionTimeout(workspace)
     // Registered while declared, including declarations added later on the
     // running agent (ToolRegistry.provideDeclared).
     registry.provideDeclared('sys_code', () => new SysCodeTool(
@@ -596,7 +597,7 @@ export class AgentRuntimeBuilder {
     }
 
     registry.register(new FsTransferTool(this.podmanService, liveCaps))
-    registry.register(new ComputeExecTool(this.podmanService, liveCaps, () => workspace.getAgentConfig().limits?.execution_timeout_ms))
+    registry.register(new ComputeExecTool(this.podmanService, liveCaps, liveExecutionTimeout(workspace)))
     return startup
   }
 

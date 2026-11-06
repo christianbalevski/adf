@@ -12,6 +12,7 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AgentRuntimeBuilder } from '../../../src/main/runtime/agent-runtime-builder'
 import { CodeSandboxService } from '../../../src/main/runtime/code-sandbox'
 import { createHeadlessAgent, MockLLMProvider } from '../../../src/main/runtime/headless'
+import { liveExecutionTimeout } from '../../../src/main/runtime/live-execution-timeout'
 
 const cleanup: Array<() => void> = []
 afterEach(() => {
@@ -35,6 +36,14 @@ describe('execution_timeout_ms is the one code-execution limit', () => {
     // Worker guard = effective timeout + 2s RPC buffer.
     expect(delays).toContain(7_202_000)
     expect(delays).not.toContain(302_000)
+  })
+
+  it('a limit beyond Node\'s timer range does not fire the timeout immediately', async () => {
+    const sandbox = new CodeSandboxService()
+    cleanup.push(() => sandbox.destroyAll())
+    const result = await sandbox.execute('timeout-overflow-agent', 'await new Promise(r => setTimeout(r, 50)); return 1', 3_000_000_000)
+    expect(result.error).toBeUndefined()
+    expect(result.errorCode).toBeUndefined()
   })
 
   it('sys_code / sys_lambda schemas follow a limit raised after the agent started', async () => {
@@ -69,5 +78,26 @@ describe('execution_timeout_ms is the one code-execution limit', () => {
     expect(sysLambda.inputSchema.safeParse({ source: 'a.js', timeout: 7_200_000 }).success).toBe(true)
     expect(JSON.stringify(sysLambda.toProviderFormat().input_schema)).toContain('7200000')
     expect(JSON.stringify(sysLambda.toProviderFormat().input_schema)).not.toContain('600000')
+  })
+
+  it('reads the config only when it changed, and still follows a change', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-exec-limit-cache-'))
+    cleanup.push(() => rmSync(dir, { recursive: true, force: true }))
+    const workspace = AdfWorkspace.create(join(dir, 'agent.adf'), { name: 'cache', autonomous: false })
+    cleanup.push(() => workspace.close())
+    const read = vi.spyOn(workspace, 'getAgentConfig')
+    const limit = liveExecutionTimeout(workspace)
+
+    const first = limit()
+    for (let i = 0; i < 20; i++) expect(limit()).toBe(first)
+    expect(read).toHaveBeenCalledTimes(1)
+
+    const next = workspace.getAgentConfig()
+    next.limits = { ...next.limits, execution_timeout_ms: 1_234_000 }
+    workspace.setAgentConfig(next)
+    read.mockClear()
+    expect(limit()).toBe(1_234_000)
+    expect(limit()).toBe(1_234_000)
+    expect(read).toHaveBeenCalledTimes(1)
   })
 })

@@ -63,6 +63,7 @@ import { toDisplayState } from './display-state'
 import { AGENT_LEASED_CODE, processAgentLeases } from './agent-lease'
 import { applyBackgroundEvent, countActiveLoops, type BackgroundMappedEvent } from './background-event-mapping'
 import { inboxSnapshot } from './inbox-snapshot'
+import { liveExecutionTimeout } from './live-execution-timeout'
 
 /** Max agents starting concurrently during the boot autostart scan. */
 const AUTOSTART_CONCURRENCY = 5
@@ -1195,13 +1196,13 @@ export class BackgroundAgentManager extends EventEmitter {
     // running agent (ToolRegistry.provideDeclared).
     const sandbox = this.codeSandboxService
     if (sandbox) {
-      agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(sandbox, filePath, adfCallHandler ?? undefined, () => workspace.getAgentConfig().limits?.execution_timeout_ms), config.tools)
+      agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(sandbox, filePath, adfCallHandler ?? undefined, liveExecutionTimeout(workspace)), config.tools)
     }
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook has a private backend and does not need this shared registration.
     if (sandbox && adfCallHandler) {
-      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(sandbox, adfCallHandler, filePath, () => workspace.getAgentConfig().limits?.execution_timeout_ms), config.tools)
+      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(sandbox, adfCallHandler, filePath, liveExecutionTimeout(workspace)), config.tools)
     }
     const packages = this.sandboxPackagesService
     if (packages) {
@@ -1235,7 +1236,7 @@ export class BackgroundAgentManager extends EventEmitter {
       }
 
       agentToolRegistry.register(new FsTransferTool(this.podmanService ?? null, liveComputeCaps))
-      agentToolRegistry.register(new ComputeExecTool(this.podmanService ?? null, liveComputeCaps, () => workspace.getAgentConfig().limits?.execution_timeout_ms))
+      agentToolRegistry.register(new ComputeExecTool(this.podmanService ?? null, liveComputeCaps, liveExecutionTimeout(workspace)))
 
       const legacyDecl = config.tools.find((t) => t.name === 'container_exec')
       if (legacyDecl) legacyDecl.name = 'compute_exec'

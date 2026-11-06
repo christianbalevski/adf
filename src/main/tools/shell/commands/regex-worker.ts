@@ -22,6 +22,7 @@
  */
 
 import { Worker } from 'node:worker_threads'
+import { clampTimerDelay } from '../../../utils/timer-delay'
 
 /** One regex match, enough for the caller to rebuild replace() semantics. */
 export interface RegexMatch {
@@ -217,7 +218,7 @@ function release(w: Worker | null): void {
 
 async function run<T>(job: Record<string, unknown>, opts: RegexOptions): Promise<RegexOutcome<T>> {
   // Clamp: a 0/negative/NaN timeout must not kill every match instantly.
-  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 60_000
+  const timeoutMs = clampTimerDelay(opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 60_000)
   const worker = await acquire()
   return new Promise<RegexOutcome<T>>((resolve) => {
     let settled = false

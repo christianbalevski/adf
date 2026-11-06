@@ -55,4 +55,10 @@ describe('compute_exec timeout', () => {
     expect(result.isError).toBe(true)
     expect(JSON.parse(result.content)).toMatchObject({ timed_out: true, timeout_ms: 300 })
   })
+
+  it('clamps a limit beyond Node\'s timer range before it reaches a backend timer', async () => {
+    const exec = vi.fn().mockResolvedValue({ stdout: 'ok', stderr: '', code: 0 })
+    await sharedTool(exec, () => 3_000_000_000).execute({ command: 'true', timeout_ms: 3_000_000_000 }, {} as AdfWorkspace)
+    expect(exec).toHaveBeenLastCalledWith('adf-mcp', `/workspace/${AGENT_ID}`, 'true', 2_147_483_647)
+  })
 })

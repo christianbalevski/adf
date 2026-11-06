@@ -22,6 +22,7 @@ import { protectionGatedRegistry } from './executor/protection-gated-registry'
 import type { ShellGate } from './commands/types'
 import type { AdfEventDispatch } from '@shared/types/adf-event.types'
 import { DOCS_GUIDES_URL } from '../../../shared/constants/adf-defaults'
+import { clampTimerDelay } from '../../utils/timer-delay'
 
 const InputSchema = z.object({
   command: z.string().describe('Bash command or pipeline')
@@ -138,7 +139,7 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
       // a pre-walk here, so scripts, xargs, and $() substitutions — which build
       // sub-pipelines at runtime — inherit the same disabled/HIL/on_tool_call
       // checks instead of bypassing them.
-      const timeoutMs = config.limits?.execution_timeout_ms ?? 60_000
+      const timeoutMs = clampTimerDelay(config.limits?.execution_timeout_ms ?? 60_000)
       const ac = new AbortController()
       let timer = setTimeout(() => ac.abort(), timeoutMs)
 
