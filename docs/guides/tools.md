@@ -972,7 +972,7 @@ These reserved parameters (prefixed with `_`) modify tool behavior across tools.
 
 ### `_async`
 
-Add `_async: true` to any tool call to execute it in the background. The tool returns immediately with a task reference. Available from both LLM tool calls and code execution. For restricted tools, the task is created with `pending_approval` status — the agent continues without blocking while approval is pending. See [Tasks](tasks.md) for details.
+Add `_async: true` to a tool call to execute it in the background. The tool returns immediately with a task reference. Available from both LLM tool calls and code execution, on every tool except the ones bound to the turn itself: `say` and `ask` (not offered), and `loop_compact` / `loop_clear` (refused — they only work as direct calls). For restricted tools, the task is created with `pending_approval` status — the agent continues without blocking while approval is pending. See [Tasks](tasks.md) for details.
 
 ### `_full`
 

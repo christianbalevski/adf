@@ -24,6 +24,22 @@
 
 export const LOOP_RESET_TOOLS = new Set(['loop_compact', 'loop_clear'])
 
+/**
+ * Tools that belong to the model's own turn and cannot be called from code:
+ * `say` is its own tool_use block in the conversation, and the executor
+ * intercepts `ask` by its top-level name to block on the human.
+ */
+export const TURN_ONLY_TOOLS = new Set(['say', 'ask'])
+
+/**
+ * Whether `tool` may run as a background task (`_async: true`). A task runs
+ * the tool through the registry outside the turn, so every tool the executor
+ * completes or intercepts by its top-level name is out.
+ */
+export function canRunAsTask(tool: string): boolean {
+  return !LOOP_RESET_TOOLS.has(tool) && !TURN_ONLY_TOOLS.has(tool)
+}
+
 /** What goes wrong for each tool when the executor branch is skipped. */
 const INDIRECT_EFFECT: Record<string, string> = {
   loop_compact: 'it would report compaction started while nothing is summarized or cleared',
@@ -31,7 +47,7 @@ const INDIRECT_EFFECT: Record<string, string> = {
 }
 
 /** Refusal text for an indirect loop-reset call. `via` names the door used. */
-export function loopResetRefusal(tool: string, via: 'adf_shell' | 'code'): string {
+export function loopResetRefusal(tool: string, via: 'adf_shell' | 'code' | '_async'): string {
   const effect = INDIRECT_EFFECT[tool] ?? 'it would not take effect'
   return (
     `${tool} only works as a direct tool call — the runtime completes the loop reset ` +

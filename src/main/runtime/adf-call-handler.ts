@@ -16,7 +16,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { withAuthorization, currentAuthorization } from './authorization-context'
 import type { AgentSession } from './agent-session'
 import { currentSourceOrUnknown } from './execution-context'
-import { LOOP_RESET_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
+import { LOOP_RESET_TOOLS, TURN_ONLY_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -57,9 +57,6 @@ export interface AdfCallHandlerOptions {
   /** This agent's Ed25519 signing key (PKCS8 DER) for attestation_issue. Handles envelope/password decryption. */
   getSigningKey?: () => Buffer | null
 }
-
-/** Tools that cannot be called from code */
-const EXCLUDED_TOOLS = new Set(['say', 'ask'])
 
 /** Code-execution-only methods (not regular tools — gated by code_execution config). */
 const CODE_EXECUTION_METHODS = new Set<keyof CodeExecutionConfig>([
@@ -281,7 +278,7 @@ export class AdfCallHandler {
       }
 
       // Excluded tools (say, ask) — cannot be called from code
-      if (EXCLUDED_TOOLS.has(method)) {
+      if (TURN_ONLY_TOOLS.has(method)) {
         this.logCall('warn', 'call_rejected', method, `Excluded tool "${method}" called from code`)
         return {
           error: `Tool "${method}" cannot be called from code`,
