@@ -350,11 +350,14 @@ export class ClaudeCodeSession {
       // Tool calls wait on ADF (approvals, long tools); never time them out.
       MCP_TOOL_TIMEOUT: '100000000',
       // Keep Claude Code's own additions to the model input to the minimum:
-      // no token countdown, no CLAUDE.md files, no auto-memory, no skills.
+      // no token countdown, no silent-turn reminder (ADF handles silent turns
+      // itself), no CLAUDE.md files, no auto-memory, no skills.
       CLAUDE_CODE_TOTAL_TOKENS_REMINDER: 'off',
+      CLAUDE_CODE_SILENT_TURN_REMINDER: 'off',
       CLAUDE_CODE_DISABLE_CLAUDE_MDS: '1',
       CLAUDE_CODE_DISABLE_AUTO_MEMORY: '1',
-      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',    })
+      CLAUDE_CODE_DISABLE_BUNDLED_SKILLS: '1',
+    })
 
     const mcp = toolsServer(this.config.tools, (id) => this.onToolCall(id))
     this.query = query({
