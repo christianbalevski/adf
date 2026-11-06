@@ -41,6 +41,28 @@ export const TRIGGER_TO_EVENT_TYPE: Record<TriggerTypeV3, AdfEventType> = {
   on_llm_call: 'llm_call',
 }
 
+/**
+ * Whether a trigger type observes the agent's own activity: its events are
+ * produced by the agent's own turn (its LLM calls, tool calls, logs, outbound
+ * messages, task creations). While the agent is working these never wake it at
+ * agent scope — the wake would be caused by the turn it follows, and the next
+ * turn would cause the next wake. on_file_change decides per event instead
+ * (the event's source says whether the agent or its lambdas wrote it).
+ */
+export const TRIGGER_OBSERVES_OWN_ACTIVITY: Record<TriggerTypeV3, boolean> = {
+  on_startup: false,
+  on_inbox: false,
+  on_outbox: true,
+  on_file_change: false,
+  on_chat: false,
+  on_timer: false,
+  on_tool_call: true,
+  on_task_create: true,
+  on_task_complete: false,
+  on_logs: true,
+  on_llm_call: true,
+}
+
 // =============================================================================
 // Per-Event Data Interfaces
 // =============================================================================

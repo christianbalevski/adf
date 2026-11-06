@@ -18,6 +18,7 @@ import {
   type AdfEvent, type AdfEventType, type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEvent,
   type FileChangeEventData,
   type LlmCallEventData,
+  TRIGGER_OBSERVES_OWN_ACTIVITY,
 } from '../../shared/types/adf-event.types'
 import { withSource } from './execution-context'
 import { currentSourceOrUnknown } from './execution-context'
@@ -121,6 +122,10 @@ function computeUnifiedDiff(filePath: string, before: string, after: string): st
 
 type DisplayState = 'active' | 'idle' | 'hibernate' | 'suspended' | 'off'
 
+/** Executor states that mean "running a turn" — sub-states of the `active`
+ *  display state. They reach setDisplayState through state_changed. */
+const EXECUTOR_WORK_STATES = new Set(['thinking', 'tool_use', 'awaiting_approval', 'awaiting_ask'])
+
 /**
  * Watches for trigger conditions and emits "trigger" events
  * when the agent should execute a turn.
@@ -140,6 +145,8 @@ export class TriggerEvaluator extends EventEmitter {
 
   // State gating
   private displayState: DisplayState = 'idle'
+  /** The executor is in one of EXECUTOR_WORK_STATES (displayState is then 'active'). */
+  private executorWorking = false
 
   // Hibernate nudge: fires after configured interval since the last trigger while in hibernate
   private lastTriggerAt: number = Date.now()
@@ -185,7 +192,10 @@ export class TriggerEvaluator extends EventEmitter {
 
   setDisplayState(state: string): void {
     const prev = this.displayState
-    this.displayState = state as DisplayState
+    // A turn in progress is `active`. Agent-scope triggers that arrive now are
+    // queued by the executor and run at the turn boundary.
+    this.executorWorking = EXECUTOR_WORK_STATES.has(state)
+    this.displayState = (this.executorWorking ? 'active' : state) as DisplayState
     // Reset nudge timer when leaving hibernate
     if (prev === 'hibernate' && state !== 'hibernate') {
       this.lastHibernateNudge = null
@@ -220,12 +230,9 @@ export class TriggerEvaluator extends EventEmitter {
    *
    * System scope: fires in all states except `off`
    * Agent scope:
+   *   active/idle → all triggers
    *   hibernate    → only on_timer (direct user chat is dispatched separately)
    *   suspended/off → nothing
-   *   anything else → all triggers. That includes the executor's working
-   *   states (thinking, tool_use, awaiting_*), which also arrive here via
-   *   state_changed: the executor queues a mid-turn dispatch itself and runs
-   *   it at the turn boundary, so dropping it here would lose it.
    */
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
     if (scope === 'system') {
@@ -233,13 +240,16 @@ export class TriggerEvaluator extends EventEmitter {
     }
     // Agent scope
     switch (this.displayState) {
+      case 'active':
+      case 'idle':
+        return true
       case 'hibernate':
         return triggerType === 'on_timer'
       case 'suspended':
       case 'off':
         return false
       default:
-        return true
+        return false
     }
   }
 
@@ -439,6 +449,9 @@ export class TriggerEvaluator extends EventEmitter {
       if (skipSystemScope && target.scope === 'system') continue
       if (skipAgentScope && target.scope === 'agent') continue
       if (!this.shouldFire(target.scope, triggerType)) continue
+      // The agent's own activity never wakes it while it is working: the wake
+      // would follow the very turn that caused it, endlessly.
+      if (target.scope === 'agent' && this.executorWorking && this.observesOwnActivity(triggerType, event)) continue
       if (!this.matchesFilter(triggerType, target, filterData)) continue
 
       // Self-generated file writes are suppressed unless a target asks for
@@ -593,6 +606,13 @@ export class TriggerEvaluator extends EventEmitter {
 
   private isSelfGeneratedFileEvent(event: Pick<AdfEvent, 'source'>): boolean {
     return event.source.startsWith('agent:') || event.source.startsWith('lambda:')
+  }
+
+  /** Whether this event can be the agent's own activity (TRIGGER_OBSERVES_OWN_ACTIVITY;
+   *  file changes carry their writer in the event source). */
+  private observesOwnActivity(triggerType: TriggerTypeV3, event: Pick<AdfEvent, 'type' | 'source'>): boolean {
+    if (event.type === 'file_change') return this.isSelfGeneratedFileEvent(event)
+    return TRIGGER_OBSERVES_OWN_ACTIVITY[triggerType]
   }
 
   private lambdaSource(lambda: string): string {

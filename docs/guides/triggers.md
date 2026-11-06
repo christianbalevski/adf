@@ -389,7 +389,7 @@ Key behaviors:
 
 | Current State | System Scope | Agent Scope |
 |---------------|-------------|-------------|
-| **Active** | Fires | Already running |
+| **Active** | Fires | Queued, runs at the turn boundary |
 | **Idle** | Fires | Fires |
 | **Hibernate** | Fires | `on_timer` only |
 | **Suspended** | Fires | No |
@@ -397,6 +397,8 @@ Key behaviors:
 | **Off** | No | No |
 
 System scope fires in every state except `off` — including `error` and `suspended`. Agent scope is the only scope the state gate can hold back.
+
+An agent-scope trigger that arrives while a turn is running (a task completing, a message, a timer) is queued and runs as the next turn once the current one ends. The agent's own activity never wakes it this way: while it is working, `on_llm_call`, `on_tool_call`, `on_logs`, `on_outbox`, `on_task_create` and its own file writes do not fire agent scope.
 
 ### Firing Order
 
