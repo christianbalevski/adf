@@ -1348,7 +1348,8 @@ export class LoopPool implements LoopPoolApi {
   private rebindBoundTools(runtime: LoopRuntime): void {
     const granted = new Set(runtime.derived.tools.filter(t => t.enabled).map(t => t.name))
     const filePath = this.deps.workspace.getFilePath()
-    const timeout = runtime.derived.limits?.execution_timeout_ms
+    // Read at use: runtime.derived is replaced when the host config changes.
+    const timeout = () => runtime.derived.limits?.execution_timeout_ms
 
     // Inter-loop tools: granted like any other tool now (host-enabled AND in
     // this loop's allow-list), so the registration follows `granted`. The

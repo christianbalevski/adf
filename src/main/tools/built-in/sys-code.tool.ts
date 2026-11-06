@@ -51,20 +51,30 @@ export class SysCodeTool implements Tool {
     'Standard library packages (always available): xlsx, pdf-lib, mupdf, docx, jszip, sql.js, cheerio, yaml, date-fns, jimp. ' +
     'Additional packages can be installed via npm_install (pure JS only, no native addons). ' +
     'Set clear_state to false to preserve variables between calls. For multi-step investigations, load data once into a variable and pass clear_state: false on every follow-up call instead of re-fetching; any call with the default (true) wipes saved state.'
-  readonly inputSchema: ReturnType<typeof buildInputSchema>
+  private schema: { maxTimeout: number; inputSchema: ReturnType<typeof buildInputSchema> } | null = null
   readonly category = 'external' as const
 
   private service: CodeSandboxService
   private agentId: string
   private adfCallHandler: AdfCallHandler | null
-  private maxTimeout: number
+  private readMaxTimeout: () => number | undefined
 
-  constructor(service: CodeSandboxService, agentId: string, adfCallHandler?: AdfCallHandler, maxTimeout?: number) {
+  constructor(service: CodeSandboxService, agentId: string, adfCallHandler?: AdfCallHandler, maxTimeout?: () => number | undefined) {
     this.service = service
     this.agentId = agentId
     this.adfCallHandler = adfCallHandler ?? null
-    this.maxTimeout = maxTimeout ?? 30_000
-    this.inputSchema = buildInputSchema(this.maxTimeout)
+    this.readMaxTimeout = maxTimeout ?? (() => undefined)
+  }
+
+  /** The agent's limits.execution_timeout_ms, read live so a raised limit applies without a restart. */
+  private get maxTimeout(): number {
+    return this.readMaxTimeout() ?? 30_000
+  }
+
+  get inputSchema(): ReturnType<typeof buildInputSchema> {
+    const maxTimeout = this.maxTimeout
+    if (this.schema?.maxTimeout !== maxTimeout) this.schema = { maxTimeout, inputSchema: buildInputSchema(maxTimeout) }
+    return this.schema.inputSchema
   }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {

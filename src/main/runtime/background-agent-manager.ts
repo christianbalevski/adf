@@ -1195,13 +1195,13 @@ export class BackgroundAgentManager extends EventEmitter {
     // running agent (ToolRegistry.provideDeclared).
     const sandbox = this.codeSandboxService
     if (sandbox) {
-      agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(sandbox, filePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms), config.tools)
+      agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(sandbox, filePath, adfCallHandler ?? undefined, () => workspace.getAgentConfig().limits?.execution_timeout_ms), config.tools)
     }
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook has a private backend and does not need this shared registration.
     if (sandbox && adfCallHandler) {
-      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(sandbox, adfCallHandler, filePath, config.limits?.execution_timeout_ms), config.tools)
+      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(sandbox, adfCallHandler, filePath, () => workspace.getAgentConfig().limits?.execution_timeout_ms), config.tools)
     }
     const packages = this.sandboxPackagesService
     if (packages) {
@@ -1235,7 +1235,7 @@ export class BackgroundAgentManager extends EventEmitter {
       }
 
       agentToolRegistry.register(new FsTransferTool(this.podmanService ?? null, liveComputeCaps))
-      agentToolRegistry.register(new ComputeExecTool(this.podmanService ?? null, liveComputeCaps, config.limits?.execution_timeout_ms))
+      agentToolRegistry.register(new ComputeExecTool(this.podmanService ?? null, liveComputeCaps, () => workspace.getAgentConfig().limits?.execution_timeout_ms))
 
       const legacyDecl = config.tools.find((t) => t.name === 'container_exec')
       if (legacyDecl) legacyDecl.name = 'compute_exec'

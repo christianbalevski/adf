@@ -24,7 +24,6 @@ export interface ToolConfig {
 }
 
 const DEFAULT_TIMEOUT = 10_000
-const MAX_TIMEOUT = 300_000
 
 /**
  * Transform import statements to await __require() calls.
@@ -408,7 +407,8 @@ export class CodeSandboxService {
     toolConfig?: ToolConfig,
     options?: ExecuteOptions
   ): Promise<CodeResult> {
-    const effectiveTimeout = Math.min(timeout ?? DEFAULT_TIMEOUT, MAX_TIMEOUT)
+    // No ceiling here: callers pass the agent's limits.execution_timeout_ms.
+    const effectiveTimeout = timeout ?? DEFAULT_TIMEOUT
     const ephemeral = options?.ephemeral ?? false
     if (options?.signal?.aborted) {
       return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }

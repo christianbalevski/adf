@@ -2517,7 +2517,7 @@ export class PodmanService extends EventEmitter {
     cwd: string,
     command: string,
     timeout = 30_000
-  ): Promise<{ stdout: string; stderr: string; code: number }> {
+  ): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
     const bin = await this.requirePodman()
     const start = Date.now()
     const result = await this.exec0(bin, [

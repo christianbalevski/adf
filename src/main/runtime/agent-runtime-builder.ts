@@ -289,7 +289,7 @@ export class AgentRuntimeBuilder {
       keyRef,
     })
 
-    this.registerCodeTools(registry, config, agentId, adfCallHandler)
+    this.registerCodeTools(registry, workspace, config, agentId, adfCallHandler)
     const computeStartup = this.registerComputeTools(registry, workspace, config, filePath)
     // `assembled` is created further down; the MCP install/restart closures fan
     // a freshly-synced config out to the live executor once it exists (a no-op
@@ -540,19 +540,21 @@ export class AgentRuntimeBuilder {
 
   private registerCodeTools(
     registry: ToolRegistry,
+    workspace: AdfWorkspace,
     config: AgentConfig,
     agentId: string,
     adfCallHandler: AdfCallHandler | null,
   ): void {
     const sandbox = this.codeSandboxService
     if (!sandbox) return
+    const timeoutLimit = () => workspace.getAgentConfig().limits?.execution_timeout_ms
     // Registered while declared, including declarations added later on the
     // running agent (ToolRegistry.provideDeclared).
     registry.provideDeclared('sys_code', () => new SysCodeTool(
       sandbox,
       agentId,
       adfCallHandler ?? undefined,
-      config.limits?.execution_timeout_ms,
+      timeoutLimit,
     ), config.tools)
     // Normal sys_lambda access remains declaration-dependent. A hook that is
     // added live uses its private registry/backend instead of this shared path.
@@ -561,7 +563,7 @@ export class AgentRuntimeBuilder {
         sandbox,
         adfCallHandler,
         agentId,
-        config.limits?.execution_timeout_ms,
+        timeoutLimit,
       ), config.tools)
     }
     const packages = this.sandboxPackagesService
@@ -594,7 +596,7 @@ export class AgentRuntimeBuilder {
     }
 
     registry.register(new FsTransferTool(this.podmanService, liveCaps))
-    registry.register(new ComputeExecTool(this.podmanService, liveCaps, config.limits?.execution_timeout_ms))
+    registry.register(new ComputeExecTool(this.podmanService, liveCaps, () => workspace.getAgentConfig().limits?.execution_timeout_ms))
     return startup
   }
 
