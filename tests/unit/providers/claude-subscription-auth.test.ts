@@ -319,4 +319,21 @@ describe('claudeCodeEnv', () => {
       }
     }
   })
+
+  it('applies explicit values over inherited ones and strips an inherited silent-turn reminder setting', () => {
+    const vars = { CLAUDE_CODE_SILENT_TURN_REMINDER: '1', MCP_TOOL_TIMEOUT: '5000' }
+    const saved = Object.fromEntries(Object.keys(vars).map(k => [k, process.env[k]]))
+    Object.assign(process.env, vars)
+    try {
+      expect(code.claudeCodeEnv({ CLAUDE_CODE_SILENT_TURN_REMINDER: 'off' }).CLAUDE_CODE_SILENT_TURN_REMINDER).toBe('off')
+      expect(code.claudeCodeEnv()).not.toHaveProperty('CLAUDE_CODE_SILENT_TURN_REMINDER')
+      // Inherited variables that are not stripped must still lose to explicit ones.
+      expect(code.claudeCodeEnv({ MCP_TOOL_TIMEOUT: '100000000' }).MCP_TOOL_TIMEOUT).toBe('100000000')
+    } finally {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k]
+        else process.env[k] = v
+      }
+    }
+  })
 })
