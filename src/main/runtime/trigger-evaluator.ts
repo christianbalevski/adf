@@ -225,6 +225,13 @@ export class TriggerEvaluator extends EventEmitter {
   // State gating
   // ===========================================================================
 
+  /** The state triggers are gated on: a turn in progress (EXECUTOR_WORK_STATES)
+   *  is `active` — agent-scope triggers arriving now are queued by the executor
+   *  and run at the turn boundary. Everything else gates as reported. */
+  private gateState(): string {
+    return this.executorWorking ? 'active' : this.displayState
+  }
+
   /**
    * Determine if a trigger should fire given the current display state and scope.
    *
@@ -234,13 +241,6 @@ export class TriggerEvaluator extends EventEmitter {
    *   hibernate    → only on_timer (direct user chat is dispatched separately)
    *   suspended/off → nothing
    */
-  /** The state triggers are gated on: a turn in progress (EXECUTOR_WORK_STATES)
-   *  is `active` — agent-scope triggers arriving now are queued by the executor
-   *  and run at the turn boundary. Everything else gates as reported. */
-  private gateState(): string {
-    return this.executorWorking ? 'active' : this.displayState
-  }
-
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
     if (scope === 'system') {
       return this.gateState() !== 'off'
