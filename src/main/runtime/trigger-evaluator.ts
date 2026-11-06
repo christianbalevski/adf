@@ -220,9 +220,12 @@ export class TriggerEvaluator extends EventEmitter {
    *
    * System scope: fires in all states except `off`
    * Agent scope:
-   *   active/idle → all triggers
    *   hibernate    → only on_timer (direct user chat is dispatched separately)
    *   suspended/off → nothing
+   *   anything else → all triggers. That includes the executor's working
+   *   states (thinking, tool_use, awaiting_*), which also arrive here via
+   *   state_changed: the executor queues a mid-turn dispatch itself and runs
+   *   it at the turn boundary, so dropping it here would lose it.
    */
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
     if (scope === 'system') {
@@ -230,16 +233,13 @@ export class TriggerEvaluator extends EventEmitter {
     }
     // Agent scope
     switch (this.displayState) {
-      case 'active':
-      case 'idle':
-        return true
       case 'hibernate':
         return triggerType === 'on_timer'
       case 'suspended':
       case 'off':
         return false
       default:
-        return false
+        return true
     }
   }
 
