@@ -134,6 +134,18 @@ describe('the agent\'s own activity does not wake it', () => {
 })
 
 describe('agent-scope gating by state', () => {
+  it('reports a work state as given (as on base) while gating it as active', () => {
+    const evaluator = new TriggerEvaluator({ id: 'a', name: 'a', triggers: { on_task_complete: { enabled: true, targets: [{ scope: 'agent' }] } } } as unknown as AgentConfig)
+    const fired: (AdfEventDispatch | AdfBatchDispatch)[] = []
+    evaluator.on('trigger', (d) => fired.push(d))
+
+    evaluator.setDisplayState('awaiting_approval')
+    expect(evaluator.getDisplayState()).toBe('awaiting_approval')
+    evaluator.onTaskComplete('task-1', 'fs_read', 'completed', 'ok')
+    expect(fired).toHaveLength(1)
+    expect((fired[0] as AdfEventDispatch).scope).toBe('agent')
+  })
+
   it('does not fire an agent-scope trigger in error state', () => {
     const evaluator = new TriggerEvaluator({ id: 'a', name: 'a', triggers: { on_task_complete: { enabled: true, targets: [{ scope: 'agent' }] } } } as unknown as AgentConfig)
     const fired: (AdfEventDispatch | AdfBatchDispatch)[] = []

@@ -145,7 +145,7 @@ export class TriggerEvaluator extends EventEmitter {
 
   // State gating
   private displayState: DisplayState = 'idle'
-  /** The executor is in one of EXECUTOR_WORK_STATES (displayState is then 'active'). */
+  /** The executor is in one of EXECUTOR_WORK_STATES (gated as 'active'; see gateState). */
   private executorWorking = false
 
   // Hibernate nudge: fires after configured interval since the last trigger while in hibernate
@@ -192,10 +192,10 @@ export class TriggerEvaluator extends EventEmitter {
 
   setDisplayState(state: string): void {
     const prev = this.displayState
-    // A turn in progress is `active`. Agent-scope triggers that arrive now are
-    // queued by the executor and run at the turn boundary.
+    // Stored as reported (getDisplayState is read by diagnostics and Studio).
+    // Gating maps work states to `active` — see gateState.
     this.executorWorking = EXECUTOR_WORK_STATES.has(state)
-    this.displayState = (this.executorWorking ? 'active' : state) as DisplayState
+    this.displayState = state as DisplayState
     // Reset nudge timer when leaving hibernate
     if (prev === 'hibernate' && state !== 'hibernate') {
       this.lastHibernateNudge = null
@@ -234,12 +234,19 @@ export class TriggerEvaluator extends EventEmitter {
    *   hibernate    → only on_timer (direct user chat is dispatched separately)
    *   suspended/off → nothing
    */
+  /** The state triggers are gated on: a turn in progress (EXECUTOR_WORK_STATES)
+   *  is `active` — agent-scope triggers arriving now are queued by the executor
+   *  and run at the turn boundary. Everything else gates as reported. */
+  private gateState(): string {
+    return this.executorWorking ? 'active' : this.displayState
+  }
+
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
     if (scope === 'system') {
-      return this.displayState !== 'off'
+      return this.gateState() !== 'off'
     }
     // Agent scope
-    switch (this.displayState) {
+    switch (this.gateState()) {
       case 'active':
       case 'idle':
         return true
@@ -1023,7 +1030,7 @@ export class TriggerEvaluator extends EventEmitter {
 
   private checkHibernateNudge(): void {
     if (RuntimeGate.stopped) return
-    if (this.displayState !== 'hibernate') return
+    if (this.gateState() !== 'hibernate') return
 
     const nudgeCfg = this.config.limits?.hibernate_nudge
     // Default: enabled with 24h interval
