@@ -29,7 +29,7 @@ function makeWorkspace(name: string) {
     name,
     provider: new MockLLMProvider(),
     createOptions: {
-      tools: ['sys_set_state', 'say', 'fs_list'].map(n => ({ name: n, enabled: true, visible: true, restricted: false })),
+      tools: ['sys_set_state', 'say', 'fs_list', 'fs_write', 'adf_shell'].map(n => ({ name: n, enabled: true, visible: true, restricted: false })),
     },
   })
   created.dispose()
@@ -68,11 +68,13 @@ class ScriptedProvider implements LLMProvider {
   readonly name = 'scripted'
   readonly modelId = 'scripted-v1'
   readonly calls: LLMMessage[][] = []
+  beforeCall?: (index: number) => Promise<void> | void
 
   constructor(private readonly script: Array<() => LLMResponse>) {}
 
   async createMessage(opts: CreateMessageOptions): Promise<LLMResponse> {
     this.calls.push([...opts.messages])
+    await this.beforeCall?.(this.calls.length - 1)
     return this.script[Math.min(this.calls.length - 1, this.script.length - 1)]()
   }
 
@@ -89,10 +91,15 @@ function sawNotice(messages: LLMMessage[]): boolean {
   return messages.some(m => m.role === 'user' && JSON.stringify(m.content).includes(NOTICE_MARK))
 }
 
-async function run(type: 'chat' | 'timer', script: Array<() => LLMResponse>) {
+async function run(
+  type: 'chat' | 'timer',
+  script: Array<() => LLMResponse>,
+  beforeCall?: (index: number, executor: { executeTurn(d: ReturnType<typeof dispatch>): Promise<unknown> }) => Promise<void> | void,
+) {
   const { filePath, workspace } = makeWorkspace('agent')
   const provider = new ScriptedProvider(script)
   const agent = await new AgentRuntimeBuilder().build({ workspace, filePath, config: workspace.getAgentConfig(), provider })
+  if (beforeCall) provider.beforeCall = index => beforeCall(index, agent.executor)
   try {
     await agent.executor.executeTurn(dispatch(type))
   } finally {
@@ -228,6 +235,67 @@ describe('silent turn notice', () => {
     ])
     expect(provider.calls).toHaveLength(3)
     expect(sawNotice(provider.calls[2])).toBe(true)
+    expect(noticeRows(workspace)).toHaveLength(1)
+  })
+
+  // The response that ends the turn is an answer: the model never sees its
+  // tool results, so its text cannot be a status line. Turn-ending is the
+  // executor's own decision (the tool result's endTurn), so the shell's
+  // `state idle` counts the same as sys_set_state.
+  it('no notice when an answer ends the turn through the shell', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([text('HN post on Oct 21.'), tool('adf_shell', { command: 'state idle' })]),
+    ])
+    expect(provider.calls).toHaveLength(1)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  it('no notice when an answer, a log write and sys_set_state share the turn-ending response', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([text('HN post on Oct 21.'), tool('fs_write', { path: 'log.md', content: 'answered' }), idle()]),
+    ])
+    expect(provider.calls).toHaveLength(1)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  it('no notice when a say is followed by the shell ending the turn', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('say', { message: 'HN post on Oct 21.' })]),
+      () => response([tool('adf_shell', { command: 'state idle' })]),
+    ])
+    expect(provider.calls).toHaveLength(2)
+    expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  // Accepted cost: an answer said before any work, then work, then a bare
+  // idle has the same shape as a status say, a tool round and a silent idle,
+  // so it gets the (once-per-turn) notice.
+  it('a say before any work, a tool round, then a bare idle gets the notice', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('say', { message: 'HN post on Oct 21.' })]),
+      () => response([tool('fs_list', {})]),
+      () => response([idle()]),
+    ])
+    expect(provider.calls).toHaveLength(4)
+    expect(sawNotice(provider.calls[3])).toBe(true)
+    expect(noticeRows(workspace)).toHaveLength(1)
+  })
+
+  // A chat delivered mid-turn has not been worked on yet: a status line for
+  // it, sent with the first work after it arrives, does not answer it.
+  it('a chat delivered mid-turn resets the guard: its status line and tool round, then a silent idle, get the notice', async () => {
+    const { provider, workspace } = await run('chat', [
+      () => response([tool('fs_list', {})]),
+      () => response([tool('say', { message: 'HN post on Oct 21.' })]),
+      () => response([tool('say', { message: 'Checking the budget too.' }), tool('fs_list', {})]),
+      () => response([thinking('Budget is $2k.'), idle()]),
+      () => response([text('Budget is $2k.')]),
+    ], async (index, executor) => {
+      if (index === 1) await executor.executeTurn(dispatch('chat', 'and the budget?'))
+    })
+    expect(provider.calls).toHaveLength(5)
+    expect(JSON.stringify(provider.calls[2])).toContain('and the budget?')
+    expect(sawNotice(provider.calls[4])).toBe(true)
     expect(noticeRows(workspace)).toHaveLength(1)
   })
 

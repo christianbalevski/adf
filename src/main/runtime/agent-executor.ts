@@ -143,6 +143,12 @@ export const INTERRUPTED_TOOL_RESULT = '[Tool execution cancelled — user inter
 /** The loop row an owner interrupt (Stop, Esc, POST /interrupt) leaves. */
 export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by user.'
 
+/** What the owner sees of a response: its text and its say / ask calls, never thinking. */
+function isVisibleToOwner(block: ContentBlock): boolean {
+  return (block.type === 'text' && !!block.text?.trim())
+    || (block.type === 'tool_use' && (block.name === 'say' || block.name === 'ask'))
+}
+
 const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
 // gets one turn to persist durable learnings to its mind pages before the loop
@@ -747,8 +753,8 @@ export class AgentExecutor extends EventEmitter {
   // shown before the agent has seen any tool results is a status line, not an
   // answer. See noteSilentTurn.
   private ownerChat: 'none' | 'unanswered' | 'answered' = 'none'
-  // The agent has called a work tool (anything but say, ask, sys_set_state)
-  // since the owner chat arrived, so it has seen tool results.
+  // Since the owner chat arrived, the model has seen the results of a call
+  // that isn't visible output. See noteOwnerChatResponse.
   private turnDidWork = false
 
   // System prompt caching for performance
@@ -2891,18 +2897,7 @@ export class AgentExecutor extends EventEmitter {
           }
         )
 
-        // The turn's first work tool: everything the owner saw so far, this
-        // response included, came before any tool results, so it was a status
-        // line. After that, visible output answers and later work keeps it.
-        if (this.ownerChat !== 'none') {
-          if (!this.turnDidWork && toolUseBlocks.some(b => b.name !== 'say' && b.name !== 'ask' && b.name !== 'sys_set_state')) {
-            this.ownerChat = 'unanswered'
-            this.turnDidWork = true
-          } else if (response.content.some(b => (b.type === 'text' && b.text?.trim())
-            || (b.type === 'tool_use' && (b.name === 'say' || b.name === 'ask')))) {
-            this.ownerChat = 'answered'
-          }
-        }
+        const responseVisible = response.content.some(isVisibleToOwner)
 
         if (toolUseBlocks.length > 0) {
           consecutiveTextOnly = 0
@@ -3652,6 +3647,12 @@ export class AgentExecutor extends EventEmitter {
             console.log('[AgentExecutor] Session reset after loop clear/compact')
           }
 
+          // Work: a call the model will see the result of. Not visible output,
+          // and not in a response whose turn a call ended (sys_set_state, the
+          // shell's `state`, a lambda): that is the tool result's endTurn above,
+          // so this guard and end-of-turn handling use one definition.
+          this.noteOwnerChatResponse(responseVisible, continueLoop && toolUseBlocks.some(b => !isVisibleToOwner(b)))
+
           // A state change that would end an owner's chat turn with nothing said
           // gets one chance to reply first. 'off' is a deliberate stop.
           if (!continueLoop && !silenceNoticed && targetState !== 'off' && !needsLoopReset && this.noteSilentTurn()) {
@@ -3700,6 +3701,8 @@ export class AgentExecutor extends EventEmitter {
             },
             timestamp: Date.now()
           })
+
+          this.noteOwnerChatResponse(responseVisible, false)
 
           // Interactive mode: text without tool calls ends the turn
           // Autonomous mode: text is logged, turn continues
@@ -6435,6 +6438,24 @@ export class AgentExecutor extends EventEmitter {
     this.absorbedTurnIds.push(...ids)
     this.emitRuntimeEvent('chat.delivered', { delivery, count: chats.length, turn_ids: ids })
     return chats
+  }
+
+  /**
+   * Fold one model response into the owner-chat state. `didWork`: the model
+   * will see results of calls in it that aren't visible output. The turn's
+   * first such response makes everything the owner saw so far, that response
+   * included, a status line: it all came before any tool results. Otherwise
+   * visible output answers, including in the response that ends the turn,
+   * whose tool results the model never sees.
+   */
+  private noteOwnerChatResponse(visible: boolean, didWork: boolean): void {
+    if (this.ownerChat === 'none') return
+    if (didWork && !this.turnDidWork) {
+      this.ownerChat = 'unanswered'
+      this.turnDidWork = true
+    } else if (visible) {
+      this.ownerChat = 'answered'
+    }
   }
 
   /**
