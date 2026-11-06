@@ -63,9 +63,6 @@ import {
   toLlmCallEventData,
 } from './llm-call-metadata'
 
-/** Tools that support _async: true (background execution). MCP tools (mcp_*) are also allowed. */
-const ASYNC_ALLOWED_TOOLS = new Set(['adf_shell', 'sys_code', 'sys_lambda', 'sys_fetch'])
-
 /** `hil.requested` fields telling an owner surface (daemon/TUI) whether
  *  "Always approve" is offered — snake_case like the rest of the payload. The
  *  server re-checks on the always-approve call; this is only the affordance. */
@@ -1463,9 +1460,7 @@ export class AgentExecutor extends EventEmitter {
       const schema = t.toProviderFormat()
       const props = (schema.input_schema.properties ?? {}) as Record<string, unknown>
       props._reason = { type: 'string', description: 'Why you are calling this tool in ~10 words or less.' }
-      if (ASYNC_ALLOWED_TOOLS.has(t.name) || t.name.startsWith('mcp_')) {
-        props._async = { type: 'boolean', default: false, description: 'Run in background as a task. Returns a task_id immediately.' }
-      }
+      props._async = { type: 'boolean', default: false, description: 'Run in background as a task. Returns a task_id immediately.' }
       schema.input_schema.properties = props
       return schema
     })
@@ -3057,8 +3052,7 @@ export class AgentExecutor extends EventEmitter {
             // _async check BEFORE HIL — async restricted tools create a pending_approval task
             // and return immediately instead of blocking the loop
             const toolInput = toolBlock.input as Record<string, unknown> | undefined
-            const asyncAllowed = ASYNC_ALLOWED_TOOLS.has(toolBlock.name) || toolBlock.name.startsWith('mcp_')
-            const isAsync = asyncAllowed && toolInput && (toolInput._async === true || toolInput._async === 'true')
+            const isAsync = toolInput && (toolInput._async === true || toolInput._async === 'true')
 
             if (isAsync && isRestricted) {
               // Async + restricted: create HIL task but don't block — return task reference
@@ -4732,7 +4726,9 @@ export class AgentExecutor extends EventEmitter {
           this.onTaskCompleted?.(taskId, toolName, 'failed', undefined, result.content)
         } else {
           workspace.updateTaskStatus(taskId, 'completed', result.content)
-          this.onTaskCompleted?.(taskId, toolName, 'completed', result.content)
+          // Same side-effect contract as AdfCallHandler's async path: a
+          // turn-control tool (sys_set_state) run as a task still applies.
+          this.onTaskCompleted?.(taskId, toolName, 'completed', result.content, undefined, result.endTurn ? { endTurn: true } : undefined)
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
