@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { accessSync, constants as fsConstants } from 'node:fs'
 import { platform } from 'node:os'
+import { killedByTimeout } from '../utils/exec-timeout'
 import type {
   ContainerEngine,
   ExecutionTargetProbeResult,
@@ -169,7 +170,7 @@ function run(command: string, args: string[], timeout: number): Promise<ExecResu
     execFile(command, args, { timeout, maxBuffer: 2 * 1024 * 1024, windowsHide: true }, (error, stdout, stderr) => {
       const errorCode = (error as (NodeJS.ErrnoException & { code?: number }) | null)?.code
       const code = typeof errorCode === 'number' ? errorCode : error ? 1 : 0
-      const timedOut = error != null && (error as { killed?: boolean }).killed === true
+      const timedOut = killedByTimeout(error)
       resolve({ stdout: stdout?.trim() ?? '', stderr: stderr?.trim() ?? '', code, timedOut })
     })
   })
