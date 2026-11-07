@@ -40,6 +40,29 @@ export function canRunAsTask(tool: string): boolean {
   return !LOOP_RESET_TOOLS.has(tool) && !TURN_ONLY_TOOLS.has(tool)
 }
 
+/**
+ * Built-in tools that wait on something outside the process (a subprocess, a
+ * container, the network, sandboxed code), so running them as a task frees the
+ * turn. The local fs_* and db_* tools run on synchronous SQLite in-process: as a
+ * task they block the same event loop a moment later and add a wake turn.
+ * mcp_install / mcp_uninstall are left out because `adf_shell` can already run
+ * them in the background.
+ */
+export const EXTERNAL_WAIT_TOOLS = new Set(['adf_shell', 'sys_code', 'sys_lambda', 'sys_fetch', 'compute_exec'])
+
+/**
+ * Whether the LLM loop offers (and honors) `_async` on `tool`: a tool that waits
+ * on something external, any MCP server tool, or any tool restricted for this
+ * agent. A restricted call waits on the owner's approval, so `_async` lets the
+ * agent keep working until the owner decides. Code (`adf.<tool>({ _async: true })`)
+ * may run any task-capable tool in the background; this only shapes the
+ * model's schema.
+ */
+export function offersAsync(tool: string, opts: { mcp: boolean; restricted: boolean }): boolean {
+  if (!canRunAsTask(tool)) return false
+  return EXTERNAL_WAIT_TOOLS.has(tool) || opts.mcp || opts.restricted
+}
+
 /** What goes wrong for each tool when the executor branch is skipped. */
 const INDIRECT_EFFECT: Record<string, string> = {
   loop_compact: 'it would report compaction started while nothing is summarized or cleared',

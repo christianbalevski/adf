@@ -242,8 +242,8 @@ Grouped by area, then category.
 - **Task resolution paths** — UI approval dialog / daemon `POST /agents/:id/tasks/:taskId/resolve`, `on_task_create` lambda dispatch, or `task_resolve` from authorized code.
 - **Blocking-denial no-fire rule** — A denied synchronous HIL task deliberately does not fire `on_task_complete` since the agent already gets the rejection in-band.
 - **Async-denial fire rule** — A denied async (`_async:true`) HIL task does fire `on_task_complete`, since the agent has no inline context otherwise.
-- **Orphaned task reconciliation** — On load, `running` tasks sweep to `failed` (outcome unknown), executor-managed `pending_approval` sweep to `cancelled`; non-executor-managed rows stay open.
-- **Task-level authorization flag** — `requires_authorization` (settable once via `task_resolve`) restricts who may approve/deny a task to authorized code or the owner-authorized UI.
+- **Orphaned task reconciliation** — On load, `running` tasks sweep to `failed` (outcome unknown), blocking executor-managed `pending_approval` sweep to `cancelled`, task-backed (`_async`) approvals whose id the loop holds are reopened; non-executor-managed rows stay open.
+- **Task-level authorization flag** — `requires_authorization` (settable once via `task_resolve`) restricts who may approve a task to authorized code or the owner-authorized UI; any code may deny it.
 - **Restricted-tool code-context matrix** — Blocked from `sys_code`/unauthorized `sys_lambda`; HIL-gated from an authorized `sys_lambda` target; freely allowed from authorized files, triggers, and timers.
 - **visible:false tool hiding** — Keeps an enabled tool callable from code/lambdas while removing it from the LLM's tool schema, independent of `restricted`.
 - **Approval Hub global registry** — Central map of every pending HIL approval/ask across all agents and loops, surfaced as a title-bar bell badge, decoupled from executor-only state.

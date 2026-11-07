@@ -55,7 +55,7 @@ import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispat
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
 import { AskInputSchema } from '../tools/built-in/ask.tool'
-import { LOOP_RESET_TOOLS, canRunAsTask, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
+import { LOOP_RESET_TOOLS, loopResetRefusal, offersAsync } from '../tools/built-in/loop-reset-tools'
 import { formatAskAnswers, normalizeAskAnswers, summarizeAsk, type AskAnswer, type AskQuestion } from '../../shared/utils/ask-form'
 import {
   callLlmWithMetadata,
@@ -701,7 +701,10 @@ export class AgentExecutor extends EventEmitter {
   })
 
   // HIL (human-in-the-loop) tool approval — task-native
-  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
+  /** `reportsCompletion`: a task-backed approval (`_async`, or a protection
+   *  override raised from a task) whose resolve handler reports the task's
+   *  outcome through onTaskCompleted itself. */
+  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta; reportsCompletion?: boolean }>()
   // Pending approvals raised beside the turn (requestApproval restoreState) or
   // with no agent turn running: they block no dispatch, a chat does not deny
   // them, and the agent reads awaiting_approval (not idle) while one is open.
@@ -1122,6 +1125,7 @@ export class AgentExecutor extends EventEmitter {
       name: string
       input: unknown
       meta: ApprovalMeta
+      reportsCompletion?: boolean
     }
   ): void {
     this.pendingHilTasks.set(taskId, entry)
@@ -1183,6 +1187,16 @@ export class AgentExecutor extends EventEmitter {
    * Stop would find nothing to end. setState keeps awaiting_approval while
    * another beside-turn approval is open.
    */
+  /**
+   * A task-backed approval (`_async`, a task's protection override) settled.
+   * It held no turn, so with no turn running the agent goes back to idle
+   * (setState keeps awaiting_approval while another beside-turn one is open).
+   */
+  private endTaskApproval(taskId: string): void {
+    this.besideTurnHilTasks.delete(taskId)
+    if (this.getState() !== 'stopped') this.restoreAfterApproval('idle', null)
+  }
+
   private restoreAfterApproval(priorState: AgentState, raisedInTurn: number | null): void {
     if (raisedInTurn !== null && this.currentAgentTurn() === raisedInTurn) {
       this.setState('tool_use')
@@ -1461,7 +1475,9 @@ export class AgentExecutor extends EventEmitter {
       const schema = t.toProviderFormat()
       const props = (schema.input_schema.properties ?? {}) as Record<string, unknown>
       props._reason = { type: 'string', description: 'Why you are calling this tool in ~10 words or less.' }
-      if (canRunAsTask(t.name)) {
+      const decl = activeDeclarations.find(d => d.name === t.name)
+      const restricted = decl ? !!(decl.enabled && decl.restricted) : this.mcpServerIsRestricted(t.name)
+      if (offersAsync(t.name, { mcp: t instanceof McpTool, restricted })) {
         props._async = { type: 'boolean', default: false, description: 'Run in background as a task. Returns a task_id immediately.' }
       }
       schema.input_schema.properties = props
@@ -1698,6 +1714,10 @@ export class AgentExecutor extends EventEmitter {
   /**
    * Resolve a pending HIL task. Called when task_resolve approves/denies
    * an executor-managed task (routed via onHilApproved callback).
+   *
+   * Returns true when the request was task-backed: its handler reports the
+   * task's outcome (onTaskCompleted) itself, so the caller must not report it
+   * again.
    */
   resolveHilTask(
     taskId: string,
@@ -1705,7 +1725,7 @@ export class AgentExecutor extends EventEmitter {
     modifiedArgs?: Record<string, unknown>,
     feedback?: string,
     opts?: { timedOut?: boolean }
-  ): void {
+  ): boolean {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.persistHilDecision(taskId, approved, feedback)
@@ -1733,7 +1753,9 @@ export class AgentExecutor extends EventEmitter {
         ...(opts?.timedOut ? { timed_out: true } : {}),
       })
       pending.resolve({ approved, modifiedArgs, feedback })
+      return pending.reportsCompletion === true
     }
+    return false
   }
 
   /**
@@ -3070,7 +3092,12 @@ export class AgentExecutor extends EventEmitter {
               this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, { content: refusal, isError: true })
               continue
             }
-            const isAsync = wantsAsync && canRunAsTask(toolBlock.name)
+            // Honored only where it is offered (offersAsync). Elsewhere the call
+            // runs in the turn, as the schema told the model it would.
+            const isAsync = wantsAsync && offersAsync(toolBlock.name, {
+              mcp: this.toolRegistry.get(toolBlock.name) instanceof McpTool,
+              restricted: !!isRestricted,
+            })
 
             if (isAsync && isRestricted) {
               // Async + restricted: create HIL task but don't block — return task reference
@@ -3091,8 +3118,13 @@ export class AgentExecutor extends EventEmitter {
               // When approved, execute the tool asynchronously
               const asyncMeta = this.buildApprovalMeta(toolBlock.name!)
               const asyncToolUseId = toolBlock.id
+              // It waits on the owner without holding the agent, like an
+              // approval raised beside the turn: a chat that ends another
+              // approval, or Stop, leaves it open.
+              this.besideTurnHilTasks.add(taskId)
               this.trackPendingHilTask(taskId, {
                 resolve: (r) => {
+                  this.endTaskApproval(taskId)
                   if (r.approved) {
                     const finalInput = r.modifiedArgs ?? cleanInput
                     // tool.started was already emitted at enqueue (below) so the
@@ -3112,7 +3144,8 @@ export class AgentExecutor extends EventEmitter {
                 },
                 name: toolBlock.name,
                 input: cleanInput,
-                meta: asyncMeta
+                meta: asyncMeta,
+                reportsCompletion: true,
               })
 
               this.emitEvent({
@@ -4179,9 +4212,9 @@ export class AgentExecutor extends EventEmitter {
    * `hil.requested` guarantee for approvals whose request was emitted by the
    * dead process.
    */
-  reconcileOrphanedTasks(): { running: number; awaitingApproval: number } {
+  reconcileOrphanedTasks(): { running: number; awaitingApproval: number; reopened: number } {
     const workspace = this.session.getWorkspace()
-    const counts = { running: 0, awaitingApproval: 0 }
+    const counts = { running: 0, awaitingApproval: 0, reopened: 0 }
     try {
       for (const task of workspace.getTasksByStatus('running')) {
         workspace.updateTaskStatus(
@@ -4194,9 +4227,19 @@ export class AgentExecutor extends EventEmitter {
         )
         counts.running++
       }
-      for (const task of workspace.getTasksByStatus('pending_approval')) {
-        // Only the executor's own blocking approvals are orphaned by a restart.
-        if (!task.executor_managed) continue
+      const awaiting = workspace.getTasksByStatus('pending_approval').filter(t => t.executor_managed)
+      const handedOut = awaiting.length > 0 ? this.taskIdsHandedToLoop(awaiting.map(t => t.id)) : new Set<string>()
+      for (const task of awaiting) {
+        // A task-backed approval (`_async` on a restricted tool, or a task's
+        // protection override): the agent already holds its task_id and is
+        // not waiting in a turn, so the restart orphans nothing. Re-register
+        // it; the owner's decision runs or denies the task as it would have.
+        if (handedOut.has(task.id)) {
+          this.reopenTaskApproval(task)
+          counts.reopened++
+          continue
+        }
+        // A blocking approval: the turn that waited on it died with the process.
         workspace.updateTaskStatus(
           task.id, 'cancelled', undefined,
           'Orphaned: the runtime restarted before this approval was resolved.',
@@ -4222,6 +4265,67 @@ export class AgentExecutor extends EventEmitter {
       }
     } catch { /* reconciliation is diagnostic — never block agent load */ }
     return counts
+  }
+
+  /**
+   * Which of `taskIds` the agent was handed in a tool result: an `_async` call
+   * returns `{"task_id": ..., "status": ...}` as its result in the same turn.
+   * A blocking approval writes no tool result until it is decided, so an
+   * undecided one never appears here.
+   */
+  private taskIdsHandedToLoop(taskIds: string[]): Set<string> {
+    const found = new Set<string>()
+    const needles = taskIds.map(id => [id, `"task_id":"${id}"`] as const)
+    for (const entry of this.session.getWorkspace().getLoop()) {
+      for (const block of entry.content_json) {
+        if (block.type !== 'tool_result') continue
+        const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '')
+        for (const [id, needle] of needles) if (text.includes(needle)) found.add(id)
+      }
+      if (found.size === taskIds.length) break
+    }
+    return found
+  }
+
+  /** Re-register a task-backed approval found at load (see reconcileOrphanedTasks). */
+  private reopenTaskApproval(task: import('../../shared/types/adf-v02.types').TaskEntry): void {
+    const workspace = this.session.getWorkspace()
+    let input: Record<string, unknown> = {}
+    try { input = JSON.parse(task.args) as Record<string, unknown> } catch { /* keep {} */ }
+    const protection = task.approval_meta?.reason === 'protection'
+    const meta = protection
+      ? this.buildApprovalMeta(task.tool, task.approval_meta?.protection as ProtectionDenial | undefined)
+      : this.buildApprovalMeta(task.tool)
+    this.besideTurnHilTasks.add(task.id)
+    this.trackPendingHilTask(task.id, {
+      resolve: (r) => {
+        this.endTaskApproval(task.id)
+        if (r.approved) {
+          const finalInput = (r.modifiedArgs ?? input) as Record<string, unknown>
+          this.executeAsyncTool(task.id, task.tool, protection ? { ...finalInput, _protection_override: true } : finalInput)
+        } else {
+          const fb = r.feedback?.trim() || 'Rejected'
+          workspace.updateTaskStatus(task.id, 'denied', undefined, fb)
+          this.onTaskCompleted?.(task.id, task.tool, 'denied', undefined, fb)
+        }
+      },
+      name: task.tool,
+      input,
+      meta,
+      reportsCompletion: true,
+    })
+    // Show the open approval (setState turns idle into awaiting_approval);
+    // never touch any other state the agent loaded in.
+    if (this.state === 'idle') this.setState('idle')
+    workspace.insertLog(
+      'info', 'executor', 'task_approval_reopened', task.tool,
+      `Approval task ${task.id} (${task.tool}) was awaiting a decision at load; reopened — the agent holds its task id`,
+    )
+    this.emitRuntimeEvent('hil.requested', {
+      request_id: task.id, task_id: task.id, tool: task.tool,
+      reason: meta.reason, input: stripInternalToolFlags(input),
+      ...alwaysApproveEventFields(meta),
+    })
   }
 
   private beginTurnCheckpoint(
@@ -4611,8 +4715,10 @@ export class AgentExecutor extends EventEmitter {
           workspace.setTaskRequiresAuthorization(taskId, true)
           workspace.updateTaskStatus(taskId, 'pending_approval')
           workspace.setTaskExecutorManaged(taskId, true)
+          this.besideTurnHilTasks.add(taskId)
           this.trackPendingHilTask(taskId, {
             resolve: (r) => {
+              this.endTaskApproval(taskId)
               if (r.approved) {
                 const finalInput = {
                   ...((r.modifiedArgs ?? input) as Record<string, unknown>),
@@ -4630,7 +4736,8 @@ export class AgentExecutor extends EventEmitter {
             },
             name: toolName,
             input,
-            meta
+            meta,
+            reportsCompletion: true,
           })
           this.emitEvent({
             type: 'tool_approval_request',

@@ -158,18 +158,28 @@ describe('agent-scope gating by state', () => {
 
   it('wakes the agent after its turn when an _async tool from the LLM loop completes mid-turn', async () => {
     let workspaceRef: AdfWorkspace | null = null
-    // Hold the reply that follows the async tool call until the task has
-    // actually completed — the completion lands while the turn is running.
+    let agentRef: AssembledAgent | null = null
+    // fs_read is restricted, so the LLM loop offers it _async (it waits on the
+    // owner). Hold the reply that follows the call until the owner approves and
+    // the task completes — the completion lands while the turn is running.
     const provider = new ToolEachTurnProvider('fs_read', { path: 'notes.md', _async: true }, async (call) => {
       if (call !== 2) return
+      const pending = workspaceRef!.getAllTasks().find(t => t.tool === 'fs_read' && t.status === 'pending_approval')
+      if (pending) agentRef!.executor.resolveHilTask(pending.id, true)
       const deadline = Date.now() + 2_000
       while (Date.now() < deadline) {
         if (workspaceRef!.getAllTasks().some(t => t.tool === 'fs_read' && t.status === 'completed')) return
         await sleep(5)
       }
     }, 1) // one task; the wake turn just replies
-    const { agent, workspace } = await startAgent({}, provider, (ws) => ws.writeFile('notes.md', 'hello'))
+    const { agent, workspace } = await startAgent({}, provider, (ws) => {
+      ws.writeFile('notes.md', 'hello')
+      const config = ws.getAgentConfig()
+      config.tools = config.tools.map(t => (t.name === 'fs_read' ? { ...t, enabled: true, restricted: true } : t))
+      ws.setAgentConfig(config)
+    })
     workspaceRef = workspace
+    agentRef = agent
 
     await agent.dispatch(chat('read it in the background'))
     const task = workspace.getAllTasks().find(t => t.tool === 'fs_read')

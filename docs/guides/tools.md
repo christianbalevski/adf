@@ -972,7 +972,13 @@ These reserved parameters (prefixed with `_`) modify tool behavior across tools.
 
 ### `_async`
 
-Add `_async: true` to a tool call to execute it in the background. The tool returns immediately with a task reference. Available from both LLM tool calls and code execution, on every tool except the ones bound to the turn itself: `say` and `ask` (not offered), and `loop_compact` / `loop_clear` (refused — they only work as direct calls). For restricted tools, the task is created with `pending_approval` status — the agent continues without blocking while approval is pending. See [Tasks](tasks.md) for details.
+Add `_async: true` to a tool call to execute it in the background. The tool returns immediately with a task reference.
+
+- **LLM tool calls:** offered on tools that wait on something outside the process (`adf_shell`, `sys_code`, `sys_lambda`, `sys_fetch`, `compute_exec`), on every MCP server tool, and on any tool restricted for this agent. On a restricted tool the task is created with `pending_approval` status, so the agent keeps working while the owner decides. On other tools the flag is not offered, and a call that passes it anyway runs in the turn. The local `fs_*` and `db_*` tools run on in-process SQLite, so a task would not free anything.
+- **Code execution:** any tool except `say` and `ask` can run as a task, e.g. `adf_shell` running `mcp_install` in the background.
+- `loop_compact` / `loop_clear` are refused with `_async` on either path: they only work as direct calls.
+
+See [Tasks](tasks.md) for details.
 
 ### `_full`
 
