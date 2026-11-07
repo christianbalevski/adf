@@ -191,6 +191,7 @@ import { listAdapterCredentialFiles, listMcpCredentialFiles, listProviderCredent
 import { getTokenCounterService } from '../services/token-counter.service'
 import { buildConfigSummary, deriveReviewIdentity, autoLockFields, getReviewedIds, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { inboxSnapshot } from '../runtime/inbox-snapshot'
+import { liveExecutionTimeout } from '../runtime/live-execution-timeout'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
@@ -4054,12 +4055,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     // Registered while declared, including declarations added later on the
     // running agent (ToolRegistry.provideDeclared).
-    agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(codeSandboxService, capturedFilePath, adfCallHandler ?? undefined, config.limits?.execution_timeout_ms), config.tools)
+    agentToolRegistry.provideDeclared('sys_code', () => new SysCodeTool(codeSandboxService, capturedFilePath, adfCallHandler ?? undefined, liveExecutionTimeout(capturedWorkspace)), config.tools)
 
     // Normal sys_lambda access remains declaration-dependent. A live-added
     // hook uses its private registry/backend instead of this agent registry.
     if (adfCallHandler) {
-      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, config.limits?.execution_timeout_ms), config.tools)
+      agentToolRegistry.provideDeclared('sys_lambda', () => new SysLambdaTool(codeSandboxService, adfCallHandler, capturedFilePath, liveExecutionTimeout(capturedWorkspace)), config.tools)
     }
 
     // Package visibility needs no wiring here: the sandbox reads runtime
@@ -4403,7 +4404,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     }
 
     agentToolRegistry.register(new FsTransferTool(podmanService, liveComputeCaps))
-    agentToolRegistry.register(new ComputeExecTool(podmanService, liveComputeCaps, config.limits?.execution_timeout_ms))
+    agentToolRegistry.register(new ComputeExecTool(podmanService, liveComputeCaps, liveExecutionTimeout(capturedWorkspace)))
 
     // Backward compat: rename container_exec → compute_exec in declarations
     const legacyDecl = config.tools.find((t) => t.name === 'container_exec')

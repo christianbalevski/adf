@@ -21,7 +21,7 @@ Tools configured with `enabled: true` and `restricted: true` create a task with 
 The task can be resolved by:
 - **UI approval dialog / HTTP** — the owner clicks approve/deny in the Studio UI, or a client calls the daemon endpoint `POST /agents/:id/tasks/:taskId/resolve`
 - **`on_task_create` trigger lambda** — notifies or routes to an external approval system (Telegram, multi-agent vote, etc.); only owner-authorized code can then call `task_resolve`. See [Routing approvals outside Studio](#routing-approvals-outside-studio) before resolving tasks from a chat channel.
-- **`task_resolve` from authorized code** — any authorized lambda can approve/deny
+- **`task_resolve` from code** — any authorized lambda can approve or deny; unauthorized code (including the agent's own `sys_code`) can only deny
 
 The resolve endpoint returns **404** for an unknown task id and **409** when the task is not in a resolvable status — only `pending` and `pending_approval` rows can be resolved. A task already swept to a terminal status by orphan reconciliation therefore returns 409.
 
@@ -43,9 +43,11 @@ When a **blocking** (synchronous) HIL task is **denied**, `on_task_complete` is 
 { "task_id": "task_abc123", "status": "pending_approval", "tool": "fs_write" }
 ```
 
+The approval stays open beside the turn: a later chat or Stop does not end it, and the agent shows `awaiting_approval` while idle. If the agent no longer wants the call, its own code can withdraw it with `task_resolve({ task_id, action: "deny" })`. Denying does not need authorized code, because it only narrows what runs; approving does.
+
 ### 2. Async Execution (`_async: true`)
 
-Any tool call can be made asynchronous by including `_async: true` in the input. The runtime strips the flag, creates a task in `running` status, and executes the tool in the background:
+A tool call that waits on something external can be made asynchronous by including `_async: true` in the input (see [`_async`](tools.md#_async) for where the LLM loop offers it; code may use it on any tool). The runtime strips the flag, creates a task in `running` status, and executes the tool in the background:
 
 ```json
 { "task_id": "task_def456", "status": "running", "tool": "sys_code" }
@@ -74,7 +76,8 @@ A crash or hard shutdown can leave `adf_tasks` rows stranded in a non-terminal s
 | Orphaned row | Swept to | Why |
 |--------------|----------|-----|
 | `running` | `failed` (error: "outcome unknown") | The tool may have produced side effects before the process died; the outcome cannot be known. |
-| `pending_approval`, **executor-managed** | `cancelled` | These are the executor's own blocking HIL approvals — nobody is left waiting on them. Not `denied`: no human ever decided. |
+| `pending_approval`, **executor-managed**, blocking | `cancelled` | The executor's own blocking HIL approvals — the turn that waited on them died with the process. Not `denied`: no human ever decided. |
+| `pending_approval`, **executor-managed**, task-backed | *reopened* | An `_async` approval the agent was handed the task id of (its id is in a tool result in the loop). The approval is registered again; the owner's decision runs or denies the task as before, and the outcome arrives through `on_task_complete`. |
 | `pending_approval`, **not** executor-managed | *left open* | Owned by lambdas/UI, which can still resolve them after restart. |
 
 Each swept executor-managed approval emits `hil.resolved { orphaned: true, approved: false }` (closing the one-resolve-per-request guarantee for a request whose emitter died). If any rows were swept, the executor emits a single `loop.recovered { reason: 'orphaned_tasks', running, awaiting_approval }`. Reconciliation is diagnostic — a failure never blocks agent load.
@@ -94,12 +97,12 @@ The `adf_tasks` table:
 | `created_at` | INTEGER | Unix timestamp (ms) |
 | `completed_at` | INTEGER | Unix timestamp (ms), set on terminal status |
 | `origin` | TEXT | Source — `hil:AgentName:id` for HIL, `agent:AgentName:id` for async |
-| `requires_authorization` | INTEGER | `1` if only authorized code can approve/deny this task |
+| `requires_authorization` | INTEGER | `1` if only authorized code can approve this task (any code can deny it) |
 | `executor_managed` | INTEGER | `1` if the executor is waiting to execute the tool after approval |
 
 ## Task-Level Authorization
 
-HIL tasks are created with `requires_authorization: true`, meaning only authorized code (or the UI dialog, which is owner-authorized) can approve or deny them. This prevents the agent from self-approving its own gated tool calls.
+HIL tasks are created with `requires_authorization: true`, meaning only authorized code (or the UI dialog, which is owner-authorized) can approve them. This prevents the agent from self-approving its own gated tool calls. Denying is open to any code, since it only stops a call from running.
 
 For non-HIL tasks, `requires_authorization` can be set via `task_resolve`:
 

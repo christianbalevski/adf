@@ -19,6 +19,7 @@ import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
 import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
+import { killedByTimeout } from '../utils/exec-timeout'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -2517,7 +2518,7 @@ export class PodmanService extends EventEmitter {
     cwd: string,
     command: string,
     timeout = 30_000
-  ): Promise<{ stdout: string; stderr: string; code: number }> {
+  ): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
     const bin = await this.requirePodman()
     const start = Date.now()
     const result = await this.exec0(bin, [
@@ -2633,10 +2634,10 @@ export class PodmanService extends EventEmitter {
           stderr: stderr?.trim() ?? '',
           code: error ? 1 : 0,
           // execFile only kills the child itself when its timeout (or
-          // maxBuffer) fires — `killed` distinguishes that from a real
-          // nonzero exit, which otherwise looks identical (code 1, often
-          // empty stderr).
-          timedOut: error != null && (error as { killed?: boolean }).killed === true,
+          // maxBuffer) fires — killedByTimeout tells the timeout apart from
+          // both a real nonzero exit, which otherwise looks identical (code 1,
+          // often empty stderr), and output overflowing maxBuffer.
+          timedOut: killedByTimeout(error),
         })
       })
     })

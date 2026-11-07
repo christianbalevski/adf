@@ -55,6 +55,7 @@ import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispat
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
 import { AskInputSchema } from '../tools/built-in/ask.tool'
+import { LOOP_RESET_TOOLS, loopResetRefusal, offersAsync } from '../tools/built-in/loop-reset-tools'
 import { formatAskAnswers, normalizeAskAnswers, summarizeAsk, type AskAnswer, type AskQuestion } from '../../shared/utils/ask-form'
 import {
   callLlmWithMetadata,
@@ -62,9 +63,6 @@ import {
   loopTokensFromLlmMetadata,
   toLlmCallEventData,
 } from './llm-call-metadata'
-
-/** Tools that support _async: true (background execution). MCP tools (mcp_*) are also allowed. */
-const ASYNC_ALLOWED_TOOLS = new Set(['adf_shell', 'sys_code', 'sys_lambda', 'sys_fetch'])
 
 /** `hil.requested` fields telling an owner surface (daemon/TUI) whether
  *  "Always approve" is offered — snake_case like the rest of the payload. The
@@ -703,7 +701,10 @@ export class AgentExecutor extends EventEmitter {
   })
 
   // HIL (human-in-the-loop) tool approval — task-native
-  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta }>()
+  /** `reportsCompletion`: a task-backed approval (`_async`, or a protection
+   *  override raised from a task) whose resolve handler reports the task's
+   *  outcome through onTaskCompleted itself. */
+  private pendingHilTasks = new Map<string, { resolve: (result: { approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string; settled?: boolean }) => void; name: string; input: unknown; meta: ApprovalMeta; reportsCompletion?: boolean }>()
   // Pending approvals raised beside the turn (requestApproval restoreState) or
   // with no agent turn running: they block no dispatch, a chat does not deny
   // them, and the agent reads awaiting_approval (not idle) while one is open.
@@ -1124,6 +1125,7 @@ export class AgentExecutor extends EventEmitter {
       name: string
       input: unknown
       meta: ApprovalMeta
+      reportsCompletion?: boolean
     }
   ): void {
     this.pendingHilTasks.set(taskId, entry)
@@ -1185,6 +1187,16 @@ export class AgentExecutor extends EventEmitter {
    * Stop would find nothing to end. setState keeps awaiting_approval while
    * another beside-turn approval is open.
    */
+  /**
+   * A task-backed approval (`_async`, a task's protection override) settled.
+   * It held no turn, so with no turn running the agent goes back to idle
+   * (setState keeps awaiting_approval while another beside-turn one is open).
+   */
+  private endTaskApproval(taskId: string): void {
+    this.besideTurnHilTasks.delete(taskId)
+    if (this.getState() !== 'stopped') this.restoreAfterApproval('idle', null)
+  }
+
   private restoreAfterApproval(priorState: AgentState, raisedInTurn: number | null): void {
     if (raisedInTurn !== null && this.currentAgentTurn() === raisedInTurn) {
       this.setState('tool_use')
@@ -1463,7 +1475,9 @@ export class AgentExecutor extends EventEmitter {
       const schema = t.toProviderFormat()
       const props = (schema.input_schema.properties ?? {}) as Record<string, unknown>
       props._reason = { type: 'string', description: 'Why you are calling this tool in ~10 words or less.' }
-      if (ASYNC_ALLOWED_TOOLS.has(t.name) || t.name.startsWith('mcp_')) {
+      const decl = activeDeclarations.find(d => d.name === t.name)
+      const restricted = decl ? !!(decl.enabled && decl.restricted) : this.mcpServerIsRestricted(t.name)
+      if (offersAsync(t.name, { mcp: t instanceof McpTool, restricted })) {
         props._async = { type: 'boolean', default: false, description: 'Run in background as a task. Returns a task_id immediately.' }
       }
       schema.input_schema.properties = props
@@ -1700,6 +1714,10 @@ export class AgentExecutor extends EventEmitter {
   /**
    * Resolve a pending HIL task. Called when task_resolve approves/denies
    * an executor-managed task (routed via onHilApproved callback).
+   *
+   * Returns true when the request was task-backed: its handler reports the
+   * task's outcome (onTaskCompleted) itself, so the caller must not report it
+   * again.
    */
   resolveHilTask(
     taskId: string,
@@ -1707,7 +1725,7 @@ export class AgentExecutor extends EventEmitter {
     modifiedArgs?: Record<string, unknown>,
     feedback?: string,
     opts?: { timedOut?: boolean }
-  ): void {
+  ): boolean {
     const pending = this.pendingHilTasks.get(taskId)
     if (pending) {
       this.persistHilDecision(taskId, approved, feedback)
@@ -1735,7 +1753,9 @@ export class AgentExecutor extends EventEmitter {
         ...(opts?.timedOut ? { timed_out: true } : {}),
       })
       pending.resolve({ approved, modifiedArgs, feedback })
+      return pending.reportsCompletion === true
     }
+    return false
   }
 
   /**
@@ -3057,8 +3077,27 @@ export class AgentExecutor extends EventEmitter {
             // _async check BEFORE HIL — async restricted tools create a pending_approval task
             // and return immediately instead of blocking the loop
             const toolInput = toolBlock.input as Record<string, unknown> | undefined
-            const asyncAllowed = ASYNC_ALLOWED_TOOLS.has(toolBlock.name) || toolBlock.name.startsWith('mcp_')
-            const isAsync = asyncAllowed && toolInput && (toolInput._async === true || toolInput._async === 'true')
+            const wantsAsync = toolInput && (toolInput._async === true || toolInput._async === 'true')
+            // A loop reset cannot be completed from a task (loop-reset-tools.ts):
+            // refuse, as the sandbox and adf_shell do, rather than report a
+            // reset that never happens.
+            if (wantsAsync && LOOP_RESET_TOOLS.has(toolBlock.name)) {
+              const refusal = loopResetRefusal(toolBlock.name, '_async')
+              toolResults.push({ type: 'tool_result', tool_use_id: toolBlock.id, content: refusal, is_error: true })
+              this.emitEvent({
+                type: 'tool_call_result',
+                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: refusal, isError: true } },
+                timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, { content: refusal, isError: true })
+              continue
+            }
+            // Honored only where it is offered (offersAsync). Elsewhere the call
+            // runs in the turn, as the schema told the model it would.
+            const isAsync = wantsAsync && offersAsync(toolBlock.name, {
+              mcp: this.toolRegistry.get(toolBlock.name) instanceof McpTool,
+              restricted: !!isRestricted,
+            })
 
             if (isAsync && isRestricted) {
               // Async + restricted: create HIL task but don't block — return task reference
@@ -3079,8 +3118,13 @@ export class AgentExecutor extends EventEmitter {
               // When approved, execute the tool asynchronously
               const asyncMeta = this.buildApprovalMeta(toolBlock.name!)
               const asyncToolUseId = toolBlock.id
+              // It waits on the owner without holding the agent, like an
+              // approval raised beside the turn: a chat that ends another
+              // approval, or Stop, leaves it open.
+              this.besideTurnHilTasks.add(taskId)
               this.trackPendingHilTask(taskId, {
                 resolve: (r) => {
+                  this.endTaskApproval(taskId)
                   if (r.approved) {
                     const finalInput = r.modifiedArgs ?? cleanInput
                     // tool.started was already emitted at enqueue (below) so the
@@ -3100,7 +3144,8 @@ export class AgentExecutor extends EventEmitter {
                 },
                 name: toolBlock.name,
                 input: cleanInput,
-                meta: asyncMeta
+                meta: asyncMeta,
+                reportsCompletion: true,
               })
 
               this.emitEvent({
@@ -3224,18 +3269,7 @@ export class AgentExecutor extends EventEmitter {
             }
 
             // Snapshot file content before tool execution for diff computation
-            let preWriteContent: string | null = null
-            if (toolBlock.name === 'fs_write') {
-              const toolInput = toolBlock.input as Record<string, unknown>
-              const path = toolInput?.path as string | undefined
-              if (path) {
-                if (path === 'README.md' || path === 'document.md') {
-                  preWriteContent = this.session.getWorkspace().readDocument()
-                } else {
-                  preWriteContent = this.session.getWorkspace().readFile(path)
-                }
-              }
-            }
+            const preWriteContent = this.snapshotBeforeWrite(toolBlock.name, toolBlock.input)
 
             let rawResult: ToolResult
             try {
@@ -3334,41 +3368,7 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
-            // Extract multimodal blocks — from fs_read binary content or MCP media responses.
-            // Every extractor and filter below reads the same JSON body, so it is
-            // parsed once here and handed over (a 5 MB base64 payload used to be
-            // parsed up to four times per tool call).
-            const isMcpTool = toolBlock.name.startsWith('mcp_')
-            let sharedParse: ParsedToolResult | undefined
-            const parsedResult = (): ParsedToolResult => {
-              if (sharedParse === undefined) sharedParse = parseToolResultJson(rawResult)
-              return sharedParse
-            }
-            // Media a tool read or produced is a reference to its file in
-            // adf_files, attached after the tool result. History keeps the
-            // reference; each request loads the bytes (resolveFileRefs) for a
-            // model that takes them, so a later model switch loses nothing.
-            const mediaBlocks: ContentBlock[] = []
-            let filteredResult: ToolResult
-            let savedFiles: Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }> | undefined
-            if (toolBlock.name === 'fs_read') {
-              const ref = this.fsReadFileRef(rawResult, parsedResult())
-              if (ref) mediaBlocks.push(ref)
-              filteredResult = this.filterFsReadResult(rawResult, parsedResult())
-            } else if (isMcpTool) {
-              savedFiles = this.persistMcpMedia(rawResult, toolBlock.name!, parsedResult())
-              for (const saved of savedFiles) {
-                const ref = saved.type === 'resource' ? null : makeFileRef(this.session.getWorkspace(), saved.path)
-                if (ref) mediaBlocks.push(ref)
-              }
-              filteredResult = this.filterMcpMediaResult(rawResult, savedFiles, parsedResult())
-            } else if (toolBlock.name === 'adf_shell') {
-              mediaBlocks.push(...this.shellFileRefs(rawResult))
-              filteredResult = rawResult
-            } else {
-              filteredResult = rawResult
-            }
-            const result = this.enforceToolResultLimit(filteredResult, toolBlock.name)
+            const { result, mediaBlocks, eventImageUrl } = this.shapeToolResult(toolBlock.name, rawResult)
 
             toolResults.push({
               type: 'tool_result',
@@ -3380,19 +3380,6 @@ export class AgentExecutor extends EventEmitter {
             // Attach multimodal blocks immediately after tool_result
             for (const block of mediaBlocks) {
               toolResults.push(block)
-            }
-
-            // Build adf-file:// URL for the renderer image preview
-            let eventImageUrl: string | undefined
-            if (isMcpTool) {
-              const savedImage = savedFiles?.find(f => f.type === 'image')
-              eventImageUrl = savedImage ? `adf-file://${savedImage.path}` : undefined
-            } else if ((toolBlock.name === 'fs_read' || toolBlock.name === 'adf_shell') && mediaBlocks.some(b => b.type === 'file_ref' && b.file_ref && fileRefKind(b.file_ref) === 'image')) {
-              // File already in adf_files — use its path (fs_read: row.path;
-              // adf_shell: first entry of the media manifest)
-              const row = parsedResult() as { path?: string; media?: Array<{ path?: string }> } | null
-              const path = row?.path ?? row?.media?.[0]?.path
-              if (path) eventImageUrl = `adf-file://${path}`
             }
 
             this.emitEvent({
@@ -3429,43 +3416,7 @@ export class AgentExecutor extends EventEmitter {
               this.onToolCallIntercepted?.(toolBlock.name, argsStr, hilTaskId ?? '', originLabel)
             }
 
-            // Notify the renderer when the document changes. Every OTHER file —
-            // mind.md and soul.md included — is covered by the `file_updated`
-            // event raised from the workspace's file-change choke point (see
-            // assemble-agent.ts), which catches writes this tool loop never sees:
-            // shell redirection, sys_code, lambdas, and `_async: true` fs_write.
-            //
-            // Note that mind.md is a session-start snapshot: a mid-session write
-            // lands on disk (and in the tab) but does not refresh the injected
-            // copy, which is re-read on the next session reset (compaction or
-            // loop_clear).
-            if (toolBlock.name === 'fs_write') {
-              const toolInput = toolBlock.input as Record<string, unknown>
-              const path = toolInput?.path as string | undefined
-              if (path && (path === 'README.md' || path === 'document.md')) {
-                const docWorkspace = this.session.getWorkspace()
-                const docContent = docWorkspace.readDocument()
-                // W3-F: the revision this content took, and who wrote it, so an
-                // editor holding unsaved text can say the agent changed it.
-                const { revision, writer } = documentRevision(docWorkspace, currentResourceWriter())
-                this.emitEvent({
-                  type: 'document_updated',
-                  payload: { content: docContent, previousContent: preWriteContent ?? undefined, revision, writer },
-                  timestamp: Date.now()
-                })
-              }
-            }
-
-            // Notify when a new ADF file is created so tracked dirs refresh
-            if (toolBlock.name === 'sys_create_adf' && !result.isError) {
-              const pathMatch = result.content.match(/\nPath: (.+)/)
-              const newFilePath = pathMatch?.[1]?.trim()
-              this.emitEvent({
-                type: 'adf_file_created',
-                payload: newFilePath ? { filePath: newFilePath } : {},
-                timestamp: Date.now()
-              })
-            }
+            this.emitToolResultEffects(toolBlock.name, toolBlock.input, result, preWriteContent)
 
             // Flag loop-clearing tools for session reset after tool results are committed
             if (toolBlock.name === 'loop_compact' || toolBlock.name === 'loop_clear') {
@@ -4261,9 +4212,9 @@ export class AgentExecutor extends EventEmitter {
    * `hil.requested` guarantee for approvals whose request was emitted by the
    * dead process.
    */
-  reconcileOrphanedTasks(): { running: number; awaitingApproval: number } {
+  reconcileOrphanedTasks(): { running: number; awaitingApproval: number; reopened: number } {
     const workspace = this.session.getWorkspace()
-    const counts = { running: 0, awaitingApproval: 0 }
+    const counts = { running: 0, awaitingApproval: 0, reopened: 0 }
     try {
       for (const task of workspace.getTasksByStatus('running')) {
         workspace.updateTaskStatus(
@@ -4276,9 +4227,19 @@ export class AgentExecutor extends EventEmitter {
         )
         counts.running++
       }
-      for (const task of workspace.getTasksByStatus('pending_approval')) {
-        // Only the executor's own blocking approvals are orphaned by a restart.
-        if (!task.executor_managed) continue
+      const awaiting = workspace.getTasksByStatus('pending_approval').filter(t => t.executor_managed)
+      const handedOut = awaiting.length > 0 ? this.taskIdsHandedToLoop(awaiting.map(t => t.id)) : new Set<string>()
+      for (const task of awaiting) {
+        // A task-backed approval (`_async` on a restricted tool, or a task's
+        // protection override): the agent already holds its task_id and is
+        // not waiting in a turn, so the restart orphans nothing. Re-register
+        // it; the owner's decision runs or denies the task as it would have.
+        if (handedOut.has(task.id)) {
+          this.reopenTaskApproval(task)
+          counts.reopened++
+          continue
+        }
+        // A blocking approval: the turn that waited on it died with the process.
         workspace.updateTaskStatus(
           task.id, 'cancelled', undefined,
           'Orphaned: the runtime restarted before this approval was resolved.',
@@ -4304,6 +4265,67 @@ export class AgentExecutor extends EventEmitter {
       }
     } catch { /* reconciliation is diagnostic — never block agent load */ }
     return counts
+  }
+
+  /**
+   * Which of `taskIds` the agent was handed in a tool result: an `_async` call
+   * returns `{"task_id": ..., "status": ...}` as its result in the same turn.
+   * A blocking approval writes no tool result until it is decided, so an
+   * undecided one never appears here.
+   */
+  private taskIdsHandedToLoop(taskIds: string[]): Set<string> {
+    const found = new Set<string>()
+    const needles = taskIds.map(id => [id, `"task_id":"${id}"`] as const)
+    for (const entry of this.session.getWorkspace().getLoop()) {
+      for (const block of entry.content_json) {
+        if (block.type !== 'tool_result') continue
+        const text = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '')
+        for (const [id, needle] of needles) if (text.includes(needle)) found.add(id)
+      }
+      if (found.size === taskIds.length) break
+    }
+    return found
+  }
+
+  /** Re-register a task-backed approval found at load (see reconcileOrphanedTasks). */
+  private reopenTaskApproval(task: import('../../shared/types/adf-v02.types').TaskEntry): void {
+    const workspace = this.session.getWorkspace()
+    let input: Record<string, unknown> = {}
+    try { input = JSON.parse(task.args) as Record<string, unknown> } catch { /* keep {} */ }
+    const protection = task.approval_meta?.reason === 'protection'
+    const meta = protection
+      ? this.buildApprovalMeta(task.tool, task.approval_meta?.protection as ProtectionDenial | undefined)
+      : this.buildApprovalMeta(task.tool)
+    this.besideTurnHilTasks.add(task.id)
+    this.trackPendingHilTask(task.id, {
+      resolve: (r) => {
+        this.endTaskApproval(task.id)
+        if (r.approved) {
+          const finalInput = (r.modifiedArgs ?? input) as Record<string, unknown>
+          this.executeAsyncTool(task.id, task.tool, protection ? { ...finalInput, _protection_override: true } : finalInput)
+        } else {
+          const fb = r.feedback?.trim() || 'Rejected'
+          workspace.updateTaskStatus(task.id, 'denied', undefined, fb)
+          this.onTaskCompleted?.(task.id, task.tool, 'denied', undefined, fb)
+        }
+      },
+      name: task.tool,
+      input,
+      meta,
+      reportsCompletion: true,
+    })
+    // Show the open approval (setState turns idle into awaiting_approval);
+    // never touch any other state the agent loaded in.
+    if (this.state === 'idle') this.setState('idle')
+    workspace.insertLog(
+      'info', 'executor', 'task_approval_reopened', task.tool,
+      `Approval task ${task.id} (${task.tool}) was awaiting a decision at load; reopened — the agent holds its task id`,
+    )
+    this.emitRuntimeEvent('hil.requested', {
+      request_id: task.id, task_id: task.id, tool: task.tool,
+      reason: meta.reason, input: stripInternalToolFlags(input),
+      ...alwaysApproveEventFields(meta),
+    })
   }
 
   private beginTurnCheckpoint(
@@ -4656,6 +4678,7 @@ export class AgentExecutor extends EventEmitter {
     const doExecute = async () => {
       try {
         workspace.updateTaskStatus(taskId, 'running')
+        const preWriteContent = this.snapshotBeforeWrite(toolName, input)
         // Thread explicit provenance: this runs OUTSIDE any withSource scope
         // (resumed from an approval callback), so the registry stamps agentId +
         // the tool_use id from here. suppressStarted avoids a second tool.started
@@ -4692,8 +4715,10 @@ export class AgentExecutor extends EventEmitter {
           workspace.setTaskRequiresAuthorization(taskId, true)
           workspace.updateTaskStatus(taskId, 'pending_approval')
           workspace.setTaskExecutorManaged(taskId, true)
+          this.besideTurnHilTasks.add(taskId)
           this.trackPendingHilTask(taskId, {
             resolve: (r) => {
+              this.endTaskApproval(taskId)
               if (r.approved) {
                 const finalInput = {
                   ...((r.modifiedArgs ?? input) as Record<string, unknown>),
@@ -4711,7 +4736,8 @@ export class AgentExecutor extends EventEmitter {
             },
             name: toolName,
             input,
-            meta
+            meta,
+            reportsCompletion: true,
           })
           this.emitEvent({
             type: 'tool_approval_request',
@@ -4726,13 +4752,16 @@ export class AgentExecutor extends EventEmitter {
           return
         }
 
-        const result = this.enforceToolResultLimit(rawResult, toolName)
+        const { result } = this.shapeToolResult(toolName, rawResult)
+        this.emitToolResultEffects(toolName, input, result, preWriteContent)
         if (result.isError) {
           workspace.updateTaskStatus(taskId, 'failed', undefined, result.content)
           this.onTaskCompleted?.(taskId, toolName, 'failed', undefined, result.content)
         } else {
           workspace.updateTaskStatus(taskId, 'completed', result.content)
-          this.onTaskCompleted?.(taskId, toolName, 'completed', result.content)
+          // Same side-effect contract as AdfCallHandler's async path: a
+          // turn-control tool (sys_set_state) run as a task still applies.
+          this.onTaskCompleted?.(taskId, toolName, 'completed', result.content, undefined, result.endTurn ? { endTurn: true } : undefined)
         }
       } catch (err) {
         const errorMsg = err instanceof Error ? err.message : String(err)
@@ -5091,6 +5120,113 @@ export class AgentExecutor extends EventEmitter {
     if (refs.length) parts.push(refs.join('\n'))
 
     return { content: parts.join('\n'), isError: false }
+  }
+
+  /** fs_write's target content before the write, for the document diff. */
+  private snapshotBeforeWrite(toolName: string, input: unknown): string | null {
+    if (toolName !== 'fs_write') return null
+    const path = (input as Record<string, unknown> | undefined)?.path as string | undefined
+    if (!path) return null
+    const workspace = this.session.getWorkspace()
+    return path === 'README.md' || path === 'document.md' ? workspace.readDocument() : workspace.readFile(path)
+  }
+
+  /**
+   * Turn a tool's raw result into what the model sees: media become file
+   * references, binary/oversized reads are tombstoned or truncated, and the
+   * result limit applies. One implementation for the turn and for tasks
+   * (`_async`) — a task keeps the shaped text; it has no place for mediaBlocks.
+   */
+  private shapeToolResult(toolName: string, rawResult: ToolResult): { result: ToolResult; mediaBlocks: ContentBlock[]; eventImageUrl?: string } {
+    // Extract multimodal blocks — from fs_read binary content or MCP media responses.
+    // Every extractor and filter below reads the same JSON body, so it is
+    // parsed once here and handed over (a 5 MB base64 payload used to be
+    // parsed up to four times per tool call).
+    const isMcpTool = toolName.startsWith('mcp_')
+    let sharedParse: ParsedToolResult | undefined
+    const parsedResult = (): ParsedToolResult => {
+      if (sharedParse === undefined) sharedParse = parseToolResultJson(rawResult)
+      return sharedParse
+    }
+    // Media a tool read or produced is a reference to its file in
+    // adf_files, attached after the tool result. History keeps the
+    // reference; each request loads the bytes (resolveFileRefs) for a
+    // model that takes them, so a later model switch loses nothing.
+    const mediaBlocks: ContentBlock[] = []
+    let filteredResult: ToolResult
+    let savedFiles: Array<{ path: string; mimeType: string; type: 'image' | 'audio' | 'resource' }> | undefined
+    if (toolName === 'fs_read') {
+      const ref = this.fsReadFileRef(rawResult, parsedResult())
+      if (ref) mediaBlocks.push(ref)
+      filteredResult = this.filterFsReadResult(rawResult, parsedResult())
+    } else if (isMcpTool) {
+      savedFiles = this.persistMcpMedia(rawResult, toolName, parsedResult())
+      for (const saved of savedFiles) {
+        const ref = saved.type === 'resource' ? null : makeFileRef(this.session.getWorkspace(), saved.path)
+        if (ref) mediaBlocks.push(ref)
+      }
+      filteredResult = this.filterMcpMediaResult(rawResult, savedFiles, parsedResult())
+    } else if (toolName === 'adf_shell') {
+      mediaBlocks.push(...this.shellFileRefs(rawResult))
+      filteredResult = rawResult
+    } else {
+      filteredResult = rawResult
+    }
+    const result = this.enforceToolResultLimit(filteredResult, toolName)
+
+    // Build adf-file:// URL for the renderer image preview
+    let eventImageUrl: string | undefined
+    if (isMcpTool) {
+      const savedImage = savedFiles?.find(f => f.type === 'image')
+      eventImageUrl = savedImage ? `adf-file://${savedImage.path}` : undefined
+    } else if ((toolName === 'fs_read' || toolName === 'adf_shell') && mediaBlocks.some(b => b.type === 'file_ref' && b.file_ref && fileRefKind(b.file_ref) === 'image')) {
+      // File already in adf_files — use its path (fs_read: row.path;
+      // adf_shell: first entry of the media manifest)
+      const row = parsedResult() as { path?: string; media?: Array<{ path?: string }> } | null
+      const path = row?.path ?? row?.media?.[0]?.path
+      if (path) eventImageUrl = `adf-file://${path}`
+    }
+    return { result, mediaBlocks, eventImageUrl }
+  }
+
+  /** Renderer notifications a tool result implies. Shared by the turn and by tasks (`_async`). */
+  private emitToolResultEffects(toolName: string, input: unknown, result: ToolResult, preWriteContent: string | null): void {
+    // Notify the renderer when the document changes. Every OTHER file —
+    // mind.md and soul.md included — is covered by the `file_updated`
+    // event raised from the workspace's file-change choke point (see
+    // assemble-agent.ts), which catches writes this tool loop never sees:
+    // shell redirection, sys_code, lambdas.
+    //
+    // Note that mind.md is a session-start snapshot: a mid-session write
+    // lands on disk (and in the tab) but does not refresh the injected
+    // copy, which is re-read on the next session reset (compaction or
+    // loop_clear).
+    if (toolName === 'fs_write') {
+      const path = (input as Record<string, unknown> | undefined)?.path as string | undefined
+      if (path && (path === 'README.md' || path === 'document.md')) {
+        const docWorkspace = this.session.getWorkspace()
+        const docContent = docWorkspace.readDocument()
+        // W3-F: the revision this content took, and who wrote it, so an
+        // editor holding unsaved text can say the agent changed it.
+        const { revision, writer } = documentRevision(docWorkspace, currentResourceWriter())
+        this.emitEvent({
+          type: 'document_updated',
+          payload: { content: docContent, previousContent: preWriteContent ?? undefined, revision, writer },
+          timestamp: Date.now()
+        })
+      }
+    }
+
+    // Notify when a new ADF file is created so tracked dirs refresh
+    if (toolName === 'sys_create_adf' && !result.isError) {
+      const pathMatch = result.content.match(/\nPath: (.+)/)
+      const newFilePath = pathMatch?.[1]?.trim()
+      this.emitEvent({
+        type: 'adf_file_created',
+        payload: newFilePath ? { filePath: newFilePath } : {},
+        timestamp: Date.now()
+      })
+    }
   }
 
   private filterFsReadResult(result: ToolResult, shared?: ParsedToolResult): ToolResult {

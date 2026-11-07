@@ -156,7 +156,7 @@ export function hostExec(
   command: string,
   timeout: number,
   options: HostExecOptions = {},
-): Promise<{ stdout: string; stderr: string; code: number }> {
+): Promise<{ stdout: string; stderr: string; code: number; timedOut?: boolean }> {
   const shell = resolveHostShell()
   const { owner, signal } = options
   if (signal?.aborted) {
@@ -221,6 +221,7 @@ export function hostExec(
         stdout: stdout.trim(),
         stderr: (stderr + extraStderr).trim(),
         code,
+        timedOut,
       })
     }
 

@@ -166,6 +166,32 @@ describe('a chat while an approval waits with no turn running', () => {
     }
   })
 
+  it('an external agent-scope trigger runs a turn while only a beside-turn approval is open', async () => {
+    const { agent, executor, provider, dispose } = await build()
+    try {
+      await agent.start()
+      const approval = executor.requestApproval('mcp_oauth_authorize', { server: 'fs' }, { canAlwaysApprove: false, restoreState: true })
+      expect(executor.getState()).toBe('awaiting_approval')
+      // Reported as on base; gated as `active`.
+      expect(agent.triggerEvaluator.getDisplayState()).toBe('awaiting_approval')
+
+      // A task finishing now (default on_task_complete agent target) wakes the agent.
+      executor.onTaskCompleted!('task-beside-1', 'fs_read', 'completed', 'ok')
+      const deadline = Date.now() + 2_000
+      while (provider.requests.length < 1 && Date.now() < deadline) await new Promise(r => setTimeout(r, 10))
+      expect(provider.requests).toHaveLength(1)
+      expect(JSON.stringify(provider.requests[0].messages)).toContain('Task ID: task-beside-1')
+
+      // The approval is still open.
+      const pending = executor.getPendingApprovals()
+      expect(pending.map((p) => p.name)).toEqual(['mcp_oauth_authorize'])
+      executor.resolveApproval(pending[0].requestId, true)
+      expect(await approval).toBe(true)
+    } finally {
+      await dispose()
+    }
+  })
+
   it('a trigger queued behind a manual compaction drains when it ends, with a beside-turn approval open', async () => {
     const { executor, provider, workspace, dispose } = await build()
     try {

@@ -329,7 +329,7 @@ Execute code in the persistent sandbox. Has access to [standard library packages
 |-----------|------|----------|-------------|
 | `code` | string | Yes | Code to execute |
 | `language` | string | No | Language hint (default: `"javascript"`) |
-| `timeout` | number | No | Timeout in ms (max 300000) |
+| `timeout` | number | No | Timeout in ms (default and max: `limits.execution_timeout_ms`) |
 
 ### sys_lambda
 

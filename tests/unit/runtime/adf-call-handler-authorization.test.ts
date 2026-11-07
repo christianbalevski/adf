@@ -85,6 +85,19 @@ function makeHandler(taskOverrides: Partial<TaskRow> = {}) {
 }
 
 describe('AdfCallHandler authorization scoping', () => {
+  it('lets unauthorized code deny a requires_authorization task (it only narrows), never approve it', async () => {
+    const { handler, task, hilSignals } = makeHandler()
+    const approve = await handler.handleCall('task_resolve', { task_id: 'task_test', action: 'approve' })
+    expect(approve.errorCode).toBe('REQUIRES_AUTHORIZED_CODE')
+    expect(task.status).toBe('pending_approval')
+
+    const deny = await handler.handleCall('task_resolve', { task_id: 'task_test', action: 'deny', reason: 'not needed' })
+    expect(deny.error).toBeUndefined()
+    expect(deny.result).toContain('denied')
+    expect(task.status).toBe('denied')
+    expect(hilSignals).toEqual([{ id: 'task_test', approved: false }])
+  })
+
   it('rejects task_resolve on a HIL task when no ALS auth scope is set and the legacy field is false', async () => {
     const { handler } = makeHandler()
     const result = await handler.handleCall('task_resolve', { task_id: 'task_test', action: 'approve' })

@@ -10,7 +10,7 @@ see_also:
 
 ADF agents can write and execute code. By default, all code — whether written by the agent or the owner — runs with the same privileges. This creates a privilege escalation risk: an agent with code execution can approve its own human-in-the-loop (HIL) restricted tool calls, bypassing human oversight entirely.
 
-Authorized code execution solves this by introducing a file-level trust boundary. The owner marks specific files as **authorized**, and the runtime restricts sensitive methods so only authorized code can call them. For `task_resolve` specifically, authorization is enforced at the task level — trigger lambdas opt in by setting `requires_authorization: true` on the task via `task_resolve`, and subsequent approve/deny calls check this flag rather than relying on method-level restriction.
+Authorized code execution solves this by introducing a file-level trust boundary. The owner marks specific files as **authorized**, and the runtime restricts sensitive methods so only authorized code can call them. For `task_resolve` specifically, authorization is enforced at the task level — trigger lambdas opt in by setting `requires_authorization: true` on the task via `task_resolve`, and subsequent approve calls check this flag rather than relying on method-level restriction (deny is open to any code).
 
 ## Core Concepts
 
@@ -23,7 +23,7 @@ Without authorized code, these two scenarios are indistinguishable to the runtim
 
 Both files live in `adf_files`. Both execute in the same sandbox. Both have access to the same `adf.*` methods.
 
-For `task_resolve`, the distinction is made by the trigger lambda: a HIL lambda sets `requires_authorization: true` when escalating the task, so only authorized code can approve or deny it. Non-security interceptions (rate limiting, batching, logging) don't set the flag, so any code can resolve them.
+For `task_resolve`, the distinction is made by the trigger lambda: a HIL lambda sets `requires_authorization: true` when escalating the task, so only authorized code can approve it (any code can deny it). Non-security interceptions (rate limiting, batching, logging) don't set the flag, so any code can resolve them.
 
 ### The Solution
 
@@ -370,7 +370,7 @@ await adf.task_resolve({
 });
 ```
 
-Once set, the flag cannot be unset — any code can lock the door, but only authorized code can approve or deny the task. Setting to `pending_approval` is always allowed (it's restrictive). The `task_resolve` method checks this flag — not method-level restriction — to determine if the caller must be authorized.
+Once set, the flag cannot be unset — any code can lock the door, but only authorized code can approve the task. Setting to `pending_approval` and denying are always allowed: both only narrow what runs. Deny lets an agent withdraw an `_async` approval it no longer wants. The `task_resolve` method checks this flag — not method-level restriction — to determine if the caller must be authorized.
 
 The `authorized` field is also returned by `fs_read`:
 
