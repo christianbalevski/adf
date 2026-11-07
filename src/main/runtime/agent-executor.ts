@@ -143,6 +143,12 @@ export const INTERRUPTED_TOOL_RESULT = '[Tool execution cancelled — user inter
 /** The loop row an owner interrupt (Stop, Esc, POST /interrupt) leaves. */
 export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by user.'
 
+/** What the owner sees of a response: its text and its say / ask calls, never thinking. */
+function isVisibleToOwner(block: ContentBlock): boolean {
+  return (block.type === 'text' && !!block.text?.trim())
+    || (block.type === 'tool_use' && (block.name === 'say' || block.name === 'ask'))
+}
+
 const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
 // Memory-flush grace turn: after the compaction threshold is crossed the agent
 // gets one turn to persist durable learnings to its mind pages before the loop
@@ -742,9 +748,14 @@ export class AgentExecutor extends EventEmitter {
   private providerValidated: boolean = false
   private bufferTimer: NodeJS.Timeout | null = null
   private readonly BATCH_WINDOW_MS = 50
-  // An owner chat reached this turn and nothing visible (text, say, ask) has
-  // followed it yet. See noteSilentTurn.
-  private ownerChatUnanswered = false
+  // Whether an owner chat reached this turn, and if so whether the owner has
+  // seen anything visible (text, say, ask) that answers it. Visible output
+  // shown before the agent has seen any tool results is a status line, not an
+  // answer. See noteSilentTurn.
+  private ownerChat: 'none' | 'unanswered' | 'answered' = 'none'
+  // Since the owner chat arrived, the model has seen the results of a call
+  // that isn't visible output. See noteOwnerChatResponse.
+  private turnDidWork = false
 
   // System prompt caching for performance
   private systemPromptCache: {
@@ -2449,7 +2460,8 @@ export class AgentExecutor extends EventEmitter {
       // or ones that arrived while this turn was being scheduled) join it as
       // consecutive user rows, in arrival order, before the first model call.
       if (!opts?.nested) {
-        this.ownerChatUnanswered = eventType === 'chat'
+        this.ownerChat = eventType === 'chat' ? 'unanswered' : 'none'
+        this.turnDidWork = false
         this.deliverQueuedChatsAtTurnStart()
       }
 
@@ -2885,10 +2897,7 @@ export class AgentExecutor extends EventEmitter {
           }
         )
 
-        if (response.content.some(b => (b.type === 'text' && b.text?.trim())
-          || (b.type === 'tool_use' && (b.name === 'say' || b.name === 'ask')))) {
-          this.ownerChatUnanswered = false
-        }
+        const responseVisible = response.content.some(isVisibleToOwner)
 
         if (toolUseBlocks.length > 0) {
           consecutiveTextOnly = 0
@@ -3638,6 +3647,12 @@ export class AgentExecutor extends EventEmitter {
             console.log('[AgentExecutor] Session reset after loop clear/compact')
           }
 
+          // Work: a call the model will see the result of. Not visible output,
+          // and not in a response whose turn a call ended (sys_set_state, the
+          // shell's `state`, a lambda): that is the tool result's endTurn above,
+          // so this guard and end-of-turn handling use one definition.
+          this.noteOwnerChatResponse(responseVisible, continueLoop && toolUseBlocks.some(b => !isVisibleToOwner(b)))
+
           // A state change that would end an owner's chat turn with nothing said
           // gets one chance to reply first. 'off' is a deliberate stop.
           if (!continueLoop && !silenceNoticed && targetState !== 'off' && !needsLoopReset && this.noteSilentTurn()) {
@@ -3686,6 +3701,8 @@ export class AgentExecutor extends EventEmitter {
             },
             timestamp: Date.now()
           })
+
+          this.noteOwnerChatResponse(responseVisible, false)
 
           // Interactive mode: text without tool calls ends the turn
           // Autonomous mode: text is logged, turn continues
@@ -6424,12 +6441,30 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * Fold one model response into the owner-chat state. `didWork`: the model
+   * will see results of calls in it that aren't visible output. The turn's
+   * first such response makes everything the owner saw so far, that response
+   * included, a status line: it all came before any tool results. Otherwise
+   * visible output answers, including in the response that ends the turn,
+   * whose tool results the model never sees.
+   */
+  private noteOwnerChatResponse(visible: boolean, didWork: boolean): void {
+    if (this.ownerChat === 'none') return
+    if (didWork && !this.turnDidWork) {
+      this.ownerChat = 'unanswered'
+      this.turnDidWork = true
+    } else if (visible) {
+      this.ownerChat = 'answered'
+    }
+  }
+
+  /**
    * The turn is about to end with nothing the owner can see since their chat:
    * only thinking, or a bare state change. Tell the model, through the loop
    * like any other input, so it can reply. Returns whether the notice went in.
    */
   private noteSilentTurn(): boolean {
-    if (!this.ownerChatUnanswered) return false
+    if (this.ownerChat !== 'unanswered') return false
     if (this.getState() === 'stopped' || this._interruptRestart || this._ownerStateTransitionRequested) return false
     try {
       this.session.getWorkspace().insertLog('warn', 'executor', 'silent_turn', null, 'Turn would have ended without a reply to the owner; asked the model to reply')
@@ -6470,7 +6505,12 @@ export class AgentExecutor extends EventEmitter {
    */
   private deliverQueuedChats(delivery: 'turn_start' | 'next_step'): number {
     const chats = this.takeQueuedChats(delivery)
-    if (chats.length > 0) this.ownerChatUnanswered = true
+    // A newly absorbed chat has not been worked on yet: the next status line
+    // shown for it does not answer it either.
+    if (chats.length > 0) {
+      this.ownerChat = 'unanswered'
+      this.turnDidWork = false
+    }
     for (const chat of chats) {
       if (this.preAppendedRowAlreadyInSession(chat)) continue
       const content = this.buildTriggerContent(chat)
