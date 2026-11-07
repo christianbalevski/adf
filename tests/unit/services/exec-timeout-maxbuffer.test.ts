@@ -10,7 +10,7 @@ import { killedByTimeout } from '../../../src/main/utils/exec-timeout'
 import { PodmanService } from '../../../src/main/services/podman.service'
 
 const run = (args: string[], opts: { timeout?: number; maxBuffer?: number }) =>
-  new Promise<Error | null>((resolve) => { execFile(process.execPath, args, opts, (error) => resolve(error)) })
+  new Promise<Error | null>((resolve) => { execFile(process.execPath, args, { ...opts, windowsHide: true }, (error) => resolve(error)) })
 
 /** Reaches the protected exec0 — the real one, no podman needed for a plain binary. */
 class ExecProbe extends PodmanService {

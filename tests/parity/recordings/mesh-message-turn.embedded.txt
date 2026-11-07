@@ -376,7 +376,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 12206
+      input: 12233
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -431,7 +431,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 12239
+      input: 12266
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -501,7 +501,7 @@
       filePath: "<ROOT>/agents/agent-2.adf"
       model: "parity-model"
       usage:
-        input: 12286
+        input: 12313
         output: 0
     timestamp: "<t>"
     type: "response_metadata"
