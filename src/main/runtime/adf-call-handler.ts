@@ -16,7 +16,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { withAuthorization, currentAuthorization } from './authorization-context'
 import type { AgentSession } from './agent-session'
 import { currentSourceOrUnknown } from './execution-context'
-import { LOOP_RESET_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
+import { LOOP_RESET_TOOLS, TURN_ONLY_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -57,9 +57,6 @@ export interface AdfCallHandlerOptions {
   /** This agent's Ed25519 signing key (PKCS8 DER) for attestation_issue. Handles envelope/password decryption. */
   getSigningKey?: () => Buffer | null
 }
-
-/** Tools that cannot be called from code */
-const EXCLUDED_TOOLS = new Set(['say', 'ask'])
 
 /** Code-execution-only methods (not regular tools — gated by code_execution config). */
 const CODE_EXECUTION_METHODS = new Set<keyof CodeExecutionConfig>([
@@ -110,7 +107,9 @@ export class AdfCallHandler {
   onLambdaToolEndTurn?: (tool: string, resultContent: string) => void
 
   /** HIL task approval callback — signals executor to proceed with tool execution */
-  onHilApproved?: (taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string) => void
+  /** Returns true when the executor's request was task-backed and reports the
+   *  task's outcome (onTaskCompleted) itself. */
+  onHilApproved?: (taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string) => boolean | void
 
   /** Blocking HIL override request for protection denials hit by unauthorized code.
    *  Absent (e.g. serving runtimes without an executor) → denial returned as a plain error. */
@@ -281,7 +280,7 @@ export class AdfCallHandler {
       }
 
       // Excluded tools (say, ask) — cannot be called from code
-      if (EXCLUDED_TOOLS.has(method)) {
+      if (TURN_ONLY_TOOLS.has(method)) {
         this.logCall('warn', 'call_rejected', method, `Excluded tool "${method}" called from code`)
         return {
           error: `Tool "${method}" cannot be called from code`,
@@ -826,8 +825,10 @@ export class AdfCallHandler {
 
     // Check task-level authorization before allowing approve/deny
     if (task.requires_authorization && !this.effectiveAuthorization()) {
-      // Setting to pending_approval is allowed from unauthorized code (it's restrictive, not permissive)
-      if (input.action !== 'pending_approval') {
+      // pending_approval and deny are allowed from unauthorized code: both only
+      // narrow what runs. Deny lets an agent withdraw a call it no longer wants
+      // (an _async approval it has moved past). Approve stays authorized-only.
+      if (input.action === 'approve') {
         this.logCall('warn', 'call_rejected', 'task_resolve', `Task "${input.task_id}" requires authorized code to resolve`)
         return {
           error: `Task "${input.task_id}" requires authorized code to resolve. Ask the owner to authorize the source file.`,
@@ -880,10 +881,12 @@ export class AdfCallHandler {
         // Executor-managed: signal the executor to reject. The reason rides
         // along as feedback so the agent sees WHY in the in-band tool error,
         // not just that it was denied.
-        if (task.executor_managed) {
-          this.onHilApproved?.(input.task_id, false, undefined, input.reason)
-        }
-        this.onTaskCompleted?.(input.task_id, task.tool, 'denied', undefined, reason)
+        // A task-backed request (_async on a restricted tool) reports its own
+        // outcome from the executor; reporting it here too would wake twice.
+        const reported = task.executor_managed
+          ? this.onHilApproved?.(input.task_id, false, undefined, input.reason) === true
+          : false
+        if (!reported) this.onTaskCompleted?.(input.task_id, task.tool, 'denied', undefined, reason)
         return { result: JSON.stringify({ task_id: input.task_id, status: 'denied', reason }) }
       }
       case 'pending_approval': {

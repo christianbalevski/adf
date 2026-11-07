@@ -131,7 +131,7 @@ sys_update_config({path:'triggers.on_inbox.enabled',value:true})
 sys_update_config({path:'triggers.on_timer.enabled',value:true})
 ```
 
-The inbox filter is defense in depth; the gateway also verifies the actual stored sender and private chat. Keep both. Do not rely on an LLM turn for yes/no resolution: the agent can be blocked waiting on synchronous HIL. System-scope dispatch and response let the human answer while that turn waits. Use `_async:true` only for supported calls: `adf_shell`, `sys_code`, `sys_lambda`, `sys_fetch`, and `mcp_*` on the characterized runtime. `fs_write` does not support this flag. Check the installed tool schema before choosing the harmless test; system-scope replies must also work for synchronous HIL.
+The inbox filter is defense in depth; the gateway also verifies the actual stored sender and private chat. Keep both. Do not rely on an LLM turn for yes/no resolution: the agent can be blocked waiting on synchronous HIL. System-scope dispatch and response let the human answer while that turn waits. `_async:true` is accepted on any tool call. Check the installed tool schema before choosing the harmless test; system-scope replies must also work for synchronous HIL.
 
 Ensure `on_timer` has a system-scope target, preserving existing targets. Create **one** system timer after checking `sys_list_timers` for duplicates:
 

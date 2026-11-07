@@ -21,11 +21,10 @@ import type { ContainerPhase } from '../../../shared/types/compute.types'
 import { availableTargets, resolveTarget, type ComputeCapabilities, type ComputeTarget } from './compute-target'
 import { hostExec, ensureHostWorkspace } from '../../services/host-exec.service'
 import { ExternalExecutionService } from '../../services/external-execution.service'
+import { clampTimerDelay } from '../../utils/timer-delay'
 
 const MAX_OUTPUT_BYTES = 512 * 1024 // 512 KB per stream
-const MAX_TIMEOUT_MS = 120_000      // Hard ceiling: 2 minutes
 const DEFAULT_TIMEOUT_MS = 30_000
-const TIMEOUT_EXIT_CODE = 124       // GNU timeout convention — hostExec reports this on timeout
 
 const BASE_DESCRIPTION =
   'Execute a shell command in a compute environment. ' +
@@ -39,11 +38,12 @@ export class ComputeExecTool implements Tool {
   private readonly readCapabilities: () => ComputeCapabilities
   private presented: { key: string; description: string; inputSchema: z.ZodObject<any> } | null = null
 
-  /** `capabilities` may be a function: it is then read on every use, so config changes apply live. */
+  /** `capabilities` may be a function: it is then read on every use, so config changes apply live.
+   *  `agentTimeoutMs` reads the agent's limits.execution_timeout_ms — the only ceiling — at use. */
   constructor(
     private podmanService: PodmanService | null,
     capabilities: ComputeCapabilities | (() => ComputeCapabilities),
-    private agentTimeoutMs?: number,
+    private agentTimeoutMs: () => number | undefined = () => undefined,
     private externalExecutionService = new ExternalExecutionService(),
   ) {
     this.readCapabilities = typeof capabilities === 'function' ? capabilities : () => capabilities
@@ -51,6 +51,10 @@ export class ComputeExecTool implements Tool {
 
   private get capabilities(): ComputeCapabilities {
     return this.readCapabilities()
+  }
+
+  private get ceiling(): number {
+    return this.agentTimeoutMs() ?? DEFAULT_TIMEOUT_MS
   }
 
   get description(): string {
@@ -66,13 +70,14 @@ export class ComputeExecTool implements Tool {
     const capabilities = this.capabilities
     const targets = availableTargets(capabilities)
     const showDisplay = capabilities.hasIsolated && !!capabilities.browserDisplay
-    const key = JSON.stringify([targets, capabilities.defaultTarget, showDisplay, capabilities.hostInfo])
+    const ceiling = this.ceiling
+    const key = JSON.stringify([targets, capabilities.defaultTarget, showDisplay, capabilities.hostInfo, ceiling])
     if (this.presented?.key === key) return this.presented
 
     const schemaTargets = (targets.length > 0 ? targets : ['shared']) as [string, ...string[]]
     const shape: Record<string, z.ZodTypeAny> = {
       command: z.string().min(1).describe('Shell command to execute. Supports pipes, chaining, and redirection.'),
-      timeout_ms: z.number().int().positive().optional().describe('Timeout in milliseconds (default 30000, max 120000).'),
+      timeout_ms: z.number().int().positive().optional().describe(`Timeout in milliseconds (default ${Math.min(DEFAULT_TIMEOUT_MS, ceiling)}, max ${ceiling} — your limits.execution_timeout_ms).`),
     }
     if (targets.length > 1) {
       shape.target = z.enum(schemaTargets).optional().describe('Optional execution environment. Omit to use the default.')
@@ -109,14 +114,15 @@ export class ComputeExecTool implements Tool {
       return { content: err instanceof Error ? err.message : String(err), isError: true }
     }
 
-    // Resolve effective timeout: per-call < agent limit < hard ceiling
-    const ceiling = Math.min(this.agentTimeoutMs ?? MAX_TIMEOUT_MS, MAX_TIMEOUT_MS)
-    const effectiveTimeout = timeout_ms
+    // Resolve effective timeout: per-call, bounded by the agent's limit
+    const ceiling = this.ceiling
+    // Every backend arms a timer with it (hostExec, execFile's timeout).
+    const effectiveTimeout = clampTimerDelay(timeout_ms
       ? Math.min(timeout_ms, ceiling)
-      : Math.min(DEFAULT_TIMEOUT_MS, ceiling)
+      : Math.min(DEFAULT_TIMEOUT_MS, ceiling))
 
     try {
-      let result: { stdout: string; stderr: string; code: number }
+      let result: { stdout: string; stderr: string; code: number; timedOut?: boolean }
 
       switch (effectiveTarget) {
         case 'isolated': {
@@ -165,6 +171,7 @@ export class ComputeExecTool implements Tool {
         }
       }
 
+      const timedOut = result.timedOut === true
       return {
         content: JSON.stringify({
           target: effectiveTarget,
@@ -175,15 +182,21 @@ export class ComputeExecTool implements Tool {
                 target_name: capabilities.externalTargets[effectiveTarget].name,
               }
             : {}),
-          exit_code: result.code,
-          ...(result.code === TIMEOUT_EXIT_CODE
-            ? { timed_out: true, timeout_ms: effectiveTimeout }
+          // A killed command has no exit status of its own.
+          exit_code: timedOut ? null : result.code,
+          ...(timedOut
+            ? {
+                timed_out: true,
+                timeout_ms: effectiveTimeout,
+                error: `Command timed out after ${effectiveTimeout} ms and was killed (limit: limits.execution_timeout_ms = ${ceiling} ms). ` +
+                  'Pass a larger timeout_ms, raise the limit with sys_update_config, or run it with _async: true.',
+              }
             : {}),
           ...(context?.signal?.aborted ? { interrupted: true } : {}),
           stdout: truncate(result.stdout, MAX_OUTPUT_BYTES),
           stderr: truncate(result.stderr, MAX_OUTPUT_BYTES),
         }),
-        isError: false,
+        isError: timedOut,
       }
     } catch (err) {
       return {

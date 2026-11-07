@@ -21,6 +21,7 @@
 import { readFileSync } from 'fs'
 import { Worker } from 'node:worker_threads'
 import { locate } from './locate-resource'
+import { clampTimerDelay } from '../../../utils/timer-delay'
 
 export interface JqRunResult {
   stdout: string
@@ -99,7 +100,7 @@ export async function runJq(
   const wasmModule = await getModule()
   const entryPath = locateJqEntry()
   // Clamp: a 0/negative/NaN timeout must not kill every filter instantly.
-  const timeoutMs = opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 60_000
+  const timeoutMs = clampTimerDelay(opts.timeoutMs && opts.timeoutMs > 0 ? opts.timeoutMs : 60_000)
 
   await acquireSlot()
   return new Promise<JqRunResult>((resolve) => {

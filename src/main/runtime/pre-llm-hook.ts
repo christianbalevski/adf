@@ -386,7 +386,7 @@ export class PreLlmHookRunner {
         this.codeSandboxService,
         hookHandler,
         this.agentId,
-        config.limits?.execution_timeout_ms,
+        () => config.limits?.execution_timeout_ms,
       ))
       hookHandler.setAuthorizationContext(fileAuthorized)
       toolConfig = {

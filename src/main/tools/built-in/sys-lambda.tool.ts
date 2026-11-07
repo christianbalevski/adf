@@ -42,25 +42,35 @@ export class SysLambdaTool implements Tool {
   readonly name = 'sys_lambda'
   readonly description =
     'Call a function from a script file in the workspace. The function receives the provided args as a single object parameter — use destructuring: function add({ a, b }) { return a + b; }. Functions have access to the `adf` object for calling tools and model_invoke. If no function name is specified (e.g. just "utils.js"), calls main(). Use "file.js:functionName" to call a specific function.'
-  readonly inputSchema: ReturnType<typeof buildInputSchema>
+  private schema: { maxTimeout: number; inputSchema: ReturnType<typeof buildInputSchema> } | null = null
   readonly category = 'external' as const
 
   private codeSandboxService: CodeSandboxService
   private adfCallHandler: AdfCallHandler
   private agentId: string
-  private maxTimeout: number
+  private readMaxTimeout: () => number | undefined
 
   constructor(
     codeSandboxService: CodeSandboxService,
     adfCallHandler: AdfCallHandler,
     agentId: string,
-    maxTimeout?: number
+    maxTimeout?: () => number | undefined
   ) {
     this.codeSandboxService = codeSandboxService
     this.adfCallHandler = adfCallHandler
     this.agentId = agentId
-    this.maxTimeout = maxTimeout ?? 30_000
-    this.inputSchema = buildInputSchema(this.maxTimeout)
+    this.readMaxTimeout = maxTimeout ?? (() => undefined)
+  }
+
+  /** The agent's limits.execution_timeout_ms, read live so a raised limit applies without a restart. */
+  private get maxTimeout(): number {
+    return this.readMaxTimeout() ?? 30_000
+  }
+
+  get inputSchema(): ReturnType<typeof buildInputSchema> {
+    const maxTimeout = this.maxTimeout
+    if (this.schema?.maxTimeout !== maxTimeout) this.schema = { maxTimeout, inputSchema: buildInputSchema(maxTimeout) }
+    return this.schema.inputSchema
   }
 
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {

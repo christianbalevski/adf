@@ -716,9 +716,8 @@ export function assembleAgent<P extends AgentProfileName>(
     adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
       applyStateTransitionSideEffect(executor, tool, 'completed', resultContent, { endTurn: true })
     }
-    adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) => {
+    adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) =>
       executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
-    }
     adfCallHandler.requestProtectionApproval = (method, args, protection) =>
       executor.requestProtectionApproval(method, args, protection)
     adfCallHandler.onLlmCall = (data) => triggerEvaluator.onLlmCall(data)
