@@ -12,6 +12,16 @@ The contract reference for sending and receiving over channel adapters
 doc `msg_send` links to. Human setup instructions (credentials, app
 manifests, pairing) live in [messaging.md](messaging.md#channel-adapters).
 
+**The `email` adapter is a channel, not mailbox access.** It lets someone message
+you by email: it takes only new unread mail from INBOX (and marks it read there),
+and it cannot search, label, move or sort a mailbox. When your principal wants you
+to work with their Gmail (search, read, label or send), connect the
+Gmail MCP server instead. Studio ships it with its own Google sign-in, so it needs
+no app password and no Google Cloud project. They set it up once in **Settings →
+MCP servers → + Add MCP Server → Gmail**, **Turn on host access**, **Sign in to
+Gmail**, and set **Agent access** to **On**. You then attach it with
+`mcp_install` and the name `gmail`. Details: [mcp-integration.md](mcp-integration.md#making-settings-servers-available-to-agents).
+
 ## Addressing
 
 First contact uses `{adapter}:{platform-id}` as `recipient` (no `address`):
