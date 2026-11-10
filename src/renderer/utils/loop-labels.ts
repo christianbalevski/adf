@@ -87,8 +87,10 @@ export function contextLabel(entry: AgentLogEntry): string {
       return 'Instructions updated · system prompt'
     case 'dynamic_instructions':
       return 'Instructions updated · dynamic instructions'
-    case 'provider_context':
-      return `Added by ${typeof meta.addedBy === 'string' ? meta.addedBy : 'provider'}`
+    case 'provider_context': {
+      const by = `Added by ${typeof meta.addedBy === 'string' ? meta.addedBy : 'provider'}`
+      return typeof meta.mergedCount === 'number' && meta.mergedCount > 1 ? `${by} · ${meta.mergedCount}` : by
+    }
     case 'injected': {
       const name = String(meta.injectCategory ?? 'context')
       // The runtime's own injections (the skills index) carry a system: origin.
@@ -99,15 +101,34 @@ export function contextLabel(entry: AgentLogEntry): string {
   }
 }
 
+/** Between the blocks of merged provider context rows, in the expanded view. */
+export const MERGED_CONTEXT_SEPARATOR = '\n\n────────\n\n'
+
 /**
- * The system prompt and dynamic instructions recorded together (the executor
- * writes them back to back) as one row, so a changed turn shows one
- * "Instructions updated" step. Anything else passes through.
+ * Context rows recorded back to back, merged into one row:
+ * - the system prompt and dynamic instructions (the executor writes them
+ *   together), so a changed turn shows one "Instructions updated" step;
+ * - consecutive context added by the same provider (Claude Code), as one
+ *   "Added by Claude Code · n" row holding every block.
+ * Anything else passes through.
  */
-export function mergeInstructionRows(entries: AgentLogEntry[]): AgentLogEntry[] {
+export function mergeContextRows(entries: AgentLogEntry[]): AgentLogEntry[] {
   const out: AgentLogEntry[] = []
   for (const entry of entries) {
     const prev = out[out.length - 1]
+    if (
+      entry.type === 'context' && entry.metadata?.category === 'provider_context'
+      && prev?.type === 'context' && prev.metadata?.category === 'provider_context'
+      && prev.metadata?.addedBy === entry.metadata?.addedBy
+    ) {
+      const count = typeof prev.metadata.mergedCount === 'number' ? prev.metadata.mergedCount : 1
+      out[out.length - 1] = {
+        ...prev,
+        content: `${prev.content}${MERGED_CONTEXT_SEPARATOR}${entry.content}`,
+        metadata: { ...prev.metadata, mergedCount: count + 1 },
+      }
+      continue
+    }
     if (
       entry.type === 'context' && entry.metadata?.category === 'dynamic_instructions'
       && prev?.type === 'context' && prev.metadata?.category === 'system_prompt'

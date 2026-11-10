@@ -16,7 +16,7 @@ import { nanoid } from 'nanoid'
 import { MarkdownEntry } from './MarkdownEntry'
 import { loopColor } from '../../utils/loop-color'
 import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../utils/loop-activity'
-import { contextLabel, describeWake, mergeInstructionRows } from '../../utils/loop-labels'
+import { contextLabel, describeWake, mergeContextRows } from '../../utils/loop-labels'
 import { LOOP_ERROR_ACTION_LABELS, actionableErrorId, errorAction, isMissingProvider, type LoopErrorAction } from '../../utils/loop-error'
 import { restoreDraft, sendWithRecovery } from '../../utils/send-recovery'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry, type RegistryEntry } from '../../utils/skills-panel'
@@ -328,7 +328,7 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
   }
 
   // A trigger is never folded: it is the line that opens a woken turn.
-  for (const entry of mergeInstructionRows(entries)) {
+  for (const entry of mergeContextRows(entries)) {
     if (isCollapsibleActivity(entry, toolPairs)) {
       activityEntries.push(entry)
     } else {

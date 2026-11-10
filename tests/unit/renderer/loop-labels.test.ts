@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { contextLabel, describeWake, mergeInstructionRows } from '../../../src/renderer/utils/loop-labels'
+import { MERGED_CONTEXT_SEPARATOR, contextLabel, describeWake, mergeContextRows } from '../../../src/renderer/utils/loop-labels'
 import { useAgentStore, type AgentLogEntry } from '../../../src/renderer/stores/agent.store'
 import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
 import { parseLoopToDisplay } from '../../../src/shared/utils/loop-parser'
@@ -34,9 +34,9 @@ describe('contextLabel', () => {
   })
 })
 
-describe('mergeInstructionRows', () => {
+describe('mergeContextRows', () => {
   it('joins a system prompt and the dynamic instructions after it into one row', () => {
-    const merged = mergeInstructionRows([
+    const merged = mergeContextRows([
       context('sp', { category: 'system_prompt', seq: 4 }, 'You are an agent.'),
       context('di', { category: 'dynamic_instructions', seq: 5 }, '2 unread.'),
     ])
@@ -45,7 +45,24 @@ describe('mergeInstructionRows', () => {
 
   it('leaves a lone row alone', () => {
     const rows = [context('di', { category: 'dynamic_instructions' }), context('sp', { category: 'system_prompt' })]
-    expect(mergeInstructionRows(rows)).toEqual(rows)
+    expect(mergeContextRows(rows)).toEqual(rows)
+  })
+
+  it('folds back-to-back context from one provider into one counted row', () => {
+    const cc = { category: 'provider_context', addedBy: 'Claude Code' }
+    const thinking: AgentLogEntry = { id: 't', type: 'thinking', content: '…', timestamp: 1 }
+    const merged = mergeContextRows([
+      context('a', cc, 'one'),
+      context('b', cc, 'two'),
+      context('c', cc, 'three'),
+      thinking,
+      context('d', cc, 'four'),
+      context('e', { category: 'provider_context', addedBy: 'Codex' }, 'five'),
+    ])
+    expect(merged.map((e) => e.id)).toEqual(['a', 't', 'd', 'e'])
+    expect(merged[0].content).toBe(['one', 'two', 'three'].join(MERGED_CONTEXT_SEPARATOR))
+    expect(contextLabel(merged[0])).toBe('Added by Claude Code · 3')
+    expect(contextLabel(merged[2])).toBe('Added by Claude Code')
   })
 })
 
