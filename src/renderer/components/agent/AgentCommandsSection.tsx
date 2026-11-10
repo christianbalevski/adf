@@ -37,6 +37,13 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
   }
   return <div className="space-y-3">
     <datalist id={listId}>{(files ?? []).map(file => <option key={file} value={`${file}:`} />)}</datalist>
+    <div className="flex items-center justify-between">
+      <span className="block text-xs text-neutral-500 dark:text-neutral-400">Commands</span>
+      <button type="button" disabled={draft.length >= 64} onClick={() => { setDraft(rows => [...rows, { name: '', description: '', lambda: '' }]); setDirty(true) }}
+        className="text-[11px] font-medium text-blue-500 hover:text-blue-700 disabled:cursor-not-allowed disabled:opacity-40">
+        + Add command
+      </button>
+    </div>
     {draft.map((command, index) => <div key={index} className="space-y-2 rounded border border-[var(--adf-ui-border)] p-3">
       {command.malformed !== undefined && <details className="text-xs text-[var(--adf-ui-danger)]">
         <summary className="cursor-pointer">Invalid command data</summary>
@@ -74,14 +81,13 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
         })}
       </div>
     </div>)}
-    <div className="flex flex-wrap items-center gap-2">
-      <Button size="compact" disabled={draft.length >= 64} onClick={() => { setDraft(rows => [...rows, { name: '', description: '', lambda: '' }]); setDirty(true) }}>Add command</Button>
+    {(draft.length > 0 || dirty) && <div className="flex flex-wrap items-center gap-2">
       <Button variant="primary" size="compact" disabled={!dirty || !validation.canSave} onClick={() => {
         if (!validation.commands) return
         onSave(validation.commands)
         setDirty(false)
       }}>Save commands</Button>
       {dirty && <Button variant="ghost" size="compact" onClick={() => { setDraft(agentCommandsDraftFromConfig(commands)); setDirty(false) }}>Discard</Button>}
-    </div>
+    </div>}
   </div>
 }
