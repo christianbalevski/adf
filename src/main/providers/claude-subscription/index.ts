@@ -24,8 +24,8 @@ export function createClaudeSubscriptionProvider(opts: ClaudeSubscriptionProvide
 export const CLAUDE_SUBSCRIPTION_MODELS = [
   'claude-opus-5-5',
   'claude-sonnet-5-5',
-  'claude-fable-5-1',
-  'claude-haiku-4-5',
+  'claude-fable-5-2',
+  'claude-haiku-5-5',
 ]
 
 /**

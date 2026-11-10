@@ -862,7 +862,9 @@ async function fetchSupportedModels(): Promise<string[]> {
       plugins: [],
       persistSession: false,
       cwd,
-      env: claudeCodeEnv({ CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1', DISABLE_AUTOUPDATER: '1' }),
+      // Nonessential traffic stays on here: Claude Code learns which models the
+      // plan offers from remote config, and without it lists only its built-ins.
+      env: claudeCodeEnv({ DISABLE_AUTOUPDATER: '1' }),
     },
   })
   try {
