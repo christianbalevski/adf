@@ -414,9 +414,11 @@ cdp_up() { wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/j
 # sandbox on. The sandbox would guard nothing: the agent already controls the
 # container as root, and the container is the boundary. --test-type drops the
 # "unsupported command-line flag" bar that would say otherwise.
+# --enable-unsafe-swiftshader: no GPU here, and without it WebGL is unavailable and pages fall back to paths that can
+# misbehave. It renders on the CPU; "unsafe" because page shaders run through SwiftShader, so the container is the boundary.
 launch() {
   sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$PROFILE/Default/Preferences" 2>/dev/null
-  exec '${chromium}' --no-sandbox --test-type --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
+  exec '${chromium}' --no-sandbox --test-type --enable-unsafe-swiftshader --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
 }
 # Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
 browser_pids() {
@@ -448,7 +450,8 @@ case "$cmd" in
     setsid -f "$0" launch-detached "$@" </dev/null >/dev/null 2>&1
     i=0; while ! cdp_up && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.25; done
     cdp_up || { echo "managed Chromium did not come up; see /tmp/adf-browser/chromium.log" >&2; exit 1; } ;;
-  launch-detached) launch "$@" ;;
+  # Rotate here, once per fresh browser: launch() also hands URLs to a running one, whose log this would cut.
+  launch-detached) mv -f /tmp/adf-browser/chromium.log /tmp/adf-browser/chromium.log.1 2>/dev/null; launch "$@" ;;
   stop)
     touch "$HOLD"
     kill_browser || { echo "managed Chromium still running" >&2; exit 1; } ;;
