@@ -1,6 +1,6 @@
 {
   "name": "adf-studio",
-  "version": "0.8.8",
+  "version": "0.8.9",
   "description": "Agent Document Format - The document is the agent boundary",
   "repository": {
     "type": "git",
