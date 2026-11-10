@@ -5369,7 +5369,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // --- Models ---
 
-  ipcMain.handle(IPC.MODELS_LIST, async (_event, args: { provider: string; filePath?: string }) => {
+  ipcMain.handle(IPC.MODELS_LIST, async (_event, args: { provider: string; filePath?: string; refresh?: boolean }) => {
     let cfg = settings.getProvider(args.provider)
 
     // If not found in app settings, check ADF-stored providers
@@ -5413,7 +5413,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     if (cfg.type === 'claude-subscription') {
       const { listClaudeSubscriptionModels } = await import('../providers/claude-subscription')
-      return { models: await listClaudeSubscriptionModels() }
+      return await listClaudeSubscriptionModels({ refresh: args.refresh })
     }
 
     if (cfg.type === 'anthropic') {

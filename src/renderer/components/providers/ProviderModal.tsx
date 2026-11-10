@@ -10,7 +10,8 @@ import {
 } from '../../../shared/constants/provider-catalog'
 import { Dialog } from '../common/Dialog'
 import { BrandMark } from '../common/BrandMark'
-import { Button, Select, TextInput } from '../ui'
+import { Tooltip } from '../common/Tooltip'
+import { Button, IconButton, Select, TextInput } from '../ui'
 import { ProviderAgentOverrides, ParamsEditor } from './ProviderAgentOverrides'
 import { providerDotClass, providerStatusLabel, type ProviderTestStatus } from './provider-status'
 import { hasCredential } from './provider-ready'
@@ -71,6 +72,8 @@ interface ProviderModalProps {
   onTest: () => void
   models?: ModelListState
   onFetchModels: () => void
+  /** Ask the provider for its models again, past any cached list. */
+  onRefreshModels: () => void
   /** A key was pasted or the key field left with a new value: save, test, list models. */
   onKeyEntered?: () => void
   chatgpt: SubscriptionAuthState
@@ -192,7 +195,7 @@ export function ProviderSaveError({ message }: { message: string }) {
 
 function ProviderForm({
   provider, entry, isDefault, status, saveError, onUpdate, onRemove, onMakeDefault, onTest, onClose,
-  models, onFetchModels, onKeyEntered, chatgpt, grok, claude, onCarrierCountChange, onDone, requireDefaultModel,
+  models, onFetchModels, onRefreshModels, onKeyEntered, chatgpt, grok, claude, onCarrierCountChange, onDone, requireDefaultModel,
 }: ProviderModalProps & { provider: ProviderConfig; entry?: ProviderCatalogEntry }) {
   const subscription = isSubscriptionType(provider.type)
   const auth = provider.type === 'chatgpt-subscription' ? chatgpt
@@ -287,21 +290,30 @@ function ProviderForm({
         )}
 
         <Field label="Default model" hint={models?.error ? <span className="text-[var(--adf-ui-danger)]">{models.error}</span> : requireDefaultModel ?? 'Agents can pick another model; this is the starting point.'}>
-          {models?.loading ? (
+          {models?.loading && modelList.length === 0 ? (
             <div className="px-1 py-1.5 text-[12px] text-[var(--adf-ui-text-subtle)]">Loading models…</div>
           ) : listMode ? (
-            <Select
-              aria-label="Default model"
-              value={modelList.includes(provider.defaultModel ?? '') ? provider.defaultModel : '__custom__'}
-              onChange={(e) => {
-                if (e.target.value === '__custom__') setCustomModel(true)
-                else onUpdate({ defaultModel: e.target.value })
-              }}
-            >
-              {modelList.map((m) => <option key={m} value={m}>{m}</option>)}
-              {provider.defaultModel && !modelList.includes(provider.defaultModel) && <option value={provider.defaultModel}>{provider.defaultModel} (current)</option>}
-              <option value="__custom__">Type a model id…</option>
-            </Select>
+            <div className="flex gap-1.5">
+              <Select
+                aria-label="Default model"
+                className="flex-1"
+                value={modelList.includes(provider.defaultModel ?? '') ? provider.defaultModel : '__custom__'}
+                onChange={(e) => {
+                  if (e.target.value === '__custom__') setCustomModel(true)
+                  else onUpdate({ defaultModel: e.target.value })
+                }}
+              >
+                {modelList.map((m) => <option key={m} value={m}>{m}</option>)}
+                {provider.defaultModel && !modelList.includes(provider.defaultModel) && <option value={provider.defaultModel}>{provider.defaultModel} (current)</option>}
+                <option value="__custom__">Type a model id…</option>
+              </Select>
+              <Tooltip tip="Refresh model list" className="flex">
+                {/* Not `disabled` while loading: that would drop focus from the button just clicked. */}
+                <IconButton aria-label="Refresh model list" aria-busy={models?.loading || undefined} size="default" onClick={() => { if (!models?.loading) onRefreshModels() }}>
+                  <span className={models?.loading ? 'animate-spin' : undefined}>↻</span>
+                </IconButton>
+              </Tooltip>
+            </div>
           ) : (
             <div className="flex gap-1.5">
               <TextInput aria-label="Default model" type="text" value={provider.defaultModel ?? ''} onChange={(e) => onUpdate({ defaultModel: e.target.value })} placeholder={entry?.modelPlaceholder ?? 'model id'} className="flex-1" />

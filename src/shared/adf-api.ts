@@ -142,8 +142,8 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.AGENT_SUSPEND_RESPOND, { resume }),
 
   // Models
-  listModels: (provider: string, filePath?: string) =>
-    ipcRenderer.invoke(IPC.MODELS_LIST, { provider, filePath }),
+  listModels: (provider: string, filePath?: string, opts?: { refresh?: boolean }) =>
+    ipcRenderer.invoke(IPC.MODELS_LIST, { provider, filePath, refresh: opts?.refresh }),
 
   // Events (main -> renderer)
   onAgentEvent: (callback) => {

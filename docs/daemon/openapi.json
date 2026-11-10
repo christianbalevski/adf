@@ -5676,6 +5676,18 @@
             "schema": {
               "type": "string"
             }
+          },
+          {
+            "name": "refresh",
+            "in": "query",
+            "required": false,
+            "description": "`true` skips the runtime's cached list (Claude Code's, kept 10 minutes) and asks the provider again",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "true"
+              ]
+            }
           }
         ],
         "responses": {

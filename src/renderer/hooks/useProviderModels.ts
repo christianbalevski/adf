@@ -23,9 +23,14 @@ const cacheKey = (providerId: string, filePath?: string, runtimeId: RuntimeId = 
   return runtimeId === LOCAL_RUNTIME ? key : `${runtimeId}\n${key}`
 }
 
-/** Drop every cached list (provider settings or keys changed). */
+// Mounted pickers listen, so an invalidation refetches what is on screen too.
+const listeners = new Set<() => void>()
+
+/** Drop every cached list (provider settings or keys changed); mounted pickers fetch again. */
 export function invalidateProviderModels(): void {
   cache = new Map()
+  inflight.clear()
+  for (const listener of listeners) listener()
 }
 
 /** The runtime left the set or is another computer now: its lists go, and a fetch on its way is not kept. */
@@ -75,6 +80,13 @@ export function useProviderModels(providerId: string | undefined, filePath?: str
   const runtimeId = useOpenRuntime()
   const key = providerId ? cacheKey(providerId, filePath, runtimeId) : ''
   const [state, setState] = useState<{ key: string; list: ProviderModelList } | null>(null)
+  const [generation, setGeneration] = useState(0)
+
+  useEffect(() => {
+    const listener = () => setGeneration((g) => g + 1)
+    listeners.add(listener)
+    return () => { listeners.delete(listener) }
+  }, [])
 
   useEffect(() => {
     if (!providerId) return
@@ -83,7 +95,7 @@ export function useProviderModels(providerId: string | undefined, filePath?: str
       if (live) setState({ key, list })
     })
     return () => { live = false }
-  }, [providerId, filePath, key])
+  }, [providerId, filePath, key, generation])
 
   if (!providerId) return { models: [], loading: false }
   const list = state?.key === key ? state.list : cachedList(key)

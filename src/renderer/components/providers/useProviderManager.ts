@@ -8,6 +8,7 @@ import { rebaseProviderList, type ProviderSaveFailure } from './provider-save'
 import { recommendedModel } from './provider-ready'
 import type { ClaudeAuthStatusView } from '../../../preload/api'
 import { useSettingsApi } from '../settings/settings-runtime'
+import { invalidateProviderModels } from '../../hooks/useProviderModels'
 
 export interface ProviderManagerInput {
   providers: ProviderConfig[]
@@ -97,15 +98,19 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
   /**
    * Ask main for one provider's models. `preselect` (the provider form): a
    * provider with no default model gets the recommended one from the list,
-   * shown in the form's model field.
+   * shown in the form's model field. `refresh` skips the runtime's cached
+   * list and has the agent pickers fetch again; the list on screen stays
+   * until the new one arrives, and stays if the refresh fails.
    */
-  const fetchModels = useCallback(async (id: string, opts: { preselect?: boolean } = {}) => {
+  const fetchModels = useCallback(async (id: string, opts: { preselect?: boolean; refresh?: boolean } = {}) => {
     if (modelsRef.current[id]?.loading) return
-    setModels((m) => ({ ...m, [id]: { models: [], loading: true } }))
+    const keep = opts.refresh ? modelsRef.current[id]?.models ?? [] : []
+    setModels((m) => ({ ...m, [id]: { models: keep, loading: true } }))
     try {
       // main reads the provider back from settings, so the write has to land first.
       await flushSave()
-      const result = await api?.listModels(id)
+      const result = await api?.listModels(id, undefined, opts.refresh ? { refresh: true } : undefined)
+      if (opts.refresh) invalidateProviderModels()
       const list = [...(result?.models ?? [])].sort((a, b) => a.localeCompare(b))
       setModels((m) => ({ ...m, [id]: { models: list, error: result?.error } }))
       const p = providersRef.current.find((x) => x.id === id)
@@ -114,7 +119,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
         if (pick) update(id, { defaultModel: pick })
       }
     } catch (err) {
-      setModels((m) => ({ ...m, [id]: { models: [], error: String(err) } }))
+      setModels((m) => ({ ...m, [id]: { models: keep, error: String(err) } }))
     }
   }, [flushSave, update])
 
@@ -384,6 +389,7 @@ export function useProviderManager({ providers, setProviders, defaultProviderId,
     onTest: () => { if (editing) void (async () => { await flushSave(); await runTest(editing.id, true) })() },
     models: editing ? models[editing.id] : undefined,
     onFetchModels: () => { if (editing) void fetchModels(editing.id, { preselect: true }) },
+    onRefreshModels: () => { if (editing) void fetchModels(editing.id, { refresh: true }) },
     onKeyEntered: () => { if (editing) void checkKey(editing.id) },
     chatgpt,
     grok,

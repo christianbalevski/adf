@@ -1,6 +1,6 @@
 import type { LLMProvider } from '../provider.interface'
 import { ClaudeSubscriptionProvider } from './provider'
-import { listSupportedModels } from './session'
+import { lastSupportedModels, listSupportedModels } from './session'
 
 export { getClaudeAuthManager } from './auth-manager'
 export type { ClaudeAuthStatus, ClaudeAuthFlow } from './types'
@@ -29,14 +29,21 @@ export const CLAUDE_SUBSCRIPTION_MODELS = [
 ]
 
 /**
- * Models the signed-in plan can use, as reported by Claude Code, falling
- * back to the static list when Claude Code is missing or signed out.
+ * Models the signed-in plan can use, as reported by Claude Code. When
+ * Claude Code can't be asked, the last list it gave (else the static one)
+ * comes back with an `error` saying so. `refresh` asks Claude Code again
+ * instead of using the cached list.
  */
-export async function listClaudeSubscriptionModels(): Promise<string[]> {
+export async function listClaudeSubscriptionModels(opts: { refresh?: boolean } = {}): Promise<{ models: string[]; error?: string }> {
   try {
-    const models = await listSupportedModels()
-    return models.length > 0 ? models : [...CLAUDE_SUBSCRIPTION_MODELS]
-  } catch {
-    return [...CLAUDE_SUBSCRIPTION_MODELS]
+    const models = await listSupportedModels(opts)
+    if (models.length > 0) return { models }
+    return { models: [...CLAUDE_SUBSCRIPTION_MODELS], error: 'Claude Code listed no models. Showing the built-in list.' }
+  } catch (err) {
+    const last = lastSupportedModels()
+    const reason = (err instanceof Error ? err.message : String(err)).replace(/\.?$/, '.')
+    return last
+      ? { models: last, error: `Claude Code could not list models: ${reason} Showing the last list.` }
+      : { models: [...CLAUDE_SUBSCRIPTION_MODELS], error: `Claude Code could not list models: ${reason} Showing the built-in list.` }
   }
 }

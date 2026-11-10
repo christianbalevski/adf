@@ -7849,6 +7849,7 @@ Operation `listRuntimeProviderModels` · bearer token
 | `provider` | query | string | yes | Provider id |
 | `agentId` | query | string |  | Resolve the provider in this agent's config |
 | `filePath` | query | string |  | An agent file (absolute .adf) whose own provider entry to use when the provider is not in settings: through the open document or running agent, else read from the closed file |
+| `refresh` | query | `"true"` |  | `true` skips the runtime's cached list (Claude Code's, kept 10 minutes) and asks the provider again |
 
 **Responses**
 

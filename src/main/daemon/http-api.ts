@@ -362,6 +362,8 @@ interface ModelsQuery {
   agentId?: string
   /** An agent file (open, running or closed) whose own provider entry to use (Studio's MODELS_LIST filePath). */
   filePath?: string
+  /** 'true': skip the runtime's cached list (Claude Code's) and ask the provider again. */
+  refresh?: string
 }
 
 interface IdentityListQuery {
@@ -1335,7 +1337,7 @@ export function createDaemonHttpApi(
         throw err
       }
     }
-    return listProviderModels(runtime, opts.settingsStore, request.query.provider, request.query.agentId, filePath)
+    return listProviderModels(runtime, opts.settingsStore, request.query.provider, request.query.agentId, filePath, request.query.refresh === 'true')
   })
 
   server.post<{ Body: TokenCountBody }>('/runtime/token-count', async (request, reply) => {
@@ -3016,6 +3018,7 @@ async function listProviderModels(
   providerId: string,
   agentId?: string,
   filePath?: string,
+  refresh = false,
 ): Promise<{ provider: string; models: string[]; error?: string }> {
   const cfg = resolveModelListProviderConfig(runtime, settingsStore, providerId, agentId, filePath)
   if (!cfg) return { provider: providerId, models: [], error: `Provider "${providerId}" not found.` }
@@ -3032,7 +3035,7 @@ async function listProviderModels(
 
   if (cfg.type === 'claude-subscription') {
     const { listClaudeSubscriptionModels } = await import('../providers/claude-subscription')
-    return { provider: providerId, models: await listClaudeSubscriptionModels() }
+    return { provider: providerId, ...await listClaudeSubscriptionModels({ refresh }) }
   }
 
   if (cfg.type === 'anthropic') {

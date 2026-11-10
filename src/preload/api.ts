@@ -173,7 +173,7 @@ export interface AdfApi {
   getPendingApprovalReveal: () => Promise<{ filePath?: string; notificationId?: string } | null>
 
   // Models
-  listModels: (provider: string, filePath?: string) => Promise<{ models: string[]; error?: string }>
+  listModels: (provider: string, filePath?: string, opts?: { refresh?: boolean }) => Promise<{ models: string[]; error?: string }>
 
   // Events
   onAgentEvent: (callback: (event: AgentExecutionEvent) => void) => () => void

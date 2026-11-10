@@ -219,7 +219,7 @@ export const CHANNEL_MAP = {
   [IPC.AGENT_SUSPEND_RESPOND]: proxied('invoke', ['POST /agents/:id/suspend/respond']),
 
   // --- Models and settings ---------------------------------------------------
-  [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath goes to the route as filePath (an agent file\'s own provider); a path the route refuses is dropped and the app providers are listed.' }),
+  [IPC.MODELS_LIST]: proxied('invoke', ['GET /runtime/models'], { note: 'filePath goes to the route as filePath (an agent file\'s own provider); a path the route refuses is dropped and the app providers are listed. refresh goes as refresh=true (skip the runtime\'s cached list).' }),
   [IPC.SETTINGS_GET]: proxied('invoke', ['GET /settings', 'POST /settings/providers/keys/reveal'], {
     note: 'Returns {...daemonSettings, ...clientSettings} (§4.2); provider apiKey arrives as __redacted__; local mode replaces it with the stored key through POST /settings/providers/keys/reveal (local proof); remote mode keeps the placeholder. Studio main runs the client-key migrations on studio-client-settings.json when it loads it (daemon-mode/settings.ts).' }),
   [IPC.SETTINGS_SET]: proxied('invoke', ['PATCH /settings'], {

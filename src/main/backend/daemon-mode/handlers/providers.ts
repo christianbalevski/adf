@@ -168,9 +168,11 @@ async function chatgptSignIn(ctx: DaemonModeContext, client: DaemonClient): Prom
 
 export const PROVIDER_HANDLERS: DaemonHandlerTable = {
   // --- models ------------------------------------------------------------------------
-  [IPC.MODELS_LIST]: async (ctx, _event, args: { provider: string; filePath?: string }) => {
+  [IPC.MODELS_LIST]: async (ctx, _event, args: { provider: string; filePath?: string; refresh?: boolean }) => {
     const client = await ctx.ready()
-    const list = (filePath?: string) => client.request<{ models: string[]; error?: string }>('GET', '/runtime/models', { query: { provider: args.provider, filePath } })
+    const refresh = args.refresh ? 'true' : undefined
+    // Claude Code's probe can take its full 30s on a cold start; the default 15s would cut it off.
+    const list = (filePath?: string) => client.request<{ models: string[]; error?: string }>('GET', '/runtime/models', { query: { provider: args.provider, filePath, refresh }, timeoutMs: 45_000 })
     let answer: { models: string[]; error?: string }
     try {
       answer = await list(args.filePath)

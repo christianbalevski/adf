@@ -815,15 +815,29 @@ interface RawUsage {
 }
 
 const MODELS_TTL_MS = 10 * 60_000
-let modelsCache: { at: number; models: Promise<string[]> } | null = null
+/** The last list Claude Code gave; a failed probe leaves it in place. */
+let modelsCache: { at: number; models: string[] } | null = null
+let modelsProbe: Promise<string[]> | null = null
 
-/** Models the signed-in plan offers, per Claude Code. Cached; one probe in flight. */
-export function listSupportedModels(): Promise<string[]> {
-  if (modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) return modelsCache.models
-  const models = fetchSupportedModels()
-  modelsCache = { at: Date.now(), models }
-  models.catch(() => { if (modelsCache?.models === models) modelsCache = null })
-  return models
+/**
+ * Models the signed-in plan offers, per Claude Code. Cached for
+ * MODELS_TTL_MS unless `refresh`; a probe in flight is shared, refresh or not.
+ */
+export function listSupportedModels(opts: { refresh?: boolean } = {}): Promise<string[]> {
+  if (modelsProbe) return modelsProbe
+  if (!opts.refresh && modelsCache && Date.now() - modelsCache.at < MODELS_TTL_MS) return Promise.resolve(modelsCache.models)
+  const probe = fetchSupportedModels()
+  modelsProbe = probe
+  probe.then(
+    (models) => { if (modelsProbe === probe) modelsCache = { at: Date.now(), models } },
+    () => {},
+  ).finally(() => { if (modelsProbe === probe) modelsProbe = null })
+  return probe
+}
+
+/** The last list Claude Code gave this process, however old. */
+export function lastSupportedModels(): string[] | undefined {
+  return modelsCache?.models
 }
 
 async function fetchSupportedModels(): Promise<string[]> {
@@ -861,4 +875,5 @@ async function fetchSupportedModels(): Promise<string[]> {
 /** Drop cached model lists (sign-in changed). */
 export function invalidateSupportedModels(): void {
   modelsCache = null
+  modelsProbe = null
 }

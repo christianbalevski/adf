@@ -52,7 +52,7 @@ const claudeAuth = vi.hoisted(() => {
 vi.mock('../src/main/providers/claude-subscription/auth-manager', () => ({ getClaudeAuthManager: () => claudeAuth.manager }))
 vi.mock('../src/main/providers/claude-subscription', () => ({
   getClaudeAuthManager: () => claudeAuth.manager,
-  listClaudeSubscriptionModels: async () => ['claude-opus-5-5', 'claude-sonnet-5-5'],
+  listClaudeSubscriptionModels: async () => ({ models: ['claude-opus-5-5', 'claude-sonnet-5-5'] }),
 }))
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
