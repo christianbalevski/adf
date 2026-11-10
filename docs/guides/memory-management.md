@@ -183,6 +183,8 @@ When you clear loop entries, delete messages, delete files, or compact the loop,
 
 The audit table is written for the **operator**: the agent manages its own context (compact, clear, delete) without that bookkeeping depending on whether history is being retained. It is not hidden from the agent, though — `adf_audit` is a readable table for `db_query` (SELECT only; it is append-only, so writes are rejected), and an agent reflecting on its own past is expected to read it. See the `self-observation` skill for how to decompress rows.
 
+In Studio, scrolling to the top of a fully loaded loop shows **Load archived** when that loop has audit snapshots; each click reads one page of archived rows, newest first, merged across snapshots in display order. Rows still live, or archived from inside the live window (a slice cleared from the middle), are not shown there. Archived messages are display-only and never re-enter the model's context; the line above a live compaction summary marks that boundary.
+
 ### How Audit Works
 
 **Loop audit (on clear/compaction):**

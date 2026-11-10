@@ -87,6 +87,8 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
   getChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_GET_CHAT, { loop }),
   getChatOlder: (beforeSeq: number, limit?: number, loop?: string) =>
     ipcRenderer.invoke(IPC.DOC_GET_CHAT_OLDER, { beforeSeq, limit, loop }),
+  getChatArchived: (cursor: string | null, loop?: string, peek?: boolean) =>
+    ipcRenderer.invoke(IPC.DOC_GET_CHAT_ARCHIVED, { cursor, loop, peek }),
   setChat: (chatHistory: unknown) =>
     ipcRenderer.invoke(IPC.DOC_SET_CHAT, { chatHistory }),
   clearChat: (loop?: string) => ipcRenderer.invoke(IPC.DOC_CLEAR_CHAT, { loop }),

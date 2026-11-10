@@ -1,12 +1,13 @@
-import { useState, useRef, useEffect, useCallback, useMemo, memo } from 'react'
+import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
+import { useAgentStore, selectLoopSlice, liveHeadOf, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { pickOldestSeq } from '../../hooks/live-seq'
+import { captureAgentView, isCurrentAgentView } from '../../utils/agent-view'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
 import { sendComposerMessage, type SendRoute } from '../../utils/composer-send'
 import { composerMedia, gateAttachments, type RefusedAttachment } from '../../utils/attachment-gate'
@@ -337,6 +338,74 @@ function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): 
   }
   flushActivity()
   return items
+}
+
+/**
+ * A compaction summary: a fixed-height preview that expands into a scrollable
+ * box. Above a live summary, a line marks where the model's context begins;
+ * an archived summary sits inside history and gets none.
+ */
+function CompactionBlock({ entry, expanded, onToggle }: {
+  entry: AgentLogEntry
+  expanded: boolean
+  onToggle: (id: string) => void
+}) {
+  const audited = entry.metadata?.audited === true
+  const archived = entry.metadata?.archived === true
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const [overflows, setOverflows] = useState(true)
+  useLayoutEffect(() => {
+    const el = bodyRef.current
+    if (!el || expanded) return
+    setOverflows(el.scrollHeight > el.clientHeight + 1)
+  }, [entry.content, expanded])
+  const collapsible = overflows || expanded
+  const header = (
+    <>
+      <span className="text-[11px] font-semibold text-[var(--ink-muted)]">
+        Loop compacted{audited ? <> &middot; Prior context audited</> : null}
+      </span>
+      <span className="flex items-center gap-2 text-[10px] text-[var(--adf-ui-text-subtle)]">
+        {entry.timestamp > 0 && formatLoopTime(entry.timestamp)}
+        {collapsible && <span>{expanded ? 'Collapse' : 'Expand'}</span>}
+      </span>
+    </>
+  )
+  const headerClass = 'flex w-full items-center justify-between gap-2 rounded-t-lg px-2.5 pb-1.5 pt-2.5 text-left'
+  return (
+    <div className="space-y-1">
+      {!archived && (
+        <div className="flex items-center gap-2 text-[10px] text-[var(--ink-faint)]">
+          <span className="h-px flex-1 bg-[var(--rule)]" />
+          <span>Previous messages not in context{audited ? <> &middot; Archived in adf_audit</> : null}</span>
+          <span className="h-px flex-1 bg-[var(--rule)]" />
+        </div>
+      )}
+      <div className="rounded-lg border border-[var(--rule)] bg-[var(--paper-sunken)]">
+        {collapsible
+          ? <button onClick={() => onToggle(entry.id)} aria-expanded={expanded} className={`${headerClass} ${LOG_ROW_HOVER}`}>{header}</button>
+          : <div className={headerClass}>{header}</div>}
+        <div
+          ref={bodyRef}
+          // Wheel inside the expanded box scrolls the box only: the outer
+          // loop must not read it as the user leaving the tail.
+          onWheel={expanded ? (e) => e.stopPropagation() : undefined}
+          className={`px-2.5 pb-2.5 ${expanded
+            ? 'max-h-96 overflow-y-auto overscroll-contain'
+            : `max-h-24 overflow-hidden${overflows ? ' [mask-image:linear-gradient(to_bottom,black_60%,transparent)]' : ''}`}`}
+        >
+          <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/** The line between loaded archived history and the live loop. */
+const ARCHIVE_END_ITEM: DisplayItem = {
+  kind: 'entry',
+  id: 'archive-end',
+  entry: { id: 'archive-end', type: 'system', content: 'End of archived messages', timestamp: 0 }
 }
 
 const LOW_SIGNAL_ACTIVITY_TOOLS = new Set(['msg_update', 'sys_get_meta', 'sys_set_meta', 'sys_delete_meta'])
@@ -884,21 +953,11 @@ const LogEntryRow = memo(({
         )
       })()}
       {entry.type === 'compaction' && (
-        <div className="rounded-lg border border-[var(--rule)] bg-[var(--paper-sunken)] p-2.5">
-          <div className="flex items-center justify-between mb-1.5">
-            <div className="flex items-center gap-1.5">
-              <span className="text-[11px] font-semibold text-[var(--ink-muted)]">
-                Loop compacted{entry.metadata?.audited === true ? <> &middot; Prior context audited</> : null}
-              </span>
-            </div>
-            {entry.timestamp > 0 && (
-              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                {formatLoopTime(entry.timestamp)}
-              </span>
-            )}
-          </div>
-          <MarkdownEntry content={entry.content} className="break-words text-xs text-[var(--ink-muted)]" />
-        </div>
+        <CompactionBlock
+          entry={entry}
+          expanded={expandedContexts.has(entry.id)}
+          onToggle={onToggleContext}
+        />
       )}
       {entry.type === 'system' && Boolean(entry.metadata?.isAsk) && askCard}
       {entry.type === 'system' && !isSuspendEntry && !entry.metadata?.isAsk && (
@@ -959,6 +1018,9 @@ function LoopStream({ loop }: { loop: string }) {
   const earlierCount = useAgentStore((s) => selectLoopSlice(s, loop).earlierCount)
   const prependLog = useAgentStore((s) => s.prependLog)
   const setEarlierCount = useAgentStore((s) => s.setEarlierCount)
+  const archive = useAgentStore((s) => selectLoopSlice(s, loop).archive)
+  const patchArchive = useAgentStore((s) => s.patchArchive)
+  const prependArchive = useAgentStore((s) => s.prependArchive)
   const state = useAgentStore((s) => selectLoopSlice(s, loop).state)
   /** Agent-level state (= main's, §6.3) — governs the off/start gate for every tab. */
   const agentState = useAgentStore((s) => s.state)
@@ -1127,7 +1189,15 @@ function LoopStream({ loop }: { loop: string }) {
     () => log.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
     [log, structuralVersion]
   )
-  const toolPairIndex = useMemo(() => buildToolPairIndex(log), [log, structuralVersion])
+  const liveToolPairIndex = useMemo(() => buildToolPairIndex(log), [log, structuralVersion])
+  // Archived entries pair and group among themselves only, so a call in the
+  // archive never claims a live result and no group spans the boundary.
+  const archivedToolPairIndex = useMemo(() => buildToolPairIndex(archive.entries), [archive.entries])
+  /** Lookup for rendering: ids never collide (archived ones are `audit-…`). */
+  const toolPairIndex = useMemo(
+    () => (archivedToolPairIndex.size === 0 ? liveToolPairIndex : new Map([...archivedToolPairIndex, ...liveToolPairIndex])),
+    [archivedToolPairIndex, liveToolPairIndex]
+  )
   const isActive = state === 'active'
   // A turn that can be stopped: working, or waiting on the owner (approval, question, suspend).
   const turnRunning = state === 'active' || state === 'suspended'
@@ -1155,9 +1225,18 @@ function LoopStream({ loop }: { loop: string }) {
   const tailEntry = log.length > 0 ? log[log.length - 1] : null
   const liveEntry = (entry: AgentLogEntry): AgentLogEntry =>
     tailEntry !== null && tailEntry.id === entry.id ? tailEntry : entry
+  const archivedItems = useMemo(() => {
+    if (archive.entries.length === 0) return []
+    const archivedDisplayLog = archive.entries.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
+    return [...buildDisplayItems(archivedDisplayLog, archivedToolPairIndex), ARCHIVE_END_ITEM]
+  }, [archive.entries, archivedToolPairIndex])
+  const liveItems = useMemo(
+    () => buildDisplayItems(displayLog, liveToolPairIndex),
+    [displayLog, liveToolPairIndex]
+  )
   const displayItems = useMemo(
-    () => buildDisplayItems(displayLog, toolPairIndex),
-    [displayLog, toolPairIndex]
+    () => (archivedItems.length === 0 ? liveItems : [...archivedItems, ...liveItems]),
+    [archivedItems, liveItems]
   )
   const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
   const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Set<string>>(new Set())
@@ -1918,6 +1997,68 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [loadingOlder, prependLog, setEarlierCount, virtualizer, loop])
 
+  // Archived history: rows compactions and clears moved into adf_audit, read
+  // a page per click once the whole live table is loaded and the user is at
+  // the top. Kept in the slice's `archive`, apart from the live log; a reload
+  // whose head moved drops it (agent.store archiveAfterReload).
+  const archiveHasMore = archive.hasMore
+  const archiveGenerationNow = archive.generation
+  const [loadingArchived, setLoadingArchived] = useState(false)
+
+  useEffect(() => {
+    if (!atTop || earlierCount > 0 || archiveHasMore !== null) return
+    const view = captureAgentView()
+    const generation = archiveGenerationNow
+    const liveHead = liveHeadOf(selectLoopSlice(useAgentStore.getState(), loop).log)
+    Promise.resolve(openApi()?.getChatArchived(null, loop, true))
+      .then((result) => {
+        if (!isCurrentAgentView(view)) return
+        if (result?.error) patchArchive(generation, { error: result.error }, loop)
+        else patchArchive(generation, { hasMore: result?.hasMore ?? false, liveHead }, loop)
+      })
+      .catch((error) => console.error('[AgentLoop] Failed to check archived loop history:', error))
+  }, [atTop, earlierCount, archiveHasMore, archiveGenerationNow, loop, patchArchive])
+
+  const handleLoadArchived = useCallback(async () => {
+    if (loadingArchived) return
+    const view = captureAgentView()
+    const current = selectLoopSlice(useAgentStore.getState(), loop).archive
+    const generation = current.generation
+    setLoadingArchived(true)
+    try {
+      const result = await openApi().getChatArchived(current.cursor, loop)
+      // Dropped when the agent view changed or the archive was reset while
+      // the read was in flight (prependArchive checks the generation).
+      if (!isCurrentAgentView(view)) return
+      if (result.error) {
+        patchArchive(generation, { error: result.error }, loop)
+        return
+      }
+      const entries = result.uiLog as AgentLogEntry[]
+      // A retry after a failed check is the first read: anchor it to the window.
+      if (current.hasMore === null) {
+        patchArchive(generation, { liveHead: liveHeadOf(selectLoopSlice(useAgentStore.getState(), loop).log) }, loop)
+      }
+      prependArchive(generation, { entries, cursor: result.cursor, hasMore: result.hasMore, unreadable: result.unreadable }, loop)
+      if (entries.length > 0) {
+        const added = buildDisplayItems(
+          entries.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
+          buildToolPairIndex(entries)
+        ).length
+        // The first page also adds the end-of-archive line.
+        const prepended = added + (current.entries.length === 0 ? 1 : 0)
+        requestAnimationFrame(() => {
+          virtualizer.scrollToIndex(prepended, { align: 'start' })
+        })
+      }
+    } catch (error) {
+      console.error('[AgentLoop] Failed to load archived loop history:', error)
+      patchArchive(generation, { error: error instanceof Error ? error.message : String(error) }, loop)
+    } finally {
+      setLoadingArchived(false)
+    }
+  }, [loadingArchived, loop, patchArchive, prependArchive, virtualizer])
+
   const findToolPair = useCallback((entry: AgentLogEntry) => {
     return toolPairIndex.get(entry.id) ?? { call: null, result: null }
   }, [toolPairIndex])
@@ -2064,6 +2205,28 @@ function LoopStream({ loop }: { loop: string }) {
           >
             {loadingOlder ? 'Loading…' : 'Load older'}
           </button>
+        </div>
+      )}
+
+      {/* Archived-history boundary — past the live table, compactions and
+          clears left rows in adf_audit. Shown only at the top of a fully
+          loaded window; each click reads one page. */}
+      {earlierCount === 0 && atTop && (archive.hasMore === true || archive.error !== null || archive.unreadable > 0) && (
+        <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-[var(--ink-faint)]">
+          {archive.error !== null
+            ? <span>Archived messages unavailable: {archive.error}</span>
+            : archive.unreadable > 0 && archive.hasMore !== true
+              ? <span>{archive.unreadable} archived {archive.unreadable === 1 ? 'snapshot' : 'snapshots'} unreadable</span>
+              : <span>Earlier messages archived in adf_audit{archive.unreadable > 0 ? ` · ${archive.unreadable} unreadable` : ''}</span>}
+          {(archive.hasMore === true || archive.error !== null) && (
+            <button
+              onClick={handleLoadArchived}
+              disabled={loadingArchived}
+              className="underline transition-colors hover:text-[var(--ink)] disabled:opacity-50"
+            >
+              {loadingArchived ? 'Loading…' : archive.error !== null ? 'Retry' : 'Load archived'}
+            </button>
+          )}
         </div>
       )}
 

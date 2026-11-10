@@ -193,6 +193,7 @@ import { buildConfigSummary, deriveReviewIdentity, autoLockFields, getReviewedId
 import { inboxSnapshot } from '../runtime/inbox-snapshot'
 import { liveExecutionTimeout } from '../runtime/live-execution-timeout'
 import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
+import { readArchivedChatPage } from '../adf/archived-loop-page'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
@@ -3112,6 +3113,19 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     } catch (error) {
       console.error('[IPC] DOC_GET_CHAT_OLDER error:', error)
       return { uiLog: [], earlierCount: 0 }
+    }
+  })
+
+  // Archived scroll-back: a page of this loop's rows that compactions and
+  // clears moved into adf_audit, older than `cursor` (null: the live head).
+  // A failure answers `error` so the view does not read it as "no archive".
+  ipcMain.handle(IPC.DOC_GET_CHAT_ARCHIVED, async (_event, args: { cursor?: string | null; loop?: string; peek?: boolean }) => {
+    try {
+      if (!currentWorkspace) return { uiLog: [], cursor: null, hasMore: false, unreadable: 0 }
+      return await readArchivedChatPage(currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP), args?.cursor ?? null, { peek: args?.peek === true })
+    } catch (error) {
+      console.error('[IPC] DOC_GET_CHAT_ARCHIVED error:', error)
+      return { uiLog: [], cursor: null, hasMore: false, unreadable: 0, error: error instanceof Error ? error.message : String(error) }
     }
   })
 

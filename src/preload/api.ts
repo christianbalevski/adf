@@ -91,6 +91,13 @@ export interface AdfApi {
   /** `loop` selects which loop's stream to read; omitted/'main' = the host loop. */
   getChat: (loop?: string) => Promise<{ chatHistory: ChatHistory | null }>
   getChatOlder: (beforeSeq: number, limit?: number, loop?: string) => Promise<{ uiLog: ChatHistoryEntry[]; earlierCount: number }>
+  /**
+   * Archived history of one loop (rows compactions and clears moved into
+   * adf_audit): a page older than `cursor`, or with a null cursor older than
+   * the live head. Pass the returned `cursor` back for the next page. `peek`
+   * only answers `hasMore`. `error` is set when the read failed.
+   */
+  getChatArchived: (cursor: string | null, loop?: string, peek?: boolean) => Promise<{ uiLog: ChatHistoryEntry[]; cursor: string | null; hasMore: boolean; unreadable: number; error?: string }>
   setChat: (chatHistory: ChatHistory) => Promise<{ success: boolean }>
   clearChat: (loop?: string) => Promise<{ success: boolean }>
   getInbox: () => Promise<{ inbox: Inbox | null }>

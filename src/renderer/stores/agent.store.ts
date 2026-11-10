@@ -64,6 +64,59 @@ export const MAIN_LOOP = 'main'
  * (compaction) or delta merge can never splice into or truncate main's view
  * (IMPL-5 / RT-F17).
  */
+/**
+ * Archived history of one loop: rows compactions and clears moved into
+ * adf_audit, read a page at a time on request and shown above the live log.
+ * Held only here — kept apart from `log`, so nothing that scans the live
+ * stream (activity, pairing, asks, "Load older") ever sees it.
+ */
+export interface LoopArchive {
+  /** Archived display entries, oldest first. */
+  entries: AgentLogEntry[]
+  /** Cursor for the next older page; null = start at the live head. */
+  cursor: string | null
+  /** Whether older archived rows may exist; null = not checked yet. */
+  hasMore: boolean | null
+  /** Snapshots that could not be read, summed over the loaded pages. */
+  unreadable: number
+  /** Why the last read failed, if it did. */
+  error: string | null
+  /** Oldest live seq when the archive was first read; a window whose head moved drops it. */
+  liveHead: number | null
+  /** Unique per archive instance; a read that lands after a reset is dropped. */
+  generation: number
+}
+
+let archiveGeneration = 0
+function freshArchive(): LoopArchive {
+  return { entries: [], cursor: null, hasMore: null, unreadable: 0, error: null, liveHead: null, generation: ++archiveGeneration }
+}
+
+/** Oldest loop seq among a window's entries (null when none carries one). */
+export function liveHeadOf(log: AgentLogEntry[]): number | null {
+  let head: number | null = null
+  for (const entry of log) {
+    const seq = entry.metadata?.seq
+    if (typeof seq === 'number' && (head === null || seq < head)) head = seq
+  }
+  return head
+}
+
+/**
+ * A reloaded window keeps the archive only while it still starts where the
+ * archive ends: same live head, or — when the archive was read against an
+ * empty loop (just cleared) — a window that has not been compacted since.
+ * Otherwise rows left the live loop after the archive was read, and showing
+ * it would hide that gap.
+ */
+function archiveAfterReload(archive: LoopArchive, log: AgentLogEntry[]): LoopArchive {
+  if (archive.hasMore === null && archive.entries.length === 0 && archive.error === null) return archive
+  const head = liveHeadOf(log)
+  if (head === archive.liveHead) return archive
+  if (archive.liveHead === null && !log.some((entry) => entry.type === 'compaction')) return { ...archive, liveHead: head }
+  return freshArchive()
+}
+
 export interface LoopSlice {
   /** Display state. For `main` this is the agent-level state (§6.3). */
   state: AgentState
@@ -82,6 +135,7 @@ export interface LoopSlice {
   structuralVersion: number
   /** Loop rows in the DB older than the loaded window (0 = fully loaded). */
   earlierCount: number
+  archive: LoopArchive
   /** Maps logEntryId -> pending approval info for tool calls awaiting HIL approval */
   pendingApprovals: Map<string, PendingApprovalInfo>
   /** Maps logEntryId -> pending ask, for the row that shows its form */
@@ -109,6 +163,7 @@ function emptySlice(): LoopSlice {
     logVersion: 0,
     structuralVersion: 0,
     earlierCount: 0,
+    archive: freshArchive(),
     pendingApprovals: new Map(),
     pendingAsks: new Map(),
     pendingSuspend: null,
@@ -191,6 +246,10 @@ interface AgentStoreState extends LoopSlice {
   /** Prepend older loop entries loaded via keyset pagination. */
   prependLog: (entries: AgentLogEntry[], earlierCount: number, loop?: string) => void
   setEarlierCount: (earlierCount: number, loop?: string) => void
+  /** Update the archive's status, if it is still the instance `generation` names. */
+  patchArchive: (generation: number, patch: Partial<Omit<LoopArchive, 'entries' | 'generation'>>, loop?: string) => void
+  /** Put a read page above the archive, if it is still the instance `generation` names. */
+  prependArchive: (generation: number, page: { entries: AgentLogEntry[]; cursor: string | null; hasMore: boolean; unreadable: number }, loop?: string) => void
   clearLog: (loop?: string) => void
   /** Drop a side loop's slice entirely (loop disabled/deleted). No-op for main. */
   dropLoop: (loop: string) => void
@@ -272,6 +331,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     logVersion: 0,
     structuralVersion: 0,
     earlierCount: 0,
+    archive: freshArchive(),
     sideLoops: {},
     config: null,
     configConflict: null,
@@ -339,6 +399,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       log,
       logVersion: s.logVersion + 1,
       structuralVersion: s.structuralVersion + 1,
+      archive: archiveAfterReload(s.archive, log),
       ...(earlierCount !== undefined ? { earlierCount } : {})
     })),
     prependLog: (entries, earlierCount, loop) => patchSlice(loop, (s) => ({
@@ -348,11 +409,27 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       earlierCount
     })),
     setEarlierCount: (earlierCount, loop) => patchSlice(loop, () => ({ earlierCount })),
+    patchArchive: (generation, patch, loop) => patchSlice(loop, (s) =>
+      s.archive.generation === generation ? { archive: { ...s.archive, ...patch } } : {}),
+    prependArchive: (generation, page, loop) => patchSlice(loop, (s) =>
+      s.archive.generation === generation
+        ? {
+            archive: {
+              ...s.archive,
+              entries: [...page.entries, ...s.archive.entries],
+              cursor: page.cursor,
+              hasMore: page.hasMore,
+              unreadable: s.archive.unreadable + page.unreadable,
+              error: null
+            }
+          }
+        : {}),
     clearLog: (loop) => patchSlice(loop, (s) => ({
       log: [],
       logVersion: s.logVersion + 1,
       structuralVersion: s.structuralVersion + 1,
-      earlierCount: 0
+      earlierCount: 0,
+      archive: freshArchive()
     })),
     dropLoop: (loop) => {
       if (isMainLoop(loop)) return

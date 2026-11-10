@@ -93,6 +93,7 @@ describe('DOC_* without an open file', () => {
     expect(await call(IPC.DOC_GET_AGENT_CONFIG)).toBeNull()
     expect(await call(IPC.DOC_SET_AGENT_CONFIG, { id: AGENT })).toEqual({ success: false, error: 'No file open' })
     expect(await call(IPC.DOC_GET_CHAT_OLDER, { beforeSeq: 5 })).toEqual({ uiLog: [], earlierCount: 0 })
+    expect(await call(IPC.DOC_GET_CHAT_ARCHIVED, { cursor: null })).toEqual({ uiLog: [], cursor: null, hasMore: false, unreadable: 0 })
     expect(await call(IPC.DOC_GET_INBOX)).toEqual({ inbox: null })
     expect(await call(IPC.DOC_GET_OUTBOX)).toEqual({ outbox: null })
     expect(await call(IPC.DOC_ADD_TIMER, { mode: 'once_delay', delay_ms: 5, scope: ['agent'] })).toEqual({ success: false, error: 'No workspace open' })

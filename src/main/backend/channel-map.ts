@@ -172,6 +172,7 @@ export const CHANNEL_MAP = {
   }),
   [IPC.DOC_GET_CHAT]: proxied('invoke', ['GET /agents/:id/chat']),
   [IPC.DOC_GET_CHAT_OLDER]: proxied('invoke', ['GET /agents/:id/chat']),
+  [IPC.DOC_GET_CHAT_ARCHIVED]: proxied('invoke', ['GET /agents/:id/chat/archived']),
   [IPC.DOC_SET_CHAT]: local('invoke', 'No-op stub that returns success; chat is written by the runtime only. No daemon call.'),
   [IPC.DOC_CLEAR_CHAT]: proxied('invoke', ['DELETE /agents/:id/chat']),
   [IPC.DOC_GET_INBOX]: proxied('invoke', ['GET /agents/:id/inbox']),

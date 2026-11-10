@@ -267,6 +267,20 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
     }
   }),
 
+  // Archived scroll-back (GET /agents/:id/chat/archived). A failure answers `error`, as embedded.
+  [IPC.DOC_GET_CHAT_ARCHIVED]: (ctx, _event, args: { cursor?: string | null; loop?: string; peek?: boolean }) => onOpenFile(ctx, 'Reading the open agent\'s archived chat', { uiLog: [], cursor: null, hasMore: false, unreadable: 0 }, async (client, id) => {
+    try {
+      const page = await client.request<{ uiLog: unknown[]; cursor: string | null; hasMore: boolean; unreadable: number }>('GET', `/agents/${enc(id)}/chat/archived`, {
+        query: { loop: args?.loop ?? MAIN_LOOP, ...(args?.cursor ? { cursor: args.cursor } : {}), ...(args?.peek ? { peek: 1 } : {}) },
+      })
+      return { uiLog: page.uiLog, cursor: page.cursor, hasMore: page.hasMore, unreadable: page.unreadable }
+    } catch (err) {
+      rethrowIfGone(err, id)
+      ctx.log.error('[IPC] DOC_GET_CHAT_ARCHIVED error:', err)
+      return { uiLog: [], cursor: null, hasMore: false, unreadable: 0, error: err instanceof Error ? err.message : String(err) }
+    }
+  }),
+
   /**
    * Absent `loop` clears main. Embedded clears a side loop only on a running
    * agent that has it; the daemon also clears a declared loop of an open

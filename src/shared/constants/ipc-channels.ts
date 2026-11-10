@@ -42,6 +42,7 @@ export const IPC = {
   DOC_AGENT_CONFIG_CHANGED: 'adf:doc:agent-config-changed',
   DOC_GET_CHAT: 'adf:doc:get-chat',
   DOC_GET_CHAT_OLDER: 'adf:doc:get-chat-older',
+  DOC_GET_CHAT_ARCHIVED: 'adf:doc:get-chat-archived',
   DOC_SET_CHAT: 'adf:doc:set-chat',
   DOC_CLEAR_CHAT: 'adf:doc:clear-chat',
   DOC_GET_INBOX: 'adf:doc:get-inbox',

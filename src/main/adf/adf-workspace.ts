@@ -1697,6 +1697,33 @@ export class AdfWorkspace {
     return this.db.listAudits()
   }
 
+  /** adf_audit sources holding this loop's archived stream (pre-v28 main used bare `loop`). */
+  private loopAuditSources(): string[] {
+    return this.boundLoop === MAIN_LOOP ? [`loop:${MAIN_LOOP}`, 'loop'] : [`loop:${this.boundLoop}`]
+  }
+
+  /**
+   * Metadata of this loop's archived snapshots (compactions, clears, loop
+   * deletion), newest archived rows first. Pre-v28 main used bare `loop`.
+   * Read-only; see archived-loop-page.ts for how they are paged.
+   */
+  listLoopArchiveMeta(): Array<{ id: number; start_seq: number; end_seq: number; size_bytes: number }> {
+    const sources = this.boundLoop === MAIN_LOOP ? [`loop:${MAIN_LOOP}`, 'loop'] : [`loop:${this.boundLoop}`]
+    return this.db.listLoopAuditMeta(sources)
+  }
+
+  /** The compressed blob of one audit row (null when gone). */
+  getAuditBlob(id: number): Buffer | null {
+    const row = this.db.getAuditById(id)
+    if (!row) return null
+    return Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)
+  }
+
+  /** This loop's live rows: seq and display-order key (ord when set, else seq). */
+  getLoopOrderKeys(): Array<{ seq: number; key: number }> {
+    return this.db.getLoopOrderKeys(this.boundLoop)
+  }
+
   /**
    * Guard against a filter that looks selective but produces no WHERE clause.
    * The DELETE builders ignore fields they do not know and skip falsy values,

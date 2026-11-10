@@ -62,6 +62,7 @@ import { parseBaseRevision } from '../runtime/resource-revisions'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
 import { ProviderKeyVaultLockedError, SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
 import { SECRET_STORAGE_POLICY_KEY, SETTINGS_SECRET_KEYS, isSecretSettingsKey } from '../services/secret-storage-policy'
+import { decodeArchiveCursor } from '../adf/archived-loop-page'
 
 export interface DaemonHttpApiOptions {
   /** The shared Studio renderer served at /studio/. Disable with enabled: false. */
@@ -1778,6 +1779,22 @@ export function createDaemonHttpApi(
       // Keyset scroll-back (Studio's DOC_GET_CHAT_OLDER): the page before a seq.
       if (before !== undefined) return runtime.getAgentChatBefore(request.params.id, before, { limit, loop: request.query.loop })
       return runtime.getAgentChat(request.params.id, limit, request.query.loop)
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Archived scroll-back (Studio's DOC_GET_CHAT_ARCHIVED): a page of the
+  // loop's rows in adf_audit older than `cursor` (absent: the live head).
+  server.get<{ Params: AgentIdParams; Querystring: { loop?: string; cursor?: string; peek?: string } }>('/agents/:id/chat/archived', async (request, reply) => {
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    const cursor = request.query.cursor ?? null
+    if (cursor !== null && !decodeArchiveCursor(cursor)) return badRequest(reply, 'cursor must be a cursor returned by this route')
+    const peekParam = request.query.peek
+    if (peekParam !== undefined && !['1', '0', 'true', 'false'].includes(peekParam)) return badRequest(reply, 'peek must be 1, 0, true or false')
+    const peek = peekParam === '1' || peekParam === 'true'
+    try {
+      return await runtime.getAgentChatArchived(request.params.id, cursor, { loop: request.query.loop, peek })
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

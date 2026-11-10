@@ -6,6 +6,7 @@ import { readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { readArchivedChatPage, type ArchivedChatPage } from '../adf/archived-loop-page'
 import { mcpEnvCredentialsOnly } from '../../shared/utils/mcp-config'
 import { removeMcpServerHome } from '../services/mcp-server-home'
 import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
@@ -318,6 +319,12 @@ export interface RuntimeAgentChatPage {
   loop: string
   uiLog: unknown[]
   earlierCount: number
+}
+
+/** Studio's DOC_GET_CHAT_ARCHIVED: one page of a loop's archived history as display entries. */
+export interface RuntimeAgentArchivedChatPage extends ArchivedChatPage {
+  agentId: string
+  loop: string
 }
 
 /**
@@ -2765,6 +2772,18 @@ export class RuntimeService extends EventEmitter {
     const entries = workspace.getLoopBefore(beforeSeq, limit)
     const earlierCount = entries.length > 0 ? workspace.getLoopCountBefore(entries[0].seq) : 0
     return { agentId: target.id, loop: loopName, uiLog: parseLoopToDisplay(entries), earlierCount }
+  }
+
+  /**
+   * Studio's DOC_GET_CHAT_ARCHIVED: a page of a loop's archived history (rows
+   * compactions and clears moved into adf_audit) older than `cursor`, or with
+   * no cursor older than the live head. `peek` only says whether any exists.
+   */
+  async getAgentChatArchived(agentId: string, cursor: string | null, opts: { loop?: string; peek?: boolean } = {}): Promise<RuntimeAgentArchivedChatPage> {
+    const target = this.requireTarget(agentId)
+    const loopName = this.targetLoopName(target, opts.loop)
+    const page = await readArchivedChatPage(target.workspace.forLoop(loopName), cursor, { peek: opts.peek === true })
+    return { agentId: target.id, loop: loopName, ...page }
   }
 
   async clearAgentChat(agentId: string, loop?: string): Promise<{ agentId: string; loop: string; success: true }> {

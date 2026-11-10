@@ -4159,6 +4159,35 @@ export class AdfDatabase {
     }>
   }
 
+  private loopAuditStmts = new Map<number, { list: Database.Statement }>()
+
+  /**
+   * Metadata of every seq-addressable loop-audit row among `sources`, newest
+   * archived rows first (end_seq DESC). Read-only scroll-back over compacted
+   * and cleared history; the blobs are fetched one at a time by id.
+   */
+  listLoopAuditMeta(sources: string[]): Array<{ id: number; start_seq: number; end_seq: number; size_bytes: number }> {
+    if (sources.length === 0) return []
+    let stmts = this.loopAuditStmts.get(sources.length)
+    if (!stmts) {
+      const placeholders = sources.map(() => '?').join(', ')
+      stmts = {
+        list: this.db.prepare(
+          `SELECT id, start_seq, end_seq, size_bytes FROM adf_audit
+           WHERE source IN (${placeholders}) AND start_seq IS NOT NULL AND end_seq IS NOT NULL
+           ORDER BY end_seq DESC, id DESC`
+        )
+      }
+      this.loopAuditStmts.set(sources.length, stmts)
+    }
+    return stmts.list.all(...sources) as Array<{ id: number; start_seq: number; end_seq: number; size_bytes: number }>
+  }
+
+  /** Each live row of a loop: its seq and display-order key (ord when set, else seq). */
+  getLoopOrderKeys(loop: string): Array<{ seq: number; key: number }> {
+    return this.db.prepare('SELECT seq, COALESCE(ord, seq) AS key FROM adf_loop WHERE loop = ?').all(loop) as Array<{ seq: number; key: number }>
+  }
+
   // ===========================================================================
   // Filter-based Inbox/Outbox queries (for msg_delete audit)
   // ===========================================================================

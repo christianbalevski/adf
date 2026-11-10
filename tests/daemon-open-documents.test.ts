@@ -185,6 +185,7 @@ const ROUTES: RouteCase[] = [
   { method: 'PUT', path: `${A}/mind`, url: c => `/agents/${c.id}/mind`, body: { content: '# Mind' }, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/mind`, url: c => `/agents/${c.id}/mind`, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/chat`, url: c => `/agents/${c.id}/chat`, expect: { ok: 200 } },
+  { method: 'GET', path: `${A}/chat/archived`, url: c => `/agents/${c.id}/chat/archived`, expect: { ok: 200 } },
   { method: 'DELETE', path: `${A}/chat`, url: c => `/agents/${c.id}/chat`, expect: { ok: 200 } },
   { method: 'POST', path: `${A}/chat`, url: c => `/agents/${c.id}/chat`, body: { text: 'hello' }, expect: 'notRunning' },
   { method: 'GET', path: `${A}/files`, url: c => `/agents/${c.id}/files`, expect: { ok: 200 } },

@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 345 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 346 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -31,7 +31,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Events](#tag-events) (2)
 - [Agents](#tag-agents) (33)
 - [Loops](#tag-loops) (9)
-- [Chat](#tag-chat) (7)
+- [Chat](#tag-chat) (8)
 - [Files](#tag-files) (15)
 - [Identity (agent)](#tag-identity-agent) (23)
 - [Owner identity](#tag-owner-identity) (11)
@@ -3286,6 +3286,7 @@ Chat turns, event triggers and the agent's message inbox / outbox.
 | GET | [`/agents/{id}/chat`](#op-getagentchat) | Display chat history of a loop |
 | POST | [`/agents/{id}/chat`](#op-chatagent) | Queue a user chat turn |
 | DELETE | [`/agents/{id}/chat`](#op-clearagentchat) | Clear a loop's persisted chat / loop history |
+| GET | [`/agents/{id}/chat/archived`](#op-getagentchatarchived) | Archived chat history of a loop |
 | POST | [`/agents/{id}/trigger`](#op-triggeragent) | Queue an ADF event dispatch |
 | GET | [`/agents/{id}/inbox`](#op-getagentinbox) | List inbox messages |
 | DELETE | [`/agents/{id}/inbox`](#op-clearagentinbox) | Delete all inbox messages |
@@ -3435,6 +3436,57 @@ Example 200 (`application/json`):
   "agentId": "Xk3v9QpLm2",
   "loop": "string",
   "success": true
+}
+```
+
+<a id="op-getagentchatarchived"></a>
+
+### GET `/agents/{id}/chat/archived`
+
+**Archived chat history of a loop**
+
+Scroll-back past the live loop table: a page (up to 200 loop rows) of the rows compactions and clears moved into `adf_audit` for this loop, older in display order than `cursor` — or, without a cursor, than the oldest live row. Snapshots are merged by display order (ord, then seq); a row archived twice appears once and rows still live are left out. Entries carry `metadata.archived` and ids prefixed `audit-`. Pass the returned `cursor` back for the next older page while `hasMore` is true. Rows archived from inside or after the live window (a slice cleared from the middle or tail) are not offered. A snapshot that fails to decompress, or inflates past 128 MiB, is skipped and counted in `unreadable`. With `peek`, answers only `hasMore`, from snapshot metadata. Read-only; nothing here re-enters the model's context (Studio's DOC_GET_CHAT_ARCHIVED).
+
+Operation `getAgentChatArchived` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+| `loop` | query | string |  | Cognition loop to address. Absent = main. Unknown loops answer 404. |
+| `cursor` | query | string |  | A `cursor` from a previous page of this route; absent starts at the live head. Any other value answers 400. |
+| `peek` | query | `"1"` \| `"true"` \| `"0"` \| `"false"` |  | `1`/`true`: answer `hasMore` only. Other values than 1, 0, true, false answer 400. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [ArchivedChatPageResponse](#schema-archivedchatpageresponse) | A page of archived history (empty `uiLog` when none), or with `peek` only `hasMore` |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "string",
+  "loop": "string",
+  "uiLog": [
+    {
+      "id": "string",
+      "type": "user",
+      "content": "string",
+      "timestamp": 0,
+      "metadata": {}
+    }
+  ],
+  "cursor": "string",
+  "hasMore": true,
+  "unreadable": 0
 }
 ```
 
@@ -23150,6 +23202,21 @@ GET /agents/{id}/chat with `before`: a keyset page of display entries older than
 | `loop` | string | yes |  |
 | `uiLog` | [DisplayEntry](#schema-displayentry)[] | yes |  |
 | `earlierCount` | integer | yes | Rows of this loop before the page |
+
+<a id="schema-archivedchatpageresponse"></a>
+
+### ArchivedChatPageResponse
+
+GET /agents/{id}/chat/archived: a page of a loop's archived history as display entries (Studio's DOC_GET_CHAT_ARCHIVED).
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes |  |
+| `loop` | string | yes |  |
+| `uiLog` | [DisplayEntry](#schema-displayentry)[] | yes | Oldest first |
+| `cursor` | string \| null | yes | Cursor for the next older page; null on a peek or when the page is empty |
+| `hasMore` | boolean | yes | Whether older archived rows may exist (a later page can still come back empty) |
+| `unreadable` | integer | yes | Snapshots skipped on this page because they could not be read |
 
 <a id="schema-agentheaderresponse"></a>
 

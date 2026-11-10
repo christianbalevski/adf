@@ -2468,6 +2468,76 @@
         }
       }
     },
+    "/agents/{id}/chat/archived": {
+      "get": {
+        "tags": [
+          "Chat"
+        ],
+        "summary": "Archived chat history of a loop",
+        "description": "Scroll-back past the live loop table: a page (up to 200 loop rows) of the rows compactions and clears moved into `adf_audit` for this loop, older in display order than `cursor` — or, without a cursor, than the oldest live row. Snapshots are merged by display order (ord, then seq); a row archived twice appears once and rows still live are left out. Entries carry `metadata.archived` and ids prefixed `audit-`. Pass the returned `cursor` back for the next older page while `hasMore` is true. Rows archived from inside or after the live window (a slice cleared from the middle or tail) are not offered. A snapshot that fails to decompress, or inflates past 128 MiB, is skipped and counted in `unreadable`. With `peek`, answers only `hasMore`, from snapshot metadata. Read-only; nothing here re-enters the model's context (Studio's DOC_GET_CHAT_ARCHIVED).",
+        "operationId": "getAgentChatArchived",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          },
+          {
+            "$ref": "#/components/parameters/LoopQuery"
+          },
+          {
+            "name": "cursor",
+            "in": "query",
+            "required": false,
+            "description": "A `cursor` from a previous page of this route; absent starts at the live head. Any other value answers 400.",
+            "schema": {
+              "type": "string",
+              "pattern": "^-?\\d+:-?\\d+$"
+            }
+          },
+          {
+            "name": "peek",
+            "in": "query",
+            "required": false,
+            "description": "`1`/`true`: answer `hasMore` only. Other values than 1, 0, true, false answer 400.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "true",
+                "0",
+                "false"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of archived history (empty `uiLog` when none), or with `peek` only `hasMore`",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ArchivedChatPageResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/agents/{id}/trigger": {
       "post": {
         "tags": [
@@ -30865,6 +30935,48 @@
           "earlierCount": {
             "type": "integer",
             "description": "Rows of this loop before the page"
+          }
+        }
+      },
+      "ArchivedChatPageResponse": {
+        "type": "object",
+        "description": "GET /agents/{id}/chat/archived: a page of a loop's archived history as display entries (Studio's DOC_GET_CHAT_ARCHIVED).",
+        "required": [
+          "agentId",
+          "loop",
+          "uiLog",
+          "cursor",
+          "hasMore",
+          "unreadable"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string"
+          },
+          "loop": {
+            "type": "string"
+          },
+          "uiLog": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/DisplayEntry"
+            },
+            "description": "Oldest first"
+          },
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Cursor for the next older page; null on a peek or when the page is empty"
+          },
+          "hasMore": {
+            "type": "boolean",
+            "description": "Whether older archived rows may exist (a later page can still come back empty)"
+          },
+          "unreadable": {
+            "type": "integer",
+            "description": "Snapshots skipped on this page because they could not be read"
           }
         }
       },
