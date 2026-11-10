@@ -5,6 +5,7 @@
  */
 import { useEffect, useState } from 'react'
 import { TextInput } from '../ui'
+import { MIN_CONTAINER_MEMORY_MB } from '../../../shared/constants/compute-defaults'
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -15,6 +16,13 @@ export function checkWholeNumber(raw: string, min: number, max: number): Checked
   const value = Number(text)
   if (value < min || value > max) return { ok: false, error: `Enter a whole number from ${min} to ${max}.` }
   return { ok: true, value }
+}
+
+/** A container memory cap in MB: 0 for no cap, otherwise from the minimum to `max`. */
+export function checkContainerMemory(raw: string, max: number): Checked<number> {
+  if (raw.trim() === '0') return { ok: true, value: 0 }
+  const checked = checkWholeNumber(raw, MIN_CONTAINER_MEMORY_MB, max)
+  return checked.ok ? checked : { ok: false, error: `Enter 0 for no limit, or a whole number from ${MIN_CONTAINER_MEMORY_MB} to ${max}.` }
 }
 
 /** A manual mesh peer: `host:port`, or a bare host (the mesh port is used). */

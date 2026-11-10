@@ -110,6 +110,10 @@ To request an isolated container from the loop: `sys_update_config({ path: "comp
 
 When no compute config is set, agents still have access to the shared container (via `compute_exec` and `fs_transfer`) as long as Podman is running.
 
+### Container memory limit
+
+Each ADF-managed container is limited to 4096 MB by default, set under Settings → Compute (`containerMemoryMb`). `0` turns the limit off. A change applies the next time a container is created or an agent starts on an existing one, without recreating the container. When a container reaches its limit, the kernel kills its largest process, usually a runaway browser tab. The limit never exceeds the memory of the Podman machine, and is skipped with a logged warning where the cgroup memory controller is not available.
+
 ## Tools
 
 Two tools interact with compute environments. Both are disabled by default — request them via `tools.compute_exec.enabled` / `tools.fs_transfer.enabled` (HIL-gated: your principal approves).

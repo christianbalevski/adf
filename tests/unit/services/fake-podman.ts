@@ -15,6 +15,8 @@ export interface FakeContainer {
   kind: 'shared' | 'agent' | 'legacy'
   agentId?: string
   agentName?: string
+  /** `HostConfig.Memory` in bytes; absent = no limit (podman reports 0). */
+  memoryBytes?: number
 }
 
 interface ExecResult { stdout: string; stderr: string; code: number; timedOut?: boolean }
@@ -22,9 +24,17 @@ interface ExecResult { stdout: string; stderr: string; code: number; timedOut?: 
 const ok = (stdout = ''): ExecResult => ({ stdout, stderr: '', code: 0 })
 const fail = (stderr: string): ExecResult => ({ stdout: '', stderr, code: 1 })
 
+/** A podman size argument (`4096m`, or plain bytes) in bytes. */
+const sizeBytes = (value: string): number =>
+  value.endsWith('m') ? Number(value.slice(0, -1)) * 1024 * 1024 : Number(value)
+
 export class FakePodman {
   readonly containers = new Map<string, FakeContainer>()
   readonly calls: string[][] = []
+  /** The `host` object of `podman info --format json`; unset = `info` fails. */
+  hostInfo?: { cgroupControllers?: string[]; memTotal?: number }
+  /** Make `podman update` exit non-zero. */
+  failUpdate = false
 
   add(c: Partial<FakeContainer> & { name: string }): this {
     this.containers.set(c.name, {
@@ -78,10 +88,26 @@ export class FakePodman {
       const c = this.containers.get(name)
       if (!c) return fail(`no such container ${name}`)
       if (format.includes('State.Running')) return ok(String(c.running))
+      if (format.includes('HostConfig.Memory')) return ok(String(c.memoryBytes ?? 0))
       if (format.includes('io.adf.managed')) return ok(this.labels(c)['io.adf.managed'] ?? '')
       if (format.includes('json .Config.Labels')) return ok(JSON.stringify(this.labels(c)))
       // Peer-isolation label probe: unlabeled → applyPeerFirewall skips.
       return ok('')
+    }
+    if (cmd === 'info' && args.includes('json') && this.hostInfo) return ok(JSON.stringify({ host: this.hostInfo }))
+    if (cmd === 'image' && rest[0] === 'exists') return ok()
+    if (cmd === 'run') {
+      const name = args[args.indexOf('--name') + 1]
+      const memory = args.indexOf('--memory')
+      this.add({ name, memoryBytes: memory < 0 ? undefined : sizeBytes(args[memory + 1]) })
+      return ok(`${name}-id`)
+    }
+    if (cmd === 'update') {
+      if (this.failUpdate) return fail('fake podman: update failed')
+      const c = this.containers.get(args[args.length - 1])
+      if (!c) return fail(`no such container ${args[args.length - 1]}`)
+      c.memoryBytes = sizeBytes(args[args.indexOf('--memory') + 1])
+      return ok(c.name)
     }
     if (cmd === 'machine' && rest[0] === 'list') return ok('true')
     if (cmd === 'exec') return this.containers.get(rest[0])?.running ? ok('') : fail(`container state improper: ${rest[0]} is not running`)

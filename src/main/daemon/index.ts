@@ -743,6 +743,9 @@ function readComputeSettings(raw: unknown): ComputeEnvSettings {
     machineMemoryMb: typeof compute.machineMemoryMb === 'number'
       ? compute.machineMemoryMb
       : DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
+    containerMemoryMb: typeof compute.containerMemoryMb === 'number'
+      ? compute.containerMemoryMb
+      : DEFAULT_COMPUTE_SETTINGS.containerMemoryMb,
     containerImage: typeof compute.containerImage === 'string'
       ? compute.containerImage
       : DEFAULT_COMPUTE_SETTINGS.containerImage,

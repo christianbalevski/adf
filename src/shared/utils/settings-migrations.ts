@@ -194,6 +194,8 @@ function migrateComputeDefaults(data: Record<string, unknown>): boolean {
   if (!saved.containerImage) { saved.containerImage = DEFAULT_COMPUTE_SETTINGS.containerImage; changed = true }
   if (!saved.machineCpus) { saved.machineCpus = DEFAULT_COMPUTE_SETTINGS.machineCpus; changed = true }
   if (!saved.machineMemoryMb) { saved.machineMemoryMb = DEFAULT_COMPUTE_SETTINGS.machineMemoryMb; changed = true }
+  // Not `!saved.x`: 0 is a real value here (no cap).
+  if (saved.containerMemoryMb === undefined) { saved.containerMemoryMb = DEFAULT_COMPUTE_SETTINGS.containerMemoryMb; changed = true }
   if (!Array.isArray(saved.executionTargets)) { saved.executionTargets = []; changed = true }
 
   if (changed) {

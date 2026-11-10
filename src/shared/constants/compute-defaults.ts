@@ -51,9 +51,13 @@ export const DEFAULT_COMPUTE_SETTINGS = {
   ] as string[],
   machineCpus: 2,
   machineMemoryMb: 2048,
+  containerMemoryMb: 4096,
   containerImage: 'docker.io/library/node:20-slim',
   executionTargets: [] as unknown[],
 }
+
+/** Smallest per-container memory cap; 0 (no cap) is the only value below it. */
+export const MIN_CONTAINER_MEMORY_MB = 512
 
 /** A deep, independently mutable copy of the compute defaults. */
 export function cloneComputeDefaults(): Record<string, unknown> {

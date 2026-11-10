@@ -121,6 +121,7 @@ This example shows the broader shape the daemon understands. It is intentionally
     "mcpOnHost": false,
     "machineCpus": 2,
     "machineMemoryMb": 2048,
+    "containerMemoryMb": 4096,
     "containerImage": "docker.io/library/node:20-slim"
   }
 }
@@ -210,6 +211,7 @@ The daemon passes `compute` settings to `PodmanService`.
 | `containerPackages` | Packages installed in compute containers. Omit it to get the defaults (`src/shared/constants/compute-defaults.ts`: Python, Git, Chromium, the desktop/VNC stack, …); a list replaces them entirely |
 | `machineCpus` | CPU allocation for the Podman machine |
 | `machineMemoryMb` | Memory allocation for the Podman machine |
+| `containerMemoryMb` | Memory cap in MB for each ADF-managed container, default `4096`, `0` for no cap. Applied the next time a container is created or reused |
 | `containerImage` | Base container image |
 
 Agents can request isolated compute from their own `.adf` config. The daemon settings define the shared environment defaults and host access policy.

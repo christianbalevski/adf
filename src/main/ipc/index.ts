@@ -596,6 +596,7 @@ podmanService.setSettingsAccessor(() => {
     containerPackages: (raw?.containerPackages as string[]) ?? DEFAULT_COMPUTE_SETTINGS.containerPackages,
     machineCpus: (raw?.machineCpus as number) ?? DEFAULT_COMPUTE_SETTINGS.machineCpus,
     machineMemoryMb: (raw?.machineMemoryMb as number) ?? DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
+    containerMemoryMb: (raw?.containerMemoryMb as number) ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb,
     containerImage: (raw?.containerImage as string) ?? DEFAULT_COMPUTE_SETTINGS.containerImage,
   }
 })

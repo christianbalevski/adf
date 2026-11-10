@@ -19,6 +19,7 @@ import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
 import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
+import { DEFAULT_COMPUTE_SETTINGS, MIN_CONTAINER_MEMORY_MB } from '../../shared/constants/compute-defaults'
 import { killedByTimeout } from '../utils/exec-timeout'
 
 // ---------------------------------------------------------------------------
@@ -685,6 +686,7 @@ export interface ComputeEnvSettings {
   containerPackages: string[]
   machineCpus: number
   machineMemoryMb: number
+  containerMemoryMb: number
   containerImage: string
 }
 
@@ -696,6 +698,7 @@ const DEFAULT_SETTINGS: ComputeEnvSettings = {
   containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'fonts-dejavu-core', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm', 'x11-xserver-utils'],
   machineCpus: 2,
   machineMemoryMb: 2048,
+  containerMemoryMb: DEFAULT_COMPUTE_SETTINGS.containerMemoryMb,
   containerImage: 'docker.io/library/node:20-slim',
 }
 
@@ -758,6 +761,69 @@ export function machineSize(
     memoryMb: boundedInt(cfg.machineMemoryMb, host.memoryMb) ?? DEFAULT_SETTINGS.machineMemoryMb,
     cpus: boundedInt(cfg.machineCpus, host.cpus) ?? DEFAULT_SETTINGS.machineCpus,
   }
+}
+
+/** What `podman info` says about where containers actually run. */
+export interface ContainerMemoryHost {
+  /** The cgroup memory controller is usable, so `--memory` will not fail. */
+  memoryController: boolean
+  /** Memory of the Podman host: the VM on macOS and Windows. */
+  memoryMb: number
+}
+
+const MIB = 1024 * 1024
+/**
+ * Podman has no way to clear a memory limit on an existing container:
+ * `--memory -1` is refused as a negative size and `--memory 0` leaves the
+ * limit as it was. A limit the kernel cannot reach is the equivalent. The
+ * swap value is larger so that swap stays unlimited too.
+ */
+const LIFTED_MEMORY = '4611686018427387904' // 2^62; a JS number would print it rounded
+const LIFTED_MEMORY_SWAP = '9223372036854771712' // 2^63 - one page
+
+/**
+ * The cap to apply in MB, 0 for none. As in machineSize, a bogus, too small or
+ * larger-than-the-host value falls back to the default, and the default itself
+ * never exceeds the host (the default VM is smaller than the default cap).
+ */
+function containerMemoryLimitMb(value: unknown, capacityMb: number): number {
+  if (value === 0 || value === '0') return 0
+  const mb = boundedInt(value, capacityMb)
+  return mb !== null && mb >= MIN_CONTAINER_MEMORY_MB
+    ? mb
+    : Math.min(DEFAULT_SETTINGS.containerMemoryMb, capacityMb)
+}
+
+/**
+ * Memory args for every ADF-managed container. An equal `--memory-swap` means
+ * no swap on top of the cap.
+ */
+export function containerMemoryArgs(
+  cfg: Pick<ComputeEnvSettings, 'containerMemoryMb'>,
+  host: ContainerMemoryHost,
+): string[] {
+  if (!host.memoryController) return []
+  const mb = containerMemoryLimitMb(cfg.containerMemoryMb, host.memoryMb)
+  return mb > 0 ? ['--memory', `${mb}m`, '--memory-swap', `${mb}m`] : []
+}
+
+/**
+ * The `podman update` args that bring an existing container with
+ * `HostConfig.Memory` = `currentBytes` in line with the setting, or null when
+ * it already is.
+ */
+export function containerMemoryUpdateArgs(
+  currentBytes: number,
+  cfg: Pick<ComputeEnvSettings, 'containerMemoryMb'>,
+  host: ContainerMemoryHost,
+): string[] | null {
+  if (!host.memoryController) return null
+  const mb = containerMemoryLimitMb(cfg.containerMemoryMb, host.memoryMb)
+  if (mb === 0) {
+    const limited = currentBytes > 0 && currentBytes < Number(LIFTED_MEMORY)
+    return limited ? ['--memory', LIFTED_MEMORY, '--memory-swap', LIFTED_MEMORY_SWAP] : null
+  }
+  return currentBytes === mb * MIB ? null : containerMemoryArgs(cfg, host)
 }
 
 const PODMAN_MISS_TTL_MS = 60_000
@@ -863,6 +929,10 @@ export class PodmanService extends EventEmitter {
    *  clear the pending promise — a second ensureRunning would then launch a
    *  duplicate concurrent startShared and hit a name conflict. */
   private _sharedRunningSettled = false
+  /** containerMemoryMb the shared container was last brought in line with. */
+  private _sharedMemorySetting: unknown
+  /** Memory controller and capacity, probed once per Podman session. */
+  private _containerMemoryHost: Promise<ContainerMemoryHost> | null = null
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */
   private _shuttingDown = false
@@ -998,7 +1068,11 @@ export class PodmanService extends EventEmitter {
    */
   ensureRunning(): Promise<void> {
     if (this._shuttingDown) return Promise.reject(new Error('Compute environment is shutting down'))
-    if (this._sharedRunning) return this._sharedRunning
+    if (this._sharedRunning) {
+      // The memo skips the bring-up that would apply a changed memory setting.
+      const changed = this._sharedRunningSettled && this._getSettings().containerMemoryMb !== this._sharedMemorySetting
+      return changed ? this._sharedRunning.then(() => this.syncSharedMemoryLimit()) : this._sharedRunning
+    }
     this._sharedRunningSettled = false
     const tracked = this.startShared().then(
       () => {
@@ -1047,6 +1121,7 @@ export class PodmanService extends EventEmitter {
 
     try {
       await this.ensureMachine(bin)
+      this._sharedMemorySetting = this._getSettings().containerMemoryMb
       await this.ensureContainerRunning(bin, SHARED_CONTAINER, { kind: 'shared' })
       await this.applyPeerFirewall(bin, SHARED_CONTAINER)
       this.setStatus('running')
@@ -1513,6 +1588,7 @@ export class PodmanService extends EventEmitter {
     // The netns (and its firewall) is fresh after a start — reload it. No-op
     // for containers created before the feature.
     if (result.code === 0) {
+      await this.applyContainerMemoryLimit(bin, name)
       await this.applyPeerFirewall(bin, name)
       this.setPhase(name, 'ready')
     }
@@ -1627,6 +1703,7 @@ export class PodmanService extends EventEmitter {
   ): Promise<ComputeSetupResult> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
+    this._containerMemoryHost = null
 
     const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
       const cwd = await podmanCwd(cmdArgs)
@@ -1751,7 +1828,8 @@ export class PodmanService extends EventEmitter {
       await this.exec0(bin, ['pull', image], 120_000)
     }
 
-    const runArgs: string[] = ['run', '--rm', '-i', '--init', '--network=bridge']
+    const memoryArgs = containerMemoryArgs(this._getSettings(), await this.containerMemoryHost(bin))
+    const runArgs: string[] = ['run', '--rm', '-i', '--init', '--network=bridge', ...memoryArgs]
     if (cwd) runArgs.push('-w', cwd)
     if (env) {
       for (const [k, v] of Object.entries(env)) {
@@ -1877,6 +1955,7 @@ export class PodmanService extends EventEmitter {
     const inspectResult = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.State.Running}}'])
     if (inspectResult.code === 0) {
       if (inspectResult.stdout.trim() === 'true') {
+        await this.applyContainerMemoryLimit(bin, containerName)
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
         this.setPhase(containerName, 'ready', undefined, agentId)
         // Browser bring-up is slow (probe + display daemons) — keep it off the
@@ -1892,6 +1971,7 @@ export class PodmanService extends EventEmitter {
           this.setPhase(containerName, 'stopped', undefined, agentId)
           throw new Error(startResult.stderr || `Failed to start ${containerName}`)
         }
+        await this.applyContainerMemoryLimit(bin, containerName)
         // The display daemons died with the container — restart them lazily.
         // (Clear per-run caches directly; the shared ensureRunning memo stays
         // intact because this very call is what backs it.)
@@ -1939,7 +2019,8 @@ export class PodmanService extends EventEmitter {
       // --init: PID 1 is otherwise `sleep infinity`, which never reaps — every
       // dead exec-session child would linger as a zombie. Podman injects a
       // reaping init that runs the command below as its child.
-      const runArgs = ['run', '-d', '--init', '--name', containerName, '--network=bridge',
+      const memoryArgs = containerMemoryArgs(cfg, await this.containerMemoryHost(bin))
+      const runArgs = ['run', '-d', '--init', '--name', containerName, '--network=bridge', ...memoryArgs,
         // Shared npm/npx cache across all managed containers: second+ agent
         // resolves `npx -y <pkg>` from a warm cache instead of the registry.
         '-v', `${NPM_CACHE_VOLUME}:${NPM_CACHE_MOUNT}`,
@@ -2006,6 +2087,7 @@ export class PodmanService extends EventEmitter {
               this._stackStartPending.delete(containerName)
               this._browserRuntimeVerified.delete(containerName)
             }
+            await this.applyContainerMemoryLimit(bin, containerName)
             console.log(`[Compute] Container ${containerName} already existed — reusing it`)
             await this.ensureBrowserCompatibility(bin, containerName, compatibility)
             this.setPhase(containerName, 'ready', undefined, agentId)
@@ -2053,6 +2135,64 @@ export class PodmanService extends EventEmitter {
       this.setPhase(containerName, 'ready', undefined, agentId)
     }
     if (browserWanted) this.kickBrowserReady(containerName)
+  }
+
+  /** Memory controller and capacity of the Podman host, read once per session.
+   *  A failed read means no cap for now and is not remembered: the machine may
+   *  still be coming up. */
+  private containerMemoryHost(bin: string): Promise<ContainerMemoryHost> {
+    this._containerMemoryHost ??= (async () => {
+      const unknown: ContainerMemoryHost = { memoryController: false, memoryMb: 0 }
+      let host: { cgroupControllers?: unknown; memTotal?: unknown } | undefined
+      try {
+        const info = await this.exec0(bin, ['info', '--format', 'json'], 15_000)
+        if (info.code === 0) host = JSON.parse(info.stdout)?.host
+      } catch { /* reported below */ }
+      if (!host) {
+        this._containerMemoryHost = null
+        console.warn('[Compute] Could not read podman info; applying no container memory cap for now')
+        return unknown
+      }
+      if (!Array.isArray(host.cgroupControllers) || !host.cgroupControllers.includes('memory')) {
+        console.warn('[Compute] The cgroup memory controller is not available to Podman; containers run without a memory cap')
+        return unknown
+      }
+      const memTotal = typeof host.memTotal === 'number' && host.memTotal > 0 ? host.memTotal : totalmem()
+      return { memoryController: true, memoryMb: Math.floor(memTotal / MIB) }
+    })()
+    return this._containerMemoryHost
+  }
+
+  /** Bring a reused container's memory limit in line with the setting, without
+   *  recreating it. Called once the container is running: Podman before 5.1
+   *  can only update a live container and does not keep the change across a
+   *  restart. Best effort: a failure is logged, never fatal to the bring-up. */
+  private async applyContainerMemoryLimit(bin: string, containerName: string): Promise<void> {
+    try {
+      const host = await this.containerMemoryHost(bin)
+      if (!host.memoryController) return
+      const current = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.HostConfig.Memory}}'])
+      const text = current.stdout.trim()
+      if (current.code !== 0 || !/^\d+$/.test(text)) {
+        console.warn(`[Compute] Could not read the memory limit of ${containerName}; leaving it as it is`)
+        return
+      }
+      const args = containerMemoryUpdateArgs(Number(text), this._getSettings(), host)
+      if (!args) return
+      const result = await this.exec0(bin, ['update', ...args, containerName])
+      if (result.code !== 0) {
+        console.warn(`[Compute] Could not update the memory limit of ${containerName}: ${(result.stderr || result.stdout).slice(0, 200)}`)
+      }
+    } catch (err) {
+      console.warn(`[Compute] Could not update the memory limit of ${containerName}:`, err instanceof Error ? err.message : err)
+    }
+  }
+
+  /** Apply a changed memory setting to the shared container on its next use. */
+  private async syncSharedMemoryLimit(): Promise<void> {
+    this._sharedMemorySetting = this._getSettings().containerMemoryMb
+    const bin = await this.findPodman()
+    if (bin) await this.applyContainerMemoryLimit(bin, SHARED_CONTAINER)
   }
 
   /** Load the peer-isolation firewall in a container that was created with it

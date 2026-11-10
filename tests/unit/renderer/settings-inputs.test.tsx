@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it } from 'vitest'
-import { CommitInput, checkPeerAddress, checkWholeNumber } from '../../../src/renderer/components/settings/settings-inputs'
+import { CommitInput, checkContainerMemory, checkPeerAddress, checkWholeNumber } from '../../../src/renderer/components/settings/settings-inputs'
 
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
@@ -23,6 +23,21 @@ describe('whole numbers (workers, CPUs, memory, port)', () => {
     for (const bad of ['', '-1', '1.5', 'abc', '257', '4e2']) {
       expect(checkWholeNumber(bad, 0, 256), bad).toEqual({ ok: false, error: 'Enter a whole number from 0 to 256.' })
     }
+  })
+})
+
+describe('container memory limit', () => {
+  it('accepts 0 (no limit) and the range; refuses the gap between them', () => {
+    expect(checkContainerMemory('0', 32768)).toEqual({ ok: true, value: 0 })
+    expect(checkContainerMemory(' 512 ', 32768)).toEqual({ ok: true, value: 512 })
+    expect(checkContainerMemory('32768', 32768)).toEqual({ ok: true, value: 32768 })
+    for (const bad of ['', '1', '511', '32769', '-1', '1.5', 'abc']) {
+      expect(checkContainerMemory(bad, 32768), bad).toEqual({ ok: false, error: 'Enter 0 for no limit, or a whole number from 512 to 32768.' })
+    }
+  })
+
+  it('loads a saved 0 instead of treating it as unset', () => {
+    expect(page()).toContain("if (typeof compute.containerMemoryMb === 'number') setComputeContainerMemoryMb(compute.containerMemoryMb)")
   })
 })
 

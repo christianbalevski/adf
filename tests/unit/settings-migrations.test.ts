@@ -267,3 +267,23 @@ describe('settings migrations — automatic prompt updates', () => {
     expect(data).toMatchObject(before)
   })
 })
+
+describe('settings migrations — compute.containerMemoryMb', () => {
+  const migrated = (compute: Record<string, unknown>): Record<string, unknown> => {
+    const data: Record<string, unknown> = { compute }
+    applySettingsMigrations(data)
+    return data.compute as Record<string, unknown>
+  }
+
+  it('gives an old settings file without the key the 4096 MB default', () => {
+    expect(migrated({ machineMemoryMb: 2048 }).containerMemoryMb).toBe(4096)
+  })
+
+  it('keeps an explicit 0: the cap stays off', () => {
+    expect(migrated({ containerMemoryMb: 0 }).containerMemoryMb).toBe(0)
+  })
+
+  it('keeps a configured value', () => {
+    expect(migrated({ containerMemoryMb: 2048 }).containerMemoryMb).toBe(2048)
+  })
+})
