@@ -10,7 +10,7 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
-import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, hasLoopGoal } from '../../../shared/types/adf-v02.types'
+import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, BUILT_IN_TOOLS, hasLoopGoal } from '../../../shared/types/adf-v02.types'
 import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpToolInfo, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
@@ -78,73 +78,6 @@ function McpServerMenu({ serverName, items }: { serverName: string; items: Conte
   )
 }
 
-/**
- * All tools this runtime supports. Any tool listed here will appear
- * in every agent's config panel. Tools not already in the agent's
- * config are added as disabled so the user can opt in.
- */
-const RUNTIME_TOOLS: ToolDeclaration[] = [
-  // --- ADF Shell ---
-  { name: 'adf_shell', enabled: false, visible: false },
-  // --- Filesystem tools ---
-  { name: 'fs_read', enabled: true, visible: true },
-  { name: 'fs_write', enabled: true, visible: true },
-  { name: 'fs_list', enabled: true, visible: true },
-  { name: 'fs_delete', enabled: false, visible: false },
-  // --- System tools ---
-  { name: 'sys_get_config', enabled: true, visible: true },
-  { name: 'sys_update_config', enabled: false, visible: false },
-  { name: 'sys_code', enabled: false, visible: false },
-  { name: 'sys_lambda', enabled: false, visible: false },
-  { name: 'sys_create_adf', enabled: false, visible: false },
-  { name: 'sys_get_meta', enabled: true, visible: true },
-  { name: 'sys_set_meta', enabled: true, visible: true },
-  { name: 'sys_delete_meta', enabled: true, visible: true },
-  { name: 'sys_set_timer', enabled: false, visible: false },
-  { name: 'sys_list_timers', enabled: false, visible: false },
-  { name: 'sys_delete_timer', enabled: false, visible: false },
-  // --- Package management tools ---
-  { name: 'npm_install', enabled: false, visible: false },
-  { name: 'npm_uninstall', enabled: false, visible: false },
-  // --- MCP management tools ---
-  { name: 'mcp_install', enabled: false, visible: false },
-  { name: 'mcp_restart', enabled: false, visible: false },
-  { name: 'mcp_uninstall', enabled: false, visible: false },
-  // --- Compute environment tools ---
-  { name: 'fs_transfer', enabled: false, visible: false },
-  { name: 'compute_exec', enabled: false, visible: false, restricted: true },
-  // --- Network tools ---
-  { name: 'sys_fetch', enabled: false, visible: false },
-  // --- Database tools ---
-  { name: 'db_query', enabled: false, visible: false },
-  { name: 'db_execute', enabled: false, visible: false },
-  // --- Loop tools ---
-  { name: 'loop_compact', enabled: false, visible: false },
-  { name: 'loop_clear', enabled: false, visible: false },
-  // --- Messaging tools (require messaging toggle) ---
-  { name: 'msg_send', enabled: false, visible: false },
-  { name: 'agent_discover', enabled: false, visible: false },
-  // --- Inbox tools (require inbox mode) ---
-  { name: 'msg_list', enabled: false, visible: false },
-  { name: 'msg_read', enabled: false, visible: false },
-  { name: 'msg_update', enabled: false, visible: false },
-  { name: 'msg_delete', enabled: false, visible: false },
-  { name: 'chat_info', enabled: false, visible: false },
-  // --- WebSocket tools ---
-  { name: 'ws_connect', enabled: false, visible: false },
-  { name: 'ws_disconnect', enabled: false, visible: false },
-  { name: 'ws_connections', enabled: false, visible: false },
-  { name: 'ws_send', enabled: false, visible: false },
-  // --- Stream binding tools ---
-  { name: 'stream_bind', enabled: false, visible: false },
-  { name: 'stream_unbind', enabled: false, visible: false },
-  { name: 'stream_bindings', enabled: false, visible: false },
-  // --- Turn tools ---
-  { name: 'say', enabled: true, visible: true },
-  { name: 'ask', enabled: true, visible: true },
-  { name: 'sys_set_state', enabled: true, visible: true }
-]
-
 /** Logical tool groups for the UI. Order matters — rendered top to bottom. */
 const TOOL_GROUPS: { label: string; tools: Set<string>; note?: string }[] = [
   { label: 'ADF Shell', tools: new Set(['adf_shell']), note: 'Bash-like shell that can run any enabled tool by name. Hide the other tools to save context.' },
@@ -190,8 +123,8 @@ function computeTriState<T>(items: T[], predicate: (item: T) => boolean): TriSta
 }
 
 /**
- * Ensure the config's tools array contains all runtime-supported tools.
- * Missing tools are appended as disabled. Existing entries are preserved.
+ * Ensure the config's tools array contains every built-in tool
+ * (`BUILT_IN_TOOLS`). Missing tools are appended as disabled. Existing entries are preserved.
  */
 export function ensureRuntimeTools(tools: ToolDeclaration[]): ToolDeclaration[] {
   // Deduplicate by name (keep first occurrence)
@@ -201,7 +134,7 @@ export function ensureRuntimeTools(tools: ToolDeclaration[]): ToolDeclaration[] 
     seen.add(t.name)
     return true
   })
-  const missing = RUNTIME_TOOLS.filter((rt) => !seen.has(rt.name))
+  const missing = BUILT_IN_TOOLS.filter((rt) => !seen.has(rt.name))
   if (missing.length === 0 && deduped.length === tools.length) return tools
   return [...deduped, ...missing.map((t) => ({ ...t, enabled: false, visible: false }))]
 }

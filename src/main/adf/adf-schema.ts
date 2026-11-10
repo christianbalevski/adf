@@ -21,11 +21,11 @@ function warnUnknownEventTypes(label: string, eventTypes: readonly string[] | un
 }
 
 /**
- * Tool-name renames applied transparently on config load.
- * Any entry in `config.tools` with a legacy name is rewritten in memory; the rename
- * persists on the next sys_update_config save. No explicit migration step required.
+ * Retired built-ins that became another tool. Applied when a config is parsed
+ * here (templates, sys_update_config) and by `AdfDatabase.getConfig`, which
+ * persists the rename in the file.
  */
-const TOOL_NAME_RENAMES: Record<string, string> = {
+export const TOOL_NAME_RENAMES: Readonly<Record<string, string>> = {
   msg_list_agents: 'agent_discover'
 }
 

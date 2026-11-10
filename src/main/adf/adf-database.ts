@@ -48,6 +48,7 @@ import {
   DEFAULT_SOUL_CONTENT
 } from '../../shared/types/adf-v02.types'
 import { pickAgentIcon } from '../../shared/constants/agent-icons'
+import { TOOL_NAME_RENAMES } from './adf-schema'
 import { DEFAULT_AGENT_CONFIG } from '../../shared/constants/adf-defaults'
 import { mergeAgentTemplate, validateTemplateFilePath } from '../../shared/utils/agent-template'
 import {
@@ -68,6 +69,18 @@ const LOOP_TOOLS_BACKFILL_META = 'adf_loop_tools_backfilled'
  * leak into old files through it.
  */
 const LEGACY_ESSENTIAL_LOOP_TOOLS = ['loop_send', 'loop_list'] as const
+
+/**
+ * Built-in tools ADF once shipped and no longer runs. `getConfig` strips them
+ * from the host's declarations and every loop's allow-list, so old files stop
+ * showing them in sys_get_config and the config panel. A name here must never
+ * be reused for a new tool — it would be erased on read.
+ */
+const RETIRED_TOOL_NAMES: ReadonlySet<string> = new Set([
+  'peer_save', 'peer_list', 'peer_get', 'peer_update', 'peer_remove', 'msg_peers',
+  'plan', 'shell', 'fs_edit', 'sys_execute_code', 'fn_call', 'sys_run_document',
+  'archive_read', 'skill_install', 'skill_remove'
+])
 
 /**
  * LoopEntry plus the storage-level `ord` position override (set only on
@@ -3801,12 +3814,39 @@ export class AdfDatabase {
       if (storedHandle) config.handle = storedHandle
     }
 
+    // Drop retired built-ins and carry renamed ones over (keeping the owner's
+    // flags) before the backfill below, so a rename isn't shadowed by a fresh
+    // default. Loops' allow-lists get the same treatment.
+    let added = false
+    const declared = new Set(config.tools.map(t => t.name))
+    const tools = config.tools.flatMap((t) => {
+      if (RETIRED_TOOL_NAMES.has(t.name)) return []
+      const renamed = TOOL_NAME_RENAMES[t.name]
+      if (!renamed) return [t]
+      if (declared.has(renamed)) return []
+      declared.add(renamed)
+      return [{ ...t, name: renamed }]
+    })
+    if (tools.length !== config.tools.length || tools.some((t, i) => t !== config.tools[i])) {
+      config.tools = tools
+      added = true
+    }
+    for (const loop of config.loops ?? []) {
+      if (!Array.isArray(loop.tools)) continue
+      const kept = [...new Set(loop.tools
+        .filter((name) => !RETIRED_TOOL_NAMES.has(name))
+        .map((name) => TOOL_NAME_RENAMES[name] ?? name))]
+      if (kept.length !== loop.tools.length || kept.some((name, i) => name !== loop.tools![i])) {
+        loop.tools = kept
+        added = true
+      }
+    }
+
     // Backfill tool visibility for pre-visible local files and any tools from
     // DEFAULT_TOOLS missing from this agent's config. New tools are added with
     // their default enabled/restricted/visible state so they
     // appear in the UI immediately for existing agents.
     const existing = new Set(config.tools.map(t => t.name))
-    let added = false
     for (const tool of config.tools) {
       if (tool.visible === undefined) {
         tool.visible = tool.enabled
@@ -3850,8 +3890,8 @@ export class AdfDatabase {
 
     // NOTE: legacy config-format rewrites (thinking_budget fold, key removals)
     // belong in the versioned migration pipeline in open(), not here. Only the
-    // dynamic merges above (handle, tool visibility, new default tools, the
-    // loop grandfather) may patch on read — they depend on app state, not file
+    // dynamic merges above (handle, retired tool names, tool visibility, new
+    // default tools, the loop grandfather) may patch on read — they depend on app state, not file
     // format version.
 
     if (added) {

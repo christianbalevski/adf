@@ -35,6 +35,11 @@ describe('grantableLoopTools', () => {
     ]
     expect(grantableLoopTools(tools)).toEqual(['fs_read', 'msg_send'])
   })
+
+  it('offers only tools this build runs: built-ins and MCP server tools', () => {
+    const tools = [decl('fs_read'), decl('peer_save'), decl('plan'), decl('mcp_github_search'), decl('adf_shell')]
+    expect(grantableLoopTools(tools)).toEqual(['adf_shell', 'fs_read', 'mcp_github_search'])
+  })
 })
 
 describe('newLoop', () => {

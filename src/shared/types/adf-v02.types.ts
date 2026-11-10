@@ -1666,6 +1666,27 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   { name: 'mcp_uninstall', enabled: false, visible: false },
 ]
 
+/**
+ * Every built-in tool this runtime ships: DEFAULT_TOOLS plus the package
+ * tools, which are never backfilled into files (templates opt in to them).
+ * The Studio config panel lists exactly these, plus each MCP server's tools.
+ */
+export const BUILT_IN_TOOLS: readonly ToolDeclaration[] = [
+  ...DEFAULT_TOOLS,
+  { name: 'npm_install', enabled: false, visible: false },
+  { name: 'npm_uninstall', enabled: false, visible: false },
+]
+
+/**
+ * Whether Studio offers a declaration: a built-in it ships, or an MCP server
+ * tool (`mcp_<server>_<tool>`). Anything else is a name this build does not
+ * run — a retired built-in, or a tool from another runtime — and stays in the
+ * file untouched but unlisted.
+ */
+export function isKnownToolName(name: string): boolean {
+  return name.startsWith('mcp_') || BUILT_IN_TOOLS.some((t) => t.name === name)
+}
+
 export const AUDIT_DEFAULTS: AuditConfig = {
   // Loop audit is on by default: compaction is the one routine operation that
   // destroys history irreversibly, and an agent that reflects on its own past
