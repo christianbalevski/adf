@@ -343,6 +343,11 @@ export class ClaudeCodeSession {
     const env = claudeCodeEnv({
       // ADF manages context (compaction, tool-output limits) itself.
       DISABLE_AUTO_COMPACT: '1',
+      // Claude Code refuses requests near its idea of the model's window with
+      // a local "Prompt is too long" (no API call). For a model newer than the
+      // installed Claude Code that window is an assumed 200k, so it blocks at
+      // ~177k. The API is the authority on the window; never block locally.
+      CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE: '1000000000',
       MAX_MCP_OUTPUT_TOKENS: '1000000',
       ENABLE_TOOL_SEARCH: 'false',
       CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: '1',
