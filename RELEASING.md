@@ -252,43 +252,54 @@ If a Defender behavioural false positive recurs on a signed build, submit
 the installer at <https://www.microsoft.com/wdsi/filesubmission> as a
 software developer; the verdict then clears for the certificate.
 
-## Gmail OAuth client
+## Google OAuth client (Gmail and Google Calendar)
 
-Release builds can embed a Google **Desktop app** OAuth client so Gmail's
-Add MCP Server flow signs in without the user creating a Google Cloud
-project. The build step of `.github/workflows/release.yml` reads it from the
-`ADF_GMAIL_OAUTH_CLIENT_JSON` secret: the client JSON as downloaded from
-Google Cloud Console (`{"installed": {...}}`). `electron.vite.config.ts`
-validates it and defines it into Studio's main process and the daemon; a
-malformed value, a Web application client, or one carrying tokens fails the
-build (the error never prints the value). Without the secret (local builds,
-pull requests, the npm CLI package) the constant is undefined and Gmail asks
-for the user's own client file as before.
+Release builds can embed a Google **Desktop app** OAuth client so the Gmail
+and Google Calendar Add MCP Server flows sign in without the user creating a
+Google Cloud project. Both servers use the same client
+(`src/shared/utils/google-oauth-client.ts`). The build step of
+`.github/workflows/release.yml` reads it from the
+`ADF_GMAIL_OAUTH_CLIENT_JSON` secret (the name predates Calendar): the client
+JSON as downloaded from Google Cloud Console (`{"installed": {...}}`).
+`electron.vite.config.ts` validates it and defines it into Studio's main
+process and the daemon; a malformed value, a Web application client, or one
+carrying tokens fails the build (the error never prints the value). Without
+the secret (local builds, pull requests, the npm CLI package) the constant is
+undefined and Gmail and Calendar ask for the user's own client file as before.
 
 A Desktop client is not confidential: anyone can extract it from the
 installed app (`app.asar`). It identifies the app to Google and grants
 nothing by itself. No tokens are bundled; each user's tokens are created by
-the server's own sign-in and stay in `~/.gmail-mcp/credentials.json`. Never
-commit the client JSON.
+the server's own sign-in and stay in that server's token file under its own
+home folder (`~/.gmail-mcp/credentials.json`,
+`~/.config/google-calendar-mcp/tokens.json`). Calendar's stays there only
+while `XDG_CONFIG_HOME` is unset; with it set, the server writes
+`$XDG_CONFIG_HOME/google-calendar-mcp/tokens.json` instead. Never commit the
+client JSON.
 
-ADF writes the built-in client only when the host has neither
-`~/.gmail-mcp/gcp-oauth.keys.json` nor `~/.gmail-mcp/credentials.json` (tokens
-minted by another client would not refresh with it), and agent write-back
-never stores it: a captured file byte-equal to the build's client is skipped,
-so it never follows an agent into a container or back over a host file. A
-client file the user chose is still captured, as are the tokens.
+ADF writes the built-in client on the host only, and only when the server's
+own folder has no client file yet (`~/.gmail-mcp/gcp-oauth.keys.json`,
+`~/.config/google-calendar-mcp/gcp-oauth.keys.json`); a file the user chose
+always wins. Agent write-back never stores it: a captured file byte-equal to
+the build's client is skipped, so it never follows an agent into a container
+or back over a host file. A client file the user chose is still captured, as
+are the tokens.
 
 To rotate, create a new Desktop client, update the secret and release.
-Existing installs keep the client file they already wrote; deleting
-`~/.gmail-mcp/gcp-oauth.keys.json` and `~/.gmail-mcp/credentials.json` and
-connecting Gmail again picks up the new client. Agents that stored Gmail
-tokens from the old client need a fresh sign-in.
+Existing installs keep the client file they already wrote; deleting a
+server's client and token files and connecting it again picks up the new
+client. Agents that stored tokens from the old client need a fresh sign-in.
 
-Google side: the OAuth consent project is in production. Gmail's scopes are
-restricted, so until Google verifies the app the bundled client counts
-against Google's unverified-app cap of 100 users over the project's lifetime.
-Do not move the project back to Testing: Testing mode expires refresh tokens
-after 7 days.
+Google side: the OAuth consent project is in production. Before releasing a
+build that has the secret, the project must have the **Google Calendar API**
+enabled and the `https://www.googleapis.com/auth/calendar` scope on its consent
+screen, next to Gmail's; otherwise Calendar sign-ins fail or show the
+unverified-app screen. Calendar sign-ins likely count toward the same
+unverified-user cap as Gmail's (not confirmed with Google). Gmail's scopes are
+restricted, so until Google verifies the app the bundled client counts against
+Google's unverified-app cap of 100 users over the project's lifetime. Do not
+move the project back to Testing: Testing mode expires refresh tokens after 7
+days.
 
 ## In-app updates
 

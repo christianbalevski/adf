@@ -1,22 +1,37 @@
 /**
- * The Gmail catalog server's built-in Google OAuth client.
+ * The built-in Google OAuth client of the Google catalog servers (Gmail,
+ * Google Calendar): one client, one row per server.
  *
- * Release builds can embed a Google "Desktop app" OAuth client so Gmail
- * Connect works without the user creating their own Cloud project. The
- * client JSON comes from the ADF_GMAIL_OAUTH_CLIENT_JSON environment variable
- * at build time (electron.vite.config.ts defines it into the Studio main and
- * daemon bundles) and is never committed. A Desktop client is not
- * confidential: anyone can extract it from the installed app. It identifies
- * the app to Google, it grants nothing; the user's tokens are still created
- * by the server's own sign-in and stay in ~/.gmail-mcp/credentials.json.
+ * Release builds can embed a Google "Desktop app" OAuth client so Connect
+ * works without the user creating their own Cloud project. The client JSON
+ * comes from the ADF_GMAIL_OAUTH_CLIENT_JSON environment variable at build
+ * time (electron.vite.config.ts defines it into the Studio main and daemon
+ * bundles) and is never committed; the variable keeps its first name. A
+ * Desktop client is not confidential: anyone can extract it from the
+ * installed app. It identifies the app to Google, it grants nothing; the
+ * user's tokens are still created by each server's own sign-in and stay in
+ * that server's token file.
  *
  * Pure (no Node or Electron imports): the build config imports it too.
  */
 
-/** The catalog package the built-in client is for. */
-export const GMAIL_BUNDLED_CLIENT_NPM_PACKAGE = '@gongrzhe/server-gmail-autoauth-mcp'
-/** The declared credential file the built-in client fills. */
-export const GMAIL_BUNDLED_CLIENT_PATH = '~/.gmail-mcp/gcp-oauth.keys.json'
+/**
+ * A catalog server the built-in client is for: its package, the declared
+ * credential file the client fills, and, when the server finds that file
+ * only through an environment variable, that variable (mcp-server-home.ts
+ * sets it to `path`). Gmail needs none: its default is `path` under HOME.
+ */
+export interface BuiltInClientFile {
+  npmPackage: string
+  path: string
+  env?: string
+}
+
+export const BUILT_IN_CLIENT_FILES: readonly BuiltInClientFile[] = [
+  { npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', path: '~/.gmail-mcp/gcp-oauth.keys.json' },
+  { npmPackage: '@cocal/google-calendar-mcp', path: '~/.config/google-calendar-mcp/gcp-oauth.keys.json', env: 'GOOGLE_OAUTH_CREDENTIALS' },
+]
+
 /** Build-time environment variable carrying the client JSON. */
 export const GMAIL_OAUTH_CLIENT_ENV = 'ADF_GMAIL_OAUTH_CLIENT_JSON'
 

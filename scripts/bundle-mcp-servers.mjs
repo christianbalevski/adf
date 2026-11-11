@@ -6,12 +6,14 @@
 // them, electron-builder.yml copies the folder next to the asar
 // (extraResources). Runs as part of `npm run build`.
 //
-// Today: the Gmail catalog server (@gongrzhe/server-gmail-autoauth-mcp),
-// pinned EXACTLY in package.json devDependencies. One ESM file per server
-// plus a THIRD_PARTY_NOTICES.txt with the licenses of every bundled package.
+// Today: the Gmail (@gongrzhe/server-gmail-autoauth-mcp) and Google Calendar
+// (@cocal/google-calendar-mcp) catalog servers, pinned EXACTLY in
+// package.json devDependencies. One ESM file per server, the files it reads
+// beside itself at runtime (`assets`), plus a THIRD_PARTY_NOTICES.txt with the
+// licenses of every bundled package.
 
 import { build } from 'esbuild'
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -31,6 +33,21 @@ const SERVERS = [
     // http://localhost:3000 callback; a custom callback URL (`auth <url>`,
     // the upstream reverse-proxy setup) keeps upstream's bind.
     patches: [{ find: 'server.listen(3000);', replace: "server.listen(3000, process.argv[3] ? undefined : '127.0.0.1');" }],
+  },
+  {
+    dir: 'google-calendar',
+    pkg: '@cocal/google-calendar-mcp',
+    entry: 'build/index.js',
+    // Read at runtime beside the entry: its version (upstream: ../package.json)
+    // and the sign-in result pages (web/).
+    assets: [['package.json', 'package.json'], ['build/web', 'web']],
+    patches: [
+      { find: 'join2(__server_dirname, "..", "package.json")', replace: 'join2(__server_dirname, "package.json")' },
+      { find: 'join3(__dirname2, "..", "package.json")', replace: 'join3(__dirname2, "package.json")' },
+      // Same as Gmail: the sign-in callback server on loopback only, unless a
+      // public callback base (GOOGLE_OAUTH_REDIRECT_BASE) is configured.
+      { find: 'testServer.listen(port, () => {', replace: "testServer.listen(port, this.redirectBase ? undefined : '127.0.0.1', () => {" },
+    ],
   },
 ]
 
@@ -59,7 +76,7 @@ function patchPlugin(file, patches) {
     name: 'patch-upstream',
     setup(b) {
       b.onLoad({ filter: /\.js$/ }, (args) => {
-        if (resolve(args.path) !== resolve(file)) return undefined
+        if (realpathSync(args.path) !== realpathSync(file)) return undefined
         let code = readFileSync(args.path, 'utf-8')
         for (const { find, replace } of patches) {
           const count = code.split(find).length - 1
@@ -122,6 +139,7 @@ for (const server of SERVERS) {
     logOverride: { 'package.json': 'silent' },
     banner: { js: BANNER },
   })
+  for (const [from, to] of server.assets ?? []) cpSync(join(pkgDir, from), join(outDir, to), { recursive: true })
   writeFileSync(join(outDir, 'THIRD_PARTY_NOTICES.txt'), thirdPartyNotices(result.metafile.inputs))
   console.log(`[bundle-mcp-servers] ${server.pkg}@${pinned} -> ${join(outDir, 'index.mjs')}`)
 }

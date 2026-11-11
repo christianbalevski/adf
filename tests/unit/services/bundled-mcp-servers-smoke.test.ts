@@ -1,5 +1,5 @@
 // The bundling script's real output, run the way Studio runs it: the Electron
-// binary from node_modules with ELECTRON_RUN_AS_NODE=1, dummy Gmail credential
+// binary from node_modules with ELECTRON_RUN_AS_NODE=1, dummy Google credential
 // files under a throwaway HOME (never a real account). Skipped where the
 // Electron binary was not downloaded.
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
@@ -16,7 +16,7 @@ const electronBin = process.platform === 'win32'
     ? join(root, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
     : join(root, 'node_modules', 'electron', 'dist', 'electron')
 
-describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-Node', () => {
+describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar servers on Electron-as-Node', () => {
   let dir: string
   beforeAll(() => {
     dir = mkdtempSync(join(tmpdir(), 'adf-gmail-bundle-smoke-'))
@@ -158,5 +158,109 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail server on Electron-as-N
         rmSync(join(bin(), 'xdg-open'), { force: true })
       }
     }, 30_000)
+  })
+
+  describe('Google Calendar', () => {
+    const calDir = () => join(dir, 'mcp-servers', 'google-calendar')
+    const KEYS = JSON.stringify({ installed: { client_id: '0-dummy.apps.googleusercontent.com', client_secret: 'dummy', redirect_uris: ['http://localhost'] } })
+    const home = () => join(dir, 'calendar-home')
+    const keys = () => join(home(), '.config', 'google-calendar-mcp', 'gcp-oauth.keys.json')
+    beforeAll(() => {
+      mkdirSync(join(home(), '.config', 'google-calendar-mcp'), { recursive: true })
+      writeFileSync(keys(), KEYS)
+    })
+    const run = (args: string[], env: Record<string, string>): { child: ChildProcess; output: () => string } => {
+      const child = spawn(electronBin, [join(calDir(), 'index.mjs'), ...args], {
+        env: { HOME: home(), ELECTRON_RUN_AS_NODE: '1', GOOGLE_OAUTH_CREDENTIALS: keys(), ...(process.env.SystemRoot ? { SystemRoot: process.env.SystemRoot } : {}), ...env },
+        stdio: ['pipe', 'pipe', 'pipe'],
+        windowsHide: true,
+      })
+      let output = ''
+      child.stdout!.on('data', (c: Buffer) => { output += c.toString() })
+      child.stderr!.on('data', (c: Buffer) => { output += c.toString() })
+      return { child, output: () => output }
+    }
+    const stop = async (child: ChildProcess) => {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise((r) => child.once('exit', r))
+        child.kill()
+        await exited
+      }
+    }
+    const waitUntil = async (cond: () => boolean, what: string) => {
+      const deadline = Date.now() + 20_000
+      while (!cond()) {
+        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+        await new Promise((r) => setTimeout(r, 50))
+      }
+    }
+
+    it('writes the entry, the files it reads beside itself, and the notices', () => {
+      const code = readFileSync(join(calDir(), 'index.mjs'), 'utf-8')
+      expect(code.slice(0, 1000)).toContain('delete process.env.ELECTRON_RUN_AS_NODE;')
+      // The three patches: callback bound to loopback unless a public
+      // redirect base is set; both package.json reads beside the entry.
+      expect(code).toContain('this.redirectBase?void 0:"127.0.0.1"')
+      expect(code).not.toContain('"..","package.json"')
+      expect(JSON.parse(readFileSync(join(calDir(), 'package.json'), 'utf-8')).version).toBe('2.8.1')
+      for (const page of ['auth-landing.html', 'auth-success.html', 'auth-error.html', 'styles.css']) expect(existsSync(join(calDir(), 'web', page))).toBe(true)
+      const notices = readFileSync(join(calDir(), 'THIRD_PARTY_NOTICES.txt'), 'utf-8')
+      expect(notices).toContain('@cocal/google-calendar-mcp@2.8.1')
+      expect(notices).toContain('googleapis@')
+    })
+
+    it('answers initialize and tools/list over stdio', async () => {
+      const { child, output } = run([], { PATH: process.env.PATH ?? '' })
+      const lines = () => output().split('\n').filter((l) => l.startsWith('{')).map((l) => JSON.parse(l))
+      const send = (m: object) => child.stdin!.write(JSON.stringify({ jsonrpc: '2.0', ...m }) + '\n')
+      try {
+        send({ id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'adf-test', version: '0' } } })
+        await waitUntil(() => lines().some((m) => m.id === 1) || child.exitCode !== null, 'initialize')
+        expect(lines().find((m) => m.id === 1)?.result?.serverInfo, output()).toEqual({ name: 'google-calendar', version: '2.8.1' })
+        send({ method: 'notifications/initialized' })
+        send({ id: 2, method: 'tools/list' })
+        await waitUntil(() => lines().some((m) => m.id === 2) || child.exitCode !== null, 'tools/list')
+        const tools = (lines().find((m) => m.id === 2)?.result?.tools ?? []).map((t: { name: string }) => t.name)
+        expect(tools).toContain('list-events')
+        expect(tools).toContain('create-event')
+      } finally {
+        await stop(child)
+      }
+    }, 60_000)
+
+    // Up to the browser: the URL is handed to xdg-open (a stub that records
+    // it) and the callback server serves its pages on loopback only.
+    it.runIf(process.platform === 'linux')('auth: opens the sign-in URL, serves its pages on 127.0.0.1 only', async () => {
+      const bin = join(dir, 'calendar-bin')
+      const record = join(dir, 'calendar-opener.txt')
+      mkdirSync(bin, { recursive: true })
+      writeFileSync(join(bin, 'xdg-open'), `#!/bin/sh\necho "$1 ELECTRON_RUN_AS_NODE=\${ELECTRON_RUN_AS_NODE-unset}" > '${record}'\n`)
+      chmodSync(join(bin, 'xdg-open'), 0o755)
+      const { child, output } = run(['auth'], { PATH: bin })
+      try {
+        await waitUntil(() => (existsSync(record) && readFileSync(record, 'utf-8').includes('\n')) || child.exitCode !== null, 'the opener')
+        expect(child.exitCode, output()).toBeNull()
+        const [url, runAsNode] = readFileSync(record, 'utf-8').trim().split(' ')
+        expect(runAsNode).toBe('ELECTRON_RUN_AS_NODE=unset')
+        const auth = new URL(url)
+        expect(auth.origin).toBe('https://accounts.google.com')
+        expect(auth.searchParams.get('client_id')).toBe('0-dummy.apps.googleusercontent.com')
+        expect(auth.searchParams.get('redirect_uri')).toBe('http://localhost:3500/oauth2callback')
+        const landing = await fetch('http://127.0.0.1:3500/')
+        expect(landing.status).toBe(200)
+        expect(await landing.text()).toContain('accounts.google.com')
+        const refused = await fetch('http://127.0.0.1:3500/oauth2callback?code=x&state=forged')
+        expect(refused.status).toBe(403)
+        expect(await refused.text()).toContain('Invalid state parameter')
+        // 127.0.0.1:3500 (0DAC) in LISTEN, not every interface.
+        const v4 = readFileSync('/proc/net/tcp', 'utf-8').split('\n').filter((l) => / 0A /.test(l))
+        expect(v4.some((l) => l.includes(' 0100007F:0DAC '))).toBe(true)
+        expect(v4.some((l) => l.includes(' 00000000:0DAC '))).toBe(false)
+        const v6 = existsSync('/proc/net/tcp6') ? readFileSync('/proc/net/tcp6', 'utf-8').split('\n').filter((l) => / 0A /.test(l)) : []
+        expect(v6.some((l) => / [0-9A-F]{32}:0DAC /.test(l))).toBe(false)
+      } finally {
+        await stop(child)
+      }
+    }, 60_000)
   })
 })

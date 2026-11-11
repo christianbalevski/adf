@@ -91,7 +91,7 @@ A minority of curated quick-add servers **prefill Host** because they cannot do 
 - host CLI login state — `netlify`;
 - an in-flow browser sign-in the auth preflight cannot drive yet — `workspace`;
 - host filesystem paths — `filesystem`, `sqlite`, `duckdb`, `git`, `markitdown`, `excel`, `semgrep`, and `google-sheets` (its service-account key is referenced by path);
-- the Settings-side OAuth flow with a credential file you drop into the form — `gmail`, `google-drive`, `google-calendar`, `google-docs`, `teams`. **Connect** stores those files and completes the sign-in only for a host-located server; a containerized server defers both to the moment an agent attaches it, so these stay on the host until Settings can store credential files for containers.
+- the Settings-side OAuth flow with a credential file you drop into the form — `google-drive`, `google-docs`, `teams` — or, for `gmail` and `google-calendar`, the build's built-in Google OAuth client when it ships one and you choose no file. **Connect** stores those files and completes the sign-in only for a host-located server; a containerized server defers both to the moment an agent attaches it, so these stay on the host until Settings can store credential files for containers.
 
 Everything else in the registry — the browser MCPs included, whose managed Chromium lives in the agent's own container — installs containerized. In the registry document this is the entry's `runLocation` field; absent means container.
 
@@ -271,7 +271,7 @@ The agent calls `mcp_install` with the `auth` and `auth_args` parameters:
 | `auth_port` | Host loopback port to forward into the container for the OAuth callback. Usually unnecessary — the port is auto-detected from the auth URL's `redirect_uri`; set it only for servers whose redirect port never appears in the printed URL |
 | `credential_files` | File-shaped credentials (OAuth client keys, token stores): `[{ path, required?, write_back?, content? }]`. Content is sealed into the agent identity keystore, **materialized** into the server's filesystem before every spawn, and token files are **captured back** after a successful auth — so grants survive container rebuilds and move with the `.adf` |
 
-> **Gotcha — `env` values are verbatim.** `~` expands in `credential_files` *paths*, but `env` *values* reach the server process untouched. A server env var pointing at a credential file (e.g. `GOOGLE_OAUTH_CREDENTIALS`) must therefore use the same **absolute** runtime path as its `credential_files` declaration — a `~/...` env value ends up as a literal `~` directory under the server's working directory.
+> **`~/` in `env` values.** A leading `~/` in an env value is expanded against the server's HOME at spawn and auth preflight: its own home folder when it declares credential files, the container home in a container. Point a variable at a declared credential file with the same `~/` path as its `credential_files` entry. `~user/...`, a bare `~` and other values are passed unchanged.
 
 ### Re-running `mcp_install` on an installed server
 

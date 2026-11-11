@@ -243,8 +243,9 @@ jobs:
       - name: Build
         run: npm run build
 
-      # The Gmail MCP server Studio ships: bundled, then run on this OS's
-      # Electron binary in Node mode (the other test jobs have no Electron).
+      # The Gmail and Google Calendar MCP servers Studio ships: bundled, then run
+      # on this OS's Electron binary in Node mode (the other test jobs have no
+      # Electron).
       - name: Bundled MCP server on Electron-as-Node
         run: npx vitest run tests/unit/services/bundled-mcp-servers-smoke.test.ts --reporter=verbose
 

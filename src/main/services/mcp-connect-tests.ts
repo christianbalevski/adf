@@ -22,7 +22,7 @@ import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
 import { mcpHostHomeEnv, mcpServerHostHome, removeMcpServerHome } from './mcp-server-home'
 import { inheritableEnv } from '../utils/child-env'
-import { writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { writeBundledClientIfAbsent } from './google-bundled-client'
 import { resolveBundledMcpSpawn } from './bundled-mcp-servers'
 import { buildOAuthProviderFactory } from './mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from './mcp-http-oauth'
@@ -317,7 +317,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
       // persist (write-if-absent: never clobber existing credentials).
       // Paths are ~-confined by expandCredentialPath.
       const hostTarget = { kind: 'host' as const, home: mcpServerHostHome(serverCfg, { kind: 'app' }) }
-      Object.assign(env, mcpHostHomeEnv(serverCfg, { kind: 'app' }, { ...inheritableEnv(), ...env }))
+      Object.assign(env, mcpHostHomeEnv({ ...serverCfg, env }, { kind: 'app' }, { ...inheritableEnv(), ...env }))
       for (const f of credentialFiles ?? []) {
         const dest = expandCredentialPath(f.path, hostTarget)
         if (existsSync(dest)) { notes.push(`${f.path} already exists — kept the existing file.`); continue }
@@ -329,7 +329,7 @@ export async function runMcpRegistrationTest(rawArgs: unknown, deps: McpRegistra
         writeFileSync(dest, content, { mode: 0o600 })
         notes.push(`Wrote ${f.path}.`)
       }
-      // A declared file this build ships (the Gmail server's built-in OAuth
+      // A declared file this build ships (the Google servers' built-in OAuth
       // client), when none was chosen and the host has none: same
       // write-if-absent rule, so a chosen or existing client always wins.
       for (const f of reg.credentialFiles ?? []) {

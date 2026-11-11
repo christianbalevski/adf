@@ -3,14 +3,14 @@ import { readFileSync } from 'node:fs'
 import { build, defineConfig, externalizeDepsPlugin, type UserConfig } from 'electron-vite'
 import { normalizePath, type Plugin } from 'vite'
 import react from '@vitejs/plugin-react'
-import { GMAIL_OAUTH_CLIENT_ENV, parseGmailOAuthClientJson } from './src/shared/utils/gmail-oauth-client'
+import { GMAIL_OAUTH_CLIENT_ENV, parseGmailOAuthClientJson } from './src/shared/utils/google-oauth-client'
 
 const pkg = JSON.parse(readFileSync(resolve(__dirname, 'package.json'), 'utf-8')) as { version: string }
 
-// The Gmail catalog server's built-in Desktop OAuth client
-// (src/shared/utils/gmail-oauth-client.ts). Release builds get the JSON from
-// the ADF_GMAIL_OAUTH_CLIENT_JSON secret; without it the constant is
-// undefined and Gmail keeps asking for the user's own client file. A
+// The built-in Desktop OAuth client of the Google catalog servers, Gmail and
+// Google Calendar (src/shared/utils/google-oauth-client.ts). Release builds get
+// the JSON from the ADF_GMAIL_OAUTH_CLIENT_JSON secret; without it the constant
+// is undefined and both keep asking for the user's own client file. A
 // malformed value fails the build (the message never includes the value).
 // Studio main and the daemon both get it, so either backend can fill the file.
 const gmailOAuthClient = parseGmailOAuthClientJson(process.env[GMAIL_OAUTH_CLIENT_ENV])

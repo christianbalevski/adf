@@ -1128,7 +1128,8 @@
       "npmPackage": "@cocal/google-calendar-mcp",
       "description": "Read, create, and manage Google Calendar events",
       "category": "productivity",
-      "requiredEnvKeys": [
+      "requiredEnvKeys": [],
+      "optionalEnvKeys": [
         "GOOGLE_OAUTH_CREDENTIALS"
       ],
       "repo": "https://github.com/nspady/google-calendar-mcp",
@@ -1147,7 +1148,7 @@
           "path": "~/.config/google-calendar-mcp/tokens.json"
         }
       ],
-      "prerequisite": "Needs a Google OAuth client JSON (Desktop app) with the Calendar API enabled. GOOGLE_OAUTH_CREDENTIALS is the key file PATH (e.g. ~/.config/google-calendar-mcp/gcp-oauth.keys.json), not a token."
+      "prerequisite": "Needs a Google OAuth client JSON (Desktop app) from console.cloud.google.com with the Google Calendar API enabled, unless your ADF Studio build includes a built-in client. ADF Studio sets GOOGLE_OAUTH_CREDENTIALS to the client file itself; leave it empty. Earlier ADF Studio versions need it set to the file's absolute path."
     },
     {
       "name": "google-docs",

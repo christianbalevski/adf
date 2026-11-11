@@ -6,18 +6,17 @@
  * holds in Studio main, in the daemon Studio spawns (itself Studio's
  * executable in Node mode) and in the background agent manager.
  *
- * Today only the Gmail catalog server, at the exact version package.json
- * pins. Anything else, or a config whose executable identity was edited
- * (command, args, package, a different version), keeps the npm/npx path; so
- * does every process without the bundled file (dev trees, the npm-distributed
- * daemon on plain Node, tests). Containers are unaffected: they never resolve
- * through here (container-command-resolver.ts).
+ * Today the Gmail and Google Calendar catalog servers, at the exact versions
+ * package.json pins. Anything else, or a config whose executable identity
+ * was edited (command, args, package, a different version), keeps the
+ * npm/npx path; so does every process without the bundled file (dev trees,
+ * the npm-distributed daemon on plain Node, tests). Containers are
+ * unaffected: they never resolve through here (container-command-resolver.ts).
  */
 
 import { existsSync } from 'fs'
 import { isAbsolute, join, resolve } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
-import { GMAIL_BUNDLED_CLIENT_NPM_PACKAGE } from '../../shared/utils/gmail-oauth-client'
 import { bundledMcpServerForShape } from '../../shared/utils/bundled-mcp-shape'
 import { filterBlockedEnv } from '../utils/child-env'
 
@@ -30,7 +29,8 @@ export interface BundledMcpServer {
 }
 
 export const BUNDLED_MCP_SERVERS: readonly BundledMcpServer[] = [
-  { npmPackage: GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, version: '1.1.11', dir: 'gmail' },
+  { npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', version: '1.1.11', dir: 'gmail' },
+  { npmPackage: '@cocal/google-calendar-mcp', version: '2.8.1', dir: 'google-calendar' },
 ]
 
 /** The process facts resolution depends on (the live process by default). */
