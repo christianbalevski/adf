@@ -56,11 +56,6 @@ export const DEFAULT_COMPUTE_SETTINGS = {
   executionTargets: [] as unknown[],
 }
 
-/** Smallest per-container memory cap; 0 (no cap) is the only value below it. */
-export const MIN_CONTAINER_MEMORY_MB = 512
-/** Largest per-container memory cap. */
-export const MAX_CONTAINER_MEMORY_MB = 32768
-
 /** A deep, independently mutable copy of the compute defaults. */
 export function cloneComputeDefaults(): Record<string, unknown> {
   return JSON.parse(JSON.stringify(DEFAULT_COMPUTE_SETTINGS)) as Record<string, unknown>
@@ -69,17 +64,14 @@ export function cloneComputeDefaults(): Record<string, unknown> {
 /** The compute settings Podman uses, from an untyped store: a missing or wrong-typed key gets its default. */
 export function readComputeSettings(raw: unknown) {
   const compute = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-  const number = (key: 'machineCpus' | 'machineMemoryMb' | 'containerMemoryMb'): number => {
-    const value = compute[key]
-    return typeof value === 'number' ? value : DEFAULT_COMPUTE_SETTINGS[key]
-  }
   return {
     containerPackages: Array.isArray(compute.containerPackages)
       ? compute.containerPackages.filter((pkg): pkg is string => typeof pkg === 'string')
       : DEFAULT_COMPUTE_SETTINGS.containerPackages,
-    machineCpus: number('machineCpus'),
-    machineMemoryMb: number('machineMemoryMb'),
-    containerMemoryMb: number('containerMemoryMb'),
+    machineCpus: typeof compute.machineCpus === 'number' ? compute.machineCpus : DEFAULT_COMPUTE_SETTINGS.machineCpus,
+    machineMemoryMb: typeof compute.machineMemoryMb === 'number' ? compute.machineMemoryMb : DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
+    // Not type-checked here: the service warns about a value it cannot use.
+    containerMemoryMb: (compute.containerMemoryMb ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb) as number,
     containerImage: typeof compute.containerImage === 'string' ? compute.containerImage : DEFAULT_COMPUTE_SETTINGS.containerImage,
   }
 }

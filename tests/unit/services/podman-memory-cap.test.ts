@@ -33,6 +33,7 @@ const LIFT_ARGS = ['--memory', '4611686018427387904', '--memory-swap', '92233720
 const computeUsers = {
   claim: async () => {},
   release: async () => {},
+  own: () => [],
   others: async () => ({ claims: new Map(), unreadable: [] }),
 } as unknown as ComputeUsers
 
@@ -68,12 +69,16 @@ describe('containerMemoryArgs', () => {
     expect(containerMemoryArgs({ containerMemoryMb: 0 })).toEqual([])
   })
 
-  it.each([[1, '512m'], [511, '512m'], [512, '512m'], [32768, '32768m'], [32769, '32768m'], [Number.MAX_SAFE_INTEGER, '32768m']])('clamps %s to %s', (value, limit) => {
+  it.each([[1, '1m'], [100, '100m'], [512, '512m'], [32769, '32769m'], [99999, '99999m']])('passes %s through as %s, with no warning', (value, limit) => {
     expect(containerMemoryArgs({ containerMemoryMb: value })).toEqual(['--memory', limit, '--memory-swap', limit])
+    expect(warnings).toEqual([])
   })
 
-  it.each([[-1], [1.5], [NaN], [Infinity], ['abc'], ['0'], ['2048'], [undefined], [null]])('falls back to the default for %s', (value) => {
+  it.each([[-1], [1.5], ['abc'], ['0'], ['2048'], [true], [null]])('gets the default for %j and warns once, naming both values', (value) => {
     expect(containerMemoryArgs({ containerMemoryMb: value as never })).toEqual(CAP_ARGS)
+    expect(warnings).toHaveLength(1)
+    expect(warnings[0]).toContain(JSON.stringify(value))
+    expect(warnings[0]).toContain('4096')
   })
 })
 
@@ -87,8 +92,13 @@ describe('containerMemoryUpdateArgs', () => {
     expect(containerMemoryUpdateArgs(4096 * MIB, { containerMemoryMb: 4096 })).toBeNull()
   })
 
-  it('compares with the clamped value', () => {
-    expect(containerMemoryUpdateArgs(32768 * MIB, { containerMemoryMb: 40000 })).toBeNull()
+  it('compares with the value as entered', () => {
+    expect(containerMemoryUpdateArgs(40000 * MIB, { containerMemoryMb: 40000 })).toBeNull()
+  })
+
+  it('warns once for an unusable value', () => {
+    expect(containerMemoryUpdateArgs(0, { containerMemoryMb: 1.5 })).toEqual(CAP_ARGS)
+    expect(warnings).toHaveLength(1)
   })
 
   it('lifts an existing limit for 0 with sizes podman accepts', () => {
@@ -143,7 +153,7 @@ describe('new containers', () => {
     expect(calls(fake, 'run')[0]).not.toContain('--memory-swap')
   })
 
-  it.each([[16385, '16385m'], [40000, '32768m'], [100, '512m']])('runs with a setting of %s as %s, never the default', async (value, limit) => {
+  it.each([[16385, '16385m'], [40000, '40000m'], [100, '100m']])('runs with a setting of %s as %s', async (value, limit) => {
     const { service, fake } = setup(value)
     await service.ensureRunning()
     expect(calls(fake, 'run')[0]).toContain(limit)
@@ -346,7 +356,7 @@ describe('shared container already brought up this session', () => {
     const { service, fake } = setup()
     fake.add({ name: SHARED, memoryBytes: 4096 * MIB })
     await service.ensureRunning()
-    ;(service as unknown as { _sharedRunning: unknown })._sharedRunning = null
+    await service.stop()
     fake.add({ name: SHARED })
     fake.failUpdate = true
     await service.ensureRunning()
@@ -378,8 +388,50 @@ describe('memory controller check', () => {
     const { service, fake } = setup(4096, noMemory)
     fake.add({ name: SHARED })
     await service.ensureRunning()
-    expect(memoryInspects(fake)).toEqual([])
     expect(updateCalls(fake)).toEqual([])
+  })
+
+  it.each([[['cpu', 'pids']], [null]])('runs a one-shot uncapped for controllers %j', async (controllers) => {
+    const { service } = setup(4096, controllers)
+    await service.spawnImageProcess('img:1', 'node', [])
+    expect(spawnMock.mock.calls[0][1]).not.toContain('--memory')
+  })
+
+  describe('a probe whose spawn throws', () => {
+    const throwingProbe = (service: PodmanService, fake: FakePodman) => {
+      const answer = fake.exec0
+      const realExec0 = (PodmanService.prototype as unknown as { exec0: FakePodman['exec0'] }).exec0
+      execFileMock.mockImplementation(() => { throw Object.assign(new Error('spawn E2BIG'), { code: 'E2BIG' }) })
+      ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) =>
+        args[2] === '{{.Host.CgroupControllers}}' ? realExec0.call(service, bin, args) : answer(bin, args)
+    }
+
+    it('still creates the container, uncapped', async () => {
+      const { service, fake } = setup()
+      throwingProbe(service, fake)
+      await expect(service.ensureRunning()).resolves.toBeUndefined()
+      expect(calls(fake, 'run')[0]).not.toContain('--memory')
+    })
+
+    it('still starts a one-shot, uncapped', async () => {
+      const { service, fake } = setup()
+      throwingProbe(service, fake)
+      await service.spawnImageProcess('img:1', 'node', [])
+      expect(spawnMock.mock.calls[0][1]).not.toContain('--memory')
+    })
+  })
+
+  it('does not probe a container already in line', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: SHARED, memoryBytes: 4096 * MIB })
+    await service.ensureRunning()
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toEqual([])
+  })
+
+  it('probes once when creating a container', async () => {
+    const { service, fake } = setup()
+    await service.ensureRunning()
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
   })
 
   it('treats a failed probe as no cap', async () => {
@@ -397,6 +449,182 @@ describe('memory controller check', () => {
     fake.controllers = ['memory']
     await service.startContainer('adf-agent-1')
     expect(updateCalls(fake)).toEqual([['update', ...CAP_ARGS, 'adf-agent-1']])
+  })
+})
+
+describe('one memory sync rule per container', () => {
+  const NAME = 'adf-agent-1'
+  const exec = (service: PodmanService, name = NAME) => service.execInContainer(name, '/workspace', 'true')
+  const execs = (fake: FakePodman) => calls(fake, 'exec').filter((a) => a[1] === '-w')
+
+  it('retries a failed apply before the next exec, then stops', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME, running: false })
+    fake.failUpdate = true
+    await service.startContainer(NAME)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBeUndefined()
+    fake.failUpdate = false
+    await exec(service)
+    await exec(service)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
+    expect(updateCalls(fake)).toHaveLength(2)
+    expect(execs(fake)).toHaveLength(2)
+  })
+
+  it('applies a settings change on the next exec of a container in line', async () => {
+    const { service, fake, settings } = setup()
+    fake.add({ name: NAME, running: false })
+    await service.startContainer(NAME)
+    settings.containerMemoryMb = 2048
+    await exec(service)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(2048 * MIB)
+  })
+
+  it('an exec of a container in line makes no other podman call', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME, running: false })
+    await service.startContainer(NAME)
+    fake.calls.length = 0
+    await exec(service)
+    expect(fake.calls).toHaveLength(1)
+    expect(fake.calls[0][0]).toBe('exec')
+  })
+
+  it('a stop forgets the record, so the next start checks again', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME, running: false })
+    await service.startContainer(NAME)
+    await service.stopContainer(NAME)
+    fake.containers.get(NAME)!.memoryBytes = undefined
+    await service.startContainer(NAME)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('a Settings start checks again after a stop outside this service', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME, running: false })
+    await service.startContainer(NAME)
+    Object.assign(fake.containers.get(NAME)!, { running: false, memoryBytes: undefined })
+    await service.startContainer(NAME)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('a dead-container exec forgets the record', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME, running: false })
+    await service.startContainer(NAME)
+    fake.containers.get(NAME)!.running = false
+    await exec(service)
+    Object.assign(fake.containers.get(NAME)!, { running: true, memoryBytes: undefined })
+    await exec(service)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('a restart in a bring-up checks again', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: SHARED })
+    await service.ensureRunning()
+    ;(service as unknown as { _sharedRunning: unknown })._sharedRunning = null
+    Object.assign(fake.containers.get(SHARED)!, { running: false, memoryBytes: undefined })
+    await service.ensureRunning()
+    expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('a create after the container vanished checks again', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: SHARED })
+    await service.ensureRunning()
+    ;(service as unknown as { _sharedRunning: unknown })._sharedRunning = null
+    fake.containers.delete(SHARED)
+    fake.controllers = undefined // the create's probe fails, so it runs uncapped
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args[0] === 'run') fake.controllers = ['memory']
+      return answer(bin, args)
+    }
+    await service.ensureRunning()
+    expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('overlapping calls after a change share one update', async () => {
+    const { service, fake, settings } = setup()
+    fake.add({ name: SHARED, memoryBytes: 4096 * MIB })
+    await service.ensureRunning()
+    settings.containerMemoryMb = 2048
+    await Promise.all([service.ensureRunning(), service.ensureRunning(), exec(service, SHARED), exec(service, SHARED)])
+    expect(updateCalls(fake)).toHaveLength(1)
+  })
+
+  it('a call during the bring-up waits for it', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: SHARED, memoryBytes: 4096 * MIB })
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args.join(' ').includes('State.Running')) await gate
+      return answer(bin, args)
+    }
+    const first = service.ensureRunning()
+    let secondDone = false
+    const second = service.ensureRunning().then(() => { secondDone = true })
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    expect(secondDone).toBe(false)
+    release()
+    await Promise.all([first, second])
+    expect(secondDone).toBe(true)
+  })
+
+  it('a failing apply tries once per use', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME, running: false })
+    fake.failUpdate = true
+    await service.startContainer(NAME)
+    await exec(service)
+    await exec(service)
+    expect(updateCalls(fake)).toHaveLength(3)
+  })
+})
+
+describe('the apply runs after a container is reported up', () => {
+  const atUpdate = (service: PodmanService, fake: FakePodman, read: () => void) => {
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args[0] === 'update') read()
+      return answer(bin, args)
+    }
+  }
+
+  it('shared: status is already running', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: SHARED })
+    let status = ''
+    atUpdate(service, fake, () => { status = service.getStatus().status })
+    await service.ensureRunning()
+    expect(status).toBe('running')
+  })
+
+  it('Settings start: phase is already ready', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: 'adf-agent-1', running: false })
+    let phase = ''
+    atUpdate(service, fake, () => { phase = (service as unknown as { _phases: Map<string, { phase: string }> })._phases.get('adf-agent-1')?.phase ?? '' })
+    await service.startContainer('adf-agent-1')
+    expect(phase).toBe('ready')
+  })
+
+  it('per-agent: pip packages are already installed', async () => {
+    const { service, fake } = setup(4096, null)
+    let pipRan = false
+    let pipBeforeUpdate = false
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args.includes('pip')) pipRan = true
+      if (args[0] === 'info' && args[2].includes('CgroupControllers') && fake.calls.some((a) => a[0] === 'run')) pipBeforeUpdate = pipRan
+      return answer(bin, args)
+    }
+    await service.ensureIsolatedRunning('agent', '0b6a3c58-1111-4a40-9c55-3f0e0c3d1111', ['x'], undefined, false)
+    expect(pipBeforeUpdate).toBe(true)
   })
 })
 
@@ -422,7 +650,16 @@ describe('compute settings reader', () => {
     expect(readComputeSettings(saved)).toEqual(saved)
   })
 
-  it.each([[undefined], [null], ['x'], [{}], [{ containerPackages: 'git', machineCpus: '4', machineMemoryMb: false, containerMemoryMb: '0', containerImage: 0 }]])('falls back to the defaults for %j', (raw) => {
+  it('leaves judging containerMemoryMb to the service, which warns', async () => {
+    expect(readComputeSettings({ containerMemoryMb: 'abc' }).containerMemoryMb).toBe('abc')
+    const { service, fake } = setup()
+    service.setSettingsAccessor(() => readComputeSettings({ containerMemoryMb: 'abc' }))
+    await service.ensureRunning()
+    expect(calls(fake, 'run')[0]).toContain('4096m')
+    expect(warnings.filter((w) => w.includes('containerMemoryMb') && w.includes('"abc"')).length).toBeGreaterThan(0)
+  })
+
+  it.each([[undefined], [null], ['x'], [{}], [{ containerPackages: 'git', machineCpus: '4', machineMemoryMb: false, containerMemoryMb: null, containerImage: 0 }]])('falls back to the defaults for %j', (raw) => {
     const { containerPackages, machineCpus, machineMemoryMb, containerMemoryMb, containerImage } = DEFAULT_COMPUTE_SETTINGS
     expect(readComputeSettings(raw)).toEqual({ containerPackages, machineCpus, machineMemoryMb, containerMemoryMb, containerImage })
   })

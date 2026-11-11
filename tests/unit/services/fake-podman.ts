@@ -110,7 +110,10 @@ export class FakePodman {
       return ok(c.name)
     }
     if (cmd === 'machine' && rest[0] === 'list') return ok('true')
-    if (cmd === 'exec') return this.containers.get(rest[0])?.running ? ok('') : fail(`container state improper: ${rest[0]} is not running`)
+    if (cmd === 'exec') {
+      const name = rest[0] === '-w' ? rest[2] : rest[0]
+      return this.containers.get(name)?.running ? ok('') : fail(`container state improper: ${name} is not running`)
+    }
     return fail(`fake podman: unsupported command: ${args.join(' ')}`)
   }
 }

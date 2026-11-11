@@ -2365,7 +2365,7 @@ function ComputeTab({
     <SettingsGroup
       title="Default container"
       description="Applies to new containers and rebuilds."
-      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows; on Linux, containers use this computer's resources."
+      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows."
     >
       <SettingsRow label="Image">
         <CommitInput
@@ -2410,8 +2410,8 @@ function ComputeTab({
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title="Container memory" description="Applies when a container is created, started or reused.">
-      <SettingsRow label={<>Limit<InfoHint tip="In megabytes, for each container. 0 means no limit. Existing containers get this limit too. A process that goes over the limit is killed. This can happen later, when the process reads memory that was in swap. There is no notice." /></>}>
+    <SettingsGroup title="Container memory">
+      <SettingsRow label={<>Limit<InfoHint tip="Megabytes per container; 0 means no limit." /></>}>
         <CommitInput
           aria-label="Limit"
           inputMode="numeric"
