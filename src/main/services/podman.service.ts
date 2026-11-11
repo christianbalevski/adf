@@ -19,7 +19,7 @@ import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
 import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
-import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { DEFAULT_COMPUTE_SETTINGS, type readComputeSettings } from '../../shared/constants/compute-defaults'
 import { killedByTimeout } from '../utils/exec-timeout'
 
 // ---------------------------------------------------------------------------
@@ -412,8 +412,9 @@ cdp_up() { wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/j
 # (--disable-session-crashed-bubble no longer does anything.)
 # --no-sandbox: Chromium runs as root here and won't start as root with its
 # sandbox on. The sandbox would guard nothing: the agent already controls the
-# container as root, and the container is the boundary for everything except
-# the npm cache shared by all managed containers. --test-type drops the
+# container as root, and the container is the boundary for files and processes,
+# except the shared npm cache; it does not contain network access or the noVNC
+# page Studio displays. --test-type drops the
 # "unsupported command-line flag" bar that would say otherwise.
 # --enable-unsafe-swiftshader: no GPU here, and without it WebGL is unavailable and pages fall back to paths that can
 # misbehave. It renders on the CPU; "unsafe" because page shaders run through SwiftShader. With --no-sandbox, a page that
@@ -687,13 +688,7 @@ export function containerAgentHome(isolated: boolean, agentId: string): string {
   return `${containerWorkspacePath(isolated, agentId)}/home`
 }
 
-export interface ComputeEnvSettings {
-  containerPackages: string[]
-  machineCpus: number
-  machineMemoryMb: number
-  containerMemoryMb: number
-  containerImage: string
-}
+export type ComputeEnvSettings = ReturnType<typeof readComputeSettings>
 
 // ---------------------------------------------------------------------------
 // Service
@@ -778,7 +773,7 @@ const LIFTED_MEMORY_SWAP = '9223372036854771712' // 2^63 - one page
 
 /** The cap in MB, 0 for none: a whole number as entered, anything else the default. */
 function containerMemoryLimitMb(value: number): number {
-  if (Number.isInteger(value) && value >= 0) return value
+  if (Number.isSafeInteger(value) && value >= 0) return value
   console.warn(`[Compute] containerMemoryMb ${JSON.stringify(value)} is not a whole number; using ${DEFAULT_SETTINGS.containerMemoryMb} MB`)
   return DEFAULT_SETTINGS.containerMemoryMb
 }
@@ -907,6 +902,8 @@ export class PodmanService extends EventEmitter {
   private _sharedRunningSettled = false
   /** Per container, this run: the memory setting being applied, or in line. */
   private _memorySyncs = new Map<string, { setting: number; done: Promise<void> }>()
+  /** Only a positive probe is remembered, so a failed or negative one is asked again. */
+  private _memoryController = false
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */
   private _shuttingDown = false
@@ -1238,9 +1235,12 @@ export class PodmanService extends EventEmitter {
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
       await this.applyPeerFirewall(bin, name)
-      await this.ensurePipPackages(bin, name, pipPackages)
-      console.log(`[Compute] Isolated container ${name} ready`)
-      await this.syncMemoryLimit(name)
+      try {
+        await this.ensurePipPackages(bin, name, pipPackages)
+        console.log(`[Compute] Isolated container ${name} ready`)
+      } finally {
+        await this.syncMemoryLimit(name)
+      }
     })().finally(() => {
       this._pendingCreates.delete(name)
     })
@@ -1677,6 +1677,7 @@ export class PodmanService extends EventEmitter {
   ): Promise<ComputeSetupResult> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
+    this._memoryController = false
 
     const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
       const cwd = await podmanCwd(cmdArgs)
@@ -2111,12 +2112,13 @@ export class PodmanService extends EventEmitter {
   /** Whether Podman can apply a memory limit; null when it could not say.
    *  exec0 rejects when spawn throws instead of reporting (E2BIG, ENOMEM). */
   private async hasMemoryController(bin: string): Promise<boolean | null> {
+    if (this._memoryController) return true
     const info = await this.exec0(bin, ['info', '--format', '{{.Host.CgroupControllers}}'], 15_000).catch(() => null)
     if (info?.code !== 0) {
       console.warn('[Compute] Could not read podman info; applying no container memory cap for now')
       return null
     }
-    if (/\bmemory\b/.test(info.stdout)) return true
+    if (/\bmemory\b/.test(info.stdout)) return this._memoryController = true
     console.warn('[Compute] The cgroup memory controller is not available to Podman; containers run without a memory cap')
     return false
   }
@@ -2126,8 +2128,7 @@ export class PodmanService extends EventEmitter {
    *  memory controller there is nothing to bring in line. */
   private async applyContainerMemoryLimit(containerName: string): Promise<boolean> {
     try {
-      const bin = await this.findPodman()
-      if (!bin) return false
+      const bin = await this.requirePodman()
       const current = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.HostConfig.Memory}}'])
       const text = current.stdout.trim()
       if (current.code !== 0 || !/^\d+$/.test(text)) throw new Error('its current limit is unreadable')
@@ -2145,13 +2146,13 @@ export class PodmanService extends EventEmitter {
   }
 
   /** The one rule for every container in use: in line is a Map lookup; otherwise
-   *  apply once, shared by overlapping callers, and forget a failure so the next
-   *  use retries. */
+   *  apply once, shared by overlapping callers and after any earlier apply, and
+   *  forget a failure so the next use retries. */
   private syncMemoryLimit(name: string): Promise<void> {
     const setting = this._getSettings().containerMemoryMb
     const known = this._memorySyncs.get(name)
     if (known?.setting === setting) return known.done
-    const done = this.applyContainerMemoryLimit(name).then((inLine) => {
+    const done = (known?.done ?? Promise.resolve()).then(() => this.applyContainerMemoryLimit(name)).then((inLine) => {
       if (!inLine && this._memorySyncs.get(name)?.setting === setting) this._memorySyncs.delete(name)
     })
     this._memorySyncs.set(name, { setting, done })

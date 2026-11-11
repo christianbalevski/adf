@@ -20,6 +20,7 @@ import {
   PodmanService,
   containerMemoryArgs,
   containerMemoryUpdateArgs,
+  isolatedContainerName,
 } from '../../../src/main/services/podman.service'
 import type { ComputeUsers } from '../../../src/main/services/compute-users'
 import { DEFAULT_COMPUTE_SETTINGS, readComputeSettings } from '../../../src/shared/constants/compute-defaults'
@@ -27,6 +28,8 @@ import { FakePodman, installFakePodman } from './fake-podman'
 
 const MIB = 1024 * 1024
 const SHARED = 'adf-mcp'
+const AGENT_ID = '0b6a3c58-1111-4a40-9c55-3f0e0c3d1111'
+const AGENT = isolatedContainerName('agent', AGENT_ID)
 const CAP_ARGS = ['--memory', '4096m', '--memory-swap', '4096m']
 const LIFT_ARGS = ['--memory', '4611686018427387904', '--memory-swap', '9223372036854771712']
 
@@ -74,7 +77,7 @@ describe('containerMemoryArgs', () => {
     expect(warnings).toEqual([])
   })
 
-  it.each([[-1], [1.5], ['abc'], ['0'], ['2048'], [true], [null]])('gets the default for %j and warns once, naming both values', (value) => {
+  it.each([[-1], [1.5], [1e21], ['abc'], ['0'], ['2048'], [true], [null]])('gets the default for %j and warns once, naming both values', (value) => {
     expect(containerMemoryArgs({ containerMemoryMb: value as never })).toEqual(CAP_ARGS)
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain(JSON.stringify(value))
@@ -267,32 +270,47 @@ describe('existing containers', () => {
   })
 })
 
+// Each path starts a stopped container; `reported` says the path has told the world it is up.
+const BRING_UPS: [string, string, (s: PodmanService) => Promise<unknown>, (s: PodmanService, f: FakePodman, phases: string[]) => boolean][] = [
+  ['shared', SHARED, (s) => s.ensureRunning(), (s) => s.getStatus().status === 'running'],
+  ['per-agent', AGENT, (s) => s.ensureIsolatedRunning('agent', AGENT_ID, ['x'], undefined, false), (_s, f) => f.calls.some((a) => a.includes('pip'))],
+  ['Settings start', 'adf-agent-1', (s) => s.startContainer('adf-agent-1'), (_s, _f, phases) => phases.includes('ready')],
+]
+
 describe('order at bring-up', () => {
-  const firewallThenMemory = (fake: FakePodman) => {
+  it.each(BRING_UPS)('%s: loads the firewall before the memory step', async (_path, name, bringUp) => {
+    const { service, fake } = setup()
+    fake.add({ name, running: false })
+    await bringUp(service)
     const lines = fake.calls.map((a) => a.join(' '))
     const firewall = lines.findIndex((l) => l.startsWith('inspect') && l.includes('io.adf.peer'))
     expect(firewall).toBeGreaterThan(-1)
     expect(lines.findIndex((l) => l.includes('HostConfig.Memory'))).toBeGreaterThan(firewall)
-  }
-
-  it('loads the firewall before the memory step in the shared bring-up', async () => {
-    const { service, fake } = setup()
-    fake.add({ name: SHARED })
-    await service.ensureRunning()
-    firewallThenMemory(fake)
   })
 
-  it('loads the firewall before the memory step in a per-agent bring-up', async () => {
+  it.each(BRING_UPS)('%s: applies the limit after the container is reported up', async (_path, name, bringUp, reported) => {
     const { service, fake } = setup()
-    await service.ensureIsolatedRunning('agent', '0b6a3c58-1111-4a40-9c55-3f0e0c3d1111', [], undefined, false)
-    firewallThenMemory(fake)
+    fake.add({ name, running: false })
+    const phases: string[] = []
+    service.on('container-phase', (e: { phase: string }) => phases.push(e.phase))
+    let reportedAtUpdate = false
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args[0] === 'update') reportedAtUpdate = reported(service, fake, phases)
+      return answer(bin, args)
+    }
+    await bringUp(service)
+    expect(reportedAtUpdate).toBe(true)
   })
 
-  it('loads the firewall before the memory step in the Settings start action', async () => {
+  it('a failed pip install still applies the limit, and still fails the bring-up', async () => {
     const { service, fake } = setup()
-    fake.add({ name: 'adf-agent-1', running: false })
-    await service.startContainer('adf-agent-1')
-    firewallThenMemory(fake)
+    fake.add({ name: AGENT })
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) =>
+      args.includes('pip') ? { stdout: '', stderr: 'pip boom', code: 1 } : answer(bin, args)
+    await expect(service.ensureIsolatedRunning('agent', AGENT_ID, ['x'], undefined, false)).rejects.toThrow(/pip boom/)
+    expect(fake.containers.get(AGENT)?.memoryBytes).toBe(4096 * MIB)
   })
 })
 
@@ -434,21 +452,30 @@ describe('memory controller check', () => {
     expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
   })
 
-  it('treats a failed probe as no cap', async () => {
-    const { service, fake } = setup(4096, null)
-    await service.ensureRunning()
-    expect(calls(fake, 'run')).toHaveLength(1)
-    expect(calls(fake, 'run')[0]).not.toContain('--memory')
+  it('remembers a positive probe', async () => {
+    const { service, fake } = setup()
+    await service.spawnImageProcess('img:1', 'node', [])
+    await service.spawnImageProcess('img:1', 'node', [])
+    await service.spawnImageProcess('img:1', 'node', [])
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
   })
 
-  it('tries again after a failed probe', async () => {
-    const { service, fake } = setup(4096, null)
-    fake.add({ name: 'adf-agent-1', running: false })
-    await service.startContainer('adf-agent-1')
-    expect(updateCalls(fake)).toEqual([])
-    fake.controllers = ['memory']
-    await service.startContainer('adf-agent-1')
-    expect(updateCalls(fake)).toEqual([['update', ...CAP_ARGS, 'adf-agent-1']])
+  it.each([[['cpu', 'pids']], [null]])('does not remember a probe answering %j', async (controllers) => {
+    const { service, fake } = setup(4096, controllers)
+    await service.spawnImageProcess('img:1', 'node', [])
+    await service.spawnImageProcess('img:1', 'node', [])
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(2)
+  })
+
+  it('probes again after the setup wizard changes the machine', async () => {
+    const { service, fake } = setup()
+    availabilityMock.mockResolvedValue({ available: true, binPath: '/fake/podman', prerequisites: [], installMethods: [] })
+    execFileMock.mockImplementation((_c: string, _a: string[], _o: unknown, cb: (e: null, o: string, s: string) => void) => cb(null, '', ''))
+    await service.spawnImageProcess('img:1', 'node', [])
+    await service.setup('machine_init')
+    fake.controllers = ['cpu']
+    await service.spawnImageProcess('img:1', 'node', [])
+    expect(spawnMock.mock.calls[1][1]).not.toContain('--memory')
   })
 })
 
@@ -520,30 +547,50 @@ describe('one memory sync rule per container', () => {
     expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
   })
 
+  const bringUpAgent = (service: PodmanService) => service.ensureIsolatedRunning('agent', AGENT_ID, [], undefined, false)
+
   it('a restart in a bring-up checks again', async () => {
     const { service, fake } = setup()
-    fake.add({ name: SHARED })
-    await service.ensureRunning()
-    ;(service as unknown as { _sharedRunning: unknown })._sharedRunning = null
-    Object.assign(fake.containers.get(SHARED)!, { running: false, memoryBytes: undefined })
-    await service.ensureRunning()
-    expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
+    fake.add({ name: AGENT })
+    await bringUpAgent(service)
+    Object.assign(fake.containers.get(AGENT)!, { running: false, memoryBytes: undefined })
+    await bringUpAgent(service)
+    expect(fake.containers.get(AGENT)?.memoryBytes).toBe(4096 * MIB)
   })
 
   it('a create after the container vanished checks again', async () => {
     const { service, fake } = setup()
-    fake.add({ name: SHARED })
-    await service.ensureRunning()
-    ;(service as unknown as { _sharedRunning: unknown })._sharedRunning = null
-    fake.containers.delete(SHARED)
+    fake.add({ name: AGENT, memoryBytes: 4096 * MIB }) // in line, so nothing has probed yet
+    await bringUpAgent(service)
+    fake.containers.delete(AGENT)
     fake.controllers = undefined // the create's probe fails, so it runs uncapped
     const answer = fake.exec0
     ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
       if (args[0] === 'run') fake.controllers = ['memory']
       return answer(bin, args)
     }
-    await service.ensureRunning()
-    expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
+    await bringUpAgent(service)
+    expect(fake.containers.get(AGENT)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('applies run in order, so the latest setting lands last', async () => {
+    const { service, fake, settings } = setup(1024)
+    fake.add({ name: NAME })
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args[0] === 'update' && args.includes('1024m')) await gate
+      return answer(bin, args)
+    }
+    const first = exec(service)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    settings.containerMemoryMb = 2048
+    const second = exec(service)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    release()
+    await Promise.all([first, second])
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(2048 * MIB)
   })
 
   it('overlapping calls after a change share one update', async () => {
@@ -586,48 +633,6 @@ describe('one memory sync rule per container', () => {
   })
 })
 
-describe('the apply runs after a container is reported up', () => {
-  const atUpdate = (service: PodmanService, fake: FakePodman, read: () => void) => {
-    const answer = fake.exec0
-    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
-      if (args[0] === 'update') read()
-      return answer(bin, args)
-    }
-  }
-
-  it('shared: status is already running', async () => {
-    const { service, fake } = setup()
-    fake.add({ name: SHARED })
-    let status = ''
-    atUpdate(service, fake, () => { status = service.getStatus().status })
-    await service.ensureRunning()
-    expect(status).toBe('running')
-  })
-
-  it('Settings start: phase is already ready', async () => {
-    const { service, fake } = setup()
-    fake.add({ name: 'adf-agent-1', running: false })
-    let phase = ''
-    atUpdate(service, fake, () => { phase = (service as unknown as { _phases: Map<string, { phase: string }> })._phases.get('adf-agent-1')?.phase ?? '' })
-    await service.startContainer('adf-agent-1')
-    expect(phase).toBe('ready')
-  })
-
-  it('per-agent: pip packages are already installed', async () => {
-    const { service, fake } = setup(4096, null)
-    let pipRan = false
-    let pipBeforeUpdate = false
-    const answer = fake.exec0
-    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
-      if (args.includes('pip')) pipRan = true
-      if (args[0] === 'info' && args[2].includes('CgroupControllers') && fake.calls.some((a) => a[0] === 'run')) pipBeforeUpdate = pipRan
-      return answer(bin, args)
-    }
-    await service.ensureIsolatedRunning('agent', '0b6a3c58-1111-4a40-9c55-3f0e0c3d1111', ['x'], undefined, false)
-    expect(pipBeforeUpdate).toBe(true)
-  })
-})
-
 describe('compute settings reader', () => {
   const source = (path: string) => readFileSync(join(__dirname, '../../..', path), 'utf-8')
 
@@ -650,16 +655,21 @@ describe('compute settings reader', () => {
     expect(readComputeSettings(saved)).toEqual(saved)
   })
 
-  it('leaves judging containerMemoryMb to the service, which warns', async () => {
-    expect(readComputeSettings({ containerMemoryMb: 'abc' }).containerMemoryMb).toBe('abc')
+  it.each([['abc'], [null]])('leaves judging containerMemoryMb %j to the service, which warns', async (value) => {
+    expect(readComputeSettings({ containerMemoryMb: value }).containerMemoryMb).toBe(value)
     const { service, fake } = setup()
-    service.setSettingsAccessor(() => readComputeSettings({ containerMemoryMb: 'abc' }))
+    service.setSettingsAccessor(() => readComputeSettings({ containerMemoryMb: value }))
     await service.ensureRunning()
     expect(calls(fake, 'run')[0]).toContain('4096m')
-    expect(warnings.filter((w) => w.includes('containerMemoryMb') && w.includes('"abc"')).length).toBeGreaterThan(0)
+    expect(warnings.filter((w) => w.includes('containerMemoryMb') && w.includes(JSON.stringify(value))).length).toBeGreaterThan(0)
   })
 
-  it.each([[undefined], [null], ['x'], [{}], [{ containerPackages: 'git', machineCpus: '4', machineMemoryMb: false, containerMemoryMb: null, containerImage: 0 }]])('falls back to the defaults for %j', (raw) => {
+  it('a missing containerMemoryMb gets the default with no warning', () => {
+    expect(containerMemoryArgs(readComputeSettings({}))).toEqual(CAP_ARGS)
+    expect(warnings).toEqual([])
+  })
+
+  it.each([[undefined], [null], ['x'], [{}], [{ containerPackages: 'git', machineCpus: '4', machineMemoryMb: false, containerImage: 0 }]])('falls back to the defaults for %j', (raw) => {
     const { containerPackages, machineCpus, machineMemoryMb, containerMemoryMb, containerImage } = DEFAULT_COMPUTE_SETTINGS
     expect(readComputeSettings(raw)).toEqual({ containerPackages, machineCpus, machineMemoryMb, containerMemoryMb, containerImage })
   })

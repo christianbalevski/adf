@@ -39,7 +39,7 @@ import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
-import { CommitInput, checkContainerMemory, checkWholeNumber } from './settings-inputs'
+import { CommitInput, ContainerMemoryGroup, checkWholeNumber } from './settings-inputs'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../../shared/constants/compute-defaults'
 import { PromptEditor, PromptSectionRows } from './PromptEditor'
 import { SaveIndicator, SettingsSaveProvider, SettingsToasts, settingsWriteOutcome, useSettingsSave } from './settings-save'
@@ -2398,7 +2398,7 @@ function ComputeTab({
           className="!w-24 !text-[12px]"
         />
       </SettingsRow>
-      <SettingsRow separator label={<>Memory<InfoHint tip="In megabytes." /></>}>
+      <SettingsRow separator label={<>Memory<InfoHint tip="Podman machine size in megabytes; not used on Linux." /></>}>
         <CommitInput
           aria-label="Memory"
           inputMode="numeric"
@@ -2410,18 +2410,7 @@ function ComputeTab({
       </SettingsRow>
     </SettingsGroup>
 
-    <SettingsGroup title="Container memory">
-      <SettingsRow label={<>Limit<InfoHint tip="Megabytes per container; 0 means no limit." /></>}>
-        <CommitInput
-          aria-label="Limit"
-          inputMode="numeric"
-          value={String(containerMemoryMb)}
-          onCommit={(v) => { const r = checkContainerMemory(v); if (r.ok) setContainerMemoryMb(r.value) }}
-          check={(v) => { const r = checkContainerMemory(v); return r.ok ? null : r.error }}
-          className="!w-24 !text-[12px]"
-        />
-      </SettingsRow>
-    </SettingsGroup>
+    <ContainerMemoryGroup value={containerMemoryMb} onChange={setContainerMemoryMb} />
 
     <SettingsGroup className="overflow-hidden">
       <button

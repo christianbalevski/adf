@@ -71,7 +71,7 @@ export function readComputeSettings(raw: unknown) {
     machineCpus: typeof compute.machineCpus === 'number' ? compute.machineCpus : DEFAULT_COMPUTE_SETTINGS.machineCpus,
     machineMemoryMb: typeof compute.machineMemoryMb === 'number' ? compute.machineMemoryMb : DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
     // Not type-checked here: the service warns about a value it cannot use.
-    containerMemoryMb: (compute.containerMemoryMb ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb) as number,
+    containerMemoryMb: (compute.containerMemoryMb === undefined ? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb : compute.containerMemoryMb) as number,
     containerImage: typeof compute.containerImage === 'string' ? compute.containerImage : DEFAULT_COMPUTE_SETTINGS.containerImage,
   }
 }

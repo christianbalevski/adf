@@ -8,8 +8,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
-import { CommitInput, checkContainerMemory, checkPeerAddress, checkWholeNumber } from '../../../src/renderer/components/settings/settings-inputs'
+import { describe, expect, it, vi } from 'vitest'
+import { CommitInput, ContainerMemoryGroup, checkContainerMemory, checkPeerAddress, checkWholeNumber } from '../../../src/renderer/components/settings/settings-inputs'
 
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
@@ -36,8 +36,40 @@ describe('container memory limit', () => {
     }
   })
 
-  it('loads a saved 0 instead of treating it as unset', () => {
-    expect(page()).toContain("if (typeof compute.containerMemoryMb === 'number') setComputeContainerMemoryMb(compute.containerMemoryMb)")
+  // No DOM here: call the component and use the field's handlers from its element tree.
+  const field = (value: number, onChange: (v: number) => void) => {
+    const row = (ContainerMemoryGroup({ value, onChange }) as React.ReactElement<{ children: React.ReactElement<{ children: React.ReactElement }> }>).props.children
+    expect(row.props.children.type).toBe(CommitInput)
+    return row.props.children.props as { value: string; onCommit: (v: string) => void; check: (v: string) => string | null }
+  }
+
+  it('shows a saved 0', () => {
+    expect(renderToStaticMarkup(<ContainerMemoryGroup value={0} onChange={() => {}} />)).toContain('value="0"')
+  })
+
+  it('commits the number', () => {
+    const onChange = vi.fn()
+    field(4096, onChange).onCommit('2048')
+    field(4096, onChange).onCommit('0')
+    expect(onChange.mock.calls).toEqual([[2048], [0]])
+  })
+
+  it('refuses out-of-range input with the reason and commits nothing', () => {
+    const onChange = vi.fn()
+    const input = field(4096, onChange)
+    expect(input.check('100')).toBe('Enter 0 for no limit, or a whole number from 512 to 32768.')
+    expect(input.check('2048')).toBeNull()
+    input.onCommit('100')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('the page loads and saves it under containerMemoryMb', () => {
+    const src = page()
+    expect(src).toContain('<ContainerMemoryGroup value={containerMemoryMb} onChange={setContainerMemoryMb} />')
+    expect(src).toContain('containerMemoryMb={computeContainerMemoryMb}')
+    expect(src).toContain("persistCompute('containerMemoryMb', setComputeContainerMemoryMb, v, computeContainerMemoryMb)")
+    expect(src).toContain('setComputeContainerMemoryMb(compute.containerMemoryMb)')
+    expect(src).not.toContain('if (compute.containerMemoryMb)') // a truthiness check would drop a saved 0
   })
 })
 

@@ -4,7 +4,8 @@
  * "Saving"). The checks are pure so tests can run them without a DOM.
  */
 import { useEffect, useState } from 'react'
-import { TextInput } from '../ui'
+import { SettingsGroup, SettingsRow, TextInput } from '../ui'
+import { InfoHint } from '../common/DocsLink'
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -84,5 +85,22 @@ export function CommitInput({ value, onCommit, check, className = '', ...props }
       />
       {error && <span role="alert" className="text-[11px] text-[var(--adf-ui-danger)]">{error}</span>}
     </span>
+  )
+}
+
+export function ContainerMemoryGroup({ value, onChange }: { value: number; onChange: (mb: number) => void }) {
+  return (
+    <SettingsGroup title="Container memory">
+      <SettingsRow label={<>Limit<InfoHint tip="Megabytes per container; 0 means no limit." /></>}>
+        <CommitInput
+          aria-label="Limit"
+          inputMode="numeric"
+          value={String(value)}
+          onCommit={(v) => { const r = checkContainerMemory(v); if (r.ok) onChange(r.value) }}
+          check={(v) => { const r = checkContainerMemory(v); return r.ok ? null : r.error }}
+          className="!w-24 !text-[12px]"
+        />
+      </SettingsRow>
+    </SettingsGroup>
   )
 }
