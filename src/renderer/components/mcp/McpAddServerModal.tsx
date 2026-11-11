@@ -619,6 +619,10 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   // Required files the host fills itself move under Advanced, as an override.
   const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles, hostAccessEnabled, mcpOnHost)
   const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads, bundledPaths) : null
+  // The built-in client would fill the file if this draft ran on the host; the step is still open.
+  const showBuiltInOffHost = !!draft && bundledPaths.size === 0
+    && bundledFilePaths({ ...draft, runLocation: 'host' }, bundledCredentialFiles, true).size > 0
+    && !checklist?.inputsDone
   const signsIn = isOAuth || !!draft?.auth
 
   // Env keys the catalog entry declares sit in the "Configuration" step; anything
@@ -1071,6 +1075,17 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 </div>
               ))}
               {catalogEntry && stepEnvCount > 0 && <div className="space-y-1.5">{envRows(true, true)}</div>}
+              {catalogEntry && !isHttp && showBuiltInOffHost && (
+                <p className="text-[10px] text-amber-600 dark:text-amber-400">
+                  {`${catalogEntry.displayName}'s built-in client works only on the host with host access on. Or choose your own client file below.`}{' '}
+                  <button
+                    onClick={() => { if (hostAccessEnabled !== true) onEnableHostAccess?.(); else patch({ runLocation: 'host' }) }}
+                    className="underline font-medium hover:text-amber-700 dark:hover:text-amber-300"
+                  >
+                    {hostAccessEnabled !== true ? 'Turn on host access' : 'Run on host'}
+                  </button>
+                </p>
+              )}
               {catalogEntry && !isHttp && requiredFiles.map(fileRow)}
               {!catalogEntry && hasPlaceholders && (
                 <p className="text-[10px] text-amber-600 dark:text-amber-400">
