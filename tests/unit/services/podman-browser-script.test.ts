@@ -61,6 +61,7 @@ describe.skipIf(process.platform === 'win32')('adf-browser run under sh', () => 
     fake('chromium', `printf '%s\\n' "$@" > '${argsFile}'\necho fresh-output`)
     fake('wget', 'exit 0') // CDP answers: a browser is already running
     fake('xdotool', 'exit 0')
+    fake('setsid', 'shift; exec "$@"') // macOS has no setsid; drop -f and run the detached command
 
     const script = (await installedScript())
       .replaceAll('/tmp/adf-browser', logDir)
@@ -68,13 +69,16 @@ describe.skipIf(process.platform === 'win32')('adf-browser run under sh', () => 
       .replaceAll("'/usr/bin/chromium'", `'${join(bin, 'chromium')}'`)
     expect(script).not.toContain('/usr/bin/chromium')
     const scriptPath = join(dir, 'adf-browser')
-    writeFileSync(scriptPath, script)
+    writeFileSync(scriptPath, script, { mode: 0o755 })
 
     return {
+      fake,
+      argsFile,
       log: join(logDir, 'chromium.log'),
       previous: join(logDir, 'chromium.log.1'),
       args: () => readFileSync(argsFile, 'utf8').split('\n'),
       run: (...args: string[]) => spawnSync('sh', [scriptPath, ...args], {
+        windowsHide: true,
         encoding: 'utf8',
         env: { ...process.env, PATH: `${bin}:${process.env.PATH}` },
       }),
@@ -103,6 +107,20 @@ describe.skipIf(process.platform === 'win32')('adf-browser run under sh', () => 
     expect(result.stderr).toBe('')
     expect(existsSync(box.previous)).toBe(false)
     expect(readFileSync(box.log, 'utf8')).toBe('fresh-output\n')
+  })
+
+  it('start with no browser running goes through launch-detached and rotates', async () => {
+    const box = await sandbox()
+    box.fake('wget', `[ -f '${box.argsFile}' ]`) // CDP answers once the browser has launched
+    writeFileSync(box.log, 'previous-run\n')
+
+    const result = box.run('start', 'https://example.test/')
+
+    expect(result.status).toBe(0)
+    expect(readFileSync(box.previous, 'utf8')).toBe('previous-run\n')
+    expect(readFileSync(box.log, 'utf8')).toBe('fresh-output\n')
+    expect(box.args()).toContain('https://example.test/')
+    expect(box.args()).toContain(SWIFTSHADER_FLAG)
   })
 
   it('leaves the live log alone when handing a URL to a running browser', async () => {

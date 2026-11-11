@@ -2408,13 +2408,16 @@ function ComputeTab({
           className="!w-24 !text-[12px]"
         />
       </SettingsRow>
-      <SettingsRow separator label={<>Container memory limit<InfoHint tip="In megabytes, for each container. 0 means no limit. A change takes effect the next time a container is created or reused. At the limit the largest process in that container is killed, usually a runaway browser tab." /></>}>
+    </SettingsGroup>
+
+    <SettingsGroup title="Container memory" description="Applies when a container is created, started or reused.">
+      <SettingsRow label={<>Limit<InfoHint tip="In megabytes, for each container. 0 means no limit. Existing containers get this limit too. A process that goes over the limit is killed. This can happen later, when the process reads memory that was in swap. There is no notice." /></>}>
         <CommitInput
-          aria-label="Container memory limit"
+          aria-label="Limit"
           inputMode="numeric"
           value={String(containerMemoryMb)}
-          onCommit={(v) => { const r = checkContainerMemory(v, 32768); if (r.ok) setContainerMemoryMb(r.value) }}
-          check={(v) => { const r = checkContainerMemory(v, 32768); return r.ok ? null : r.error }}
+          onCommit={(v) => { const r = checkContainerMemory(v); if (r.ok) setContainerMemoryMb(r.value) }}
+          check={(v) => { const r = checkContainerMemory(v); return r.ok ? null : r.error }}
           className="!w-24 !text-[12px]"
         />
       </SettingsRow>

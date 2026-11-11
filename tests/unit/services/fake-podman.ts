@@ -31,8 +31,8 @@ const sizeBytes = (value: string): number =>
 export class FakePodman {
   readonly containers = new Map<string, FakeContainer>()
   readonly calls: string[][] = []
-  /** The `host` object of `podman info --format json`; unset = `info` fails. */
-  hostInfo?: { cgroupControllers?: string[]; memTotal?: number }
+  /** What `podman info` lists as cgroup controllers; unset = `info` fails. */
+  controllers?: string[]
   /** Make `podman update` exit non-zero. */
   failUpdate = false
 
@@ -94,7 +94,7 @@ export class FakePodman {
       // Peer-isolation label probe: unlabeled → applyPeerFirewall skips.
       return ok('')
     }
-    if (cmd === 'info' && args.includes('json') && this.hostInfo) return ok(JSON.stringify({ host: this.hostInfo }))
+    if (cmd === 'info' && args[2] === '{{.Host.CgroupControllers}}' && this.controllers) return ok(`[${this.controllers.join(' ')}]`)
     if (cmd === 'image' && rest[0] === 'exists') return ok()
     if (cmd === 'run') {
       const name = args[args.indexOf('--name') + 1]

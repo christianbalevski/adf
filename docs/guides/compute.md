@@ -112,7 +112,13 @@ When no compute config is set, agents still have access to the shared container 
 
 ### Container memory limit
 
-Each ADF-managed container is limited to 4096 MB by default, set under Settings → Compute (`containerMemoryMb`). `0` turns the limit off. A change applies the next time a container is created or an agent starts on an existing one, without recreating the container. When a container reaches its limit, the kernel kills its largest process, usually a runaway browser tab. The limit never exceeds the memory of the Podman machine, and is skipped with a logged warning where the cgroup memory controller is not available.
+Each ADF-managed container is limited to 4096 MB by default, set under Settings → Compute → Container memory (`containerMemoryMb`). `0` turns the limit off. A whole number from 1 to 511 becomes 512, and one above 32768 becomes 32768. A change applies the next time a container is created, started or reused, without recreating it. Where the cgroup memory controller is not available, the limit is skipped and a warning is logged.
+
+When a container reaches its limit, the kernel kills a process in it. No swap is available beyond the limit. Existing containers get the limit on their next use after an upgrade. A process that already has pages in swap can be killed later, when it touches those pages, even though the update succeeded. ADF does not detect or report these kills.
+
+The limit does not protect a Podman machine with 4 GB of memory or less at the default: one container can still use all of it. Lower the limit to protect a small machine.
+
+On Podman before 5.1, which some native Linux distributions ship, `podman inspect` does not show a limit set by `podman update`. There, the update repeats on each reuse, and `0` lifts such a limit only when the container restarts.
 
 ## Tools
 

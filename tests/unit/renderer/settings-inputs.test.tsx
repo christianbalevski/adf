@@ -28,11 +28,11 @@ describe('whole numbers (workers, CPUs, memory, port)', () => {
 
 describe('container memory limit', () => {
   it('accepts 0 (no limit) and the range; refuses the gap between them', () => {
-    expect(checkContainerMemory('0', 32768)).toEqual({ ok: true, value: 0 })
-    expect(checkContainerMemory(' 512 ', 32768)).toEqual({ ok: true, value: 512 })
-    expect(checkContainerMemory('32768', 32768)).toEqual({ ok: true, value: 32768 })
+    expect(checkContainerMemory('0')).toEqual({ ok: true, value: 0 })
+    expect(checkContainerMemory(' 512 ')).toEqual({ ok: true, value: 512 })
+    expect(checkContainerMemory('32768')).toEqual({ ok: true, value: 32768 })
     for (const bad of ['', '1', '511', '32769', '-1', '1.5', 'abc']) {
-      expect(checkContainerMemory(bad, 32768), bad).toEqual({ ok: false, error: 'Enter 0 for no limit, or a whole number from 512 to 32768.' })
+      expect(checkContainerMemory(bad), bad).toEqual({ ok: false, error: 'Enter 0 for no limit, or a whole number from 512 to 32768.' })
     }
   })
 

@@ -162,7 +162,7 @@ import { AppSettingsOAuthStore, AgentKeystoreOAuthStore, resolveOAuthStoreForCon
 import { buildOAuthProviderFactory, gateInteractiveOAuthSignIn } from '../services/mcp-oauth-connect'
 import { runMcpHttpOAuthFlow, type McpHttpOAuthIO } from '../services/mcp-http-oauth'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
-import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { readComputeSettings } from '../../shared/constants/compute-defaults'
 import { killAllHostExecs } from '../services/host-exec.service'
 import { getLanAddresses } from '../utils/network'
 import { McpPackageResolver, PackageResolver } from '../services/mcp-package-resolver'
@@ -588,18 +588,7 @@ const externalExecutionService = new ExternalExecutionService()
 // No host mounts — MCP packages are installed directly inside the container
 // via npx/uvx on first connection. This provides true isolation.
 // Lazy settings accessor — settings may not be initialized yet at import time.
-// Fallbacks come from the shared single source of truth — a local copy
-// previously drifted (py3-pip / node:20-alpine) from the real defaults.
-podmanService.setSettingsAccessor(() => {
-  const raw = settings?.get('compute') as Record<string, unknown> | undefined
-  return {
-    containerPackages: (raw?.containerPackages as string[]) ?? DEFAULT_COMPUTE_SETTINGS.containerPackages,
-    machineCpus: (raw?.machineCpus as number) ?? DEFAULT_COMPUTE_SETTINGS.machineCpus,
-    machineMemoryMb: (raw?.machineMemoryMb as number) ?? DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
-    containerMemoryMb: (raw?.containerMemoryMb as number) ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb,
-    containerImage: (raw?.containerImage as string) ?? DEFAULT_COMPUTE_SETTINGS.containerImage,
-  }
-})
+podmanService.setSettingsAccessor(() => readComputeSettings(settings?.get('compute')))
 const mcpPackageResolver = new McpPackageResolver()
 const adapterPackageResolver = new PackageResolver('channel-adapters')
 import { UvManager } from '../services/uv-manager'
