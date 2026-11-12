@@ -9,7 +9,7 @@ import { MAIN_LOOP } from '../../adf/derive-loop-config'
 
 const ScheduleOnceSchema = z.object({
   type: z.literal('once'),
-  at: z.number().int().positive().describe('Fire at this Unix timestamp (ms).')
+  at: z.number().int().positive().describe('Fire at this Unix timestamp (ms, absolute UTC).')
 }).passthrough()
 
 const ScheduleDelaySchema = z.object({
@@ -27,7 +27,7 @@ const ScheduleIntervalSchema = z.object({
 
 const ScheduleCronSchema = z.object({
   type: z.literal('cron'),
-  cron: z.string().describe('5-field cron expression (min hour dom month dow).'),
+  cron: z.string().describe('5-field cron expression (min hour dom month dow), evaluated in the host\'s local time zone.'),
   end_at: z.number().int().positive().optional().describe('Stop recurring after this time (Unix ms).'),
   max_runs: z.number().int().positive().optional().describe('Stop recurring after this many fires.')
 }).passthrough()

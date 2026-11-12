@@ -111,6 +111,12 @@ Common examples:
 | `0 0 1 * *` | First of every month |
 | `*/15 * * * *` | Every 15 minutes |
 
+## Time Zones
+
+- `cron` expressions are evaluated in the host's local time zone: `0 9 * * *` fires at 09:00 wherever the runtime runs. On hosts that set the zone with the `TZ` environment variable (containers, servers), that is the `TZ` zone.
+- `once.at`, `start_at` and `end_at` are absolute Unix timestamps in milliseconds (UTC). They do not depend on any zone.
+- To find the host's zone, run `Intl.DateTimeFormat().resolvedOptions().timeZone` in `sys_code`. The code sandbox reports the same zone the cron evaluator uses.
+
 ## Shared Fields
 
 All scheduling modes support these fields:

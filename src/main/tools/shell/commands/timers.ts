@@ -28,6 +28,7 @@ const atHandler: CommandHandler = {
     'at --delay <duration> <lambda>   One-shot after delay (30s, 5m, 1h, 2d)',
     'at --every <duration> <lambda>   Recurring interval',
     'at --cron "<expr>" <lambda>      Cron expression (5-field)',
+    'Cron, and a date-time with no Z or offset, use the host\'s local time zone.',
     '',
     'Options:',
     '  --scope system                 System scope (default: agent)',

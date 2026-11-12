@@ -1965,7 +1965,7 @@
       filePath: "<ROOT>/agents/agent-2.adf"
       model: "parity-model"
       usage:
-        input: 11100
+        input: 11111
         output: 0
     timestamp: "<t>"
     type: "response_metadata"

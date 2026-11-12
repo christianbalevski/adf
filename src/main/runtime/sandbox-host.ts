@@ -262,9 +262,17 @@ export class SandboxHost {
 }
 
 /** Only what the runtime needs to start. Notably NOT the parent's env: API
- *  keys, tokens and NODE_OPTIONS stay out of the sandbox process. */
+ *  keys, tokens and NODE_OPTIONS stay out of the sandbox process.
+ *
+ *  TZ is the one exception, copied whenever the parent has it, even empty
+ *  (an empty TZ means UTC). It names a zone and carries no secret. It is
+ *  needed because the runtime evaluates cron timers in its own local zone,
+ *  which honours TZ. Without it, sandbox code (Intl, Date) would fall back to
+ *  the system zone and report a different zone from the one the timers fire
+ *  in. */
 function minimalEnv(): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ELECTRON_RUN_AS_NODE: '1' }
+  if (process.env.TZ !== undefined) env.TZ = process.env.TZ
   if (process.platform === 'win32') {
     for (const k of ['SystemRoot', 'SYSTEMROOT', 'windir', 'WINDIR']) {
       if (process.env[k]) env[k] = process.env[k]
