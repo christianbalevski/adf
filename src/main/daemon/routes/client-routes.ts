@@ -22,7 +22,8 @@
 //   - template writes (/templates*): `templates`;
 //   - W3-F: PUT /agents/:id/{config,files/content,mind} of an open document
 //     that is not running (no runtime raises their frames): `config_changed`
-//     / `file_updated`, with the write's revision and writer.
+//     / `file_updated`, with the write's revision and writer; the same
+//     `config_changed` for a /files/agent/* write that changed its config.
 // Every write to /agents/:id/* runs as its writer (runAsWriter): the client
 // session's client, or `cli` without one, so the revision it takes and the
 // frames it raises name who wrote (W3-F).
@@ -194,6 +195,7 @@ const AGENT_FILE_CONTENT = /^\/agents\/([^/?]+)\/files\/content(?:\?|$)/
 const AGENT_MIND = /^\/agents\/([^/?]+)\/mind(?:\?|$)/
 const AGENT_INBOX = /^\/agents\/([^/?]+)\/inbox(?:\?|$)/
 const BRING_HOME = /^\/registry\/agents\/[^/?]+\/bring-home(?:\?|$)/
+const FILE_AGENT_WRITE = /^\/files\/agent\//
 
 function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext, sessions: ClientSessionRegistry): void {
   // A write to /agents/:id/* that names its client session: the route
@@ -261,6 +263,20 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
             if (typeof content === 'string' && typeof path === 'string' && path !== 'README.md' && path !== 'document.md') {
               sessions.publishExecutor({ ...target, event: { type: 'file_updated', payload: { path, content, ...extra }, timestamp: Date.now() } }, origin)
             }
+          }
+        }
+      } else if (FILE_AGENT_WRITE.test(url)) {
+        // Path-addressed config writes (channel and MCP attach/detach, provider
+        // removal) on an open document: the same announcement as a PUT config
+        // above. Every client gets it, the requester included: its open config
+        // panel did not make this write.
+        const result = parseJson(payload) as { agentId?: unknown; loaded?: unknown; config?: unknown } | null
+        if (result?.loaded === true && typeof result.agentId === 'string' && result.config && !ctx.runtime.getAgent(result.agentId)) {
+          const ref = ctx.runtime.getAgentOrDocument(result.agentId)
+          if (ref) {
+            const { config: current, revision } = ctx.runtime.getAgentConfig(ref.id)
+            const writer = writerOf(sessions, liveSession(sessions, request.headers))
+            sessions.publishPush('config_changed', { filePath: ref.filePath ?? null, config: current, revision, writer }, { agentId: ref.id, filePath: ref.filePath ?? null })
           }
         }
       } else if (inbox) {

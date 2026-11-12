@@ -7665,11 +7665,13 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           adapters[args.adapterType] = { ...existing, enabled: true }
           agentConfig.adapters = adapters
           workspace.setAgentConfig(agentConfig)
+          notifyRendererConfigChanged(args.filePath, agentConfig)
           return { success: true, alreadyAttached: true, enabled: true }
         }
         adapters[args.adapterType] = args.config
         agentConfig.adapters = adapters
         workspace.setAgentConfig(agentConfig)
+        notifyRendererConfigChanged(args.filePath, agentConfig)
         return { success: true, enabled: args.config.enabled }
       } finally {
         if (args.filePath !== currentFilePath) workspace.close()
@@ -7693,6 +7695,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
             delete agentConfig.adapters
           }
           workspace.setAgentConfig(agentConfig)
+          notifyRendererConfigChanged(args.filePath, agentConfig)
         }
         // Remove credentials
         workspace.deleteIdentityByPrefix(`adapter:${args.adapterType}:`)

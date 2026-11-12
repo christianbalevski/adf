@@ -192,3 +192,45 @@ export function TimersBlockedNotice({ onJump }: { onJump: () => void }) {
     </p>
   )
 }
+
+/** A faint rule with a group name in the middle, between section groups (CONFIG_NAV_GROUPS). */
+export function GroupDivider({ label }: { label: string }) {
+  return (
+    <div role="separator" aria-label={label} className="flex items-center gap-2 pt-2 text-[10px] font-medium uppercase tracking-wider text-[var(--adf-ui-text-subtle)]">
+      <span className="h-px flex-1 bg-[var(--adf-ui-separator)]" />
+      {label}
+      <span className="h-px flex-1 bg-[var(--adf-ui-separator)]" />
+    </div>
+  )
+}
+
+/** A section header's "+": add another of what the section lists. */
+export function SectionAddButton({ label, onClick }: { label: string; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      aria-label={label}
+      className="flex h-4 w-4 items-center justify-center rounded text-[var(--adf-ui-text-subtle)] transition-colors hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
+    >
+      <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round"><path d="M12 5v14M5 12h14" /></svg>
+    </button>
+  )
+}
+
+/** A section with nothing in it yet: one line and its Add button. */
+export function SectionEmpty({ text, label, onAdd }: { text: string; label: string; onAdd: () => void }) {
+  return (
+    <div className="flex flex-col items-center gap-2 rounded-lg border border-dashed border-neutral-200 px-3 py-4 text-center dark:border-neutral-700">
+      <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">{text}</p>
+      <button
+        type="button"
+        onClick={onAdd}
+        className="rounded-md border border-[var(--adf-ui-border)] px-2.5 py-1 text-[11px] font-medium text-[var(--adf-ui-text)] transition-colors hover:bg-[var(--adf-ui-surface-hover)]"
+      >
+        {label}
+      </button>
+    </div>
+  )
+}

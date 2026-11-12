@@ -46,7 +46,8 @@ interface McpAddServerModalProps {
   onClose: () => void
   /** Registration being edited; null = add flow (choose screen first). */
   editing: McpServerRegistration | null
-  existingServers: McpServerRegistration[]
+  /** Names already taken: the runtime's registrations and, from an agent, its own servers. */
+  existingServers: Pick<McpServerRegistration, 'name'>[]
   hostAccessEnabled?: boolean
   onEnableHostAccess?: () => void
   onSave: (reg: McpServerRegistration) => void
@@ -73,6 +74,13 @@ interface McpAddServerModalProps {
 
 function newId(): string {
   return 'mcp:' + Math.random().toString(36).slice(2, 8)
+}
+
+/** The catalog entry a registration was made from: matched by npm package, then PyPI package, then URL. */
+export function registryEntryFor(reg: McpServerRegistration, entries: McpRegistryEntry[]): McpRegistryEntry | undefined {
+  return reg.npmPackage ? findEntryIn(entries, { npmPackage: reg.npmPackage })
+    : reg.pypiPackage ? findEntryIn(entries, { pypiPackage: reg.pypiPackage })
+    : reg.url ? findEntryIn(entries, { url: reg.url }) : undefined
 }
 
 /** All registry categories in display order — mirrors the McpRegistryEntry union. */
@@ -476,9 +484,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
 
   const registryEntry = useMemo(() => {
     if (!draft) return undefined
-    return draft.npmPackage ? findEntryIn(registryEntries, { npmPackage: draft.npmPackage })
-      : draft.pypiPackage ? findEntryIn(registryEntries, { pypiPackage: draft.pypiPackage })
-      : draft.url ? findEntryIn(registryEntries, { url: draft.url }) : undefined
+    return registryEntryFor(draft, registryEntries)
   }, [draft, registryEntries])
 
   const availableEntries = useMemo(

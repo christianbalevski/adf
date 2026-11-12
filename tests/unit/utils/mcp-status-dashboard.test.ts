@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { MCP_SERVER_STATUSES } from '../../../src/shared/types/adf-v02.types'
-import { STATUS_COLORS, STATUS_LABELS, builtInManagedServer } from '../../../src/renderer/components/mcp/McpStatusDashboard'
+import { STATUS_COLORS, STATUS_LABELS } from '../../../src/renderer/components/mcp/McpStatusDashboard'
+import { builtInManagedServer } from '../../../src/renderer/components/mcp/runtime-mcp-servers'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
 
 // E3 (690e0046): `needs_sign_in` (an http+oauth server waiting for its

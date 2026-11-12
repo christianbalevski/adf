@@ -328,7 +328,7 @@ describe('configTargetFor', () => {
     expect(configTargetFor('tools.sys_create_adf')).toEqual({ subTab: 'config', section: 'Tools' })
     expect(configTargetFor('tools[].restricted')).toEqual({ subTab: 'config', section: 'Tools' })
     expect(configTargetFor('serving.public.enabled')).toEqual({ subTab: 'config', section: 'Serving' })
-    expect(configTargetFor('adapters.telegram')).toEqual({ subTab: 'config', section: 'Channels' })
+    expect(configTargetFor('adapters.telegram')).toEqual({ subTab: 'config', section: 'Messaging Channels' })
     expect(configTargetFor('autonomous')).toEqual({ subTab: 'config', section: 'Identity' })
     expect(configTargetFor('ws_connections')).toEqual({ subTab: 'config', section: 'WebSocket Connections' })
   })
