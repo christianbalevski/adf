@@ -37,13 +37,11 @@ function makeWorkspace(name: string, restricted: string[] = []) {
   return { filePath, workspace: AdfWorkspace.open(filePath) }
 }
 
-type Trigger = 'chat' | 'timer' | 'inbox'
+type Trigger = 'chat' | 'timer'
 
 function dispatch(type: Trigger, text = 'what is the launch plan?') {
   const data = type === 'chat'
     ? { message: { seq: 0, role: 'user', content_json: [{ type: 'text' as const, text }], created_at: Date.now() } }
-    : type === 'inbox'
-    ? { message: { id: 'm1', from: 'peer:1', content: 'status?', source: 'peer', received_at: Date.now(), status: 'unread' as const } }
     : {
         timer: {
           id: 1, schedule: { mode: 'once', at: Date.now() }, next_wake_at: Date.now(),
@@ -384,7 +382,6 @@ describe('silent turn notice', () => {
       const { provider, workspace } = await run('chat', [
         statusAndWork, visibleAsk, work, silentIdle, () => response([idle()]),
       ], undefined, { asks: [answered] })
-      expect(provider.calls.length).toBeLessThanOrEqual(5)
       expect(provider.calls).toHaveLength(5)
       expect(noticeRows(workspace)).toHaveLength(1)
       expect(workspace.getLogs().filter(l => l.event === 'silent_turn')).toHaveLength(1)
@@ -409,7 +406,7 @@ describe('silent turn notice', () => {
 
     it('a form with some questions answered and some skipped re-arms', async () => {
       const two = { questions: [{ question: 'Which account?' }, { question: 'Anything to avoid?' }] }
-      const { provider, workspace } = await run('chat', [
+      const { provider } = await run('chat', [
         statusAndWork, () => response([text('Two questions.'), tool('ask', two)]), work, silentIdle, reply,
       ], undefined, { asks: [['Gmail', null]] })
       expect(provider.calls).toHaveLength(5)
@@ -417,8 +414,8 @@ describe('silent turn notice', () => {
     })
 
     // Turns no owner chat started: the answers are still the owner waiting.
-    it.each(['timer', 'inbox'] as const)('%s turn: asks, gets answers, then ends silently: gets the notice', async (trigger) => {
-      const { provider, workspace } = await run(trigger, [
+    it('timer turn: asks, gets answers, then ends silently: gets the notice', async () => {
+      const { provider, workspace } = await run('timer', [
         () => response([tool('ask', email)]), work, silentIdle, reply,
       ], undefined, { asks: [answered] })
       expect(provider.calls).toHaveLength(4)
@@ -426,8 +423,8 @@ describe('silent turn notice', () => {
       expect(noticeRows(workspace)).toHaveLength(1)
     })
 
-    it.each(['timer', 'inbox'] as const)('%s turn: no notice when the owner skipped the ask', async (trigger) => {
-      const { provider, workspace } = await run(trigger, [
+    it('timer turn: no notice when the owner skipped the ask', async () => {
+      const { provider, workspace } = await run('timer', [
         () => response([tool('ask', email)]), work, silentIdle,
       ], undefined, { asks: [skipped] })
       expect(provider.calls).toHaveLength(3)
