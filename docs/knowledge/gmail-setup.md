@@ -21,10 +21,14 @@ start a polling loop, or authorize automatic replies.
 ## Direct Gmail setup
 
 This path has no Composio dependency. Release builds of ADF Studio that ship a
-built-in Google OAuth client skip steps 1–3 and 5: Gmail has no **Credential
-file** step, and **Sign in to Gmail** writes the built-in client to
-`~/.gmail-mcp/gcp-oauth.keys.json` when no client file is chosen and none
-exists yet. An existing file is kept, and your sign-in tokens stay in
+built-in Google OAuth client skip steps 1–3 and 5 when Gmail runs on the host
+with host access on: Gmail then has no **Credential file** step, and **Sign in
+to Gmail** writes the built-in client to `~/.gmail-mcp/gcp-oauth.keys.json`
+when no client file is chosen and none exists yet. Settings sign-in requires
+the host with host access on for either the built-in client or your own client
+file. If Gmail runs in a container, use **Turn on host access** or **Run on
+host** in the Credential file step as prompted; choosing a client file does not
+enable container sign-in. An existing file is kept, and your sign-in tokens stay in
 `~/.gmail-mcp/credentials.json`. Here `~` is the Gmail server's own home
 folder, not yours: `<ADF user data>/mcp-home/app/gmail` for the Settings
 server named `gmail` (see [One server, several accounts](../guides/mcp-integration.md#one-server-several-accounts)).
