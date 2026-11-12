@@ -1029,7 +1029,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             return
           }
           if (outcome.kind === 'conflict') {
-            if (owner !== useDocumentStore.getState().filePath) return
+            // A later write already saved over it: this refusal is moot.
+            if (owner !== useDocumentStore.getState().filePath || seq < lastSavedSeqRef.current) return
+            // The notice says what happened; "Saving…" would never end. A later edit still waiting keeps it.
+            if (!pendingSaveRef.current) setSaveStatus({ kind: 'idle' })
             setConfigConflict({ mine: updated, theirs: outcome.conflict.theirs as AgentConfigType | null, revision: outcome.conflict.revision, writer: outcome.conflict.writer, owner })
             return
           }
@@ -1094,14 +1097,21 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     persistConfig(failed.config, failed.owner, failed.baseRevision, failed.baseConfig)
   }, [persistConfig])
 
+  /** Show the backend's config again, with its revision, so the next save is based on it. */
+  const reloadConfig = useCallback(() => {
+    void openApi()?.getAgentConfigWithRevision().then(({ config: authoritative, revision }) => {
+      if (!authoritative) return
+      useAgentStore.getState().setConfigRevision(revision)
+      setConfig(authoritative as AgentConfigType)
+    })
+  }, [setConfig])
+
   /** Drop the refused draft: the panel shows the backend's config again. */
   const discardFailedSave = useCallback(() => {
     failedSaveRef.current = null
     setSaveStatus({ kind: 'idle' })
-    void openApi()?.getAgentConfig().then((authoritative) => {
-      if (authoritative) setConfig(authoritative as AgentConfigType)
-    })
-  }, [setConfig])
+    reloadConfig()
+  }, [reloadConfig])
 
   // Status, undo and MCP views belong to one agent.
   useEffect(() => {
@@ -1370,34 +1380,35 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     {/* Leaving any field writes the pending edit through immediately, so a
         click that switches agent or starts one never races the debounce. */}
     <div ref={scrollRef} className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
-      {!template && configConflict && configConflict.owner === filePath && (
-        <ChangedElsewhereNotice
-          what="The config"
-          writer={configConflict.writer}
-          onReload={() => {
-            const theirs = configConflict.theirs
-            setConfigConflict(null)
-            if (theirs) {
-              useAgentStore.getState().setConfigRevision(configConflict.revision)
-              setConfig(theirs)
-            } else {
-              void openApi()?.getAgentConfig().then((c) => { if (c) setConfig(c as AgentConfigType) })
-            }
-          }}
-          onKeep={() => {
-            const { mine, revision, owner } = configConflict
-            setConfigConflict(null)
-            savingRef.current = true
-            setLocal(mine)
-            setConfig(mine)
-            persistConfig(mine, owner, revision)
-          }}
-        />
-      )}
       <MaybeConfigNav
         enabled={!template}
         scrollRef={scrollRef}
         status={<SaveStatusLine status={saveStatus} onRetry={retrySave} onDiscard={discardFailedSave} />}
+        notice={configConflict && configConflict.owner === filePath ? (
+          <ChangedElsewhereNotice
+            what="The config"
+            writer={configConflict.writer}
+            onReload={() => {
+              const theirs = configConflict.theirs
+              setConfigConflict(null)
+              if (theirs) {
+                useAgentStore.getState().setConfigRevision(configConflict.revision)
+                setConfig(theirs)
+              } else {
+                reloadConfig()
+              }
+            }}
+            onKeep={() => {
+              const { mine, revision, owner } = configConflict
+              setConfigConflict(null)
+              setSaveStatus({ kind: 'saving' })
+              savingRef.current = true
+              setLocal(mine)
+              setConfig(mine)
+              persistConfig(mine, owner, revision)
+            }}
+          />
+        ) : null}
       >
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
@@ -5994,8 +6005,8 @@ function DidListPicker({
 }
 
 /** The quick nav belongs to the panel; the template editor embeds the same sections without it. */
-function MaybeConfigNav({ enabled, scrollRef, status, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; status?: React.ReactNode; children: React.ReactNode }) {
-  return enabled ? <ConfigNavProvider scrollRef={scrollRef} status={status}>{children}</ConfigNavProvider> : <>{children}</>
+function MaybeConfigNav({ enabled, scrollRef, status, notice, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; status?: React.ReactNode; notice?: React.ReactNode; children: React.ReactNode }) {
+  return enabled ? <ConfigNavProvider scrollRef={scrollRef} status={status} notice={notice}>{children}</ConfigNavProvider> : <>{children}</>
 }
 
 function Section({

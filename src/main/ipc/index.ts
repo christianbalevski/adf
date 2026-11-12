@@ -5216,6 +5216,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (meshManager && currentFilePath) {
       meshManager.updateAgentConfig(currentFilePath, updated)
     }
+    // The window sent no config: it needs the new one and its revision, or its next panel save is refused as stale.
+    if (currentFilePath) notifyRendererConfigChanged(currentFilePath, updated)
     agentExecutor.resolveHilTask(args.requestId, true)
     return { success: true }
   })
