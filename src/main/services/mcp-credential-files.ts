@@ -20,7 +20,7 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync, 
 import { homedir, tmpdir } from 'os'
 import { dirname, join, resolve, sep } from 'path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
-import { compiledGmailOAuthClient, isBundledClientContent, writeBundledClientIfAbsent } from './gmail-bundled-client'
+import { isBundledClientContent, writeBundledClientIfAbsent } from './google-bundled-client'
 
 /** Decoded size cap per credential file. Real targets are ~1 KB token files. */
 export const CREDENTIAL_FILE_MAX_BYTES = 256 * 1024
@@ -52,6 +52,9 @@ export interface CredentialHostTarget {
 }
 
 export type CredentialFileTarget = CredentialContainerTarget | CredentialHostTarget
+
+/** What `~` resolves against: a host home, or a container target's home. */
+export type CredentialHome = CredentialHostTarget | Pick<CredentialContainerTarget, 'kind' | 'home'>
 
 /** Structural slice of PodmanService the credential plumbing needs. */
 export interface CredentialCopyService {
@@ -132,7 +135,7 @@ export function folderCredentialStore(home: string, missingHint?: string): Crede
  * Container targets keep absolute paths — traversal is contained by the
  * container itself, and some servers hardcode absolute config paths.
  */
-export function expandCredentialPath(path: string, target: CredentialFileTarget): string {
+export function expandCredentialPath(path: string, target: CredentialHome): string {
   const home = target.kind === 'container' ? target.home : (target.home ?? homedir())
   if (target.kind === 'host') {
     if (path !== '~' && !path.startsWith('~/')) {
@@ -246,10 +249,10 @@ export async function materializeCredentialFiles(
         ? existsSync(existingPath)
         : await target.fileExists(target.containerName, existingPath)
       if (presentInRuntime) continue
-      // Nothing stored and nothing on the host: the Gmail server's built-in
+      // Nothing stored and nothing on the host: the Google servers' built-in
       // OAuth client, when this build ships one (host only, write-if-absent).
       if (!rowExists && target.kind === 'host' &&
-        writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath, compiledGmailOAuthClient())) continue
+        writeBundledClientIfAbsent(serverCfg.npm_package, file.path, existingPath)) continue
       // Present-but-locked (daemon without a runtime key): fail plainly for
       // optional and required files alike.
       if (rowExists) {
@@ -359,7 +362,7 @@ export async function writeBackCredentialFiles(
       }
     }
     if (content == null) continue
-    // The built-in Gmail client is the build's, not the agent's: never seal it
+    // The built-in Google client is the build's, not the agent's: never seal it
     // (it would follow the agent into containers and back over a client the
     // user picks later). A client file with any other bytes is captured.
     if (isBundledClientContent(serverCfg.npm_package, file.path, content)) continue

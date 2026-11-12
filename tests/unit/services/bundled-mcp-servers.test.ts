@@ -22,15 +22,20 @@ import { MCP_REGISTRY, registrationFromRegistryEntry } from '../../../src/shared
 import type { McpInstalledPackage, McpServerConfig } from '../../../src/shared/types/adf-v02.types'
 
 const GMAIL = '@gongrzhe/server-gmail-autoauth-mcp'
+const CALENDAR = '@cocal/google-calendar-mcp'
 const STUDIO_EXE = join(tmpdir(), 'ADF Studio', 'ADF Studio.exe')
 
 let resources: string
 let entry: string
+let calendarEntry: string
 beforeAll(() => {
   resources = mkdtempSync(join(tmpdir(), 'adf-bundled-mcp-'))
   entry = join(resources, 'mcp-servers', 'gmail', 'index.mjs')
   mkdirSync(join(resources, 'mcp-servers', 'gmail'), { recursive: true })
   writeFileSync(entry, '')
+  calendarEntry = join(resources, 'mcp-servers', 'google-calendar', 'index.mjs')
+  mkdirSync(join(resources, 'mcp-servers', 'google-calendar'), { recursive: true })
+  writeFileSync(calendarEntry, '')
 })
 afterAll(() => rmSync(resources, { recursive: true, force: true }))
 
@@ -40,12 +45,14 @@ const gmailCfg = (over: Partial<McpServerConfig> = {}): McpServerConfig => ({
 })
 const noInstalls = { getInstalled: (): McpInstalledPackage | undefined => undefined }
 
-describe('bundled Gmail server: version pin', () => {
-  it('the bundled version is the exact package.json devDependency pin', () => {
+describe('bundled servers: version pin', () => {
+  it('each bundled version is the exact package.json devDependency pin', () => {
     const pkg = JSON.parse(readFileSync(join(__dirname, '../../../package.json'), 'utf-8'))
-    const gmail = BUNDLED_MCP_SERVERS.find((s) => s.npmPackage === GMAIL)!
-    expect(pkg.devDependencies[GMAIL]).toBe(gmail.version)
-    expect(pkg.dependencies?.[GMAIL]).toBeUndefined()
+    expect(BUNDLED_MCP_SERVERS.map((s) => s.npmPackage)).toEqual([GMAIL, CALENDAR])
+    for (const server of BUNDLED_MCP_SERVERS) {
+      expect(pkg.devDependencies[server.npmPackage]).toBe(server.version)
+      expect(pkg.dependencies?.[server.npmPackage]).toBeUndefined()
+    }
   })
 
   it('matches the catalog entry (which pins no version today; if it ever does, it must be this one)', () => {
@@ -67,6 +74,17 @@ describe('resolveBundledMcpSpawn / matchBundledMcpServer', () => {
   it('a config built from the catalog registration matches', () => {
     const reg = registrationFromRegistryEntry(MCP_REGISTRY.find((e) => e.npmPackage === GMAIL)!, 'r1')
     expect(resolveBundledMcpSpawn(buildMcpServerConfigFromRegistration(reg), studio())?.args).toEqual([entry])
+  })
+
+  it('the catalog Google Calendar config runs its own bundled entry; an edited one keeps npx', () => {
+    const calendar = MCP_REGISTRY.find((e) => e.npmPackage === CALENDAR)!
+    expect(calendar.runLocation).toBe('host')
+    const cfg = buildMcpServerConfigFromRegistration(registrationFromRegistryEntry(calendar, 'r2'))
+    expect(resolveBundledMcpSpawn(cfg, studio())).toMatchObject({ command: STUDIO_EXE, args: [calendarEntry] })
+    expect(resolveMcpSpawnConfig(cfg, { npmResolver: noInstalls, bundledRuntime: studio() })).toEqual({ command: STUDIO_EXE, args: [calendarEntry] })
+    expect(isBundledMcpServerSpawn(STUDIO_EXE, [calendarEntry], studio())).toBe(true)
+    expect(matchBundledMcpServer({ ...cfg, source: `npm:${CALENDAR}@2.7.0` })).toBeNull()
+    expect(matchBundledMcpServer({ ...cfg, args: ['--x'] })).toBeNull()
   })
 
   it('accepts the npx "-y <pkg>" prefix, no source, and a source pinned to the bundled version', () => {
@@ -281,13 +299,14 @@ describe('managed install of a bundled server', () => {
 
 describe('MCP_REGISTRY_GET bundledServers', () => {
   it('reports what this process ships; absent when nothing is bundled', async () => {
-    expect(availableBundledMcpServers(studio())).toEqual([{ npmPackage: GMAIL, version: BUNDLED_MCP_SERVERS[0].version }])
+    const both = BUNDLED_MCP_SERVERS.map((s) => ({ npmPackage: s.npmPackage, version: s.version }))
+    expect(availableBundledMcpServers(studio())).toEqual(both)
     expect(availableBundledMcpServers({ ...studio(), resourcesPath: undefined })).toEqual([])
     const cacheDir = mkdtempSync(join(tmpdir(), 'adf-bundled-registry-'))
     try {
       const opts = { userDataDir: cacheDir, isRemoteEnabled: () => false, bundledFiles: () => [] }
       const withServers = await new McpRegistryFetchService({ ...opts, bundledServers: () => availableBundledMcpServers(studio()) }).getRegistry()
-      expect(withServers.bundledServers).toEqual([{ npmPackage: GMAIL, version: BUNDLED_MCP_SERVERS[0].version }])
+      expect(withServers.bundledServers).toEqual(both)
       const without = await new McpRegistryFetchService({ ...opts, bundledServers: () => [] }).getRegistry()
       expect(without).not.toHaveProperty('bundledServers')
     } finally {

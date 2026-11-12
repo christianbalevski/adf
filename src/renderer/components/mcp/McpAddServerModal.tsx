@@ -214,7 +214,7 @@ function draftRunsOnHost(
 
 /**
  * Declared credential files of `draft` that the host fills itself when none
- * is chosen (MCP_REGISTRY_GET's bundledCredentialFiles: the Gmail server's
+ * is chosen (MCP_REGISTRY_GET's bundledCredentialFiles: the Google servers'
  * built-in OAuth client). Matched on the draft's package and path; only for
  * drafts that run on the host, the way the backend places them: runLocation
  * 'host', or no location while "MCP on host" is on. Host access must be on:
@@ -1198,7 +1198,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 <div className="space-y-1.5">
                   <label className={labelCls}>
                     Use your own OAuth client
-                    <InfoHint tip="Optional. Connect uses the built-in client only when you choose no client JSON and none is on this computer yet; an existing client file is kept. Switching to a different client later needs a fresh Gmail sign-in, and agents that stored a client you chose earlier need the new one re-supplied." />
+                    <InfoHint tip="Optional. Connect uses the built-in client only when you choose no client JSON and none is on this computer yet; an existing client file is kept. Switching to a different client later needs a fresh sign-in, and agents that stored a client you chose earlier need the new one re-supplied." />
                   </label>
                   {bundledFiles.map(fileRow)}
                 </div>

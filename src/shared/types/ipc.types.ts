@@ -900,7 +900,7 @@ export interface McpRegistryGetResult {
   fetchedAt?: number
   /**
    * Declared credential files this build fills itself when the user picks
-   * none and the host has none (the Gmail server's built-in OAuth client).
+   * none and the host has none (the Google servers' built-in OAuth client).
    * Set by the host from the build, never by a registry document; absent in
    * builds that ship none.
    */

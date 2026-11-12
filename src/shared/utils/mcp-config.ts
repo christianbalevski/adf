@@ -209,6 +209,17 @@ export function pinServerConfigToRegistration(
 }
 
 /**
+ * The Settings registration's app env with values set — what the connect
+ * paths merge over the .adf env. An auth preflight merges the same, so the
+ * sign-in runs with the env the server will connect with.
+ */
+export function registrationAppEnv(reg: Pick<McpServerRegistration, 'env'> | undefined): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const { key, value } of reg?.env ?? []) if (key && value) env[key] = value
+  return env
+}
+
+/**
  * Suggested "Available to agents" default by location: container/http servers
  * are attachable by default; host servers are not — a host server attachable
  * by any autonomous agent is the bigger grant, so enabling it is a conscious

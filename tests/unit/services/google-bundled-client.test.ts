@@ -1,16 +1,13 @@
-// The Gmail catalog server's built-in Desktop OAuth client: build-time
-// parsing, the host write-if-absent fallback, the registry availability flag
-// and the Add MCP Server checklist. Synthetic client only.
+// The Google catalog servers' built-in Desktop OAuth client (Gmail, Google
+// Calendar): build-time parsing, the host write-if-absent fallback, the
+// registry availability flag and the Add MCP Server checklist. Synthetic
+// client only.
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  GMAIL_BUNDLED_CLIENT_NPM_PACKAGE,
-  GMAIL_BUNDLED_CLIENT_PATH,
-  parseGmailOAuthClientJson,
-} from '../../../src/shared/utils/gmail-oauth-client'
-import { bundledClientApplies, bundledCredentialFiles, compiledGmailOAuthClient, writeBundledClientIfAbsent } from '../../../src/main/services/gmail-bundled-client'
+import { BUILT_IN_CLIENT_FILES, parseGmailOAuthClientJson } from '../../../src/shared/utils/google-oauth-client'
+import { bundledClientApplies, bundledCredentialFiles, compiledGoogleOAuthClient, writeBundledClientIfAbsent } from '../../../src/main/services/google-bundled-client'
 import { materializeCredentialFiles, writeBackCredentialFiles, type CredentialContainerTarget, type CredentialStore } from '../../../src/main/services/mcp-credential-files'
 import { McpRegistryFetchService } from '../../../src/main/services/mcp-registry-fetch.service'
 import { MCP_REGISTRY, registrationFromRegistryEntry } from '../../../src/shared/constants/mcp-registry'
@@ -29,6 +26,17 @@ const CLIENT = {
   },
 }
 const CLIENT_JSON = parseGmailOAuthClientJson(JSON.stringify(CLIENT))!
+const GMAIL_BUNDLED_CLIENT_NPM_PACKAGE = '@gongrzhe/server-gmail-autoauth-mcp'
+const GMAIL_BUNDLED_CLIENT_PATH = '~/.gmail-mcp/gcp-oauth.keys.json'
+const CALENDAR = '@cocal/google-calendar-mcp'
+// The file the Calendar server reads through GOOGLE_OAUTH_CREDENTIALS; its
+// token file is $XDG_CONFIG_HOME|~/.config + /google-calendar-mcp/tokens.json.
+const CALENDAR_CLIENT_PATH = '~/.config/google-calendar-mcp/gcp-oauth.keys.json'
+const CALENDAR_KEYS_REL = '.config/google-calendar-mcp/gcp-oauth.keys.json'
+const BOTH = [
+  { npmPackage: GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, path: GMAIL_BUNDLED_CLIENT_PATH },
+  { npmPackage: CALENDAR, path: CALENDAR_CLIENT_PATH },
+]
 const KEYS_REL = '.gmail-mcp/gcp-oauth.keys.json'
 const TOKENS_REL = '.gmail-mcp/credentials.json'
 
@@ -79,19 +87,33 @@ describe('built-in client availability', () => {
   afterEach(() => { vi.unstubAllGlobals() })
 
   it('builds without the define (tests, npm CLI) have none', () => {
-    expect(compiledGmailOAuthClient()).toBeUndefined()
+    expect(compiledGoogleOAuthClient()).toBeUndefined()
     expect(bundledCredentialFiles()).toEqual([])
     expect(bundledClientApplies(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH)).toBe(false)
   })
 
-  it('reads the compiled constant and applies only to the Gmail package and its client path', () => {
+  it('reads the compiled constant and applies only to each row\'s package and its client path', () => {
     vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
-    expect(compiledGmailOAuthClient()).toBe(CLIENT_JSON)
-    expect(bundledCredentialFiles()).toEqual([{ npmPackage: GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, path: GMAIL_BUNDLED_CLIENT_PATH }])
+    expect(compiledGoogleOAuthClient()).toBe(CLIENT_JSON)
+    expect(bundledCredentialFiles()).toEqual(BOTH)
     expect(bundledClientApplies(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, GMAIL_BUNDLED_CLIENT_PATH)).toBe(true)
+    expect(bundledClientApplies(CALENDAR, CALENDAR_CLIENT_PATH)).toBe(true)
     expect(bundledClientApplies(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, '~/.gmail-mcp/credentials.json')).toBe(false)
+    expect(bundledClientApplies(CALENDAR, '~/.config/google-calendar-mcp/tokens.json')).toBe(false)
+    expect(bundledClientApplies(CALENDAR, GMAIL_BUNDLED_CLIENT_PATH)).toBe(false)
+    expect(bundledClientApplies(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, CALENDAR_CLIENT_PATH)).toBe(false)
     expect(bundledClientApplies('@other/gmail-mcp', GMAIL_BUNDLED_CLIENT_PATH)).toBe(false)
     expect(bundledClientApplies(undefined, GMAIL_BUNDLED_CLIENT_PATH)).toBe(false)
+  })
+
+  it('one table: each row is the catalog entry\'s required client file; only Calendar needs an env variable', () => {
+    expect(BUILT_IN_CLIENT_FILES.map(({ npmPackage, path }) => ({ npmPackage, path }))).toEqual(BOTH)
+    expect(BUILT_IN_CLIENT_FILES.map((f) => f.env)).toEqual([undefined, 'GOOGLE_OAUTH_CREDENTIALS'])
+    for (const row of BUILT_IN_CLIENT_FILES) {
+      const entry = MCP_REGISTRY.find((e) => e.npmPackage === row.npmPackage)!
+      expect(entry.credentialFiles?.find((f) => f.required)?.path).toBe(row.path)
+      if (row.env) expect(entry.requiredEnvKeys).not.toContain(row.env)
+    }
   })
 })
 
@@ -119,6 +141,23 @@ describe('host fallback', () => {
     expect(writeBundledClientIfAbsent('@other/pkg', GMAIL_BUNDLED_CLIENT_PATH, dest, CLIENT_JSON)).toBe(false)
     expect(writeBundledClientIfAbsent(GMAIL_BUNDLED_CLIENT_NPM_PACKAGE, '~/.gmail-mcp/credentials.json', join(home, TOKENS_REL), CLIENT_JSON)).toBe(false)
     expect(existsSync(join(home, '.gmail-mcp'))).toBe(false)
+  })
+
+  it('Calendar: the client file is written when missing and never overwritten when present', async () => {
+    vi.stubGlobal('__ADF_GMAIL_OAUTH_CLIENT__', CLIENT_JSON)
+    const calendar: McpServerConfig = {
+      name: 'google-calendar', transport: 'stdio', npm_package: CALENDAR,
+      credential_files: [{ path: CALENDAR_CLIENT_PATH, required: true }, { path: '~/.config/google-calendar-mcp/tokens.json' }],
+    }
+    await materializeCredentialFiles(emptyStore, calendar, { kind: 'host', home })
+    const dest = join(home, CALENDAR_KEYS_REL)
+    expect(readFileSync(dest, 'utf-8')).toBe(CLIENT_JSON)
+    if (process.platform !== 'win32') expect(statSync(dest).mode & 0o777).toBe(0o600)
+    expect(existsSync(join(home, '.config/google-calendar-mcp/tokens.json'))).toBe(false)
+    writeFileSync(dest, 'user-client')
+    await materializeCredentialFiles(emptyStore, calendar, { kind: 'host', home })
+    expect(writeBundledClientIfAbsent(CALENDAR, CALENDAR_CLIENT_PATH, dest, CLIENT_JSON)).toBe(false)
+    expect(readFileSync(dest, 'utf-8')).toBe('user-client')
   })
 
   it('materializeCredentialFiles (attach/restart): fills the missing client on the host, leaves tokens alone', async () => {
@@ -340,6 +379,25 @@ describe('Add MCP Server: Gmail with a built-in client', () => {
     const result = setupChecklist(draft, gmail, {}, bundledFilePaths(draft, undefined, true))
     expect(result.requiredFiles).toEqual([GMAIL_BUNDLED_CLIENT_PATH])
     expect(result.inputsDone).toBe(false)
+  })
+})
+
+describe('Add MCP Server: Google Calendar with a built-in client', () => {
+  const calendar = MCP_REGISTRY.find((e) => e.npmPackage === CALENDAR)!
+  const draft = registrationFromRegistryEntry(calendar, 'mcp:google-calendar')
+
+  it('asks for nothing: no required env key, and the client file is filled on the host', () => {
+    expect(calendar.requiredEnvKeys).toEqual([])
+    expect(draft.runLocation).toBe('host')
+    const bundled = bundledFilePaths(draft, BOTH, true)
+    expect([...bundled]).toEqual([CALENDAR_CLIENT_PATH])
+    const result = setupChecklist(draft, calendar, {}, bundled)
+    expect(result.requiredFiles).toEqual([])
+    expect(result.inputsDone).toBe(true)
+  })
+
+  it('without a built-in client the file is required as before', () => {
+    expect(setupChecklist(draft, calendar, {}, bundledFilePaths(draft, undefined, true)).requiredFiles).toEqual([CALENDAR_CLIENT_PATH])
   })
 })
 

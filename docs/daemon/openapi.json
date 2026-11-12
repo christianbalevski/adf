@@ -29517,7 +29517,7 @@
         "properties": {
           "bundledCredentialFiles": {
             "type": "array",
-            "description": "Declared credential files this build fills itself when none is chosen and the host has none (the Gmail server's built-in OAuth client). Set from the build, never from a registry document; absent when the build ships none.",
+            "description": "Declared credential files this build fills itself when none is chosen and the host has none (the Google servers' built-in OAuth client). Set from the build, never from a registry document; absent when the build ships none.",
             "items": {
               "type": "object",
               "required": [

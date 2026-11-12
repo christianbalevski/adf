@@ -1,5 +1,6 @@
 import { spawn as nodeSpawn } from 'child_process'
 import { inheritableEnv } from '../utils/child-env'
+import { mcpClientFileEnv } from './mcp-server-home'
 import type { ChildProcess } from 'child_process'
 import { homedir, tmpdir } from 'os'
 import { join } from 'path'
@@ -326,7 +327,10 @@ export async function runMcpAuthPreflight(
     // boundary — NEVER the host process.env, which carries runtime API keys
     // that must not leak into agent-reachable code.
     const c = opts.container
-    const containerEnv = { ...(c.home ? { HOME: c.home } : {}), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+    const configured = { ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+    // Merged last, as at spawn (mcpContainerHomeEnv).
+    const clientFileEnv = c.home ? mcpClientFileEnv({ ...serverCfg, env: configured }, { kind: 'container', home: c.home }) : {}
+    const containerEnv = { ...(c.home ? { HOME: c.home } : {}), ...configured, ...clientFileEnv }
     // Those credential values (API keys, OAuth client secrets) must NOT land on
     // the host podman client's argv: process argv is world-readable
     // (/proc/<pid>/cmdline on Linux, `ps` on macOS) and this preflight stays

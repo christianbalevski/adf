@@ -29,7 +29,7 @@ import {
 import { parseMcpRegistryDocument, type ParsedMcpRegistryDocument } from '../../shared/schemas/mcp-registry.schema'
 import type { McpRegistryGetResult } from '../../shared/types/ipc.types'
 import { writeJsonAtomic } from '../utils/atomic-json'
-import { bundledCredentialFiles } from './gmail-bundled-client'
+import { bundledCredentialFiles } from './google-bundled-client'
 import { availableBundledMcpServers } from './bundled-mcp-servers'
 
 export const MCP_REGISTRY_URL = 'https://raw.githubusercontent.com/christianbalevski/adf/main/mcp-registry.json'
