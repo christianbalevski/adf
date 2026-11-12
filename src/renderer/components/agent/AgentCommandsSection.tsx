@@ -4,15 +4,14 @@ import { agentCommandsDraftFromConfig, validateAgentCommandsDraft } from './agen
 import { openApi } from '../../utils/runtime-api'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
-import { LockIcon, PERMISSION_ON_CLASS, WarningIcon } from './config-panel-parts'
+import { LockBadge, WarningIcon } from './config-panel-parts'
 
-const FIELD_LABELS = { name: 'Name', description: 'Description', usage: 'Usage', lambda: 'Lambda' } as const
-const FIELD_PLACEHOLDERS: Record<keyof typeof FIELD_LABELS, string> = {
-  name: 'weather',
-  description: 'What the command does',
-  usage: '<city>  — optional',
-  lambda: 'lib/commands.ts:run',
-}
+const FIELDS = [
+  { key: 'name', label: 'Name', placeholder: 'weather', mono: true },
+  { key: 'description', label: 'Description', placeholder: 'What the command does', mono: false },
+  { key: 'usage', label: 'Usage', placeholder: '<city> — optional', mono: false },
+  { key: 'lambda', label: 'Lambda', placeholder: 'lib/commands.ts:run', mono: true },
+] as const
 
 export function AgentCommandsSection({ commands, onSave, template = false }: {
   commands?: AgentCommand[]
@@ -57,16 +56,16 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
         <summary className="cursor-pointer">Invalid command data</summary>
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words">{command.malformed}</pre>
       </details>}
-      {(['name', 'description', 'usage', 'lambda'] as const).map(field => {
+      {FIELDS.map(({ key: field, label, placeholder, mono }) => {
         const errors = validation.errors.filter(issue => issue.index === index && issue.field === field)
         const warnings = validation.warnings.filter(issue => issue.index === index && issue.field === field)
         const message = [...errors, ...warnings].map(issue => issue.message).join('\n')
         const fieldId = `${listId}-${index}-${field}`
         return <div key={field} className="flex items-center gap-1.5">
-          <label htmlFor={fieldId} className="text-[10px] text-[var(--adf-ui-text-subtle)] w-16 shrink-0">{FIELD_LABELS[field]}</label>
-          <input id={fieldId} type="text" className={`field-input text-[10px] flex-1 min-w-0${field === 'name' || field === 'lambda' ? ' font-mono' : ''}`}
+          <label htmlFor={fieldId} className="text-[10px] text-[var(--adf-ui-text-subtle)] w-16 shrink-0">{label}</label>
+          <input id={fieldId} type="text" className={`field-input text-[10px] flex-1 min-w-0${mono ? ' font-mono' : ''}`}
             aria-label={`Command ${index + 1} ${field}`} aria-invalid={errors.length > 0} aria-describedby={message ? `${fieldId}-issue` : undefined}
-            value={command[field] ?? ''} list={field === 'lambda' ? listId : undefined} placeholder={FIELD_PLACEHOLDERS[field]}
+            value={command[field] ?? ''} list={field === 'lambda' ? listId : undefined} placeholder={placeholder}
             onChange={event => edit(index, { [field]: event.target.value })} />
           {message && <Tooltip tip={message} className="inline-flex shrink-0">
             <button type="button" aria-label={`Command ${index + 1} ${field}: ${errors.length ? 'error' : 'warning'}`} aria-describedby={`${fieldId}-issue`} className={`inline-flex cursor-help ${errors.length ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-warning)]'}`}>
@@ -75,17 +74,10 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
           </Tooltip>}
           {message && <span id={`${fieldId}-issue`} className="sr-only">{message}</span>}
           {field === 'name' && <div className="flex items-center gap-1 shrink-0">
-            <Tooltip tip={command.locked ? 'Locked by the owner: the agent cannot change or remove it. Click to unlock.' : 'Lock this command to prevent the agent from changing or removing it.'}>
-              <button type="button" aria-label={command.locked ? 'Unlock command' : 'Lock command'} aria-pressed={command.locked ?? false} className={`inline-flex items-center transition-colors ${command.locked ? PERMISSION_ON_CLASS.locked : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'}`} onClick={() => edit(index, { locked: !command.locked })}>
-                <LockIcon size={12} open={!command.locked} />
-              </button>
-            </Tooltip>
+            <LockBadge locked={!!command.locked} size="xs" onClick={() => edit(index, { locked: !command.locked || undefined })} />
             <button type="button" title="Remove command" aria-label={`Remove command ${index + 1}`}
               className="text-[10px] text-red-400 hover:text-red-600 dark:hover:text-red-300"
-              onClick={() => {
-                if (command.locked && !window.confirm('This command is locked. Remove it?')) return
-                setDraft(rows => rows.filter((_, i) => i !== index)); setDirty(true)
-              }}>
+              onClick={() => { setDraft(rows => rows.filter((_, i) => i !== index)); setDirty(true) }}>
               ×
             </button>
           </div>}

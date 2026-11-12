@@ -883,6 +883,33 @@ describe('TriggerEvaluator', () => {
       expect(d.command).toBe('echo hi')
       expect(d.warm).toBe(true)
     })
+
+    it('a system target ignores loop; an agent target carries it (single and batch)', () => {
+      const config = makeConfig({
+        on_chat: makeTriggerConfig([
+          makeTarget('system', { lambda: 'lib/h.ts:run', loop: 'research' }),
+          makeTarget('agent', { loop: 'research' }),
+        ]),
+        on_file_change: makeTriggerConfig([
+          makeTarget('system', { lambda: 'lib/h.ts:run', loop: 'research', batch_ms: 100, filter: { watch: '*' } }),
+        ]),
+      })
+      const firedLoops: (string | undefined)[] = []
+      ensureUmbilicalBus('test-agent').subscribe(event => {
+        if (event.event_type === 'trigger.fired') firedLoops.push(event.loop)
+      })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+
+      evaluator.onChat('hey')
+      evaluator.onFileChange('a.txt', 'create')
+      evaluator.onFileChange('b.txt', 'create')
+      vi.advanceTimersByTime(100)
+
+      expect(events.map(e => [e.scope, e.loop])).toEqual([['system', undefined], ['agent', 'research'], ['system', undefined]])
+      expect(firedLoops).toEqual([undefined, 'research', undefined])
+    })
   })
 
   // ===========================================================================

@@ -104,7 +104,7 @@ Each target in a trigger's `targets` array has these fields:
 
 Only **one** timing modifier is allowed per target. `batch_count` is an optional companion to `batch_ms`.
 
-**Target loop.** An agent can run several named loops ([Inner Loops](inner-loops.md)). A target may name which one it wakes with `target.loop`; an absent `loop` means `main`, so every pre-loops trigger config routes exactly as it did. The field is **agent-scope only**: a `system`-scope target runs its lambda or command through the single agent-wide system handler, under `main`'s authority, and wakes no loop — so a `loop` on a system-scope target is **stripped** when the loop's config is derived, rather than handing that loop main's authority through the back door.
+**Target loop.** An agent can run several named loops ([Inner Loops](inner-loops.md)). A target may name which one it wakes with `target.loop`; an absent `loop` means `main`, so every pre-loops trigger config routes exactly as it did. The field is **agent-scope only**: a `system`-scope target runs its lambda or command through the single agent-wide system handler, under `main`'s authority, and wakes no loop — so a `loop` on a system-scope target is **ignored**, rather than handing that loop main's authority through the back door. To run a lambda and also wake a loop, add two targets: one `system`, one `agent` with the `loop`.
 
 ## System scope execution limits
 

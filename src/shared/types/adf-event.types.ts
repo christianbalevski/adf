@@ -373,7 +373,7 @@ export function createDispatch<T extends AdfEventType>(
     lambda?: string
     command?: string
     warm?: boolean
-    /** Cognition loop to wake. Carried straight from `TriggerTarget.loop`. */
+    /** Cognition loop to wake. Agent scope only: a system target runs its lambda and wakes no loop. */
     loop?: string
   },
 ): AdfEventDispatch<T> {
@@ -383,6 +383,6 @@ export function createDispatch<T extends AdfEventType>(
     lambda: target.lambda,
     command: target.command,
     warm: target.warm,
-    loop: target.loop,
+    loop: target.scope === 'agent' ? target.loop : undefined,
   }
 }
