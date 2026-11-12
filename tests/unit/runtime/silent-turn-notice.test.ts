@@ -10,6 +10,7 @@ import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
 import type { CreateMessageOptions, LLMProvider } from '../../../src/main/providers/provider.interface'
 import type { ContentBlock, LLMMessage, LLMResponse } from '../../../src/shared/types/provider.types'
+import type { AskAnswer } from '../../../src/shared/utils/ask-form'
 
 /**
  * A turn answering an owner chat that is about to end with nothing the owner
@@ -20,7 +21,7 @@ import type { ContentBlock, LLMMessage, LLMResponse } from '../../../src/shared/
 const NOTICE_MARK = 'You ended the turn without replying to your principal.'
 const cleanupDirs: string[] = []
 
-function makeWorkspace(name: string) {
+function makeWorkspace(name: string, restricted: string[] = []) {
   const dir = mkdtempSync(join(tmpdir(), `adf-silent-turn-${name}-`))
   cleanupDirs.push(dir)
   const filePath = join(dir, `${name}.adf`)
@@ -29,14 +30,16 @@ function makeWorkspace(name: string) {
     name,
     provider: new MockLLMProvider(),
     createOptions: {
-      tools: ['sys_set_state', 'say', 'fs_list', 'fs_write', 'adf_shell'].map(n => ({ name: n, enabled: true, visible: true, restricted: false })),
+      tools: ['sys_set_state', 'say', 'ask', 'fs_list', 'fs_write', 'adf_shell'].map(n => ({ name: n, enabled: true, visible: true, restricted: restricted.includes(n) })),
     },
   })
   created.dispose()
   return { filePath, workspace: AdfWorkspace.open(filePath) }
 }
 
-function dispatch(type: 'chat' | 'timer', text = 'what is the launch plan?') {
+type Trigger = 'chat' | 'timer'
+
+function dispatch(type: Trigger, text = 'what is the launch plan?') {
   const data = type === 'chat'
     ? { message: { seq: 0, role: 'user', content_json: [{ type: 'text' as const, text }], created_at: Date.now() } }
     : {
@@ -83,6 +86,28 @@ class ScriptedProvider implements LLMProvider {
   }
 }
 
+// The executor emits a request before it registers the pending entry, so the
+// owner answers on the next tick, as a UI would.
+function answerAs(executor: Executor, owner: Owner) {
+  const asks = [...(owner.asks ?? [])]
+  const approvals = [...(owner.approvals ?? [])]
+  executor.on('event', (event: { type: string; payload?: { requestId?: string } }) => {
+    const requestId = event.payload?.requestId ?? ''
+    if (event.type === 'ask_request') {
+      const answer = asks.shift()
+      if (answer === undefined) throw new Error('unscripted ask')
+      setTimeout(() => {
+        if (answer === 'interrupt') executor.endTurnAndSetState('idle', { reason: 'interrupt' })
+        else executor.resolveAsk(requestId, answer)
+      }, 0)
+    } else if (event.type === 'tool_approval_request') {
+      const approved = approvals.shift()
+      if (approved === undefined) throw new Error('unscripted approval')
+      setTimeout(() => executor.resolveHilTask(requestId, approved), 0)
+    }
+  })
+}
+
 function noticeRows(workspace: AdfWorkspace) {
   return workspace.getLoop().filter(row => JSON.stringify(row.content_json).includes(NOTICE_MARK))
 }
@@ -91,15 +116,28 @@ function sawNotice(messages: LLMMessage[]): boolean {
   return messages.some(m => m.role === 'user' && JSON.stringify(m.content).includes(NOTICE_MARK))
 }
 
+type Executor = Awaited<ReturnType<AgentRuntimeBuilder['build']>>['executor']
+
+/** How the owner answers the turn's blocking prompts. */
+interface Owner {
+  /** Answers per ask, in order (`null` = skipped), or 'interrupt': the owner presses Stop instead. */
+  asks?: Array<AskAnswer[] | 'interrupt'>
+  /** Verdicts for restricted-tool approvals, in order. */
+  approvals?: boolean[]
+  restricted?: string[]
+}
+
 async function run(
-  type: 'chat' | 'timer',
+  type: Trigger,
   script: Array<() => LLMResponse>,
   beforeCall?: (index: number, executor: { executeTurn(d: ReturnType<typeof dispatch>): Promise<unknown> }) => Promise<void> | void,
+  owner: Owner = {},
 ) {
-  const { filePath, workspace } = makeWorkspace('agent')
+  const { filePath, workspace } = makeWorkspace('agent', owner.restricted)
   const provider = new ScriptedProvider(script)
   const agent = await new AgentRuntimeBuilder().build({ workspace, filePath, config: workspace.getAgentConfig(), provider })
   if (beforeCall) provider.beforeCall = index => beforeCall(index, agent.executor)
+  answerAs(agent.executor, owner)
   try {
     await agent.executor.executeTurn(dispatch(type))
   } finally {
@@ -312,5 +350,139 @@ describe('silent turn notice', () => {
     const { provider, workspace } = await run('timer', [() => response([idle()])])
     expect(provider.calls).toHaveLength(1)
     expect(noticeRows(workspace)).toHaveLength(0)
+  })
+
+  // A submitted ask form is the owner saying something and waiting for a
+  // reply, like a chat: the answers re-arm the guard. A form the owner skipped
+  // entirely, an ask the owner ended with Stop, and an approval verdict do not.
+  describe('owner answers to an ask', () => {
+    const email = { questions: [{ question: 'Which email account?', options: [{ label: 'Outlook' }, { label: 'iCloud' }] }] }
+    const answered: AskAnswer[] = ['My Gmail account']
+    const skipped: AskAnswer[] = [null]
+    // The released shape: a status line and work, a visible ask, the owner's
+    // answers, more work, then a thinking-only sys_set_state.
+    const statusAndWork = () => response([text('Checking whether I have email access.'), tool('fs_list', {})])
+    const visibleAsk = () => response([text('No email adapter is configured.'), tool('ask', email)])
+    const work = () => response([tool('fs_list', {})])
+    const silentIdle = () => response([thinking('Gmail needs an MCP server; nothing more I can do.'), idle()])
+    const reply = () => response([text('Connect Gmail under Settings, then ask me again.')])
+
+    it('the released shape (status, ask, answers, work, silent idle) gets the notice and one more call', async () => {
+      const { provider, workspace } = await run('chat', [
+        statusAndWork, visibleAsk, work, work, silentIdle, reply,
+      ], undefined, { asks: [answered] })
+      expect(JSON.stringify(provider.calls[2])).toContain('A: Other: My Gmail account')
+      expect(provider.calls).toHaveLength(6)
+      expect(sawNotice(provider.calls[5])).toBe(true)
+      expect(noticeRows(workspace)).toHaveLength(1)
+      expect(workspace.getLogs().some(l => l.event === 'silent_turn')).toBe(true)
+    })
+
+    it('settles: after the notice a second silent ending ends the turn, with no second notice', async () => {
+      const { provider, workspace } = await run('chat', [
+        statusAndWork, visibleAsk, work, silentIdle, () => response([idle()]),
+      ], undefined, { asks: [answered] })
+      expect(provider.calls).toHaveLength(5)
+      expect(noticeRows(workspace)).toHaveLength(1)
+      expect(workspace.getLogs().filter(l => l.event === 'silent_turn')).toHaveLength(1)
+    })
+
+    it('no notice when the agent replies visibly after the answers', async () => {
+      const { provider, workspace } = await run('chat', [
+        statusAndWork, visibleAsk, work, () => response([text('Connect Gmail under Settings.'), idle()]),
+      ], undefined, { asks: [answered] })
+      expect(provider.calls).toHaveLength(4)
+      expect(noticeRows(workspace)).toHaveLength(0)
+    })
+
+    it('no notice when the owner skipped every question', async () => {
+      const { provider, workspace } = await run('chat', [
+        statusAndWork, visibleAsk, work, silentIdle,
+      ], undefined, { asks: [skipped] })
+      expect(JSON.stringify(provider.calls[2])).toContain('The human skipped all questions.')
+      expect(provider.calls).toHaveLength(4)
+      expect(noticeRows(workspace)).toHaveLength(0)
+    })
+
+    it('a form with some questions answered and some skipped re-arms', async () => {
+      const two = { questions: [{ question: 'Which account?' }, { question: 'Anything to avoid?' }] }
+      const { provider } = await run('chat', [
+        statusAndWork, () => response([text('Two questions.'), tool('ask', two)]), work, silentIdle, reply,
+      ], undefined, { asks: [['Gmail', null]] })
+      expect(provider.calls).toHaveLength(5)
+      expect(sawNotice(provider.calls[4])).toBe(true)
+    })
+
+    // Turns no owner chat started: the answers are still the owner waiting.
+    it('timer turn: asks, gets answers, then ends silently: gets the notice', async () => {
+      const { provider, workspace } = await run('timer', [
+        () => response([tool('ask', email)]), work, silentIdle, reply,
+      ], undefined, { asks: [answered] })
+      expect(provider.calls).toHaveLength(4)
+      expect(sawNotice(provider.calls[3])).toBe(true)
+      expect(noticeRows(workspace)).toHaveLength(1)
+    })
+
+    it('timer turn: no notice when the owner skipped the ask', async () => {
+      const { provider, workspace } = await run('timer', [
+        () => response([tool('ask', email)]), work, silentIdle,
+      ], undefined, { asks: [skipped] })
+      expect(provider.calls).toHaveLength(3)
+      expect(noticeRows(workspace)).toHaveLength(0)
+    })
+
+    // An ask and a turn-ending call in one response: the model has not seen
+    // the answers yet, so the notice is its chance to.
+    it('an ask sent with sys_set_state, answered, gets the notice', async () => {
+      const { provider, workspace } = await run('timer', [
+        () => response([tool('ask', email), idle()]), reply,
+      ], undefined, { asks: [answered] })
+      expect(provider.calls).toHaveLength(2)
+      expect(JSON.stringify(provider.calls[1])).toContain('A: Other: My Gmail account')
+      expect(sawNotice(provider.calls[1])).toBe(true)
+      expect(noticeRows(workspace)).toHaveLength(1)
+    })
+
+    // Owner input after the notice opens a fresh reply window, as a chat
+    // delivered mid-turn does.
+    it('answers given after the notice re-open it: a second silent ending gets a second notice', async () => {
+      const { provider, workspace } = await run('chat', [
+        work,
+        () => response([thinking('hm'), idle()]),
+        () => response([tool('ask', email)]),
+        work, silentIdle, () => response([idle()]),
+      ], undefined, { asks: [answered] })
+      expect(provider.calls).toHaveLength(6)
+      expect(sawNotice(provider.calls[2])).toBe(true)
+      expect(noticeRows(workspace)).toHaveLength(2)
+    })
+
+    it('no notice when the owner ends the turn with Stop while the ask is open', async () => {
+      const { provider, workspace } = await run('chat', [
+        statusAndWork, visibleAsk, work, silentIdle,
+      ], undefined, { asks: ['interrupt'] })
+      expect(provider.calls).toHaveLength(2)
+      expect(noticeRows(workspace)).toHaveLength(0)
+      expect(workspace.getLogs().some(l => l.event === 'silent_turn')).toBe(false)
+    })
+
+    // An approval is consent to run a tool, not a question awaiting a reply.
+    it.each([true, false])('an approval verdict (approved=%s) does not re-arm the guard', async (approved) => {
+      const { provider, workspace } = await run('chat', [
+        statusAndWork,
+        () => response([text('Writing the plan.'), tool('fs_write', { path: 'plan.md', content: 'x' })]),
+        work, silentIdle,
+      ], undefined, { restricted: ['fs_write'], approvals: [approved] })
+      expect(provider.calls).toHaveLength(4)
+      expect(noticeRows(workspace)).toHaveLength(0)
+    })
+
+    it('no notice for a timer turn whose restricted tool the owner approved', async () => {
+      const { provider, workspace } = await run('timer', [
+        () => response([tool('fs_write', { path: 'plan.md', content: 'x' })]), silentIdle,
+      ], undefined, { restricted: ['fs_write'], approvals: [true] })
+      expect(provider.calls).toHaveLength(2)
+      expect(noticeRows(workspace)).toHaveLength(0)
+    })
   })
 })

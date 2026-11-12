@@ -749,10 +749,10 @@ export class AgentExecutor extends EventEmitter {
   private providerValidated: boolean = false
   private bufferTimer: NodeJS.Timeout | null = null
   private readonly BATCH_WINDOW_MS = 50
-  // Whether an owner chat reached this turn, and if so whether the owner has
-  // seen anything visible (text, say, ask) that answers it. Visible output
-  // shown before the agent has seen any tool results is a status line, not an
-  // answer. See noteSilentTurn.
+  // Whether owner input awaiting a reply (a chat, or answers to an ask) reached
+  // this turn, and if so whether the owner has seen anything visible (text,
+  // say, ask) that answers it. Visible output shown before the agent has seen
+  // any tool results is a status line, not an answer. See noteSilentTurn.
   private ownerChat: 'none' | 'unanswered' | 'answered' = 'none'
   // Since the owner chat arrived, the model has seen the results of a call
   // that isn't visible output. See noteOwnerChatResponse.
@@ -2943,6 +2943,8 @@ export class AgentExecutor extends EventEmitter {
           const startedToolIds = new Set<string>()
           const abandonedToolIds = new Set<string>()
           let needsLoopReset = false
+          // The owner submitted an ask form with at least one answer.
+          let ownerAnswered = false
           let needsCompaction = false
           let compactionInstructions: string | undefined
           for (const toolBlock of toolUseBlocks) {
@@ -2981,6 +2983,10 @@ export class AgentExecutor extends EventEmitter {
               if (this._interruptRestart || this._ownerStateTransitionRequested) break
               // Restore state after human responds
               this.setState('tool_use')
+              // Answers are owner input awaiting a reply, like a chat; a form
+              // skipped entirely is not. Applied after this response is folded
+              // into the guard (below), since the answers came after it.
+              if (answers.some(a => a !== null)) ownerAnswered = true
 
               const content = formatAskAnswers(questions, answers)
               toolResults.push({
@@ -3603,6 +3609,12 @@ export class AgentExecutor extends EventEmitter {
           // shell's `state`, a lambda): that is the tool result's endTurn above,
           // so this guard and end-of-turn handling use one definition.
           this.noteOwnerChatResponse(responseVisible, continueLoop && toolUseBlocks.some(b => !isVisibleToOwner(b)))
+          // Owner answers to an ask open a fresh reply window, as a chat
+          // delivered at the next step does.
+          if (ownerAnswered) {
+            this.noteOwnerInput()
+            silenceNoticed = false
+          }
 
           // A state change that would end an owner's chat turn with nothing said
           // gets one chance to reply first. 'off' is a deliberate stop.
@@ -6595,6 +6607,16 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
+   * The owner said something mid-turn and is waiting for a reply: a delivered
+   * chat, or answers to an ask. It has not been worked on yet, so the next
+   * status line shown for it does not answer it either.
+   */
+  private noteOwnerInput(): void {
+    this.ownerChat = 'unanswered'
+    this.turnDidWork = false
+  }
+
+  /**
    * The turn is about to end with nothing the owner can see since their chat:
    * only thinking, or a bare state change. Tell the model, through the loop
    * like any other input, so it can reply. Returns whether the notice went in.
@@ -6641,12 +6663,7 @@ export class AgentExecutor extends EventEmitter {
    */
   private deliverQueuedChats(delivery: 'turn_start' | 'next_step'): number {
     const chats = this.takeQueuedChats(delivery)
-    // A newly absorbed chat has not been worked on yet: the next status line
-    // shown for it does not answer it either.
-    if (chats.length > 0) {
-      this.ownerChat = 'unanswered'
-      this.turnDidWork = false
-    }
+    if (chats.length > 0) this.noteOwnerInput()
     for (const chat of chats) {
       if (this.preAppendedRowAlreadyInSession(chat)) continue
       const content = this.buildTriggerContent(chat)
