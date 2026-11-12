@@ -3,8 +3,15 @@ import type { AgentCommand } from '../../../shared/types/adf-v02.types'
 import { agentCommandsDraftFromConfig, validateAgentCommandsDraft } from './agent-commands-config'
 import { openApi } from '../../utils/runtime-api'
 import { Tooltip } from '../common/Tooltip'
-import { Button, TextInput } from '../ui'
-import { LockIcon, PERMISSION_ON_CLASS, WarningIcon } from './config-panel-parts'
+import { Button } from '../ui'
+import { LockBadge, WarningIcon } from './config-panel-parts'
+
+const FIELDS = [
+  { key: 'name', label: 'Name', placeholder: 'weather', mono: true },
+  { key: 'description', label: 'Description', placeholder: 'What the command does', mono: false },
+  { key: 'usage', label: 'Usage', placeholder: '<city> — optional', mono: false },
+  { key: 'lambda', label: 'Lambda', placeholder: 'lib/commands.ts:run', mono: true },
+] as const
 
 export function AgentCommandsSection({ commands, onSave, template = false }: {
   commands?: AgentCommand[]
@@ -35,7 +42,7 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
     setDraft(rows => rows.map((row, i) => i === index ? { ...row, ...patch } : row))
     setDirty(true)
   }
-  return <div className="space-y-3">
+  return <div className="space-y-2">
     <datalist id={listId}>{(files ?? []).map(file => <option key={file} value={`${file}:`} />)}</datalist>
     <div className="flex items-center justify-between">
       <span className="block text-xs text-neutral-500 dark:text-neutral-400">Commands</span>
@@ -44,42 +51,38 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
         + Add command
       </button>
     </div>
-    {draft.map((command, index) => <div key={index} className="space-y-2 rounded border border-[var(--adf-ui-border)] p-3">
-      {command.malformed !== undefined && <details className="text-xs text-[var(--adf-ui-danger)]">
+    {draft.map((command, index) => <div key={index} className={`rounded-md border p-2 space-y-1.5 ${command.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50'}`}>
+      {command.malformed !== undefined && <details className="text-[10px] text-[var(--adf-ui-danger)]">
         <summary className="cursor-pointer">Invalid command data</summary>
         <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap break-words">{command.malformed}</pre>
       </details>}
-      <div className="flex items-center justify-between gap-2">
-        <span className="text-xs text-[var(--adf-ui-text-muted)]">Command {index + 1}</span>
-        <div className="flex items-center gap-3">
-          <Tooltip tip={command.locked ? 'Locked by the owner: the agent cannot change or remove it. Click to unlock.' : 'Lock this command to prevent the agent from changing or removing it.'}>
-            <button type="button" aria-label={command.locked ? 'Unlock command' : 'Lock command'} aria-pressed={command.locked ?? false} className={`inline-flex items-center transition-colors ${command.locked ? PERMISSION_ON_CLASS.locked : 'text-[var(--adf-ui-icon-muted)] hover:text-[var(--adf-ui-text-subtle)]'}`} onClick={() => edit(index, { locked: !command.locked })}>
-              <LockIcon size={14} open={!command.locked} />
+      {FIELDS.map(({ key: field, label, placeholder, mono }) => {
+        const errors = validation.errors.filter(issue => issue.index === index && issue.field === field)
+        const warnings = validation.warnings.filter(issue => issue.index === index && issue.field === field)
+        const message = [...errors, ...warnings].map(issue => issue.message).join('\n')
+        const fieldId = `${listId}-${index}-${field}`
+        return <div key={field} className="flex items-center gap-1.5">
+          <label htmlFor={fieldId} className="text-[10px] text-[var(--adf-ui-text-subtle)] w-16 shrink-0">{label}</label>
+          <input id={fieldId} type="text" className={`field-input text-[10px] flex-1 min-w-0${mono ? ' font-mono' : ''}`}
+            aria-label={`Command ${index + 1} ${field}`} aria-invalid={errors.length > 0} aria-describedby={message ? `${fieldId}-issue` : undefined}
+            value={command[field] ?? ''} list={field === 'lambda' ? listId : undefined} placeholder={placeholder}
+            onChange={event => edit(index, { [field]: event.target.value })} />
+          {message && <Tooltip tip={message} className="inline-flex shrink-0">
+            <button type="button" aria-label={`Command ${index + 1} ${field}: ${errors.length ? 'error' : 'warning'}`} aria-describedby={`${fieldId}-issue`} className={`inline-flex cursor-help ${errors.length ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-warning)]'}`}>
+              <WarningIcon />
             </button>
-          </Tooltip>
-          <Button variant="danger" size="compact" onClick={() => { setDraft(rows => rows.filter((_, i) => i !== index)); setDirty(true) }}>Remove</Button>
+          </Tooltip>}
+          {message && <span id={`${fieldId}-issue`} className="sr-only">{message}</span>}
+          {field === 'name' && <div className="flex items-center gap-1 shrink-0">
+            <LockBadge locked={!!command.locked} size="xs" onClick={() => edit(index, { locked: !command.locked || undefined })} />
+            <button type="button" title="Remove command" aria-label={`Remove command ${index + 1}`}
+              className="text-[10px] text-red-400 hover:text-red-600 dark:hover:text-red-300"
+              onClick={() => { setDraft(rows => rows.filter((_, i) => i !== index)); setDirty(true) }}>
+              ×
+            </button>
+          </div>}
         </div>
-      </div>
-      <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-        {(['name', 'description', 'usage', 'lambda'] as const).map(field => {
-          const errors = validation.errors.filter(issue => issue.index === index && issue.field === field)
-          const warnings = validation.warnings.filter(issue => issue.index === index && issue.field === field)
-          const message = [...errors, ...warnings].map(issue => issue.message).join('\n')
-          const fieldId = `${listId}-${index}-${field}`
-          return <div key={field} className="space-y-1 text-xs text-[var(--adf-ui-text-muted)]">
-            <div className="flex items-center gap-1">
-              <label htmlFor={fieldId}>{({ name: 'Name', description: 'Description', usage: 'Usage (optional)', lambda: 'Lambda file:functionName' })[field]}</label>
-              {message && <Tooltip tip={message} className="inline-flex">
-                <button type="button" aria-label={`Command ${index + 1} ${field}: ${errors.length ? 'error' : 'warning'}`} aria-describedby={`${fieldId}-issue`} className={`inline-flex cursor-help ${errors.length ? 'text-[var(--adf-ui-danger)]' : 'text-[var(--adf-ui-warning)]'}`}>
-                  <WarningIcon />
-                </button>
-              </Tooltip>}
-            </div>
-            <TextInput id={fieldId} aria-label={`Command ${index + 1} ${field}`} aria-invalid={errors.length > 0} aria-describedby={message ? `${fieldId}-issue` : undefined} value={command[field] ?? ''} list={field === 'lambda' ? listId : undefined} placeholder={field === 'lambda' ? 'lib/commands.ts:run' : field === 'usage' ? '<city>' : undefined} onChange={event => edit(index, { [field]: event.target.value })} />
-            {message && <span id={`${fieldId}-issue`} className="sr-only">{message}</span>}
-          </div>
-        })}
-      </div>
+      })}
     </div>)}
     {(draft.length > 0 || dirty) && <div className="flex flex-wrap items-center gap-2">
       <Button variant="primary" size="compact" disabled={!dirty || !validation.canSave} onClick={() => {

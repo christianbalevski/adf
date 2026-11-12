@@ -425,8 +425,8 @@ export class TriggerEvaluator extends EventEmitter {
     withSource(`system:trigger:${triggerType}`, agentId, () => {
       emitUmbilicalEvent({
         event_type: 'trigger.fired',
-        // A target aimed at an inner loop stamps that loop, so clients file the wake under it.
-        ...(target.loop ? { loop: target.loop } : {}),
+        // An agent target aimed at an inner loop stamps that loop, so clients file the wake under it.
+        ...(target.scope === 'agent' && target.loop ? { loop: target.loop } : {}),
         payload: { trigger_type: triggerType, scope: target.scope, target_lambda: target.lambda ?? null }
       })
     })
@@ -555,8 +555,8 @@ export class TriggerEvaluator extends EventEmitter {
               // on the single-item path above. Without it a batched agent-scope
               // trigger written for a side loop routes to MAIN — the same
               // privilege escalation §2.3 exists to prevent, made worse by
-              // being nondeterministic in the batch size.
-              loop: target.loop,
+              // being nondeterministic in the batch size. System targets wake no loop.
+              loop: target.scope === 'agent' ? target.loop : undefined,
             } satisfies AdfBatchDispatch)
           }
         }, target.batch_count)

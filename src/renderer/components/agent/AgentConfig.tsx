@@ -658,7 +658,7 @@ export interface AgentConfigTemplateProps {
   onChange: (next: AgentConfigType) => void
 }
 
-/** True while rendering in template mode — lock affordances hide themselves. */
+/** True while rendering in template mode — jump-to-section requests are ignored. */
 const TemplateModeContext = createContext(false)
 
 export function AgentConfig({ template }: { template?: AgentConfigTemplateProps } = {}) {
@@ -3557,7 +3557,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           <div className="flex items-center justify-between mb-0.5">
             <label className="block text-xs text-neutral-500 dark:text-neutral-400">Security level<InfoHint tip="Open: no signing. Signed: messages are cryptographically signed. Encrypted: signed, and payloads to DID recipients are encrypted end-to-end (encryption key derived from the recipient’s DID). Channel-adapter messages are not encrypted." /></label>
             {!isSectionLocked('security') && (
-              <LockButton
+              <LockBadge
                 locked={isSectionLocked('security.level')}
                 size="xs"
                 onClick={() => toggleFieldLock('security.level', ['security.require_signature', 'security.require_payload_signature', 'security.require_encryption'])}
@@ -3658,7 +3658,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             <div className="flex items-center justify-between mb-1">
               <label className="block text-xs text-neutral-500 dark:text-neutral-400">Table Permissions<InfoHint tip="Append-only blocks updates and deletes; Restricted lets only authorized code write." /></label>
               {!isSectionLocked('security') && (
-                <LockButton
+                <LockBadge
                   locked={isSectionLocked('security.table_protections')}
                   size="xs"
                   onClick={() => toggleFieldLock('security.table_protections')}
@@ -3742,7 +3742,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             <div className="flex items-center justify-between mb-1">
               <label className="block text-xs text-neutral-500 dark:text-neutral-400">Custom Middleware<InfoHint tip="Lambda functions executed in order on each message. Format: path/file.ts:functionName" /></label>
               {!isSectionLocked('security') && (
-                <LockButton
+                <LockBadge
                   locked={isSectionLocked('security.middleware')}
                   size="xs"
                   onClick={() => toggleFieldLock('security.middleware')}
@@ -3860,7 +3860,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <div className="flex items-center gap-1">
                   <span className="text-[10px] text-neutral-500 dark:text-neutral-400 font-medium">Fetch</span>
                   {!isSectionLocked('security') && (
-                    <LockButton
+                    <LockBadge
                       locked={isSectionLocked('security.fetch_middleware')}
                       size="xs"
                       onClick={() => toggleFieldLock('security.fetch_middleware')}
@@ -3929,7 +3929,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               </div>
               <div className="flex items-center gap-1.5">
                 {!isSectionLocked('security') && (
-                  <LockButton
+                  <LockBadge
                     locked={isSectionLocked('security.require_middleware_authorization')}
                     size="xs"
                     onClick={() => toggleFieldLock('security.require_middleware_authorization')}
@@ -4109,7 +4109,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                     placeholder="/status"
                     className="flex-1 min-w-0 px-2 py-1 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
                   />
-                  <LockButton
+                  <LockBadge
                     locked={!!route.locked}
                     size="xs"
                     onClick={() => {
@@ -4779,7 +4779,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   </div>
                   <div className="flex items-center gap-1.5">
                     {!isSectionLocked('triggers') && (
-                      <LockButton
+                      <LockBadge
                         locked={!!triggerCfg.locked}
                         size="xs"
                         onClick={() => updateTriggerCfg({ locked: !triggerCfg.locked || undefined })}
@@ -4809,14 +4809,16 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             <select
                               className="field-input text-[10px] w-20"
                               value={target.scope}
-                              onChange={(e) => updateTarget(ti, { scope: e.target.value as TriggerScopeV3, lambda: e.target.value === 'agent' ? undefined : target.lambda, warm: e.target.value === 'agent' ? undefined : target.warm })}
+                              onChange={(e) => updateTarget(ti, e.target.value === 'agent'
+                                ? { scope: 'agent', lambda: undefined, command: undefined, warm: undefined }
+                                : { scope: 'system', loop: undefined })}
                             >
                               <option value="agent">Agent</option>
                               <option value="system">System</option>
                             </select>
                             <div className="ml-auto flex items-center gap-1">
                               {!triggerCfg.locked && (
-                                <LockButton
+                                <LockBadge
                                   locked={!!target.locked}
                                   size="xs"
                                   onClick={() => updateTarget(ti, { locked: !target.locked || undefined })}
@@ -4834,8 +4836,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               ×
                             </button>
                           </div>
-                          {/* Target loop — only meaningful once side loops exist */}
-                          {sideLoops.length > 0 && (
+                          {/* Target loop — agent scope only (the runtime ignores loop on a system
+                              target). Shown once side loops exist, or while the target names a
+                              loop that was since deleted, so it can be cleared. */}
+                          {target.scope === 'agent' && (sideLoops.length > 0 || !!target.loop) && (
                             <div className="flex items-center gap-1.5">
                               <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Loop</span>
                               <select
@@ -4854,11 +4858,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                                   <option value={target.loop}>{target.loop} (not declared)</option>
                                 )}
                               </select>
-                              {target.loop && target.scope === 'system' && (
-                                <span className="text-[10px] text-amber-600 dark:text-amber-400">
-                                  System-scope targets never reach an inner loop
-                                </span>
-                              )}
                             </div>
                           )}
 
@@ -6072,7 +6071,7 @@ function Section({
         {title}
         {hint && <InfoHint tip={hint} />}
         {onToggleLock && (
-          <LockButton locked={!!locked} onClick={onToggleLock} />
+          <LockBadge locked={!!locked} onClick={onToggleLock} />
         )}
         {collapsed && summary && (
           <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-[var(--adf-ui-text-subtle)] truncate">{summary}</span>
@@ -6089,12 +6088,6 @@ function Section({
       )}
     </div>
   )
-}
-
-function LockButton({ locked, onClick, size = 'sm' }: { locked: boolean; onClick: () => void; size?: 'sm' | 'xs' }) {
-  // Locks belong to a running agent; the template has none to show.
-  if (useContext(TemplateModeContext)) return null
-  return <LockBadge locked={locked} onClick={onClick} size={size} />
 }
 
 /** Number input that allows empty field while typing; commits on blur. */
