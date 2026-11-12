@@ -543,6 +543,29 @@ describe('daemon file routes: snapshots, export, save-as, import', () => {
 })
 
 describe('daemon file routes: raw internal files', () => {
+  it('reads collision names that grow beyond the raw upload path limit', async () => {
+    const root = tempDir('adf-long-drop-')
+    const a = seedAgent(root, 'agent-1')
+    const { server, runtime } = setup({ trackedDirectories: [root] })
+    const ref = await runtime.loadAgent(a.filePath, { enforceReviewGate: false })
+    const path = [...Array(4).fill('d'.repeat(200)), 'f'.repeat(217) + '.md'].join('/')
+    expect(path.length).toBe(1024)
+    const upload = (name: string, content: string) => server.inject({ method: 'PUT', url: `/agents/${ref.id}/files/raw?path=${q(name)}&unique=true`, payload: Buffer.from(content), headers: { 'content-type': 'application/octet-stream' } })
+    expect((await upload(path, 'original')).statusCode).toBe(200)
+    const collision = await upload(path, 'dropped')
+    expect(collision.statusCode).toBe(200)
+    const saved = collision.json().path as string
+    expect(saved.length).toBe(1026)
+    const meta = await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/meta?path=${q(saved)}` })
+    expect(meta.statusCode).toBe(200)
+    expect(meta.json()).toMatchObject({ path: saved, text: true })
+    const read = (name: string) => server.inject({ method: 'GET', url: `/agents/${ref.id}/files/raw?path=${q(name)}` })
+    expect((await read(saved)).body).toBe('dropped')
+    expect((await read(path)).body).toBe('original')
+    // Reading a generated path does not widen the accepted upload path.
+    expect((await upload(saved, 'replacement')).statusCode).toBe(400)
+  })
+
   it('holds a lease through a raw write and releases it when the document remains stopped', async () => {
     const root = tempDir('adf-stream-write-lease-')
     const { id, filePath } = seedAgent(root, 'agent-1')

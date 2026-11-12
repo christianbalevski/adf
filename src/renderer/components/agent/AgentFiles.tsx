@@ -329,14 +329,15 @@ export function AgentFiles() {
       for (const { path, file } of allFiles) {
         const buffer = await file.arrayBuffer()
         const data = Array.from(new Uint8Array(buffer))
-        await openApi()?.uploadFile(path, data, file.type || undefined)
+        // Choose collision-free names in the backend, including across concurrent drops.
+        await openApi()?.uploadFile(path, data, file.type || undefined, { unique: true })
       }
     } else {
       // Fallback for browsers without webkitGetAsEntry
       for (const file of Array.from(e.dataTransfer.files)) {
         const buffer = await file.arrayBuffer()
         const data = Array.from(new Uint8Array(buffer))
-        await openApi()?.uploadFile(file.name, data, file.type || undefined)
+        await openApi()?.uploadFile(file.name, data, file.type || undefined, { unique: true })
       }
     }
     fetchFiles()

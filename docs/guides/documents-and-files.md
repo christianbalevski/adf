@@ -120,7 +120,7 @@ From here you can:
 
 - **Browse the folder tree** — Expand and collapse directories to navigate the file structure
 - **Open files in the editor** — Click a file to open it in the tabbed code editor (see below)
-- **Upload files** — Drag and drop files into the panel. Files with unrecognized extensions (e.g., `.adf`, `.db`, `.dat`) are stored as binary with `application/octet-stream` MIME type
+- **Upload files** — Drag and drop files or folders into the panel. Drops keep existing files: different content with the same path gets a numbered name, such as `README-2.md`. The upload checks names in order and stops at an identical file or the first available name. Dropped folders retain their directory structure. Files with unrecognized extensions (e.g., `.adf`, `.db`, `.dat`) are stored as binary with `application/octet-stream` MIME type
 - **Rename/delete/protect** — Use the file preview modal (click a file) to rename, delete, or cycle protection levels
 - **View metadata** — The file preview modal shows size, MIME type, protection level, and created/modified timestamps
 

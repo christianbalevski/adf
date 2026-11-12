@@ -311,7 +311,7 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
 
   server.put<{ Params: { id: string }; Querystring: { path?: string; mimeType?: string; unique?: string; baseRevision?: string; mustNotExist?: string } }>('/agents/:id/files/raw', async (request, reply) => {
     const path = request.query.path
-    if (!validInternalPath(path)) return badRequest(reply, 'path is required')
+    if (!validInternalPath(path) || path.length > 1024) return badRequest(reply, 'path is required')
     const unique = parseBool(request.query.unique)
     if (unique === null) return badRequest(reply, 'unique must be true or false')
     // W3-F, as PUT …/files/content: the base revision as If-Match or
@@ -487,7 +487,9 @@ function parseBool(raw: string | undefined): boolean | null {
 }
 
 function validInternalPath(path: unknown): path is string {
-  return typeof path === 'string' && path.trim() !== '' && path.length <= 1024 && !path.includes('\0')
+  // Reads must accept stored names that grew past the upload limit when a
+  // collision added a numeric suffix. The limit belongs to incoming writes.
+  return typeof path === 'string' && path.trim() !== '' && !path.includes('\0')
 }
 
 function isOctetStream(request: FastifyRequest): boolean {
