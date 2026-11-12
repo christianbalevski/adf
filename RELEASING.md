@@ -23,11 +23,15 @@ That's it. Pushing the tag triggers `.github/workflows/release.yml`:
 1. **build** (matrix, **blocking**) — the three critical platforms each run
    `npm run release`, uploading to a single **draft** GitHub Release:
    - `macos-15` → `…-arm64.dmg` (Apple Silicon) **and** `…-universal.dmg`
-     (runs on Apple Silicon and Intel — the download for Intel users)
+     (runs on Apple Silicon and Intel — the download for Intel users), plus
+     the corresponding `.zip` packages used by the macOS updater
    - `windows-2022` → `…-Setup-….exe`
    - `ubuntu-latest` → `….deb` + `….AppImage`
-2. **publish** — as soon as all three builds succeed, generates release notes
-   from every commit since the previous version tag
+
+   Each job attests its final installer/update packages after packaging,
+   signing/notarization where applicable, upload, and package checks.
+2. **publish** — as soon as all three builds and their attestations succeed,
+   generates release notes from every commit since the previous version tag
    (`scripts/release-notes.mjs`, grouped by conventional-commit prefix), sets
    them as the release body, and flips the draft to published. Live at
    `https://github.com/christianbalevski/adf/releases/latest`.
@@ -154,6 +158,80 @@ npm run package                           # builds into dist/, does NOT publish
 To test the publish path itself, `GH_TOKEN=$(gh auth token) npm run release`
 uploads to a draft from your machine — but it only attaches *your* OS's
 installer, so let CI produce real multi-platform releases.
+
+## Independently verifying installer provenance
+
+The tagged release workflow generates GitHub artifact attestations for the
+final DMG, macOS updater ZIP, Windows NSIS EXE, DEB and AppImage files. It
+hashes the completed packages uploaded by electron-builder to the draft
+release, rather than intermediate `app.asar` files or unpacked applications.
+GitHub may normalize spaces in uploaded filenames; verification binds the
+downloaded **bytes** by digest. Blockmaps and `latest*.yml` updater metadata
+are outside this attestation's scope.
+
+The workflow uses the SHA-pinned [`actions/attest` action](https://github.com/actions/attest),
+which generates SLSA build provenance by default (the successor to
+`actions/attest-build-provenance`). Only the installer build matrix receives
+`attestations: write` and the signing certificate's `id-token: write`, along
+with `contents: write` for release uploads. The publication job only needs
+`contents: write`; other jobs default to `contents: read`. The npm publisher's
+existing OIDC permission is separate and does not attest installers. A missing
+expected package or failed attestation fails the build job and blocks draft
+publication.
+
+Use an authenticated [GitHub CLI](https://cli.github.com/) with
+[`gh attestation verify`](https://cli.github.com/manual/gh_attestation_verify).
+Download the package itself and require the repository, release workflow and
+tag identities:
+
+```bash
+# Concrete existing release/name example; v0.8.9 predates attestations.
+# For a release built with this workflow, set tag and artifact to its values.
+tag=v0.8.9
+artifact=adf-studio_0.8.9_amd64.deb
+gh release view "$tag" --repo christianbalevski/adf --json assets --jq '.assets[].name'
+gh release download "$tag" --repo christianbalevski/adf \
+  --pattern "$artifact" --dir "verify-$tag"
+gh attestation verify "verify-$tag/$artifact" \
+  --repo christianbalevski/adf \
+  --signer-workflow christianbalevski/adf/.github/workflows/release.yml \
+  --source-ref "refs/tags/$tag"
+```
+
+These are real downloadable names from
+[`v0.8.9`](https://github.com/christianbalevski/adf/releases/tag/v0.8.9), checked
+on 12 November 2026. Substitute the selected release's version in each name:
+
+| Platform/package | Release asset name |
+| --- | --- |
+| macOS Apple Silicon | `ADF-Studio-0.8.9-arm64.dmg` |
+| macOS universal (Intel and Apple Silicon) | `ADF-Studio-0.8.9-universal.dmg` |
+| macOS Apple Silicon updater | `ADF-Studio-0.8.9-arm64.zip` |
+| macOS universal updater | `ADF-Studio-0.8.9-universal.zip` |
+| Windows x64 | `ADF-Studio-Setup-0.8.9.exe` |
+| Linux x64 DEB | `adf-studio_0.8.9_amd64.deb` |
+| Linux x64 AppImage | `ADF-Studio-0.8.9.AppImage` |
+
+Require a successful verification exit status. A missing attestation is a
+verification failure, not evidence of provenance; older releases are not
+retroactively covered. **Successful verification of a release built with this
+change is pending the first authorized release containing it.** No release was
+created or republished to validate this change.
+
+Validation on 12 November 2026: `actionlint` 1.7.12 passed for
+`.github/workflows/release.yml`. Local fixture checks covered all seven package
+patterns (including Windows filenames with spaces), rejected each missing
+package, and excluded intermediate files and updater metadata. Downloading
+the real `v0.8.9` DEB and running the verification command with GitHub CLI
+2.86.0 exited 1 with HTTP 404 from the attestation API for its digest, as
+expected for a release made before this workflow change.
+
+Provenance identifies the producing repository/workflow and source revision.
+It does not establish that the source is safe or reproducible, and is distinct
+from OS code signing, Apple notarization and Windows SmartScreen reputation.
+The bundled coreutils WASM's upstream source, pinned inputs, build commands and
+reproducibility limits are recorded in
+[`resources/wasm/README.md`](resources/wasm/README.md).
 
 ## npm package (`@agentdocumentformat/cli`)
 
