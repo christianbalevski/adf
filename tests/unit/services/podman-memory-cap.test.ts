@@ -89,17 +89,17 @@ describe('containerMemoryArgs', () => {
   })
 
   it.each([[512, '512m'], [32768, '32768m'], ['8192', '8192m']])('passes %j through as %s, with no warning', (value, limit) => {
-    expect(containerMemoryArgs({ containerMemoryMb: value as never })).toEqual(['--memory', limit, '--memory-swap', limit])
+    expect(containerMemoryArgs({ containerMemoryMb: value })).toEqual(['--memory', limit, '--memory-swap', limit])
     expect(warnings).toEqual([])
   })
 
   it('applies no cap for "0", with no warning', () => {
-    expect(containerMemoryArgs({ containerMemoryMb: '0' as never })).toEqual([])
+    expect(containerMemoryArgs({ containerMemoryMb: '0' })).toEqual([])
     expect(warnings).toEqual([])
   })
 
   it.each([[1], [4], [100], [511], [32769], [2 ** 43], [-1], [1.5], [1e21], ['abc'], [true], [null]])('gets the default for %j and warns once, naming both values', (value) => {
-    expect(containerMemoryArgs({ containerMemoryMb: value as never })).toEqual(CAP_ARGS)
+    expect(containerMemoryArgs({ containerMemoryMb: value })).toEqual(CAP_ARGS)
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain(JSON.stringify(value))
     expect(warnings[0]).toContain('4096')
@@ -289,6 +289,7 @@ describe('existing containers', () => {
     await service.ensureRunning()
     expect(updateCalls(fake)).toEqual([])
     expect(service.getStatus().status).toBe('running')
+    expect(warnings.find((w) => w.includes('memory limit'))).toContain('its current limit is unreadable')
   })
 })
 
@@ -626,6 +627,7 @@ describe('one memory sync rule per container', () => {
     expect(memoryInspects(fake)).toHaveLength(1)
     expect(updateCalls(fake)).toHaveLength(exists ? 1 : 0)
     expect(warnings.filter((w) => w.includes('memory limit'))).toHaveLength(1)
+    if (!exists) expect(warnings.find((w) => w.includes('memory limit'))).toContain(`no such container ${NAME}`)
   })
 
   it.each([

@@ -1138,6 +1138,7 @@ export class PodmanService extends EventEmitter {
       this._sharedRunningSettled = false
     }
     this.bumpContainerGeneration(name)
+    this.clearMemorySync(name, true)
     this._browserReadyPending.delete(name)
   }
 
@@ -1145,7 +1146,6 @@ export class PodmanService extends EventEmitter {
    *  generation so stale in-flight ensures cannot re-populate the cache. */
   private bumpContainerGeneration(name: string): void {
     this._containerGen.set(name, (this._containerGen.get(name) ?? 0) + 1)
-    this.clearMemorySync(name, true)
     for (const key of [...this._workspacesEnsured]) {
       if (key.startsWith(`${name}\0`)) this._workspacesEnsured.delete(key)
     }
@@ -2135,7 +2135,7 @@ export class PodmanService extends EventEmitter {
       const bin = await this.requirePodman()
       const current = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.HostConfig.Memory}}'])
       const text = current.stdout.trim()
-      if (current.code !== 0 || !/^\d+$/.test(text)) throw new Error('its current limit is unreadable')
+      if (current.code !== 0 || !/^\d+$/.test(text)) throw new Error(current.stderr.trim().slice(0, 200) || 'its current limit is unreadable')
       const args = containerMemoryUpdateArgs(Number(text), { containerMemoryMb: setting })
       if (!args) return true
       const controller = await this.hasMemoryController(bin)
@@ -2156,7 +2156,7 @@ export class PodmanService extends EventEmitter {
   private syncMemoryLimit(name: string): Promise<void> {
     const setting = this._getSettings().containerMemoryMb
     const known = this._memorySyncs.get(name)
-    if (known && 'setting' in known && known.setting === setting && !(known.failedAt !== undefined && Date.now() - known.failedAt >= PODMAN_MISS_TTL_MS)) return known.done
+    if (known && known.setting === setting && !(known.failedAt !== undefined && Date.now() - known.failedAt >= PODMAN_MISS_TTL_MS)) return known.done
     const record = { setting, done: Promise.resolve(), failedAt: undefined as number | undefined }
     record.done = (known?.done ?? Promise.resolve()).then(() => this.applyContainerMemoryLimit(name, setting)).then((inLine) => {
       if (!inLine) record.failedAt = Date.now()

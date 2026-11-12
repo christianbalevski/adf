@@ -2365,7 +2365,7 @@ function ComputeTab({
     <SettingsGroup
       title="Default container"
       description="Applies to new containers and rebuilds."
-      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows."
+      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS; on Windows (WSL), Memory has no effect; on Linux, containers use this computer's resources."
     >
       <SettingsRow label="Image">
         <CommitInput
@@ -2398,7 +2398,7 @@ function ComputeTab({
           className="!w-24 !text-[12px]"
         />
       </SettingsRow>
-      <SettingsRow separator label={<>Memory<InfoHint tip="Podman machine size in megabytes; not used on Linux." /></>}>
+      <SettingsRow separator label={<>Memory<InfoHint tip="In megabytes." /></>}>
         <CommitInput
           aria-label="Memory"
           inputMode="numeric"
