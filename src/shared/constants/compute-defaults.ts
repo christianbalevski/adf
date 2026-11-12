@@ -66,7 +66,7 @@ export const CONTAINER_MEMORY_MIN_MB = 512
 export const CONTAINER_MEMORY_MAX_MB = 32768
 
 /** A number, or a numeric string as one; undefined for anything else. */
-function numeric(value: unknown): number | undefined {
+export function numeric(value: unknown): number | undefined {
   const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
   return typeof n === 'number' && Number.isFinite(n) ? n : undefined
 }
@@ -87,8 +87,8 @@ export function readComputeSettings(raw: unknown) {
       : DEFAULT_COMPUTE_SETTINGS.containerPackages,
     machineCpus: numeric(compute.machineCpus) ?? DEFAULT_COMPUTE_SETTINGS.machineCpus,
     machineMemoryMb: numeric(compute.machineMemoryMb) ?? DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
-    // An invalid value passes through, so the service can warn about it.
-    containerMemoryMb: (compute.containerMemoryMb === undefined ? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb : effectiveContainerMemoryMb(compute.containerMemoryMb) ?? compute.containerMemoryMb) as number,
+    // Judged, with a warning, where it is used (podman.service containerMemoryLimitMb).
+    containerMemoryMb: compute.containerMemoryMb === undefined ? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb as unknown : compute.containerMemoryMb,
     containerImage: typeof compute.containerImage === 'string' ? compute.containerImage : DEFAULT_COMPUTE_SETTINGS.containerImage,
   }
 }

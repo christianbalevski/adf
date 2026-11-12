@@ -295,7 +295,7 @@ describe('existing containers', () => {
 // Each path starts a stopped container; `reported` says the path has told the world it is up.
 const BRING_UPS: [string, string, (s: PodmanService) => Promise<unknown>, (s: PodmanService, f: FakePodman, phases: string[]) => boolean][] = [
   ['shared', SHARED, (s) => s.ensureRunning(), (s) => s.getStatus().status === 'running'],
-  ['per-agent', AGENT, (s) => s.ensureIsolatedRunning('agent', AGENT_ID, ['x'], undefined, false), (_s, f) => f.calls.some((a) => a.includes('pip'))],
+  ['per-agent', AGENT, (s) => s.ensureIsolatedRunning('agent', AGENT_ID, ['x'], undefined, false), (_s, _f, phases) => phases.includes('ready')],
   ['Settings start', 'adf-agent-1', (s) => s.startContainer('adf-agent-1'), (_s, _f, phases) => phases.includes('ready')],
 ]
 
@@ -325,14 +325,18 @@ describe('order at bring-up', () => {
     expect(reportedAtUpdate).toBe(true)
   })
 
-  it('a failed pip install still applies the limit, and still fails the bring-up', async () => {
+  it('applies the limit before pip, so a failed pip install still has it, and still fails the bring-up', async () => {
     const { service, fake } = setup()
     fake.add({ name: AGENT })
     const answer = fake.exec0
-    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) =>
-      args.includes('pip') ? { stdout: '', stderr: 'pip boom', code: 1 } : answer(bin, args)
+    let cappedAtPip: number | undefined
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (!args.includes('pip')) return answer(bin, args)
+      cappedAtPip = fake.containers.get(AGENT)?.memoryBytes
+      return { stdout: '', stderr: 'pip boom', code: 1 }
+    }
     await expect(service.ensureIsolatedRunning('agent', AGENT_ID, ['x'], undefined, false)).rejects.toThrow(/pip boom/)
-    expect(fake.containers.get(AGENT)?.memoryBytes).toBe(4096 * MIB)
+    expect(cappedAtPip).toBe(4096 * MIB)
   })
 })
 
@@ -409,11 +413,13 @@ describe('shared container already brought up this session', () => {
     expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
   })
 
-  it('does not retry when the controller is missing', async () => {
+  it('does not retry when the controller is missing, even after the interval', async () => {
     const { service, fake } = setup(4096, ['cpu', 'pids'])
     fake.add({ name: SHARED })
     await service.ensureRunning()
     const before = fake.calls.length
+    await service.ensureRunning()
+    later()
     await service.ensureRunning()
     expect(fake.calls.length).toBe(before)
   })
@@ -494,11 +500,15 @@ describe('memory controller check', () => {
     expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
   })
 
-  it('does not remember a probe that failed', async () => {
+  it('asks again after a failed probe, once the interval has passed', async () => {
     const { service, fake } = setup(4096, null)
+    const probes = () => calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))
     await service.spawnImageProcess('img:1', 'node', [])
     await service.spawnImageProcess('img:1', 'node', [])
-    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(2)
+    expect(probes()).toHaveLength(1)
+    later()
+    await service.spawnImageProcess('img:1', 'node', [])
+    expect(probes()).toHaveLength(2)
   })
 
   it('probes again after the setup wizard changes the machine', async () => {
@@ -601,11 +611,54 @@ describe('one memory sync rule per container', () => {
     fake.controllers = undefined // the create's probe fails, so it runs uncapped
     const answer = fake.exec0
     ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
-      if (args[0] === 'run') fake.controllers = ['memory']
+      if (args[0] === 'run') { fake.controllers = ['memory']; later() } // and the failed probe's interval passes
       return answer(bin, args)
     }
     await bringUpAgent(service)
     expect(fake.containers.get(AGENT)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it.each([['stopped', true], ['missing', false]])('a failed apply keeps its back-off when the exec finds the container %s', async (_state, exists) => {
+    const { service, fake } = setup()
+    if (exists) fake.add({ name: NAME, running: false })
+    fake.failUpdate = true
+    for (let i = 0; i < 5; i++) await exec(service)
+    expect(memoryInspects(fake)).toHaveLength(1)
+    expect(updateCalls(fake)).toHaveLength(exists ? 1 : 0)
+    expect(warnings.filter((w) => w.includes('memory limit'))).toHaveLength(1)
+  })
+
+  it.each([
+    ['a Settings start', NAME, (s: PodmanService) => s.startContainer(NAME)],
+    ['a bring-up restart', AGENT, (s: PodmanService) => bringUpAgent(s)],
+  ])('%s retries a failed apply at once', async (_path, name, start) => {
+    const { service, fake } = setup()
+    fake.add({ name, running: false })
+    fake.failUpdate = true
+    await exec(service, name)
+    fake.failUpdate = false
+    await start(service)
+    expect(fake.containers.get(name)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('a start waits for an apply already running, so the latest setting lands last', async () => {
+    const { service, fake, settings } = setup(1024)
+    fake.add({ name: NAME })
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args[0] === 'update' && args.includes('1024m')) await gate
+      return answer(bin, args)
+    }
+    const first = exec(service)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    settings.containerMemoryMb = 2048
+    const started = service.startContainer(NAME)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    release()
+    await Promise.all([first, started])
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(2048 * MIB)
   })
 
   it('applies run in order, so the latest setting lands last', async () => {
@@ -735,9 +788,9 @@ describe('compute settings reader', () => {
     expect(warnings.filter((w) => w.includes('containerMemoryMb') && w.includes(JSON.stringify(value))).length).toBeGreaterThan(0)
   })
 
-  it('reads numeric strings as numbers', () => {
+  it('reads numeric machine strings as numbers, and leaves containerMemoryMb to the service', () => {
     expect(readComputeSettings({ machineCpus: '4', machineMemoryMb: '4096', containerMemoryMb: '8192' }))
-      .toMatchObject({ machineCpus: 4, machineMemoryMb: 4096, containerMemoryMb: 8192 })
+      .toMatchObject({ machineCpus: 4, machineMemoryMb: 4096, containerMemoryMb: '8192' })
   })
 
   it('a missing containerMemoryMb gets the default with no warning', () => {

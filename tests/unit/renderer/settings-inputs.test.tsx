@@ -31,17 +31,19 @@ describe('container memory limit', () => {
     expect(checkContainerMemory('0')).toEqual({ ok: true, value: 0 })
     expect(checkContainerMemory(' 512 ')).toEqual({ ok: true, value: 512 })
     expect(checkContainerMemory('32768')).toEqual({ ok: true, value: 32768 })
-    for (const bad of ['', '1', '511', '32769', '-1', '1.5', 'abc']) {
+    expect(checkContainerMemory('00'), 'the service reads "00" as 0').toEqual({ ok: true, value: 0 })
+    for (const bad of ['', '1', '511', '32769', '-1', '1.5', 'abc', '1e3', '0x200', '4096.0']) {
       expect(checkContainerMemory(bad), bad).toEqual({ ok: false, error: 'Enter 0 for no limit, or a whole number from 512 to 32768.' })
     }
   })
 
-  // No DOM here: call the component and use the field's handlers from its element tree.
-  const field = (value: number, onChange: (v: number) => void) => {
-    const row = (ContainerMemoryGroup({ value, onChange }) as React.ReactElement<{ children: React.ReactElement<{ children: React.ReactElement }> }>).props.children
-    expect(row.props.children.type).toBe(CommitInput)
-    return row.props.children.props as { value: string; onCommit: (v: string) => void; check: (v: string) => string | null }
+  // No DOM here: call the component and find the field's handlers wherever it sits in the element tree.
+  type Field = { value: string; onCommit: (v: string) => void; check: (v: string) => string | null }
+  const find = (node: unknown): Field | undefined => {
+    if (!React.isValidElement(node)) return Array.isArray(node) ? node.map(find).find(Boolean) : undefined
+    return node.type === CommitInput ? node.props as Field : find((node.props as { children?: unknown }).children)
   }
+  const field = (value: number, onChange: (v: number) => void) => find(ContainerMemoryGroup({ value, onChange }))!
 
   it('shows a saved 0', () => {
     expect(renderToStaticMarkup(<ContainerMemoryGroup value={0} onChange={() => {}} />)).toContain('value="0"')

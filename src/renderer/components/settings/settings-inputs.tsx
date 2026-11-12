@@ -21,9 +21,8 @@ export function checkWholeNumber(raw: string, min: number, max: number): Checked
 
 /** A container memory cap in MB: 0 for no cap, otherwise in the shared range. */
 export function checkContainerMemory(raw: string): Checked<number> {
-  if (raw.trim() === '0') return { ok: true, value: 0 }
-  const checked = checkWholeNumber(raw, CONTAINER_MEMORY_MIN_MB, CONTAINER_MEMORY_MAX_MB)
-  return checked.ok ? checked : { ok: false, error: `Enter 0 for no limit, or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}.` }
+  const mb = /^\d+$/.test(raw.trim()) ? effectiveContainerMemoryMb(raw) : null
+  return mb !== null ? { ok: true, value: mb } : { ok: false, error: `Enter 0 for no limit, or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}.` }
 }
 
 /** A manual mesh peer: `host:port`, or a bare host (the mesh port is used). */

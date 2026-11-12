@@ -6,7 +6,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { PodmanService } from '../../../src/main/services/podman.service'
 
 const SWIFTSHADER_FLAG = '--enable-unsafe-swiftshader'
-const ROTATION = 'mv -f /tmp/adf-browser/chromium.log /tmp/adf-browser/chromium.log.1 2>/dev/null'
 
 /** The script Studio installs: taken from the real install exec, where it
  *  travels as a base64 blob. */
@@ -23,18 +22,6 @@ async function installedScript(): Promise<string> {
   if (!blob) throw new Error('adf-browser install command not found')
   return Buffer.from(blob, 'base64').toString('utf8')
 }
-
-describe('adf-browser generated script', () => {
-  it('passes the flag on the exec line and rotates only in launch-detached', async () => {
-    const script = await installedScript()
-    const launchBody = /^launch\(\) \{\n([\s\S]*?)^\}/m.exec(script)?.[1] ?? ''
-    const execLine = launchBody.split('\n').find((line) => line.trim().startsWith('exec ')) ?? ''
-    expect(execLine).toContain(SWIFTSHADER_FLAG)
-    expect(execLine).toContain('>>/tmp/adf-browser/chromium.log')
-    expect(launchBody).not.toContain('chromium.log.1')
-    expect(script.split('\n').find((line) => line.trim().startsWith('launch-detached)'))).toContain(ROTATION)
-  })
-})
 
 // Runs the generated script for real, with its absolute paths moved into a temp
 // dir and chromium, wget and xdotool faked on PATH. Needs a POSIX sh.
@@ -124,16 +111,25 @@ describe.skipIf(process.platform === 'win32')('adf-browser run under sh', () => 
   })
 
   // The tests above fake setsid (macOS has none); this one runs the real detach.
-  it.runIf(process.platform === 'linux')('start detaches the browser through the real setsid', async () => {
+  it.runIf(process.platform === 'linux')('start detaches the browser through the real setsid, and rotates', async () => {
     const box = await sandbox()
     rmSync(join(box.argsFile, '..', 'bin', 'setsid'))
+    const sidFile = join(box.argsFile, '..', 'sid')
+    // Session id is field 6 of /proc/<pid>/stat, i.e. the 4th after the ") " that ends the command name.
+    const sessionOf = "sed 's/.*) //' /proc/$$/stat | cut -d' ' -f4"
+    box.fake('chromium', `${sessionOf} > '${sidFile}'\nprintf '%s\\n' "$@" > '${box.argsFile}'\necho fresh-output`)
     box.fake('wget', `[ -s '${box.argsFile}' ]`) // CDP answers once the browser has launched
+    writeFileSync(box.log, 'previous-run\n')
 
     const result = box.run('start', 'https://example.test/')
 
     expect(result.status).toBe(0)
     expect(box.args()).toContain('https://example.test/')
     expect(box.args()).toContain(SWIFTSHADER_FLAG)
+    const testSession = readFileSync(`/proc/${process.pid}/stat`, 'utf8').replace(/^.*\) /s, '').split(' ')[3]
+    expect(readFileSync(sidFile, 'utf8').trim()).toMatch(/^\d+$/)
+    expect(readFileSync(sidFile, 'utf8').trim()).not.toBe(testSession)
+    expect(readFileSync(box.previous, 'utf8')).toBe('previous-run\n')
   })
 
   it('leaves the live log alone when handing a URL to a running browser', async () => {
