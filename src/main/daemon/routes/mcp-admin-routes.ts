@@ -8,7 +8,7 @@
 //   POST /admin/mcp/interactions/:interactionId/continue
 //   POST /admin/mcp/interactions/:interactionId/cancel
 //   GET  /admin/mcp/logs/:serverName?agentId=          MCP_GET_SERVER_LOGS
-//   GET  /admin/mcp/oauth/status?url=                  MCP_OAUTH_STATUS (signed-in flag only)
+//   GET  /admin/mcp/oauth/status?name=&url=            MCP_OAUTH_STATUS (signed-in flag only; no url: an auth server)
 //   POST /admin/mcp/oauth/signout                      MCP_OAUTH_SIGNOUT { url }
 //   POST /admin/mcp/python-runtime                     MCP_ENSURE_PYTHON_RUNTIME → 202 { jobId, job }
 //
@@ -218,9 +218,7 @@ export function registerMcpAdminRoutes(server: FastifyInstance, ctx: DaemonRoute
   })
 
   server.get<{ Querystring: { name?: string; url?: string } }>('/admin/mcp/oauth/status', async (request) => {
-    const store = gapDeps(ctx).mcpAppOAuthStore
-    if (!store) return { signedIn: false }
-    return mcpOAuthStatus(store, { name: request.query.name, url: request.query.url })
+    return mcpOAuthStatus(gapDeps(ctx).mcpAppOAuthStore, { name: request.query.name, url: request.query.url }, options.settingsStore)
   })
 
   server.post<{ Body: { name?: unknown } | null }>('/admin/mcp/oauth/signout', async (request) => {

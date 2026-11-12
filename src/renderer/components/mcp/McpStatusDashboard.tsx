@@ -5,7 +5,7 @@ import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
-import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, registryEntryFor, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
+import { McpAddServerModal, HOST_BOUNDARY_TEXT, authNeedsSignIn, hasEmptyRequiredKeys, registryEntryFor, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
 import { builtInManagedServer, installManagedMcpPackage } from './runtime-mcp-servers'
 import { ComputeNeededSheet } from './ComputeNeededSheet'
 import { Tooltip } from '../common/Tooltip'
@@ -32,9 +32,33 @@ export const STATUS_LABELS: Record<string, string> = {
   needs_compute: 'Compute unavailable'
 }
 
+/**
+ * A row's status. A server signed out of its own auth command may run and
+ * list tools that all fail: it needs a sign-in, whatever its process does.
+ */
+export function serverRowStatus(
+  reg: Pick<McpServerRegistration, 'auth'>,
+  processStatus: string | undefined,
+  installing: boolean,
+  signedIn: boolean | undefined,
+): string {
+  if (installing) return 'installing'
+  return authNeedsSignIn(reg, signedIn) ? 'needs_sign_in' : (processStatus ?? 'stopped')
+}
+
+/**
+ * A status answer: asked by URL, as given; by name, only when main marks it
+ * byName (a daemon before it answers false for every name): otherwise unknown.
+ */
+export function signedInAnswer(byUrl: boolean, r: { signedIn?: boolean; byName?: true } | undefined): boolean | undefined {
+  return byUrl || r?.byName ? r?.signedIn : undefined
+}
+
 interface McpStatusDashboardProps {
   mcpServers: McpServerRegistration[]
   onServersChanged: (servers: McpServerRegistration[]) => void
+  /** Write pending Settings edits now: main answers sign-in state from saved settings. */
+  flushSave: () => Promise<void>
   /** Settings → Compute master toggle; used to surface host-location conflicts inline. */
   hostAccessEnabled?: boolean
   /** Invoked from the conflict note so the user can enable host access without tab-hopping. */
@@ -51,7 +75,7 @@ interface McpStatusDashboardProps {
   onAcceptMcpOnHost?: () => Promise<boolean>
 }
 
-export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost, mcpOnHost, onEnableHostAccessNow, onAcceptMcpOnHost }: McpStatusDashboardProps) {
+export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost, mcpOnHost, onEnableHostAccessNow, onAcceptMcpOnHost }: McpStatusDashboardProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
   // Ref to always access latest mcpServers inside async callbacks (avoids stale closures)
@@ -80,44 +104,45 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
   const [oauthSignedIn, setOauthSignedIn] = useState<Record<string, boolean>>({})
   /**
    * Monotonic generation for OAuth-status refreshes. Each refreshOAuthStatus
-   * call claims the next number; only the batch whose generation is still
-   * current when it resolves may merge its result. This keeps a stale in-flight
+   * call claims the next number; only answers whose generation is still
+   * current when they resolve may merge. This keeps a stale in-flight
    * read (e.g. one that observed signedIn:true just before a Sign out) from
    * resolving late and overwriting the fresh post-signout false.
    */
   const oauthRefreshGen = useRef(0)
 
-  /** Whether a row authenticates via OAuth (registration flag or registry entry). */
-  const oauthEntryFor = useCallback((reg: McpServerRegistration) => {
+  /** Whether a row is an http OAuth row (registration flag or registry entry), asked by URL. */
+  const httpOAuthRow = useCallback((reg: McpServerRegistration) => {
     const entry = reg.url ? findEntryIn(registryEntries, { url: reg.url }) : undefined
-    return isOAuthEntry(reg, entry)
+    return reg.type === 'http' && !!reg.url && isOAuthEntry(reg, entry)
   }, [registryEntries])
 
-  // Fetch sign-in status for every OAuth http row (keyed by id). Resilient:
-  // a failed status call leaves the id unknown (no chip), never a wrong one.
+  // Fetch sign-in status for every row that signs in (keyed by id): an OAuth
+  // http row by its URL at once, any other by name once pending edits are
+  // saved (main reads saved settings). Resilient: a failed or unknown status
+  // call leaves the id unknown (no chip), never a wrong one.
   const refreshOAuthStatus = useCallback(async () => {
     const gen = ++oauthRefreshGen.current
-    const oauthRows = mcpServersRef.current.filter((s) => s.type === 'http' && !!s.url && oauthEntryFor(s))
-    const results = await Promise.all(oauthRows.map(async (s) => {
+    const rows = mcpServersRef.current.filter((s) => httpOAuthRow(s) || !!s.auth)
+    const flushed = rows.some((s) => !httpOAuthRow(s)) ? flushSave().catch(() => {}) : undefined
+    await Promise.all(rows.map(async (s) => {
+      const byUrl = httpOAuthRow(s)
+      if (!byUrl) await flushed
+      let signedIn: boolean | undefined
       try {
-        const r = await api?.mcpOAuthStatus({ name: s.name, url: s.url! })
-        return [s.id, r?.signedIn] as const
-      } catch {
-        return [s.id, undefined] as const
-      }
+        signedIn = signedInAnswer(byUrl, await api?.mcpOAuthStatus(byUrl ? { name: s.name, url: s.url! } : { name: s.name }))
+      } catch { /* unknown */ }
+      // Each answer is applied as it lands, unless a newer refresh (e.g. the one
+      // handleOAuthSignOut fires after invalidating the token) superseded it.
+      if (gen !== oauthRefreshGen.current) return
+      setOauthSignedIn((prev) => {
+        const next = { ...prev }
+        if (signedIn === undefined) delete next[s.id]
+        else next[s.id] = signedIn
+        return next
+      })
     }))
-    // A newer refresh (e.g. the one handleOAuthSignOut fires after invalidating
-    // the token) superseded this batch — drop our now-stale read.
-    if (gen !== oauthRefreshGen.current) return
-    setOauthSignedIn((prev) => {
-      const next = { ...prev }
-      for (const [id, signedIn] of results) {
-        if (signedIn === undefined) delete next[id]
-        else next[id] = signedIn
-      }
-      return next
-    })
-  }, [oauthEntryFor])
+  }, [httpOAuthRow, flushSave])
 
   /** Sign out of an OAuth server (clears the stored token), then refresh state. */
   const handleOAuthSignOut = async (reg: McpServerRegistration) => {
@@ -331,6 +356,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
         onSave={handleModalSave}
         onRemove={handleRemove}
         onOAuthChanged={refreshOAuthStatus}
+        signedIn={editingServer ? oauthSignedIn[editingServer.id] : undefined}
         onComputeNeeded={(name, actions) => setComputeSheet({ name, pinnedToContainer: actions.pinnedToContainer, retry: actions.retry, runOnHost: actions.runOnHost })}
         onEnableHostAccessNow={onEnableHostAccessNow}
         mcpOnHost={mcpOnHost}
@@ -362,7 +388,8 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const regPkg = reg.npmPackage ?? reg.pypiPackage ?? ''
             const isInstalling = installing.has(regPkg)
             const installError = installErrors[regPkg]
-            const status = isInstalling ? 'installing' : (state?.status ?? 'stopped')
+            const signedIn = oauthSignedIn[reg.id] // boolean | undefined (unknown)
+            const status = serverRowStatus(reg, state?.status, isInstalling, signedIn)
             // Resolve across all three identity fields (mirrors the modal) so
             // pypi/uvx and remote HTTP rows get their brand icon and the
             // "Needs keys" chip, not just npm rows.
@@ -373,7 +400,6 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             const reconnect = reconnectResults[reg.id]
             const isHttp = reg.type === 'http'
             const isOAuthRow = isOAuthEntry(reg, registryEntry)
-            const signedIn = oauthSignedIn[reg.id] // boolean | undefined (unknown)
 
             return (
               // One flat block per server on the canvas (no card, no border).
@@ -390,7 +416,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
                       {reg.name || '(unnamed)'}
                     </span>
                     <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                      {STATUS_LABELS[status] ?? status}{state?.toolCount ? ` · ${state.toolCount} tools` : ''}
+                      {STATUS_LABELS[status] ?? status}{status !== 'needs_sign_in' && state?.toolCount ? ` · ${state.toolCount} tools` : ''}
                     </span>
                     {/* Chip slot 1: placement */}
                     {isHttp ? (

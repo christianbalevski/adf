@@ -5,7 +5,7 @@
  * starts, so a change another window made is never undone.
  */
 import { describe, expect, it } from 'vitest'
-import { listsToWrite, rebaseSettingsLists, type SettingsLists } from '../../../src/renderer/utils/settings-lists'
+import { flushIfUnsaved, listsToWrite, rebaseSettingsLists, type SettingsLists } from '../../../src/renderer/utils/settings-lists'
 import { rebaseProviderList } from '../../../src/renderer/components/providers/provider-save'
 import type { ProviderConfig, McpServerRegistration } from '../../../src/shared/types/ipc.types'
 import type { AdapterRegistration } from '../../../src/shared/types/channel-adapter.types'
@@ -60,5 +60,16 @@ describe('the providers shown after a save', () => {
     // The next save, from the written list, keeps q and adds n.
     const next = rebaseProviderList(written, rebaseProviderList(attempted, shownNow, written), written)
     expect(next.providers.map((p) => p.id)).toEqual(['p1', 'q', 'n'])
+  })
+})
+
+describe('a flush asked for by MCP Servers before it reads sign-in state', () => {
+  it('writes only when the shown MCP server list differs from the saved one (it takes no provider list, so the load fixup writes nothing)', async () => {
+    const writes: string[] = []
+    const flush = async () => { writes.push('write') }
+    await flushIfUnsaved([server('m1')], [server('m1')], flush)
+    expect(writes).toEqual([])
+    await flushIfUnsaved([server('m1'), server('m2')], [server('m1')], flush)
+    expect(writes).toEqual(['write'])
   })
 })

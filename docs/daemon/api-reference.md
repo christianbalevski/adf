@@ -7604,7 +7604,7 @@ Operation `getMcpOAuthStatus` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `name` | query | string |  | Settings registration name. App-level sign-ins are stored per server name. |
-| `url` | query | string |  | Remote server URL. A record is only reported for the URL it was minted for. |
+| `url` | query | string |  | Remote server URL. A record is only reported for the URL it was minted for. Omitted: a Settings server that signs in with its own auth command, answered by name. |
 
 **Responses**
 
@@ -7618,7 +7618,8 @@ Example 200 (`application/json`):
 
 ```json
 {
-  "signedIn": true
+  "signedIn": true,
+  "byName": true
 }
 ```
 
@@ -22732,7 +22733,8 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `signedIn` | boolean | yes | A token is stored for the server name and URL. The token itself is never returned. |
+| `signedIn` | boolean |  | A token is stored for the server name and URL, or (no URL) a file the server creates is in its folder. The token itself is never returned. Absent: cannot be told. |
+| `byName` | boolean |  | Present (true) on an answer to a call without a URL. A daemon without it answers such a call with signedIn false for every name; clients read that as cannot be told. |
 
 <a id="schema-mcpoauthnamebody"></a>
 

@@ -1,5 +1,5 @@
 import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
-import { listsToWrite, rebaseSettingsLists, settingsListsOf, type SettingsLists } from '../../utils/settings-lists'
+import { flushIfUnsaved, listsToWrite, rebaseSettingsLists, settingsListsOf, type SettingsLists } from '../../utils/settings-lists'
 import { sameContent } from '../../utils/list-rebase'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
@@ -1275,6 +1275,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
     clearTimeout(saveTimer.current)
     await pendingSave.current?.()
   }, [])
+  /** flushSave for MCP Servers' sign-in asks: only when the MCP server list is unsaved. */
+  const flushUnsaved = useCallback(() => flushIfUnsaved(shownLists.current.mcpServers, savedLists.current.mcpServers, flushSave), [flushSave])
 
   /** Show `next` now and write it; a refusal puts `prev` back. */
   const persist = <T,>(patch: Record<string, unknown>, set: (value: T) => void, next: T, prev: T) => {
@@ -1947,6 +1949,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
             // No card wrapper: each server is its own flat block on the canvas.
             <McpStatusDashboard
               mcpServers={mcpServers}
+              flushSave={flushUnsaved}
               onServersChanged={(next) => {
                 // Keep compute.hostApproved (+ recorded sources) in step with
                 // registration run locations: the user's explicit Settings
