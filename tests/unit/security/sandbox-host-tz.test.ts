@@ -63,7 +63,6 @@ describe('sandbox host time zone', () => {
     const parentZone = Intl.DateTimeFormat().resolvedOptions().timeZone
     expect(parentZone).toBe(ZONE)
     const out = await runProbe()
-    console.log('[tz-set] sandbox reports', out, 'host env', spawnCalls.map((c) => c.env))
     // UTC+13:45 on 1 January (Chatham daylight time).
     expect(out).toEqual({ zone: ZONE, offset: -825 })
     expect(spawnCalls).toHaveLength(1)
@@ -79,11 +78,17 @@ describe('sandbox host time zone', () => {
     delete process.env.TZ
     const parentZone = Intl.DateTimeFormat().resolvedOptions().timeZone
     const out = await runProbe()
-    console.log('[tz-unset] sandbox reports', out, 'parent zone', parentZone, 'host env', spawnCalls.map((c) => c.env))
     expect(spawnCalls).toHaveLength(1)
     expect(spawnCalls[0].env).not.toHaveProperty('TZ')
     for (const k of Object.keys(spawnCalls[0].env ?? {})) expect(['ELECTRON_RUN_AS_NODE', ...WINDOWS_KEYS]).toContain(k)
     // Both fall back to the system zone (/etc/localtime on Linux).
     expect(out.zone).toBe(parentZone)
+  }, 30_000)
+
+  it('passes an empty TZ through, so both processes run in UTC', async () => {
+    process.env.TZ = ''
+    const out = await runProbe()
+    expect(spawnCalls[0].env?.TZ).toBe('')
+    expect(out.offset).toBe(0)
   }, 30_000)
 })
