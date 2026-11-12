@@ -15,7 +15,7 @@ interface ChannelSetupModalProps {
   onClose: () => void
   type: string
   entry?: AdapterRegistryEntry
-  /** Agent being edited; undefined = connect a new agent */
+  /** The agent to connect or edit; undefined = pick one */
   filePath?: string
   agents: TrackedAdfFile[]
   /** Agents already on this channel (excluded from the picker) */
@@ -43,7 +43,6 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
     ...(entry?.optionalEnvKeys ?? []).map((key) => ({ key, label: key, required: false })),
   ]
   const freeForm = registryFields.length === 0
-  const editing = !!filePath
   const [agent, setAgent] = useState<string>(filePath ?? '')
   const [values, setValues] = useState<Record<string, string>>({})
   const [loaded, setLoaded] = useState<Record<string, string>>({})
@@ -94,7 +93,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
     .map((key) => ({ key, label: key, required: false }))
   const fields: AdapterCredentialField[] = [...registryFields, ...customFields]
 
-  const connected = editing || !!done
+  const connected = (!!filePath && connectedPaths.includes(filePath)) || !!done
   const available = agents.filter((a) => !connectedPaths.includes(a.filePath))
   // A key already stored on the agent satisfies "required" even when it
   // cannot be decrypted here (the field then reads "stored").
@@ -219,7 +218,7 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
   }
 
   return (
-    <Dialog open={open} onClose={onClose} title={connected ? `${label} on this agent` : `Connect an agent to ${label}`} wide lightDismiss={false}>
+    <Dialog open={open} onClose={onClose} title={connected ? `${label} on this agent` : filePath ? `Connect ${agentLabel(filePath)} to ${label}` : `Connect an agent to ${label}`} wide lightDismiss={false}>
       <div className="space-y-4">
         <div className="flex items-start gap-3">
           <BrandMark iconKey={entry?.iconKey} label={label} size={36} />
@@ -234,9 +233,9 @@ export function ChannelSetupModal({ open, onClose, type, entry, filePath, agents
           <div className="space-y-3">
             <div>
               <label className="mb-0.5 block text-[11px] text-[var(--adf-ui-text-muted)]">Agent</label>
-              {/* Once connected the agent leaves the picker's list, so show
-                  its name instead of an empty select. */}
-              {connected ? (
+              {/* A given agent, or one just connected (it has left the
+                  picker's list): its name instead of a select. */}
+              {filePath || connected ? (
                 <div className="flex items-center justify-between rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface-raised)] px-2.5 py-1.5">
                   <span className="truncate text-[12px] text-[var(--adf-ui-text)]">{agentLabel(filePath ?? agent)}</span>
                   {liveStatus && (

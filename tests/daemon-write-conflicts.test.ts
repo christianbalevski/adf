@@ -378,4 +378,30 @@ describe('two clients, one document', () => {
     await new Promise(r => setTimeout(r, 100))
     expect(changes(studio)).toEqual([])
   })
+
+  it('a channel attach or detach on an open document that is not running announces config_changed to every session, the requester included', async () => {
+    const { client, one } = await daemon({ load: false })
+    const studio = await reader(client, 'studio', one.agentId)
+    const tui = await reader(client, 'tui', one.agentId)
+    await client.holdClientSessionDocument(studio.sessionId, { filePath: one.filePath })
+    await client.holdClientSessionDocument(tui.sessionId, { filePath: one.filePath })
+    const asStudio = client.withClientSession(studio.sessionId)
+    const a = `/agents/${one.agentId}`
+
+    await asStudio.request('POST', '/files/agent/adapters', { query: { path: one.filePath }, body: { adapterType: 'telegram', config: { enabled: true, policy: { dm: 'all', groups: 'mention' } } } })
+    const attached = await asStudio.request<{ config: AgentConfig; revision: number }>('GET', `${a}/config`)
+    expect(attached.config.adapters?.telegram?.enabled).toBe(true)
+    await asStudio.request('DELETE', '/files/agent/adapters/telegram', { query: { path: one.filePath } })
+    const detached = await asStudio.request<{ config: AgentConfig; revision: number }>('GET', `${a}/config`)
+    expect(detached.config.adapters?.telegram).toBeUndefined()
+
+    const expected = [
+      { what: 'config', revision: attached.revision, writer: { kind: 'client', client: 'studio' } },
+      { what: 'config', revision: detached.revision, writer: { kind: 'client', client: 'studio' } },
+    ]
+    for (const r of [studio, tui]) {
+      await waitFor(() => changes(r).length >= 2, 5000, 'channel config frames')
+      expect(changes(r)).toEqual(expected)
+    }
+  })
 })

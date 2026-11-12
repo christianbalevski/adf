@@ -13,9 +13,9 @@ describe('configNavItems', () => {
   })
 
   it('matches a query against titles and group names', () => {
-    const present = ['Compute', 'Code Execution', 'Messaging', 'Channels', 'Logging']
+    const present = ['Compute', 'Code Execution', 'Messaging', 'Messaging Channels', 'Logging']
     expect(configNavItems(present, 'COMP').map((i) => i.title)).toEqual(['Compute'])
-    expect(configNavItems(present, 'communication').map((i) => i.title)).toEqual(['Channels', 'Messaging'])
+    expect(configNavItems(present, 'communication').map((i) => i.title)).toEqual(['Messaging', 'Messaging Channels'])
   })
 
   it('keeps an ungrouped section reachable under Other', () => {
