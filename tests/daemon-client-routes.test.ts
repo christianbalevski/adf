@@ -423,6 +423,26 @@ describe('several clients on one daemon, in real time', () => {
     // The unfocused session gets the same resolution as a stub (its approvals snapshot carries the rest).
     expect(resolved[1].map(f => f.kind === 'executor' && f.event.type)).toEqual(resolved[0].map(f => f.kind === 'executor' && f.event.type))
   })
+
+  it('a config write the server derives (always approve) reaches the requesting session with the new revision; only a PUT of the config itself skips it', async () => {
+    const { runtime, client, one } = await fleet()
+    const studio = await reader(client, { focus: one.agentId, client: 'studio' })
+    const executor = runtime.getLoadedAgent(one.agentId)!.agent.executor
+    const pending = executor.requestHilApproval('fs_write', { path: 'a.md', content: 'x' })
+    const requestId = executor.getPendingApprovals().at(-1)!.requestId
+    const before = runtime.getAgentConfig(one.agentId).revision
+
+    await client.withClientSession(studio.sessionId).request('POST', `/agents/${one.agentId}/tasks/${requestId}/always-approve`)
+    await expect(pending).resolves.toMatchObject({ approved: true })
+
+    // The window sent no config: without this frame it saves over a stale revision and is refused.
+    const changed = () => studio.frames.filter(f => f.kind === 'push' && f.topic === 'config_changed')
+      .map(f => f.kind === 'push' ? f.payload as { config: AgentConfig; revision?: number } : null)
+    await waitFor(() => changed().length > 0, 5000, 'config_changed')
+    const last = changed().at(-1)!
+    expect(last.config.tools.find(t => t.name === 'fs_write')).toMatchObject({ restricted: false })
+    expect(last.revision).toBeGreaterThan(before)
+  })
 })
 
 describe('slow and dropped readers', () => {

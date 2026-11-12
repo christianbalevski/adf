@@ -36,10 +36,12 @@ export function useConfigNavEntry(title: unknown, ref: RefObject<HTMLElement | n
 /** The space the sticky header covers; sections scroll to just below it. */
 export const CONFIG_NAV_OFFSET_CLASS = 'scroll-mt-11'
 
-export function ConfigNavProvider({ scrollRef, status, children }: {
+export function ConfigNavProvider({ scrollRef, status, notice, children }: {
   scrollRef: RefObject<HTMLElement | null>
   /** Right end of the sticky header (the panel's save status). */
   status?: React.ReactNode
+  /** Under the sticky header, so it stays in view wherever the panel is scrolled. */
+  notice?: React.ReactNode
   children: React.ReactNode
 }) {
   // Kept in a ref: summaries change on every edit and the nav only needs
@@ -58,17 +60,18 @@ export function ConfigNavProvider({ scrollRef, status, children }: {
   }), [])
   return (
     <ConfigNavContext.Provider value={registry}>
-      <ConfigNavBar scrollRef={scrollRef} entries={entries} layoutTick={layoutTick} status={status} />
+      <ConfigNavBar scrollRef={scrollRef} entries={entries} layoutTick={layoutTick} status={status} notice={notice} />
       {children}
     </ConfigNavContext.Provider>
   )
 }
 
-function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
+function ConfigNavBar({ scrollRef, entries, layoutTick, status, notice }: {
   scrollRef: RefObject<HTMLElement | null>
   entries: RefObject<Map<string, NavEntry>>
   layoutTick: number
   status?: React.ReactNode
+  notice?: React.ReactNode
 }) {
   const barRef = useRef<HTMLDivElement>(null)
   const [current, setCurrent] = useState<string | null>(null)
@@ -209,6 +212,7 @@ function ConfigNavBar({ scrollRef, entries, layoutTick, status }: {
       </button>
       {status}
       </div>
+      {notice}
       {open && (
         <div className="absolute inset-x-2 top-full mt-1 rounded-lg border border-hairline bg-surface-0 shadow-lg">
           <input
