@@ -39,6 +39,7 @@ import {
 } from './config-panel-model'
 import {
   ApprovalIcon, ShieldIcon, LockIcon, EyeIcon, PERMISSION_ON_CLASS, PermissionLegend, LockBadge, RowWarning, McpStatusChip, SaveStatusLine, UndoToast,
+  GroupDivider, SectionAddButton, SectionEmpty,
 } from './config-panel-parts'
 
 function McpServerMenu({ serverName, items }: { serverName: string; items: ContextMenuItem[] }) {
@@ -213,7 +214,14 @@ function parseTcpAllowlist(value: string): StreamBindTcpAllowRule[] {
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, SystemPromptParts } from '../../../shared/types/ipc.types'
 import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
 import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
-import { findAdapterRegistryEntry, withAgentEnabledAdapterRegistrations } from '../../../shared/constants/adapter-registry'
+import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
+import { ChannelPicker } from '../adapters/ChannelPicker'
+import { BrandMark } from '../common/BrandMark'
+import { ChannelSetupModal } from '../adapters/ChannelSetupModal'
+import { AgentMcpAddDialog } from '../mcp/AgentMcpAddDialog'
+import { addRuntimeMcpServer } from '../mcp/runtime-mcp-servers'
+import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
+import { OpenAgentRuntimeProvider } from '../settings/settings-runtime'
 import { AgentProvidersList, ModelIdField, ProviderOptions, runtimeDefaultLabel } from './AgentProviders'
 import { useRuntime } from '../../stores/runtimes.store'
 import { meshWebsiteUrl } from '../../../shared/utils/agent-website-url'
@@ -708,12 +716,20 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   // some servers expose dozens of tools.
   const [expandedMcpTools, setExpandedMcpTools] = useState<Record<string, boolean>>({})
   const [adapterRegistrations, setAdapterRegistrations] = useState<AdapterRegistration[]>([])
-  /** Set of adapter types that have identity keys stored in this ADF */
-  const [adapterWithKeys, setAdapterWithKeys] = useState<Set<string>>(new Set())
   /** Map of adapter type → set of key names stored in this ADF's identity keystore */
   const [adapterIdentityKeys, setAdapterIdentityKeys] = useState<Record<string, Set<string>>>({})
   /** Email account identifier pulled from adf_identity when present */
   const [emailAccount, setEmailAccount] = useState<string | null>(null)
+  /** Add flows: the channel picker, the channel being set up, the MCP add dialog. */
+  const [channelPickerOpen, setChannelPickerOpen] = useState(false)
+  const [channelSetup, setChannelSetup] = useState<string | null>(null)
+  const [mcpAddOpen, setMcpAddOpen] = useState(false)
+  /** The latest MCP attach, for the add dialog's call that lands after its runtime write. */
+  const attachMcpRef = useRef<((reg: McpServerRegistration) => void) | null>(null)
+  /** Bumped when this panel writes the runtime's settings or the agent's channel credentials: re-read them. */
+  const [runtimeSettingsEpoch, setRuntimeSettingsEpoch] = useState(0)
+  const [channelKeysEpoch, setChannelKeysEpoch] = useState(0)
+  const bundledMcpServers = useMcpRegistryStore((s) => s.bundledServers)
   const [meshServerStatus, setMeshServerStatus] = useState<{ running: boolean; port: number; host: string }>({ running: false, port: 7295, host: '127.0.0.1' })
   const [hasSigningKeys, setHasSigningKeys] = useState(false)
   const [metaEntries, setMetaEntries] = useState<Array<{ key: string; value: string; protection: MetaProtectionLevel }>>([])
@@ -826,7 +842,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       })
     }
     return () => { live = false }
-  }, [openRuntime])
+  }, [openRuntime, runtimeSettingsEpoch])
 
   // Check for missing sandbox packages on config load
   useEffect(() => {
@@ -926,27 +942,21 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     })
   }, [local?.mcp?.servers, mcpRegistrations])
 
-  // Check which adapters have identity keys stored in this ADF
+  // Channel credentials stored in this ADF (`adapter:<type>:<KEY>`), by type.
   useEffect(() => {
-    if (template || adapterRegistrations.length === 0) {
-      setAdapterWithKeys(new Set())
+    if (template) {
+      setAdapterIdentityKeys({})
       return
     }
     openApi()?.listIdentityPurposes('adapter:').then((purposes) => {
-      const typesWithKeys = new Set<string>()
       const keysByType: Record<string, Set<string>> = {}
-      for (const reg of withAgentEnabledAdapterRegistrations(adapterRegistrations, local?.adapters)) {
-        const prefix = `adapter:${reg.type}:`
-        const keys = new Set<string>()
-        for (const p of purposes) {
-          if (p.startsWith(prefix)) keys.add(p.slice(prefix.length))
-        }
-        if (keys.size > 0) {
-          typesWithKeys.add(reg.type)
-          keysByType[reg.type] = keys
-        }
+      for (const purpose of purposes) {
+        const rest = purpose.slice('adapter:'.length)
+        const sep = rest.indexOf(':')
+        if (sep <= 0) continue
+        const type = rest.slice(0, sep)
+        ;(keysByType[type] ??= new Set()).add(rest.slice(sep + 1))
       }
-      setAdapterWithKeys(typesWithKeys)
       setAdapterIdentityKeys(keysByType)
 
       // Pull the email account identifier for display (non-sensitive)
@@ -958,7 +968,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         setEmailAccount(null)
       }
     })
-  }, [local?.adapters, adapterRegistrations])
+  }, [local?.adapters, channelKeysEpoch])
 
   // Check if this ADF has signing keys (DID exists iff keys were generated)
   useEffect(() => {
@@ -1019,7 +1029,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             return
           }
           if (outcome.kind === 'conflict') {
-            if (owner !== useDocumentStore.getState().filePath) return
+            // A later write already saved over it: this refusal is moot.
+            if (owner !== useDocumentStore.getState().filePath || seq < lastSavedSeqRef.current) return
+            // The notice says what happened; "Saving…" would never end. A later edit still waiting keeps it.
+            if (!pendingSaveRef.current) setSaveStatus({ kind: 'idle' })
             setConfigConflict({ mine: updated, theirs: outcome.conflict.theirs as AgentConfigType | null, revision: outcome.conflict.revision, writer: outcome.conflict.writer, owner })
             return
           }
@@ -1084,14 +1097,21 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     persistConfig(failed.config, failed.owner, failed.baseRevision, failed.baseConfig)
   }, [persistConfig])
 
+  /** Show the backend's config again, with its revision, so the next save is based on it. */
+  const reloadConfig = useCallback(() => {
+    void openApi()?.getAgentConfigWithRevision().then(({ config: authoritative, revision }) => {
+      if (!authoritative) return
+      useAgentStore.getState().setConfigRevision(revision)
+      setConfig(authoritative as AgentConfigType)
+    })
+  }, [setConfig])
+
   /** Drop the refused draft: the panel shows the backend's config again. */
   const discardFailedSave = useCallback(() => {
     failedSaveRef.current = null
     setSaveStatus({ kind: 'idle' })
-    void openApi()?.getAgentConfig().then((authoritative) => {
-      if (authoritative) setConfig(authoritative as AgentConfigType)
-    })
-  }, [setConfig])
+    reloadConfig()
+  }, [reloadConfig])
 
   // Status, undo and MCP views belong to one agent.
   useEffect(() => {
@@ -1360,34 +1380,35 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     {/* Leaving any field writes the pending edit through immediately, so a
         click that switches agent or starts one never races the debounce. */}
     <div ref={scrollRef} className={template ? '' : 'h-full overflow-y-auto'} onBlurCapture={flushSave}>
-      {!template && configConflict && configConflict.owner === filePath && (
-        <ChangedElsewhereNotice
-          what="The config"
-          writer={configConflict.writer}
-          onReload={() => {
-            const theirs = configConflict.theirs
-            setConfigConflict(null)
-            if (theirs) {
-              useAgentStore.getState().setConfigRevision(configConflict.revision)
-              setConfig(theirs)
-            } else {
-              void openApi()?.getAgentConfig().then((c) => { if (c) setConfig(c as AgentConfigType) })
-            }
-          }}
-          onKeep={() => {
-            const { mine, revision, owner } = configConflict
-            setConfigConflict(null)
-            savingRef.current = true
-            setLocal(mine)
-            setConfig(mine)
-            persistConfig(mine, owner, revision)
-          }}
-        />
-      )}
       <MaybeConfigNav
         enabled={!template}
         scrollRef={scrollRef}
         status={<SaveStatusLine status={saveStatus} onRetry={retrySave} onDiscard={discardFailedSave} />}
+        notice={configConflict && configConflict.owner === filePath ? (
+          <ChangedElsewhereNotice
+            what="The config"
+            writer={configConflict.writer}
+            onReload={() => {
+              const theirs = configConflict.theirs
+              setConfigConflict(null)
+              if (theirs) {
+                useAgentStore.getState().setConfigRevision(configConflict.revision)
+                setConfig(theirs)
+              } else {
+                reloadConfig()
+              }
+            }}
+            onKeep={() => {
+              const { mine, revision, owner } = configConflict
+              setConfigConflict(null)
+              setSaveStatus({ kind: 'saving' })
+              savingRef.current = true
+              setLocal(mine)
+              setConfig(mine)
+              persistConfig(mine, owner, revision)
+            }}
+          />
+        ) : null}
       >
       <div className={template ? 'space-y-4' : 'p-3 space-y-4'}>
         {/* Identity */}
@@ -2229,6 +2250,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           </Field>
         </Section>
 
+        <GroupDivider label="Capabilities" />
+
         {/* Tools */}
         <Section docs={DOCS.tools} title="Tools" locked={isSectionLocked('tools')} onToggleLock={() => toggleSectionLock('tools')} summary={`${local.tools.filter(t => t.enabled).length}/${local.tools.length} enabled`}>
           <PermissionLegend kinds={['approval', 'locked', 'visible']} />
@@ -2903,13 +2926,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         {(() => {
           const validRegistrations = mcpRegistrations.filter((r) => r.name)
           const registeredNames = new Set(validRegistrations.map((r) => r.name))
-          const attachedNames = new Set((local.mcp?.servers ?? []).map((s) => s.name))
           const myServers = local.mcp?.servers ?? []
-          // Unattached registry servers available to add
-          const availableToAdd = validRegistrations.filter((r) => !attachedNames.has(r.name))
-          const hasAnything = myServers.length > 0 || availableToAdd.length > 0
-
-          if (!hasAnything) return null
+          const attachedNames = new Set(myServers.map((s) => s.name))
 
           // Seed a new app-level registration from the agent's server config so
           // the user can fill in shared credentials in Settings.
@@ -2946,16 +2964,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               env: appKeys.map((k) => ({ key: k, value: '' })),
             }
 
-            const currentSettings = await openApi()?.getSettings()
-            const existingServers = (currentSettings?.mcpServers as McpServerRegistration[]) ?? []
-            if (existingServers.some((r) => r.name === srv.name)) return
-            await openApi()?.setSettings({
-              mcpServers: [...existingServers, reg],
-            })
-            invalidateConfigCaches()
-            const registrations = [...existingServers, reg]
-            cachesOf(useDocumentStore.getState().runtimeId).mcpRegistrations = registrations
-            setMcpRegistrations(registrations)
+            try {
+              await addRuntimeMcpServer(openApi(), reg, bundledMcpServers)
+              setRuntimeSettingsEpoch((n) => n + 1)
+            } catch (err) {
+              setSaveStatus({ kind: 'error', error: `${srv.name} was not added to the runtime: ${err instanceof Error ? err.message : String(err)}` })
+            }
           }
 
           // Remove a server and its tools
@@ -2975,9 +2989,37 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             const servers = [...myServers, serverCfg]
             save({ ...local, mcp: { servers } })
           }
+          attachMcpRef.current = handleAddFromRegistry
 
-          return (
-            <Section docs={DOCS.mcp} title="MCP Servers" locked={isSectionLocked('mcp')} onToggleLock={() => toggleSectionLock('mcp')}>
+          return (<>
+            {mcpAddOpen && (
+              <OpenAgentRuntimeProvider>
+                <AgentMcpAddDialog
+                  onClose={() => setMcpAddOpen(false)}
+                  registrations={validRegistrations}
+                  attachedNames={attachedNames}
+                  hostAccessEnabled={runtimeHostEnabled}
+                  mcpOnHost={runtimeMcpOnHost}
+                  onAttach={(reg) => {
+                    // May land after the runtime write: the agent's latest config, and only while it is still the open one.
+                    if (useDocumentStore.getState().filePath !== docFilePath) return
+                    attachMcpRef.current?.(reg)
+                  }}
+                  onRuntimeChanged={() => setRuntimeSettingsEpoch((n) => n + 1)}
+                  onError={(error) => setSaveStatus({ kind: 'error', error })}
+                />
+              </OpenAgentRuntimeProvider>
+            )}
+            <Section
+              docs={DOCS.mcp}
+              title="MCP Servers"
+              locked={isSectionLocked('mcp')}
+              onToggleLock={() => toggleSectionLock('mcp')}
+              action={myServers.length > 0 ? <SectionAddButton label="Add MCP server" onClick={() => setMcpAddOpen(true)} /> : undefined}
+            >
+              {myServers.length === 0 ? (
+                <SectionEmpty text="No MCP servers on this agent." label="Add MCP server" onAdd={() => setMcpAddOpen(true)} />
+              ) : (<>
               <PermissionLegend kinds={['approval', 'locked', 'visible']} />
               <label className="mb-2 flex items-center gap-1.5 cursor-pointer text-[11px] text-neutral-600 dark:text-neutral-300">
                 <input
@@ -3228,192 +3270,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   )
                 })}
 
-                {myServers.length === 0 && (
-                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)] italic">
-                    No MCP servers configured. Add from the registry below or use the mcp_install tool.
-                  </p>
-                )}
-
-                {/* Add from registry */}
-                {availableToAdd.length > 0 && (
-                  <div className="pt-2 border-t border-neutral-200 dark:border-neutral-700">
-                    <label className="text-[10px] text-neutral-600 dark:text-neutral-400 block mb-1">Add from runtime<InfoHint tip="Servers from your runtime registry. App-wide credentials are inherited automatically." /></label>
-                    <select
-                      className="w-full px-2 py-1 text-xs rounded border border-neutral-300 dark:border-neutral-600 bg-white dark:bg-neutral-700 text-neutral-800 dark:text-neutral-200"
-                      value=""
-                      onChange={(e) => {
-                        const reg = availableToAdd.find((r) => r.name === e.target.value)
-                        if (reg) handleAddFromRegistry(reg)
-                      }}
-                    >
-                      <option value="">Select a server to add...</option>
-                      {availableToAdd.map((reg) => (
-                        <option key={reg.id} value={reg.name}>
-                          {reg.name} ({reg.type ?? 'npm'}{reg.npmPackage ? `: ${reg.npmPackage}` : reg.pypiPackage ? `: ${reg.pypiPackage}` : ''})
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                )}
               </div>
+              </>)}
             </Section>
-          )
+          </>)
         })()}
 
-        {/* Channels */}
-        {adapterRegistrations.length > 0 && (
-          <Section docs={DOCS.channels} hint="Channels are connected under Settings → Channels. Enable a channel here to deliver its messages to this agent." title="Channels">
-            <div className="space-y-3">
-              {template && (
-                <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Channels are connected per agent from Settings → Channels, or from the agent's own Config tab.</p>
-              )}
-              {withAgentEnabledAdapterRegistrations(adapterRegistrations, local.adapters).map((reg) => {
-                // Enabled on the agent, but the runtime that runs it does not list this channel.
-                const unknownToRuntime = !adapterRegistrations.some((r) => r.type === reg.type)
-                const adapterConfig = local.adapters?.[reg.type]
-                const enabled = adapterConfig?.enabled ?? false
-                const registryEntry = findAdapterRegistryEntry(reg.type)
-                const hasKeys = adapterWithKeys.has(reg.type)
-                const agentKeys = adapterIdentityKeys[reg.type]
-                // Credentials live only in this agent's adf_identity.
-                const hasEmptyRequiredKeys = (registryEntry?.requiredEnvKeys ?? []).some((rk) => !agentKeys?.has(rk))
-
-                const handleEnable = async () => {
-                  const newConfig: AdapterInstanceConfig = {
-                    enabled: true,
-                    policy: { dm: 'all', groups: 'mention' }
-                  }
-                  const adapters = { ...(local.adapters ?? {}), [reg.type]: newConfig }
-                  save({ ...local, adapters })
-                }
-
-                const handleDisable = () => {
-                  const msg = hasKeys
-                    ? `Disable "${registryEntry?.displayName ?? reg.type}"? Its stored credentials in this ADF will also be deleted.`
-                    : `Disable "${registryEntry?.displayName ?? reg.type}"?`
-                  if (!window.confirm(msg)) return
-
-                  // Clean up identity keys
-                  if (!template) openApi()?.deleteIdentityByPrefix(`adapter:${reg.type}:`)
-
-                  const adapters = { ...(local.adapters ?? {}) }
-                  delete adapters[reg.type]
-                  save({ ...local, adapters: Object.keys(adapters).length > 0 ? adapters : undefined })
-                }
-
-                return (
-                  <div key={reg.id} className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-2 space-y-1.5">
-                    <div className="flex items-center justify-between text-xs">
-                      <span className="font-medium text-neutral-700 dark:text-neutral-200 flex items-center gap-1.5">
-                        {registryEntry?.displayName ?? reg.type}
-                        {hasKeys && (
-                          <span
-                            className="text-[9px] text-amber-600 dark:text-amber-400"
-                            title="Credentials stored in this ADF"
-                          >
-                            <svg className="inline w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><path d="M11.5 0a4.5 4.5 0 0 0-4.2 6.1L0 13.4V16h2.6l.7-.7v-1.7h1.7l.7-.7v-1.7h1.7l1-1 .7.3a4.5 4.5 0 1 0 2.4-9.5zm1 5.5a1.5 1.5 0 1 1 0-3 1.5 1.5 0 0 1 0 3z"/></svg>
-                          </span>
-                        )}
-                        {hasEmptyRequiredKeys && (
-                          <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">
-                            Needs keys
-                          </span>
-                        )}
-                      </span>
-                      <span className="flex items-center gap-2">
-                        {enabled ? (
-                          <button
-                            onClick={handleDisable}
-                            className="text-[10px] text-red-400 hover:text-red-600 font-medium"
-                          >
-                            Disable
-                          </button>
-                        ) : (
-                          <button
-                            onClick={handleEnable}
-                            className="text-[10px] text-green-600 hover:text-green-700 dark:text-green-400 dark:hover:text-green-300 font-medium"
-                          >
-                            Enable
-                          </button>
-                        )}
-                      </span>
-                    </div>
-                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)] font-mono truncate">
-                      {reg.type}
-                    </p>
-                    {enabled && adapterConfig && reg.type === 'email' && (
-                      <div className="pl-2 space-y-1.5 pt-1 border-t border-neutral-100 dark:border-neutral-700">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-neutral-500 dark:text-neutral-400">Account</span>
-                          <span className="text-neutral-700 dark:text-neutral-200 font-mono text-[10px] truncate ml-2">
-                            {emailAccount || '—'}
-                          </span>
-                        </div>
-                      </div>
-                    )}
-                    {enabled && adapterConfig && reg.type !== 'email' && (
-                      <div className="pl-2 space-y-1.5 pt-1 border-t border-neutral-100 dark:border-neutral-700">
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-neutral-500 dark:text-neutral-400">DM mode</span>
-                          <select
-                            value={adapterConfig.policy?.dm ?? 'all'}
-                            onChange={(e) => {
-                              const adapters = { ...(local.adapters ?? {}) }
-                              adapters[reg.type] = {
-                                ...adapters[reg.type],
-                                policy: { ...(adapters[reg.type]?.policy ?? {}), dm: e.target.value as 'all' | 'allowlist' | 'none' }
-                              }
-                              save({ ...local, adapters })
-                            }}
-                            className="text-[10px] px-1.5 py-0.5 border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400"
-                          >
-                            <option value="all">All</option>
-                            <option value="allowlist">Allowlist</option>
-                            <option value="none">None</option>
-                          </select>
-                        </div>
-                        <div className="flex items-center justify-between text-xs">
-                          <span className="text-neutral-500 dark:text-neutral-400">Group mode</span>
-                          <select
-                            value={adapterConfig.policy?.groups ?? 'mention'}
-                            onChange={(e) => {
-                              const adapters = { ...(local.adapters ?? {}) }
-                              adapters[reg.type] = {
-                                ...adapters[reg.type],
-                                policy: { ...(adapters[reg.type]?.policy ?? {}), groups: e.target.value as 'all' | 'mention' | 'none' }
-                              }
-                              save({ ...local, adapters })
-                            }}
-                            className="text-[10px] px-1.5 py-0.5 border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400"
-                          >
-                            <option value="all">All</option>
-                            <option value="mention">Mention only</option>
-                            <option value="none">None</option>
-                          </select>
-                        </div>
-                      </div>
-                    )}
-                    {!enabled && (
-                      <p className="text-[10px] text-[var(--adf-ui-text-subtle)] pl-2">
-                        Not enabled
-                      </p>
-                    )}
-                    {hasEmptyRequiredKeys && (
-                      <p className="text-[10px] text-amber-600 dark:text-amber-400 pl-2">
-                        Missing credentials — connect this agent under Settings → Channels
-                      </p>
-                    )}
-                    {unknownToRuntime && (
-                      <p className="text-[10px] text-amber-600 dark:text-amber-400 pl-2">
-                        Not available in the ADF runtime running this agent. Update ADF there (on a remote daemon, its host), then restart the agent.
-                      </p>
-                    )}
-                  </div>
-                )
-              })}
-            </div>
-          </Section>
-        )}
+        <GroupDivider label="Communication" />
 
         {/* Messaging */}
         <Section docs={DOCS.messaging} title="Messaging" locked={isSectionLocked('messaging')} onToggleLock={() => toggleSectionLock('messaging')} summary={local.messaging?.receive ? `${local.messaging?.visibility ?? 'localhost'} · ${local.messaging?.mode ?? 'proactive'}${local.messaging?.inbox_mode ? ' · inbox' : ''}` : 'off'}>
@@ -3441,7 +3304,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           {local.messaging?.receive && (
             <>
               <label className="flex items-center justify-between text-xs mt-2">
-                <span className="text-neutral-700 dark:text-neutral-300">Inbox mode</span>
+                <span className="text-neutral-700 dark:text-neutral-300">Inbox mode<InfoHint tip="Received messages are always stored in adf_inbox and create on_inbox trigger events. On: enables msg_list, msg_read and msg_update, stores sent messages in the inbox, and adds the unread count to the agent's context." /></span>
                 <input
                   type="checkbox"
                   checked={local.messaging?.inbox_mode ?? false}
@@ -3460,13 +3323,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   }}
                 />
               </label>
-              <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                {local.messaging?.inbox_mode
-                  ? (local.autonomous
-                      ? 'Messages are stored in an inbox. The agent is notified immediately when new messages arrive.'
-                      : 'Messages are stored in an inbox. The agent is notified on a periodic schedule when idle.')
-                  : 'Messages trigger the agent immediately (default behavior).'}
-              </p>
               <Field label="Allow list" hint="Allow list takes priority. If set, only listed DIDs can send/receive. Leave both empty for no restriction.">
                 <DidListPicker
                   dids={local.messaging?.allow_list ?? []}
@@ -3567,6 +3423,134 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </>
           )}
         </Section>
+
+        {/* Channels */}
+        {(() => {
+          const adapters = local.adapters ?? {}
+          const channelTypes = Object.keys(adapters)
+          // settings.adapters of the agent's runtime: its own built-ins plus installed packages.
+          const runtimeTypes = adapterRegistrations.map((r) => r.type)
+          const addableTypes = runtimeTypes.filter((type) => !adapters[type])
+          const newChannelConfig = (): AdapterInstanceConfig => ({ enabled: true, policy: { dm: 'all', groups: 'mention' } })
+          const setChannel = (type: string, next: AdapterInstanceConfig | undefined) => {
+            const nextAdapters = { ...adapters }
+            if (next) nextAdapters[type] = next
+            else delete nextAdapters[type]
+            save({ ...local, adapters: Object.keys(nextAdapters).length > 0 ? nextAdapters : undefined })
+          }
+          const pickChannel = (type: string) => {
+            setChannelPickerOpen(false)
+            // A template has no file to hold credentials: the channel goes on
+            // now, and its keys are entered on an agent made from it.
+            if (template) setChannel(type, newChannelConfig())
+            else setChannelSetup(type)
+          }
+
+          return (<>
+            {channelPickerOpen && (
+              <Dialog open onClose={() => setChannelPickerOpen(false)} title="Add channel" wide>
+                {addableTypes.length > 0
+                  ? <ChannelPicker types={addableTypes} onPick={pickChannel} />
+                  : <p className="text-[12px] text-[var(--adf-ui-text-muted)]">{runtimeTypes.length === 0 ? 'Loading the runtime\'s channels.' : 'Every channel in this runtime is on this agent.'}</p>}
+              </Dialog>
+            )}
+            {channelSetup && filePath && (
+              <OpenAgentRuntimeProvider>
+                <ChannelSetupModal
+                  open
+                  onClose={() => setChannelSetup(null)}
+                  type={channelSetup}
+                  entry={findAdapterRegistryEntry(channelSetup)}
+                  filePath={filePath}
+                  agents={[]}
+                  connectedPaths={adapters[channelSetup] ? [filePath] : []}
+                  onSaved={() => setChannelKeysEpoch((n) => n + 1)}
+                />
+              </OpenAgentRuntimeProvider>
+            )}
+            <Section
+              docs={DOCS.channels}
+              title="Messaging Channels"
+              hint="Message adapters (Telegram, Slack, Discord, email, WhatsApp). Inbound messages are delivered to this agent. Credentials are stored in this .adf file."
+              action={channelTypes.length > 0 && addableTypes.length > 0 ? <SectionAddButton label="Add channel" onClick={() => setChannelPickerOpen(true)} /> : undefined}
+            >
+              {channelTypes.length === 0 ? (
+                <SectionEmpty text="No channels on this agent. Add a channel to message this agent from Telegram, Slack, Discord, email or WhatsApp." label="Add channel" onAdd={() => setChannelPickerOpen(true)} />
+              ) : (
+                <div className="space-y-2">
+                  {channelTypes.map((type) => {
+                    const cfg = adapters[type]
+                    const enabled = cfg.enabled === true
+                    const entry = findAdapterRegistryEntry(type)
+                    const label = entry?.displayName ?? type
+                    // Credentials live only in this agent's adf_identity.
+                    const missingKeys = !template && (entry?.requiredEnvKeys ?? []).some((key) => !adapterIdentityKeys[type]?.has(key))
+                    const setPolicy = (patch: NonNullable<AdapterInstanceConfig['policy']>) =>
+                      setChannel(type, { ...cfg, policy: { ...(cfg.policy ?? {}), ...patch } })
+                    const selectClass = 'text-[10px] px-1.5 py-0.5 border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded focus:outline-none focus:border-blue-400'
+                    return (
+                      <div key={type} className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-2 space-y-1.5">
+                        <div className="flex items-center justify-between gap-2 text-xs">
+                          <span className={`flex min-w-0 items-center gap-1.5 font-medium ${enabled ? 'text-neutral-700 dark:text-neutral-200' : 'text-[var(--adf-ui-text-subtle)]'}`}>
+                            <BrandMark iconKey={entry?.iconKey} label={label} size={16} />
+                            <span className="truncate">{label}</span>
+                            {missingKeys && (
+                              <span className="text-[9px] px-1 py-0.5 bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 rounded font-medium">Needs keys</span>
+                            )}
+                          </span>
+                          <span className="flex shrink-0 items-center gap-2">
+                            {template ? (
+                              <button type="button" onClick={() => setChannel(type, undefined)} className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-red-500">Remove</button>
+                            ) : (
+                              <button type="button" onClick={() => setChannelSetup(type)} className="text-[10px] text-[var(--adf-ui-text-subtle)] hover:text-[var(--adf-ui-text)]">Edit</button>
+                            )}
+                            <input
+                              type="checkbox"
+                              title="Enabled: the agent receives this channel's messages."
+                              checked={enabled}
+                              onChange={() => setChannel(type, { ...cfg, enabled: !enabled })}
+                            />
+                          </span>
+                        </div>
+                        {enabled && type === 'email' && emailAccount && (
+                          <div className="flex items-center justify-between pl-2 text-xs">
+                            <span className="text-neutral-500 dark:text-neutral-400">Account</span>
+                            <span className="ml-2 truncate font-mono text-[10px] text-neutral-700 dark:text-neutral-200">{emailAccount}</span>
+                          </div>
+                        )}
+                        {enabled && type !== 'email' && (
+                          <div className="pl-2 space-y-1.5">
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-neutral-500 dark:text-neutral-400">DM mode</span>
+                              <select value={cfg.policy?.dm ?? 'all'} onChange={(e) => setPolicy({ dm: e.target.value as 'all' | 'allowlist' | 'none' })} className={selectClass}>
+                                <option value="all">All</option>
+                                <option value="allowlist">Allowlist</option>
+                                <option value="none">None</option>
+                              </select>
+                            </div>
+                            <div className="flex items-center justify-between text-xs">
+                              <span className="text-neutral-500 dark:text-neutral-400">Group mode</span>
+                              <select value={cfg.policy?.groups ?? 'mention'} onChange={(e) => setPolicy({ groups: e.target.value as 'all' | 'mention' | 'none' })} className={selectClass}>
+                                <option value="all">All</option>
+                                <option value="mention">Mention only</option>
+                                <option value="none">None</option>
+                              </select>
+                            </div>
+                          </div>
+                        )}
+                        {runtimeTypes.length > 0 && !runtimeTypes.includes(type) && (
+                          <p className="text-[10px] text-amber-600 dark:text-amber-400 pl-2">
+                            Not available in the ADF runtime running this agent. Update ADF there (on a remote daemon, its host), then restart the agent.
+                          </p>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              )}
+            </Section>
+          </>)
+        })()}
 
         {/* Security */}
         <Section docs={DOCS.security} title="Security" locked={isSectionLocked('security')} onToggleLock={() => toggleSectionLock('security')} summary={(['Open', 'Signed', 'Encrypted', 'Advanced'] as const)[local.security?.level ?? 0]}>
@@ -3963,654 +3947,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                   className="w-4 h-4 accent-blue-500"
                 />
               </div>
-            </div>
-          </div>
-        </Section>
-
-        {/* Triggers */}
-        <Section docs={DOCS.triggers} title="Triggers" hint="Timing modes: Immediate fires instantly. Debounce resets a timer on each event and fires once after events stop. Interval fires the first event and drops others until the interval elapses. Batch collects events in a window and fires once when it expires. Values are in milliseconds." locked={isSectionLocked('triggers')} onToggleLock={() => toggleSectionLock('triggers')} summary={(() => { const t = local.triggers as TriggersConfigV3 | undefined; if (!t) return 'none'; const active = Object.values(t).filter((v: any) => v?.enabled).length; return `${active} active`; })()}>
-          <Field label="Hibernate nudge" hint="Ping the agent after this many hours without a trigger while hibernating.">
-            <div className="flex items-center gap-3">
-              <label className="flex items-center gap-1.5 cursor-pointer">
-                <input
-                  type="checkbox"
-                  checked={local.limits?.hibernate_nudge?.enabled ?? true}
-                  onChange={(e) => {
-                    save({
-                      ...local,
-                      limits: {
-                        ...local.limits,
-                        hibernate_nudge: {
-                          enabled: e.target.checked,
-                          interval_ms: local.limits?.hibernate_nudge?.interval_ms ?? 86_400_000
-                        }
-                      }
-                    })
-                  }}
-                  className="accent-blue-500"
-                />
-                <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Enabled</span>
-              </label>
-              <input
-                type="number"
-                min={1}
-                step={1}
-                value={Math.round((local.limits?.hibernate_nudge?.interval_ms ?? 86_400_000) / 3_600_000)}
-                onChange={(e) => {
-                  const hours = parseInt(e.target.value)
-                  if (isNaN(hours) || hours < 1) return
-                  save({
-                    ...local,
-                    limits: {
-                      ...local.limits,
-                      hibernate_nudge: {
-                        enabled: local.limits?.hibernate_nudge?.enabled ?? true,
-                        interval_ms: hours * 3_600_000
-                      }
-                    }
-                  })
-                }}
-                className="field-input w-16"
-                disabled={!(local.limits?.hibernate_nudge?.enabled ?? true)}
-              />
-              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">hours</span>
-            </div>
-          </Field>
-
-          <div className="border-t border-neutral-200 dark:border-neutral-700" />
-
-          {/* Trigger rows — v3 target-based */}
-          {([
-            { key: 'on_startup' as TriggerTypeV3, label: 'On startup', desc: 'Fires once when the agent starts.' },
-            { key: 'on_inbox' as TriggerTypeV3, label: 'On inbox message', desc: 'Fires when a message arrives in the inbox.' },
-            { key: 'on_outbox' as TriggerTypeV3, label: 'On outbox message', desc: 'Fires when a message is sent.' },
-            { key: 'on_file_change' as TriggerTypeV3, label: 'On file change', desc: 'Fires when a watched file is modified.' },
-            { key: 'on_chat' as TriggerTypeV3, label: 'On user chat', desc: 'Fires when the user sends a chat message.' },
-            { key: 'on_timer' as TriggerTypeV3, label: 'On timer', desc: 'Kill switch for timer-based triggers.' },
-            { key: 'on_tool_call' as TriggerTypeV3, label: 'On tool call', desc: 'Fires after a matching tool executes (observational).' },
-            { key: 'on_task_create' as TriggerTypeV3, label: 'On task create', desc: 'Fires when a task is created (approval request, async dispatch).' },
-            { key: 'on_task_complete' as TriggerTypeV3, label: 'On task complete', desc: 'Fires when a matching async task completes.' },
-            { key: 'on_logs' as TriggerTypeV3, label: 'On log entry', desc: 'Fires when a matching log entry is written.' },
-            { key: 'on_llm_call' as TriggerTypeV3, label: 'On LLM call', desc: 'Fires after model calls with tokens, latency, model, and cost metadata.' }
-          ]).map(({ key, label, desc }) => {
-            const triggerCfg: TriggerConfig = (local.triggers as TriggersConfigV3)?.[key] ?? { enabled: false, targets: [] }
-            const noTimingTypes: TriggerTypeV3[] = ['on_timer', 'on_startup']
-            const showTiming = !noTimingTypes.includes(key)
-            /** Side loops available as target streams. Empty ⇒ no Loop field at all. */
-            const sideLoops: LoopConfig[] = local.loops ?? []
-            // One key list per trigger type — the target rows hold local input state.
-            const targetKeys = triggerTargetKeys.for(key, triggerCfg.targets ?? [])
-
-            const updateTriggerCfg = (patch: Partial<TriggerConfig>) => {
-              save({
-                ...local,
-                triggers: {
-                  ...local.triggers,
-                  [key]: { ...triggerCfg, ...patch }
-                }
-              })
-            }
-
-            const updateTarget = (idx: number, patch: Partial<TriggerTarget>) => {
-              const newTargets = [...(triggerCfg.targets ?? [])]
-              newTargets[idx] = { ...newTargets[idx], ...patch }
-              updateTriggerCfg({ targets: newTargets })
-            }
-
-            const updateTargetFilter = (idx: number, filterPatch: Partial<TriggerFilter>) => {
-              const newTargets = [...(triggerCfg.targets ?? [])]
-              const existing = newTargets[idx].filter ?? {}
-              const merged = { ...existing, ...filterPatch }
-              // Remove undefined/empty values
-              const cleaned: TriggerFilter = {}
-              if (Array.isArray(merged.source) ? merged.source.length : merged.source) cleaned.source = merged.source
-              if (merged.sender) cleaned.sender = merged.sender
-              if (merged.to) cleaned.to = merged.to
-              if (merged.watch) cleaned.watch = merged.watch
-              if (merged.tools?.length) cleaned.tools = merged.tools
-              if (merged.status) cleaned.status = merged.status
-              if (merged.level?.length) cleaned.level = merged.level
-              if (merged.origin?.length) cleaned.origin = merged.origin
-              if (merged.event?.length) cleaned.event = merged.event
-              if (merged.provider?.length) cleaned.provider = merged.provider
-              newTargets[idx] = { ...newTargets[idx], filter: Object.keys(cleaned).length > 0 ? cleaned : undefined }
-              updateTriggerCfg({ targets: newTargets })
-            }
-
-            const addTarget = () => {
-              const defaultFilter: TriggerFilter | undefined =
-                key === 'on_file_change' ? { watch: 'README.*' } :
-                key === 'on_tool_call' ? { tools: ['*'] } :
-                key === 'on_task_create' ? { tools: ['*'] } :
-                key === 'on_task_complete' ? { tools: ['*'] } :
-                key === 'on_logs' ? { level: ['error'] } :
-                undefined
-              const newTarget: TriggerTarget = { scope: 'agent' as TriggerScopeV3, ...(defaultFilter ? { filter: defaultFilter } : {}) }
-              const newTargets = [...(triggerCfg.targets ?? []), newTarget]
-              targetKeys.append()
-              updateTriggerCfg({ targets: newTargets })
-            }
-
-            const removeTarget = (idx: number) => {
-              const newTargets = (triggerCfg.targets ?? []).filter((_, i) => i !== idx)
-              targetKeys.removeAt(idx)
-              updateTriggerCfg({ targets: newTargets })
-            }
-
-            return (
-              <div key={key} className="space-y-1.5 pb-3 border-b border-neutral-200 dark:border-neutral-700 last:border-b-0 last:pb-0">
-                <div className="flex items-center justify-between">
-                  <div>
-                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
-                      <span className="text-neutral-700 dark:text-neutral-300 font-medium">{label}</span>
-                    </label>
-                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">{desc}</p>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    {!isSectionLocked('triggers') && (
-                      <LockBadge
-                        locked={!!triggerCfg.locked}
-                        size="xs"
-                        onClick={() => updateTriggerCfg({ locked: !triggerCfg.locked || undefined })}
-                      />
-                    )}
-                    <input
-                      type="checkbox"
-                      checked={triggerCfg.enabled}
-                      onChange={(e) => updateTriggerCfg({ enabled: e.target.checked })}
-                    />
-                  </div>
-                </div>
-                {triggerCfg.enabled && (
-                  <div className="pl-3 space-y-2 mt-1">
-                    {(triggerCfg.targets ?? []).map((target, ti) => {
-                      const activeTimingModifier = target.debounce_ms !== undefined ? 'debounce'
-                        : target.interval_ms !== undefined ? 'interval'
-                        : target.batch_ms !== undefined ? 'batch'
-                        : 'none'
-                      const timingValue = target.debounce_ms ?? target.interval_ms ?? target.batch_ms ?? 0
-
-                      return (
-                        <div key={targetKeys.keys[ti]} className={`rounded-md border p-2 space-y-1.5 ${target.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50'}`}>
-                          {/* Target header: scope + lock + remove */}
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Scope</span>
-                            <select
-                              className="field-input text-[10px] w-20"
-                              value={target.scope}
-                              onChange={(e) => updateTarget(ti, e.target.value === 'agent'
-                                ? { scope: 'agent', lambda: undefined, command: undefined, warm: undefined }
-                                : { scope: 'system', loop: undefined })}
-                            >
-                              <option value="agent">Agent</option>
-                              <option value="system">System</option>
-                            </select>
-                            <div className="ml-auto flex items-center gap-1">
-                              {!triggerCfg.locked && (
-                                <LockBadge
-                                  locked={!!target.locked}
-                                  size="xs"
-                                  onClick={() => updateTarget(ti, { locked: !target.locked || undefined })}
-                                />
-                              )}
-                            </div>
-                            <button
-                              className="text-[10px] shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-300"
-                              onClick={() => {
-                                if (target.locked && !window.confirm('This target is locked. Remove it?')) return
-                                removeTarget(ti)
-                              }}
-                              title="Remove target"
-                            >
-                              ×
-                            </button>
-                          </div>
-                          {/* Target loop — agent scope only (the runtime ignores loop on a system
-                              target). Shown once side loops exist, or while the target names a
-                              loop that was since deleted, so it can be cleared. */}
-                          {target.scope === 'agent' && (sideLoops.length > 0 || !!target.loop) && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Loop</span>
-                              <select
-                                className="field-input text-[10px] w-32"
-                                value={target.loop ?? 'main'}
-                                onChange={(e) => updateTarget(ti, { loop: e.target.value === 'main' ? undefined : e.target.value })}
-                                title="Loop this target wakes. main is the agent's primary loop."
-                              >
-                                <option value="main">main</option>
-                                {sideLoops.map((l) => (
-                                  <option key={l.name} value={l.name}>
-                                    {l.name}{l.enabled === false ? ' (disabled)' : ''}
-                                  </option>
-                                ))}
-                                {target.loop && !sideLoops.some((l) => l.name === target.loop) && (
-                                  <option value={target.loop}>{target.loop} (not declared)</option>
-                                )}
-                              </select>
-                            </div>
-                          )}
-
-                          {/* Lambda — system scope only, not for on_timer (kill switch only) */}
-                          {target.scope === 'system' && key !== 'on_timer' && (
-                            <>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Lambda</span>
-                                <input
-                                  type="text"
-                                  className="field-input text-[10px] flex-1"
-                                  placeholder="path/file.ts:functionName"
-                                  value={target.lambda ?? ''}
-                                  onChange={(e) => updateTarget(ti, { lambda: e.target.value || undefined })}
-                                />
-                              </div>
-                              <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Warm</span>
-                                <label className="flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400 cursor-pointer">
-                                  <input
-                                    type="checkbox"
-                                    checked={target.warm ?? false}
-                                    onChange={(e) => updateTarget(ti, { warm: e.target.checked || undefined })}
-                                    className="rounded border-neutral-300 dark:border-neutral-600"
-                                  />
-                                  Keep sandbox worker alive between invocations
-                                </label>
-                              </div>
-                            </>
-                          )}
-
-                          {/* Filter fields — vary by trigger type */}
-                          {key === 'on_inbox' && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
-                              <input
-                                type="text"
-                                className="field-input text-[10px] w-24"
-                                placeholder="sender"
-                                value={target.filter?.sender ?? ''}
-                                onChange={(e) => updateTargetFilter(ti, { sender: e.target.value || undefined })}
-                              />
-                              <input
-                                type="text"
-                                className="field-input text-[10px] w-24"
-                                placeholder="source"
-                                value={typeof target.filter?.source === 'string' ? target.filter.source : ''}
-                                onChange={(e) => updateTargetFilter(ti, { source: e.target.value || undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_outbox' && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
-                              <input
-                                type="text"
-                                className="field-input text-[10px] flex-1"
-                                placeholder="to (recipient)"
-                                value={target.filter?.to ?? ''}
-                                onChange={(e) => updateTargetFilter(ti, { to: e.target.value || undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_file_change' && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Watch</span>
-                              <input
-                                type="text"
-                                className="field-input text-[10px] flex-1"
-                                placeholder="glob pattern, e.g. README.*"
-                                value={target.filter?.watch ?? ''}
-                                onChange={(e) => updateTargetFilter(ti, { watch: e.target.value || undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_tool_call' && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Tools</span>
-                              <CommaSepInput
-                                className="field-input text-[10px] flex-1"
-                                placeholder="tool globs, comma-separated (e.g. fs_*, msg_send)"
-                                value={target.filter?.tools ?? []}
-                                onChange={(tools) => updateTargetFilter(ti, { tools: tools.length > 0 ? tools : undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_task_create' && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Tools</span>
-                              <CommaSepInput
-                                className="field-input text-[10px] flex-1"
-                                placeholder="tool globs, comma-separated (e.g. fs_*, msg_send)"
-                                value={target.filter?.tools ?? []}
-                                onChange={(tools) => updateTargetFilter(ti, { tools: tools.length > 0 ? tools : undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_task_complete' && (
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
-                              <CommaSepInput
-                                className="field-input text-[10px] w-36"
-                                placeholder="tools (comma-sep globs)"
-                                value={target.filter?.tools ?? []}
-                                onChange={(tools) => updateTargetFilter(ti, { tools: tools.length > 0 ? tools : undefined })}
-                              />
-                              <input
-                                type="text"
-                                className="field-input text-[10px] w-24"
-                                placeholder="status"
-                                value={target.filter?.status ?? ''}
-                                onChange={(e) => updateTargetFilter(ti, { status: e.target.value || undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_logs' && (
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
-                              <CommaSepInput
-                                className="field-input text-[10px] w-28"
-                                placeholder="level (comma-sep)"
-                                value={target.filter?.level ?? []}
-                                onChange={(level) => updateTargetFilter(ti, { level: level.length > 0 ? level : undefined })}
-                              />
-                              <CommaSepInput
-                                className="field-input text-[10px] w-28"
-                                placeholder="origin (globs)"
-                                value={target.filter?.origin ?? []}
-                                onChange={(origin) => updateTargetFilter(ti, { origin: origin.length > 0 ? origin : undefined })}
-                              />
-                              <CommaSepInput
-                                className="field-input text-[10px] w-28"
-                                placeholder="event (globs)"
-                                value={target.filter?.event ?? []}
-                                onChange={(event) => updateTargetFilter(ti, { event: event.length > 0 ? event : undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {key === 'on_llm_call' && (
-                            <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
-                              <CommaSepInput
-                                className="field-input text-[10px] w-36"
-                                placeholder="sources (turn, compaction)"
-                                value={Array.isArray(target.filter?.source) ? target.filter.source : []}
-                                onChange={(source) => updateTargetFilter(ti, { source: source.length > 0 ? source : undefined })}
-                              />
-                              <CommaSepInput
-                                className="field-input text-[10px] w-36"
-                                placeholder="providers (comma-sep)"
-                                value={target.filter?.provider ?? []}
-                                onChange={(provider) => updateTargetFilter(ti, { provider: provider.length > 0 ? provider : undefined })}
-                              />
-                            </div>
-                          )}
-
-                          {/* Timing modifier */}
-                          {showTiming && (
-                            <div className="flex items-center gap-1.5">
-                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Timing</span>
-                              <select
-                                className="field-input text-[10px] w-20"
-                                value={activeTimingModifier}
-                                onChange={(e) => {
-                                  const mod = e.target.value
-                                  const patch: Partial<TriggerTarget> = {
-                                    debounce_ms: undefined,
-                                    interval_ms: undefined,
-                                    batch_ms: undefined,
-                                    batch_count: undefined
-                                  }
-                                  if (mod === 'debounce') patch.debounce_ms = 2000
-                                  else if (mod === 'interval') patch.interval_ms = 30000
-                                  else if (mod === 'batch') patch.batch_ms = 50
-                                  updateTarget(ti, patch)
-                                }}
-                              >
-                                <option value="none">Immediate</option>
-                                <option value="debounce">Debounce</option>
-                                <option value="interval">Interval</option>
-                                <option value="batch">Batch</option>
-                              </select>
-                              {activeTimingModifier !== 'none' && (
-                                <>
-                                  <input
-                                    type="number"
-                                    min={0}
-                                    step={500}
-                                    value={timingValue}
-                                    onChange={(e) => {
-                                      const val = parseInt(e.target.value)
-                                      const msKey = `${activeTimingModifier}_ms` as keyof TriggerTarget
-                                      updateTarget(ti, { debounce_ms: undefined, interval_ms: undefined, batch_ms: undefined, batch_count: undefined, [msKey]: isNaN(val) ? undefined : val })
-                                    }}
-                                    className="field-input w-16 text-[10px]"
-                                  />
-                                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">ms</span>
-                                  {activeTimingModifier === 'batch' && (
-                                    <>
-                                      <input
-                                        type="number"
-                                        min={1}
-                                        step={1}
-                                        value={target.batch_count ?? ''}
-                                        placeholder="N"
-                                        onChange={(e) => {
-                                          const val = parseInt(e.target.value)
-                                          updateTarget(ti, { batch_count: isNaN(val) || val < 1 ? undefined : val })
-                                        }}
-                                        className="field-input w-12 text-[10px]"
-                                        title="Fire batch early when N events accumulate"
-                                      />
-                                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">count</span>
-                                    </>
-                                  )}
-                                </>
-                              )}
-                            </div>
-                          )}
-                        </div>
-                      )
-                    })}
-                    <button
-                      className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-                      onClick={addTarget}
-                    >
-                      + Add target
-                    </button>
-                  </div>
-                )}
-              </div>
-            )
-          })}
-        </Section>
-
-        {/* Hooks run inside work already underway; they are not event triggers. */}
-        <Section
-          docs={DOCS.preLlmHook}
-          title="Hooks"
-          hint="Lambdas that run during a turn; triggers start turns from events. The pre-LLM hook can modify each model request before it is sent."
-          locked={isSectionLocked('pre_llm_hook')}
-          onToggleLock={() => toggleSectionLock('pre_llm_hook')}
-          summary={local.pre_llm_hook
-            ? local.pre_llm_hook.scope === 'all'
-              ? 'all loops'
-              : local.pre_llm_hook.scope === 'main'
-                ? 'Main'
-                : `${(local.pre_llm_hook.include_main ? 1 : 0) + (local.pre_llm_hook.loops?.length ?? 0)} targets`
-            : 'not configured'}
-          defaultCollapsed
-          testId="pre-llm-hook-section"
-        >
-          <div data-testid="pre-llm-hook-fields" className="space-y-2">
-            <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-700 pb-1">
-              <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Pre-LLM call</span>
-              <InfoHint tip="Runs immediately before each normal conversational provider request, including tool rounds. It does not run for compaction or direct model_invoke calls." />
-              <DocsLink href={DOCS.preLlmHook} label="Guide" className="ml-auto" />
-            </div>
-            <Field label="Lambda source" hint="Use a workspace .js or .ts path, optionally followed by :functionName. Without a function name, main is used.">
-              <input
-                data-testid="pre-llm-hook-source"
-                type="text"
-                value={preLlmHookDraft.source}
-                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, source: e.target.value }))}
-                placeholder="lib/request-policy.ts:transform"
-                className="field-input w-full font-mono"
-                aria-label="Pre-LLM hook lambda source"
-              />
-            </Field>
-
-            <Field label="Targets" hint="New hooks start on Main. Add specific inner loops as rows, or choose All loops (including future loops); All loops cannot be combined with specific targets.">
-              <div data-testid="pre-llm-hook-targets" className="rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-2 space-y-1.5">
-                <div className="flex items-center justify-between">
-                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Runs before the selected model calls</span>
-                  <button
-                    type="button"
-                    data-testid="pre-llm-hook-add-target"
-                    onClick={() => setPreLlmHookDraft((draft) => ({
-                      ...draft,
-                      targetMode: 'targets',
-                      targets: draft.targetMode === 'all' ? [PRE_LLM_HOOK_MAIN_TARGET, ''] : [...draft.targets, ''],
-                    }))}
-                    className="text-[10px] text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 font-medium"
-                  >
-                    + Add target
-                  </button>
-                </div>
-                {preLlmHookDraft.targetMode === 'all' ? (
-                  <div className="flex items-center gap-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5">
-                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-12 shrink-0">Target</span>
-                    <select
-                      data-testid="pre-llm-hook-target-0"
-                      value="__all_streams__"
-                      onChange={(e) => {
-                        const value = e.target.value
-                        if (value === '__all_streams__') return
-                        setPreLlmHookDraft((draft) => ({
-                          ...draft,
-                          targetMode: 'targets',
-                          targets: [value === '__future__' ? '' : value],
-                        }))
-                      }}
-                      className="field-input text-[10px] flex-1"
-                      aria-label="Hook target"
-                    >
-                      <option value="__all_streams__">All loops (including future loops)</option>
-                      <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
-                      {(local.loops ?? []).map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
-                      <option value="__future__">Future or other loop…</option>
-                    </select>
-                  </div>
-                ) : (
-                  preLlmHookDraft.targets.map((target, index) => {
-                    const declaredLoops = local.loops ?? []
-                    const isMain = target === PRE_LLM_HOOK_MAIN_TARGET
-                    const isDeclared = declaredLoops.some((loop) => loop.name === target)
-                    const isCustom = !isMain && !isDeclared
-                    const selectValue = target === '' ? '__future__' : target
-                    return (
-                      <div key={`pre-llm-hook-target-${index}`} className="min-w-0 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5 space-y-1">
-                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
-                          <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-12 shrink-0">Target</span>
-                          <select
-                            data-testid={`pre-llm-hook-target-${index}`}
-                            value={selectValue}
-                            onChange={(e) => {
-                              const value = e.target.value
-                              if (value === '__all_streams__') {
-                                setPreLlmHookDraft((draft) => ({ ...draft, targetMode: 'all', targets: [] }))
-                                return
-                              }
-                              setPreLlmHookDraft((draft) => ({
-                                ...draft,
-                                targets: draft.targets.map((entry, i) => i === index ? (value === '__future__' ? '' : value) : entry),
-                              }))
-                            }}
-                            className="field-input text-[10px] min-w-0 flex-1"
-                            aria-label={`Hook target ${index + 1}`}
-                          >
-                            <option value="">Choose a loop…</option>
-                            <option value="__all_streams__">All loops (including future loops)</option>
-                            <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
-                            {declaredLoops.map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
-                            {isCustom && target && <option value={target}>{target} (not declared)</option>}
-                            <option value="__future__">Future or other loop…</option>
-                          </select>
-                          <button
-                            type="button"
-                            onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, targets: draft.targets.filter((_, i) => i !== index) }))}
-                            className="text-xs text-red-400 hover:text-red-600 dark:hover:text-red-300 px-1"
-                            aria-label={`Remove hook target ${index + 1}`}
-                          >
-                            &times;
-                          </button>
-                        </div>
-                        {(target === '' || isCustom) && (
-                          <div className="min-w-0 pl-[3.35rem]">
-                          <input
-                            data-testid={`pre-llm-hook-target-name-${index}`}
-                            type="text"
-                            value={target}
-                            onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, targets: draft.targets.map((entry, i) => i === index ? e.target.value : entry) }))}
-                            placeholder="future-loop-name"
-                            className="field-input text-[10px] w-full min-w-0 max-w-full box-border font-mono"
-                            aria-label={`Future hook target name ${index + 1}`}
-                          />
-                          </div>
-                        )}
-                      </div>
-                    )
-                  })
-                )}
-                {preLlmHookDraft.targetMode === 'targets' && preLlmHookDraft.targets.length === 0 && (
-                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Add Main or an inner-loop target.</p>
-                )}
-              </div>
-            </Field>
-
-            <Field label="Timeout (optional, milliseconds)" hint="Whole number from 1000 to 300000 ms. The runtime also caps this by limits.execution_timeout_ms.">
-              <input
-                data-testid="pre-llm-hook-timeout"
-                type="text"
-                inputMode="numeric"
-                value={preLlmHookDraft.timeout_ms}
-                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, timeout_ms: e.target.value }))}
-                placeholder="Inherit execution timeout"
-                className="field-input w-full"
-                aria-label="Pre-LLM hook timeout in milliseconds"
-              />
-            </Field>
-
-            {preLlmHookErrors.length > 0 && (
-              <div data-testid="pre-llm-hook-errors" role="alert" className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-2 py-1.5 text-[10px] text-red-600 dark:text-red-300 space-y-0.5">
-                {preLlmHookErrors.map((error) => <p key={error}>{error}</p>)}
-              </div>
-            )}
-
-            <div className="flex items-center gap-2 pt-1">
-              <button
-                type="button"
-                data-testid="pre-llm-hook-save"
-                onClick={savePreLlmHook}
-                className="px-2.5 py-1 text-[10px] rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] font-medium"
-              >
-                {local.pre_llm_hook ? 'Save changes' : 'Save hook'}
-              </button>
-              {local.pre_llm_hook && (
-                <button
-                  type="button"
-                  data-testid="pre-llm-hook-remove"
-                  onClick={removePreLlmHook}
-                  className="px-2.5 py-1 text-[10px] rounded-md border border-red-200 dark:border-red-800 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 font-medium"
-                >
-                  Remove hook
-                </button>
-              )}
-              {!local.pre_llm_hook && <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">Not configured</span>}
             </div>
           </div>
         </Section>
@@ -5300,6 +4636,656 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           ))}
         </Section>
 
+        <GroupDivider label="Automation" />
+
+        {/* Triggers */}
+        <Section docs={DOCS.triggers} title="Triggers" hint="Timing modes: Immediate fires instantly. Debounce resets a timer on each event and fires once after events stop. Interval fires the first event and drops others until the interval elapses. Batch collects events in a window and fires once when it expires. Values are in milliseconds." locked={isSectionLocked('triggers')} onToggleLock={() => toggleSectionLock('triggers')} summary={(() => { const t = local.triggers as TriggersConfigV3 | undefined; if (!t) return 'none'; const active = Object.values(t).filter((v: any) => v?.enabled).length; return `${active} active`; })()}>
+          <Field label="Hibernate nudge" hint="Ping the agent after this many hours without a trigger while hibernating.">
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-1.5 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={local.limits?.hibernate_nudge?.enabled ?? true}
+                  onChange={(e) => {
+                    save({
+                      ...local,
+                      limits: {
+                        ...local.limits,
+                        hibernate_nudge: {
+                          enabled: e.target.checked,
+                          interval_ms: local.limits?.hibernate_nudge?.interval_ms ?? 86_400_000
+                        }
+                      }
+                    })
+                  }}
+                  className="accent-blue-500"
+                />
+                <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Enabled</span>
+              </label>
+              <input
+                type="number"
+                min={1}
+                step={1}
+                value={Math.round((local.limits?.hibernate_nudge?.interval_ms ?? 86_400_000) / 3_600_000)}
+                onChange={(e) => {
+                  const hours = parseInt(e.target.value)
+                  if (isNaN(hours) || hours < 1) return
+                  save({
+                    ...local,
+                    limits: {
+                      ...local.limits,
+                      hibernate_nudge: {
+                        enabled: local.limits?.hibernate_nudge?.enabled ?? true,
+                        interval_ms: hours * 3_600_000
+                      }
+                    }
+                  })
+                }}
+                className="field-input w-16"
+                disabled={!(local.limits?.hibernate_nudge?.enabled ?? true)}
+              />
+              <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">hours</span>
+            </div>
+          </Field>
+
+          <div className="border-t border-neutral-200 dark:border-neutral-700" />
+
+          {/* Trigger rows — v3 target-based */}
+          {([
+            { key: 'on_startup' as TriggerTypeV3, label: 'On startup', desc: 'Fires once when the agent starts.' },
+            { key: 'on_inbox' as TriggerTypeV3, label: 'On inbox message', desc: 'Fires when a message arrives in the inbox.' },
+            { key: 'on_outbox' as TriggerTypeV3, label: 'On outbox message', desc: 'Fires when a message is sent.' },
+            { key: 'on_file_change' as TriggerTypeV3, label: 'On file change', desc: 'Fires when a watched file is modified.' },
+            { key: 'on_chat' as TriggerTypeV3, label: 'On user chat', desc: 'Fires when the user sends a chat message.' },
+            { key: 'on_timer' as TriggerTypeV3, label: 'On timer', desc: 'Kill switch for timer-based triggers.' },
+            { key: 'on_tool_call' as TriggerTypeV3, label: 'On tool call', desc: 'Fires after a matching tool executes (observational).' },
+            { key: 'on_task_create' as TriggerTypeV3, label: 'On task create', desc: 'Fires when a task is created (approval request, async dispatch).' },
+            { key: 'on_task_complete' as TriggerTypeV3, label: 'On task complete', desc: 'Fires when a matching async task completes.' },
+            { key: 'on_logs' as TriggerTypeV3, label: 'On log entry', desc: 'Fires when a matching log entry is written.' },
+            { key: 'on_llm_call' as TriggerTypeV3, label: 'On LLM call', desc: 'Fires after model calls with tokens, latency, model, and cost metadata.' }
+          ]).map(({ key, label, desc }) => {
+            const triggerCfg: TriggerConfig = (local.triggers as TriggersConfigV3)?.[key] ?? { enabled: false, targets: [] }
+            const noTimingTypes: TriggerTypeV3[] = ['on_timer', 'on_startup']
+            const showTiming = !noTimingTypes.includes(key)
+            /** Side loops available as target streams. Empty ⇒ no Loop field at all. */
+            const sideLoops: LoopConfig[] = local.loops ?? []
+            // One key list per trigger type — the target rows hold local input state.
+            const targetKeys = triggerTargetKeys.for(key, triggerCfg.targets ?? [])
+
+            const updateTriggerCfg = (patch: Partial<TriggerConfig>) => {
+              save({
+                ...local,
+                triggers: {
+                  ...local.triggers,
+                  [key]: { ...triggerCfg, ...patch }
+                }
+              })
+            }
+
+            const updateTarget = (idx: number, patch: Partial<TriggerTarget>) => {
+              const newTargets = [...(triggerCfg.targets ?? [])]
+              newTargets[idx] = { ...newTargets[idx], ...patch }
+              updateTriggerCfg({ targets: newTargets })
+            }
+
+            const updateTargetFilter = (idx: number, filterPatch: Partial<TriggerFilter>) => {
+              const newTargets = [...(triggerCfg.targets ?? [])]
+              const existing = newTargets[idx].filter ?? {}
+              const merged = { ...existing, ...filterPatch }
+              // Remove undefined/empty values
+              const cleaned: TriggerFilter = {}
+              if (Array.isArray(merged.source) ? merged.source.length : merged.source) cleaned.source = merged.source
+              if (merged.sender) cleaned.sender = merged.sender
+              if (merged.to) cleaned.to = merged.to
+              if (merged.watch) cleaned.watch = merged.watch
+              if (merged.tools?.length) cleaned.tools = merged.tools
+              if (merged.status) cleaned.status = merged.status
+              if (merged.level?.length) cleaned.level = merged.level
+              if (merged.origin?.length) cleaned.origin = merged.origin
+              if (merged.event?.length) cleaned.event = merged.event
+              if (merged.provider?.length) cleaned.provider = merged.provider
+              newTargets[idx] = { ...newTargets[idx], filter: Object.keys(cleaned).length > 0 ? cleaned : undefined }
+              updateTriggerCfg({ targets: newTargets })
+            }
+
+            const addTarget = () => {
+              const defaultFilter: TriggerFilter | undefined =
+                key === 'on_file_change' ? { watch: 'README.*' } :
+                key === 'on_tool_call' ? { tools: ['*'] } :
+                key === 'on_task_create' ? { tools: ['*'] } :
+                key === 'on_task_complete' ? { tools: ['*'] } :
+                key === 'on_logs' ? { level: ['error'] } :
+                undefined
+              const newTarget: TriggerTarget = { scope: 'agent' as TriggerScopeV3, ...(defaultFilter ? { filter: defaultFilter } : {}) }
+              const newTargets = [...(triggerCfg.targets ?? []), newTarget]
+              targetKeys.append()
+              updateTriggerCfg({ targets: newTargets })
+            }
+
+            const removeTarget = (idx: number) => {
+              const newTargets = (triggerCfg.targets ?? []).filter((_, i) => i !== idx)
+              targetKeys.removeAt(idx)
+              updateTriggerCfg({ targets: newTargets })
+            }
+
+            return (
+              <div key={key} className="space-y-1.5 pb-3 border-b border-neutral-200 dark:border-neutral-700 last:border-b-0 last:pb-0">
+                <div className="flex items-center justify-between">
+                  <div>
+                    <label className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <span className="text-neutral-700 dark:text-neutral-300 font-medium">{label}</span>
+                    </label>
+                    <p className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">{desc}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    {!isSectionLocked('triggers') && (
+                      <LockBadge
+                        locked={!!triggerCfg.locked}
+                        size="xs"
+                        onClick={() => updateTriggerCfg({ locked: !triggerCfg.locked || undefined })}
+                      />
+                    )}
+                    <input
+                      type="checkbox"
+                      checked={triggerCfg.enabled}
+                      onChange={(e) => updateTriggerCfg({ enabled: e.target.checked })}
+                    />
+                  </div>
+                </div>
+                {triggerCfg.enabled && (
+                  <div className="pl-3 space-y-2 mt-1">
+                    {(triggerCfg.targets ?? []).map((target, ti) => {
+                      const activeTimingModifier = target.debounce_ms !== undefined ? 'debounce'
+                        : target.interval_ms !== undefined ? 'interval'
+                        : target.batch_ms !== undefined ? 'batch'
+                        : 'none'
+                      const timingValue = target.debounce_ms ?? target.interval_ms ?? target.batch_ms ?? 0
+
+                      return (
+                        <div key={targetKeys.keys[ti]} className={`rounded-md border p-2 space-y-1.5 ${target.locked ? 'border-amber-300 dark:border-amber-600 bg-amber-50/30 dark:bg-amber-900/10' : 'border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50'}`}>
+                          {/* Target header: scope + lock + remove */}
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Scope</span>
+                            <select
+                              className="field-input text-[10px] w-20"
+                              value={target.scope}
+                              onChange={(e) => updateTarget(ti, e.target.value === 'agent'
+                                ? { scope: 'agent', lambda: undefined, command: undefined, warm: undefined }
+                                : { scope: 'system', loop: undefined })}
+                            >
+                              <option value="agent">Agent</option>
+                              <option value="system">System</option>
+                            </select>
+                            <div className="ml-auto flex items-center gap-1">
+                              {!triggerCfg.locked && (
+                                <LockBadge
+                                  locked={!!target.locked}
+                                  size="xs"
+                                  onClick={() => updateTarget(ti, { locked: !target.locked || undefined })}
+                                />
+                              )}
+                            </div>
+                            <button
+                              className="text-[10px] shrink-0 text-red-400 hover:text-red-600 dark:hover:text-red-300"
+                              onClick={() => {
+                                if (target.locked && !window.confirm('This target is locked. Remove it?')) return
+                                removeTarget(ti)
+                              }}
+                              title="Remove target"
+                            >
+                              ×
+                            </button>
+                          </div>
+                          {/* Target loop — agent scope only (the runtime ignores loop on a system
+                              target). Shown once side loops exist, or while the target names a
+                              loop that was since deleted, so it can be cleared. */}
+                          {target.scope === 'agent' && (sideLoops.length > 0 || !!target.loop) && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Loop</span>
+                              <select
+                                className="field-input text-[10px] w-32"
+                                value={target.loop ?? 'main'}
+                                onChange={(e) => updateTarget(ti, { loop: e.target.value === 'main' ? undefined : e.target.value })}
+                                title="Loop this target wakes. main is the agent's primary loop."
+                              >
+                                <option value="main">main</option>
+                                {sideLoops.map((l) => (
+                                  <option key={l.name} value={l.name}>
+                                    {l.name}{l.enabled === false ? ' (disabled)' : ''}
+                                  </option>
+                                ))}
+                                {target.loop && !sideLoops.some((l) => l.name === target.loop) && (
+                                  <option value={target.loop}>{target.loop} (not declared)</option>
+                                )}
+                              </select>
+                            </div>
+                          )}
+
+                          {/* Lambda — system scope only, not for on_timer (kill switch only) */}
+                          {target.scope === 'system' && key !== 'on_timer' && (
+                            <>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Lambda</span>
+                                <input
+                                  type="text"
+                                  className="field-input text-[10px] flex-1"
+                                  placeholder="path/file.ts:functionName"
+                                  value={target.lambda ?? ''}
+                                  onChange={(e) => updateTarget(ti, { lambda: e.target.value || undefined })}
+                                />
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Warm</span>
+                                <label className="flex items-center gap-1 text-[10px] text-neutral-500 dark:text-neutral-400 cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={target.warm ?? false}
+                                    onChange={(e) => updateTarget(ti, { warm: e.target.checked || undefined })}
+                                    className="rounded border-neutral-300 dark:border-neutral-600"
+                                  />
+                                  Keep sandbox worker alive between invocations
+                                </label>
+                              </div>
+                            </>
+                          )}
+
+                          {/* Filter fields — vary by trigger type */}
+                          {key === 'on_inbox' && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
+                              <input
+                                type="text"
+                                className="field-input text-[10px] w-24"
+                                placeholder="sender"
+                                value={target.filter?.sender ?? ''}
+                                onChange={(e) => updateTargetFilter(ti, { sender: e.target.value || undefined })}
+                              />
+                              <input
+                                type="text"
+                                className="field-input text-[10px] w-24"
+                                placeholder="source"
+                                value={typeof target.filter?.source === 'string' ? target.filter.source : ''}
+                                onChange={(e) => updateTargetFilter(ti, { source: e.target.value || undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_outbox' && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
+                              <input
+                                type="text"
+                                className="field-input text-[10px] flex-1"
+                                placeholder="to (recipient)"
+                                value={target.filter?.to ?? ''}
+                                onChange={(e) => updateTargetFilter(ti, { to: e.target.value || undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_file_change' && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Watch</span>
+                              <input
+                                type="text"
+                                className="field-input text-[10px] flex-1"
+                                placeholder="glob pattern, e.g. README.*"
+                                value={target.filter?.watch ?? ''}
+                                onChange={(e) => updateTargetFilter(ti, { watch: e.target.value || undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_tool_call' && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Tools</span>
+                              <CommaSepInput
+                                className="field-input text-[10px] flex-1"
+                                placeholder="tool globs, comma-separated (e.g. fs_*, msg_send)"
+                                value={target.filter?.tools ?? []}
+                                onChange={(tools) => updateTargetFilter(ti, { tools: tools.length > 0 ? tools : undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_task_create' && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Tools</span>
+                              <CommaSepInput
+                                className="field-input text-[10px] flex-1"
+                                placeholder="tool globs, comma-separated (e.g. fs_*, msg_send)"
+                                value={target.filter?.tools ?? []}
+                                onChange={(tools) => updateTargetFilter(ti, { tools: tools.length > 0 ? tools : undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_task_complete' && (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
+                              <CommaSepInput
+                                className="field-input text-[10px] w-36"
+                                placeholder="tools (comma-sep globs)"
+                                value={target.filter?.tools ?? []}
+                                onChange={(tools) => updateTargetFilter(ti, { tools: tools.length > 0 ? tools : undefined })}
+                              />
+                              <input
+                                type="text"
+                                className="field-input text-[10px] w-24"
+                                placeholder="status"
+                                value={target.filter?.status ?? ''}
+                                onChange={(e) => updateTargetFilter(ti, { status: e.target.value || undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_logs' && (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
+                              <CommaSepInput
+                                className="field-input text-[10px] w-28"
+                                placeholder="level (comma-sep)"
+                                value={target.filter?.level ?? []}
+                                onChange={(level) => updateTargetFilter(ti, { level: level.length > 0 ? level : undefined })}
+                              />
+                              <CommaSepInput
+                                className="field-input text-[10px] w-28"
+                                placeholder="origin (globs)"
+                                value={target.filter?.origin ?? []}
+                                onChange={(origin) => updateTargetFilter(ti, { origin: origin.length > 0 ? origin : undefined })}
+                              />
+                              <CommaSepInput
+                                className="field-input text-[10px] w-28"
+                                placeholder="event (globs)"
+                                value={target.filter?.event ?? []}
+                                onChange={(event) => updateTargetFilter(ti, { event: event.length > 0 ? event : undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {key === 'on_llm_call' && (
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Filter</span>
+                              <CommaSepInput
+                                className="field-input text-[10px] w-36"
+                                placeholder="sources (turn, compaction)"
+                                value={Array.isArray(target.filter?.source) ? target.filter.source : []}
+                                onChange={(source) => updateTargetFilter(ti, { source: source.length > 0 ? source : undefined })}
+                              />
+                              <CommaSepInput
+                                className="field-input text-[10px] w-36"
+                                placeholder="providers (comma-sep)"
+                                value={target.filter?.provider ?? []}
+                                onChange={(provider) => updateTargetFilter(ti, { provider: provider.length > 0 ? provider : undefined })}
+                              />
+                            </div>
+                          )}
+
+                          {/* Timing modifier */}
+                          {showTiming && (
+                            <div className="flex items-center gap-1.5">
+                              <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Timing</span>
+                              <select
+                                className="field-input text-[10px] w-20"
+                                value={activeTimingModifier}
+                                onChange={(e) => {
+                                  const mod = e.target.value
+                                  const patch: Partial<TriggerTarget> = {
+                                    debounce_ms: undefined,
+                                    interval_ms: undefined,
+                                    batch_ms: undefined,
+                                    batch_count: undefined
+                                  }
+                                  if (mod === 'debounce') patch.debounce_ms = 2000
+                                  else if (mod === 'interval') patch.interval_ms = 30000
+                                  else if (mod === 'batch') patch.batch_ms = 50
+                                  updateTarget(ti, patch)
+                                }}
+                              >
+                                <option value="none">Immediate</option>
+                                <option value="debounce">Debounce</option>
+                                <option value="interval">Interval</option>
+                                <option value="batch">Batch</option>
+                              </select>
+                              {activeTimingModifier !== 'none' && (
+                                <>
+                                  <input
+                                    type="number"
+                                    min={0}
+                                    step={500}
+                                    value={timingValue}
+                                    onChange={(e) => {
+                                      const val = parseInt(e.target.value)
+                                      const msKey = `${activeTimingModifier}_ms` as keyof TriggerTarget
+                                      updateTarget(ti, { debounce_ms: undefined, interval_ms: undefined, batch_ms: undefined, batch_count: undefined, [msKey]: isNaN(val) ? undefined : val })
+                                    }}
+                                    className="field-input w-16 text-[10px]"
+                                  />
+                                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">ms</span>
+                                  {activeTimingModifier === 'batch' && (
+                                    <>
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        step={1}
+                                        value={target.batch_count ?? ''}
+                                        placeholder="N"
+                                        onChange={(e) => {
+                                          const val = parseInt(e.target.value)
+                                          updateTarget(ti, { batch_count: isNaN(val) || val < 1 ? undefined : val })
+                                        }}
+                                        className="field-input w-12 text-[10px]"
+                                        title="Fire batch early when N events accumulate"
+                                      />
+                                      <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">count</span>
+                                    </>
+                                  )}
+                                </>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                    <button
+                      className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
+                      onClick={addTarget}
+                    >
+                      + Add target
+                    </button>
+                  </div>
+                )}
+              </div>
+            )
+          })}
+        </Section>
+
+        {/* Hooks run inside work already underway; they are not event triggers. */}
+        <Section
+          docs={DOCS.preLlmHook}
+          title="Hooks"
+          hint="Lambdas that run during a turn; triggers start turns from events. The pre-LLM hook can modify each model request before it is sent."
+          locked={isSectionLocked('pre_llm_hook')}
+          onToggleLock={() => toggleSectionLock('pre_llm_hook')}
+          summary={local.pre_llm_hook
+            ? local.pre_llm_hook.scope === 'all'
+              ? 'all loops'
+              : local.pre_llm_hook.scope === 'main'
+                ? 'Main'
+                : `${(local.pre_llm_hook.include_main ? 1 : 0) + (local.pre_llm_hook.loops?.length ?? 0)} targets`
+            : 'not configured'}
+          defaultCollapsed
+          testId="pre-llm-hook-section"
+        >
+          <div data-testid="pre-llm-hook-fields" className="space-y-2">
+            <div className="flex items-center gap-2 border-b border-neutral-200 dark:border-neutral-700 pb-1">
+              <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300">Pre-LLM call</span>
+              <InfoHint tip="Runs immediately before each normal conversational provider request, including tool rounds. It does not run for compaction or direct model_invoke calls." />
+              <DocsLink href={DOCS.preLlmHook} label="Guide" className="ml-auto" />
+            </div>
+            <Field label="Lambda source" hint="Use a workspace .js or .ts path, optionally followed by :functionName. Without a function name, main is used.">
+              <input
+                data-testid="pre-llm-hook-source"
+                type="text"
+                value={preLlmHookDraft.source}
+                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, source: e.target.value }))}
+                placeholder="lib/request-policy.ts:transform"
+                className="field-input w-full font-mono"
+                aria-label="Pre-LLM hook lambda source"
+              />
+            </Field>
+
+            <Field label="Targets" hint="New hooks start on Main. Add specific inner loops as rows, or choose All loops (including future loops); All loops cannot be combined with specific targets.">
+              <div data-testid="pre-llm-hook-targets" className="rounded-md border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800/50 p-2 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] text-neutral-500 dark:text-neutral-400">Runs before the selected model calls</span>
+                  <button
+                    type="button"
+                    data-testid="pre-llm-hook-add-target"
+                    onClick={() => setPreLlmHookDraft((draft) => ({
+                      ...draft,
+                      targetMode: 'targets',
+                      targets: draft.targetMode === 'all' ? [PRE_LLM_HOOK_MAIN_TARGET, ''] : [...draft.targets, ''],
+                    }))}
+                    className="text-[10px] text-blue-500 hover:text-blue-700 dark:text-blue-400 dark:hover:text-blue-300 font-medium"
+                  >
+                    + Add target
+                  </button>
+                </div>
+                {preLlmHookDraft.targetMode === 'all' ? (
+                  <div className="flex items-center gap-1.5 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5">
+                    <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-12 shrink-0">Target</span>
+                    <select
+                      data-testid="pre-llm-hook-target-0"
+                      value="__all_streams__"
+                      onChange={(e) => {
+                        const value = e.target.value
+                        if (value === '__all_streams__') return
+                        setPreLlmHookDraft((draft) => ({
+                          ...draft,
+                          targetMode: 'targets',
+                          targets: [value === '__future__' ? '' : value],
+                        }))
+                      }}
+                      className="field-input text-[10px] flex-1"
+                      aria-label="Hook target"
+                    >
+                      <option value="__all_streams__">All loops (including future loops)</option>
+                      <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
+                      {(local.loops ?? []).map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
+                      <option value="__future__">Future or other loop…</option>
+                    </select>
+                  </div>
+                ) : (
+                  preLlmHookDraft.targets.map((target, index) => {
+                    const declaredLoops = local.loops ?? []
+                    const isMain = target === PRE_LLM_HOOK_MAIN_TARGET
+                    const isDeclared = declaredLoops.some((loop) => loop.name === target)
+                    const isCustom = !isMain && !isDeclared
+                    const selectValue = target === '' ? '__future__' : target
+                    return (
+                      <div key={`pre-llm-hook-target-${index}`} className="min-w-0 rounded-md border border-neutral-200 dark:border-neutral-700 bg-white dark:bg-neutral-800 p-1.5 space-y-1">
+                        <div className="flex min-w-0 flex-wrap items-center gap-1.5">
+                          <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-12 shrink-0">Target</span>
+                          <select
+                            data-testid={`pre-llm-hook-target-${index}`}
+                            value={selectValue}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              if (value === '__all_streams__') {
+                                setPreLlmHookDraft((draft) => ({ ...draft, targetMode: 'all', targets: [] }))
+                                return
+                              }
+                              setPreLlmHookDraft((draft) => ({
+                                ...draft,
+                                targets: draft.targets.map((entry, i) => i === index ? (value === '__future__' ? '' : value) : entry),
+                              }))
+                            }}
+                            className="field-input text-[10px] min-w-0 flex-1"
+                            aria-label={`Hook target ${index + 1}`}
+                          >
+                            <option value="">Choose a loop…</option>
+                            <option value="__all_streams__">All loops (including future loops)</option>
+                            <option value={PRE_LLM_HOOK_MAIN_TARGET}>Main</option>
+                            {declaredLoops.map((loop) => <option key={loop.name} value={loop.name}>{loop.name}</option>)}
+                            {isCustom && target && <option value={target}>{target} (not declared)</option>}
+                            <option value="__future__">Future or other loop…</option>
+                          </select>
+                          <button
+                            type="button"
+                            onClick={() => setPreLlmHookDraft((draft) => ({ ...draft, targets: draft.targets.filter((_, i) => i !== index) }))}
+                            className="text-xs text-red-400 hover:text-red-600 dark:hover:text-red-300 px-1"
+                            aria-label={`Remove hook target ${index + 1}`}
+                          >
+                            &times;
+                          </button>
+                        </div>
+                        {(target === '' || isCustom) && (
+                          <div className="min-w-0 pl-[3.35rem]">
+                          <input
+                            data-testid={`pre-llm-hook-target-name-${index}`}
+                            type="text"
+                            value={target}
+                            onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, targets: draft.targets.map((entry, i) => i === index ? e.target.value : entry) }))}
+                            placeholder="future-loop-name"
+                            className="field-input text-[10px] w-full min-w-0 max-w-full box-border font-mono"
+                            aria-label={`Future hook target name ${index + 1}`}
+                          />
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })
+                )}
+                {preLlmHookDraft.targetMode === 'targets' && preLlmHookDraft.targets.length === 0 && (
+                  <p className="text-[10px] text-[var(--adf-ui-text-subtle)]">Add Main or an inner-loop target.</p>
+                )}
+              </div>
+            </Field>
+
+            <Field label="Timeout (optional, milliseconds)" hint="Whole number from 1000 to 300000 ms. The runtime also caps this by limits.execution_timeout_ms.">
+              <input
+                data-testid="pre-llm-hook-timeout"
+                type="text"
+                inputMode="numeric"
+                value={preLlmHookDraft.timeout_ms}
+                onChange={(e) => setPreLlmHookDraft((draft) => ({ ...draft, timeout_ms: e.target.value }))}
+                placeholder="Inherit execution timeout"
+                className="field-input w-full"
+                aria-label="Pre-LLM hook timeout in milliseconds"
+              />
+            </Field>
+
+            {preLlmHookErrors.length > 0 && (
+              <div data-testid="pre-llm-hook-errors" role="alert" className="rounded-md border border-red-200 dark:border-red-800 bg-red-50 dark:bg-red-900/20 px-2 py-1.5 text-[10px] text-red-600 dark:text-red-300 space-y-0.5">
+                {preLlmHookErrors.map((error) => <p key={error}>{error}</p>)}
+              </div>
+            )}
+
+            <div className="flex items-center gap-2 pt-1">
+              <button
+                type="button"
+                data-testid="pre-llm-hook-save"
+                onClick={savePreLlmHook}
+                className="px-2.5 py-1 text-[10px] rounded-md border border-[var(--adf-ui-border)] bg-[var(--adf-ui-canvas)] text-[var(--adf-ui-text)] hover:bg-[var(--adf-ui-surface-hover)] font-medium"
+              >
+                {local.pre_llm_hook ? 'Save changes' : 'Save hook'}
+              </button>
+              {local.pre_llm_hook && (
+                <button
+                  type="button"
+                  data-testid="pre-llm-hook-remove"
+                  onClick={removePreLlmHook}
+                  className="px-2.5 py-1 text-[10px] rounded-md border border-red-200 dark:border-red-800 text-red-500 hover:bg-red-50 dark:hover:bg-red-900/20 font-medium"
+                >
+                  Remove hook
+                </button>
+              )}
+              {!local.pre_llm_hook && <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">Not configured</span>}
+            </div>
+          </div>
+        </Section>
+
         <Section title="Commands" docs={DOCS.commands}
           hint="Slash commands the owner can run from the composer. Each runs one of this agent's lambdas, with no model turn."
           locked={isSectionLocked(AGENT_COMMANDS_SECTION_LOCK)} onToggleLock={() => toggleSectionLock(AGENT_COMMANDS_SECTION_LOCK)}
@@ -5452,6 +5438,8 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
             </div>
           ))}
         </Section>
+
+        <GroupDivider label="Records" />
 
         {/* Logging */}
         <Section docs={DOCS.logging} title="Logging" locked={isSectionLocked('logging')} onToggleLock={() => toggleSectionLock('logging')} summary={local.logging?.default_level ?? 'info'} defaultCollapsed>
@@ -6016,8 +6004,8 @@ function DidListPicker({
 }
 
 /** The quick nav belongs to the panel; the template editor embeds the same sections without it. */
-function MaybeConfigNav({ enabled, scrollRef, status, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; status?: React.ReactNode; children: React.ReactNode }) {
-  return enabled ? <ConfigNavProvider scrollRef={scrollRef} status={status}>{children}</ConfigNavProvider> : <>{children}</>
+function MaybeConfigNav({ enabled, scrollRef, status, notice, children }: { enabled: boolean; scrollRef: React.RefObject<HTMLDivElement | null>; status?: React.ReactNode; notice?: React.ReactNode; children: React.ReactNode }) {
+  return enabled ? <ConfigNavProvider scrollRef={scrollRef} status={status} notice={notice}>{children}</ConfigNavProvider> : <>{children}</>
 }
 
 function Section({
@@ -6029,6 +6017,7 @@ function Section({
   hint,
   defaultCollapsed = false,
   testId,
+  action,
   children
 }: {
   title: React.ReactNode
@@ -6042,6 +6031,8 @@ function Section({
   defaultCollapsed?: boolean
   /** Stable hook for targeted renderer/electron verification. */
   testId?: string
+  /** A header control, right-aligned before Docs (e.g. SectionAddButton). */
+  action?: React.ReactNode
   children: React.ReactNode
 }) {
   const [collapsed, setCollapsed] = useState(defaultCollapsed)
@@ -6085,7 +6076,10 @@ function Section({
         {collapsed && summary && (
           <span className="ml-auto font-normal normal-case tracking-normal text-[10px] text-[var(--adf-ui-text-subtle)] truncate">{summary}</span>
         )}
-        {docs && <DocsLink href={docs} className={collapsed && summary ? 'ml-2' : 'ml-auto'} />}
+        {action && (
+          <span className={`flex items-center ${collapsed && summary ? 'ml-2' : 'ml-auto'}`} onClick={(e) => e.stopPropagation()}>{action}</span>
+        )}
+        {docs && <DocsLink href={docs} className={(collapsed && summary) || action ? 'ml-2' : 'ml-auto'} />}
       </h4>
       {!collapsed && (
         // Locked means the agent's own config edits are refused here; the

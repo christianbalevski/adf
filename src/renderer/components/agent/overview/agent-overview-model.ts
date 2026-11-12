@@ -437,7 +437,7 @@ export function configTargetFor(configPath: string): ConfigTarget {
     messaging: 'Messaging',
     security: 'Security',
     serving: 'Serving',
-    adapters: 'Channels',
+    adapters: 'Messaging Channels',
     ws_connections: 'WebSocket Connections',
     triggers: 'Triggers',
     loops: 'Loops',

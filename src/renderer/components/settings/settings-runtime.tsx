@@ -1,7 +1,8 @@
 import React, { createContext, useContext } from 'react'
 import type { AdfApi } from '../../../preload/api'
 import type { RuntimeId } from '../../../shared/runtime-tag'
-import { apiFor } from '../../utils/runtime-api'
+import { apiFor, useOpenRuntime } from '../../utils/runtime-api'
+import { isAgentWindow } from '../../utils/window-kind'
 import { useRuntimes } from '../../stores/runtimes.store'
 import { RemoteMark } from '../common/RemoteMark'
 import { ServerIcon } from '../common/ServerIcons'
@@ -18,6 +19,17 @@ const SettingsRuntimeContext = createContext<RuntimeId | null>(null)
 
 export function SettingsRuntimeProvider({ runtimeId, children }: { runtimeId: RuntimeId; children: React.ReactNode }) {
   return <SettingsRuntimeContext.Provider value={runtimeId}>{children}</SettingsRuntimeContext.Provider>
+}
+
+/**
+ * Runtime panels shown outside Settings (an agent's Config tab opens the
+ * channel and MCP setup dialogs): the open agent's runtime, reached the way
+ * `openApi()` reaches it. An agent window's own surface is already that.
+ */
+export function OpenAgentRuntimeProvider({ children }: { children: React.ReactNode }) {
+  const runtimeId = useOpenRuntime()
+  if (isAgentWindow) return <>{children}</>
+  return <SettingsRuntimeProvider runtimeId={runtimeId}>{children}</SettingsRuntimeProvider>
 }
 
 /** The surface of the runtime the Settings picker shows; `window.adfApi` outside Settings. */

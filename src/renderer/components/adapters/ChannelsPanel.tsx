@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { AdapterRegistration, AdapterStatusEvent } from '../../../shared/types/ipc.types'
 import type { AdapterState, AdapterAgentStatus, AdapterCredentialFileInfo } from '../../../shared/types/channel-adapter.types'
-import { ADAPTER_REGISTRY, findAdapterRegistryEntry, withBuiltInAdapterRegistrations } from '../../../shared/constants/adapter-registry'
+import { findAdapterRegistryEntry, withBuiltInAdapterRegistrations } from '../../../shared/constants/adapter-registry'
 import { loadTrackedAdfFiles, adfDisplayNameForPath, type TrackedAdfFile } from '../../utils/tracked-adf-files'
 import { BrandMark } from '../common/BrandMark'
 import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { ChannelSetupModal } from './ChannelSetupModal'
+import { ChannelPicker } from './ChannelPicker'
 import { useSettingsApi } from '../settings/settings-runtime'
 
 const STATUS_DOT: Record<string, string> = {
@@ -133,21 +134,8 @@ export function ChannelsPanel({ adapters, onAdaptersChanged }: ChannelsPanelProp
           <p className="mt-0.5 max-w-xl text-[12px] leading-5 text-[var(--adf-ui-text-muted)]">
             Pick a channel and an agent, then follow that channel's steps.
           </p>
-          <div className="mt-3 grid grid-cols-2 gap-2 md:grid-cols-3">
-            {ADAPTER_REGISTRY.map((e) => (
-              <button
-                key={e.type}
-                type="button"
-                onClick={() => setSetup({ type: e.type })}
-                className="flex items-start gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] bg-[var(--adf-ui-surface)] p-2.5 text-left transition-colors hover:border-[var(--adf-ui-accent)] hover:bg-[var(--adf-ui-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
-              >
-                <BrandMark iconKey={e.iconKey} label={e.displayName} size={28} />
-                <span className="min-w-0">
-                  <span className="block text-[12px] font-medium text-[var(--adf-ui-text)]">{e.displayName}</span>
-                  <span className="mt-0.5 line-clamp-2 block text-[10.5px] leading-4 text-[var(--adf-ui-text-muted)]">{e.tagline ?? e.description}</span>
-                </span>
-              </button>
-            ))}
+          <div className="mt-3">
+            <ChannelPicker types={rows.map((r) => r.type)} onPick={(type) => setSetup({ type })} />
           </div>
         </div>
       )}

@@ -5,7 +5,8 @@ import { findEntryIn } from '../../../shared/constants/mcp-registry'
 import { useMcpRegistryStore } from '../../stores/mcp-registry.store'
 import { BrandIcon } from './BrandIcon'
 import { isRegistrationAgentVisible, sameExecutableIdentity } from '../../../shared/utils/mcp-config'
-import { McpAddServerModal, HOST_BOUNDARY_TEXT, bundledServerFor, hasEmptyRequiredKeys, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
+import { McpAddServerModal, HOST_BOUNDARY_TEXT, hasEmptyRequiredKeys, registryEntryFor, isOAuthEntry, oauthNeedsSignIn } from './McpAddServerModal'
+import { builtInManagedServer, installManagedMcpPackage } from './runtime-mcp-servers'
 import { ComputeNeededSheet } from './ComputeNeededSheet'
 import { Tooltip } from '../common/Tooltip'
 import { allowHostTip, registrationPlacement } from '../../../shared/utils/mcp-host-placement'
@@ -48,21 +49,6 @@ interface McpStatusDashboardProps {
   /** Turn on host access / mcpOnHost without asking again (the compute sheet already asked). Resolve false when not saved. */
   onEnableHostAccessNow?: () => Promise<boolean>
   onAcceptMcpOnHost?: () => Promise<boolean>
-}
-
-/**
- * The server this app ships that a new managed registration launches
- * (bundledServerFor: the runtime's catalog shape, on the host): saving it
- * downloads nothing. Undefined: install the npm/pypi package as before.
- */
-export function builtInManagedServer(
-  reg: McpServerRegistration,
-  bundledServers: { npmPackage: string; version: string }[] | undefined,
-  hostAccessEnabled: boolean | undefined,
-  mcpOnHost: boolean | undefined,
-): { npmPackage: string; version: string } | undefined {
-  if (!reg.managed || reg.type === 'uvx' || reg.type === 'pip') return undefined
-  return bundledServerFor(reg, bundledServers, hostAccessEnabled, mcpOnHost)
 }
 
 export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEnabled, onEnableHostAccess, hostApproved, hostApprovedSources, onAllowHost, mcpOnHost, onEnableHostAccessNow, onAcceptMcpOnHost }: McpStatusDashboardProps) {
@@ -250,24 +236,15 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
     // New managed npm/pypi servers: download the package in the background
     // (parity with the old quick-install flow; progress events update the row).
     if (!exists && reg.managed) {
-      const isPython = reg.type === 'uvx' || reg.type === 'pip'
-      const pkg = isPython ? reg.pypiPackage : reg.npmPackage
-      if (pkg) {
-        setInstalling((prev) => new Set(prev).add(pkg))
-        try {
-          const result = isPython
-            ? await api?.installPythonMcpPackage({ package: pkg, name: reg.name })
-            : await api?.installMcpPackage({ package: pkg, name: reg.name })
-          if (result?.success && result.installed) {
-            // Identity guard: the install ran for `reg` — don't stamp its
-            // version onto a registration edited+saved while it downloaded.
-            onServersChanged(mcpServersRef.current.map((s) =>
-              s.id === reg.id && sameExecutableIdentity(s, reg) ? { ...s, version: result.installed!.version } : s
-            ))
-          }
-        } catch {
-          // Error handled via install progress event
-        }
+      const pkg = reg.type === 'uvx' || reg.type === 'pip' ? reg.pypiPackage : reg.npmPackage
+      if (pkg) setInstalling((prev) => new Set(prev).add(pkg))
+      const version = await installManagedMcpPackage(api, reg)
+      if (version) {
+        // Identity guard: the install ran for `reg` — don't stamp its
+        // version onto a registration edited+saved while it downloaded.
+        onServersChanged(mcpServersRef.current.map((s) =>
+          s.id === reg.id && sameExecutableIdentity(s, reg) ? { ...s, version } : s
+        ))
       }
     }
   }
@@ -389,9 +366,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, hostAccessEna
             // Resolve across all three identity fields (mirrors the modal) so
             // pypi/uvx and remote HTTP rows get their brand icon and the
             // "Needs keys" chip, not just npm rows.
-            const registryEntry = reg.npmPackage ? findEntryIn(registryEntries, { npmPackage: reg.npmPackage })
-              : reg.pypiPackage ? findEntryIn(registryEntries, { pypiPackage: reg.pypiPackage })
-              : reg.url ? findEntryIn(registryEntries, { url: reg.url }) : undefined
+            const registryEntry = registryEntryFor(reg, registryEntries)
             // OAuth servers need a sign-in, not env keys — the helper returns
             // false for them, so the "Needs keys" chip never fires.
             const needsKeys = hasEmptyRequiredKeys(reg, registryEntry)

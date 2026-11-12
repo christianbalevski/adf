@@ -16,6 +16,7 @@ import { ProviderAgentOverrides, ParamsEditor } from './ProviderAgentOverrides'
 import { providerDotClass, providerStatusLabel, type ProviderTestStatus } from './provider-status'
 import { hasCredential } from './provider-ready'
 import { editPlaceholderField } from '../../utils/placeholder-field'
+import { PickerTile } from '../common/PickerTile'
 
 export interface SubscriptionAuthState {
   authenticated: boolean
@@ -143,18 +144,13 @@ function ProviderPicker({ onPick }: { onPick: (entry: ProviderCatalogEntry) => v
               </div>
               <div className="grid grid-cols-2 gap-2">
                 {entries.map((e) => (
-                  <button
+                  <PickerTile
                     key={e.key}
-                    type="button"
+                    icon={<BrandMark iconKey={e.iconKey} label={e.label} size={28} />}
+                    title={e.label}
+                    detail={e.description}
                     onClick={() => onPick(e)}
-                    className="flex items-start gap-2 rounded-[var(--adf-ui-control-radius)] border border-[var(--adf-ui-border)] p-2.5 text-left transition-colors hover:border-[var(--adf-ui-accent)] hover:bg-[var(--adf-ui-surface-hover)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--adf-ui-focus)]"
-                  >
-                    <BrandMark iconKey={e.iconKey} label={e.label} size={28} />
-                    <span className="min-w-0">
-                      <span className="block truncate text-[12px] font-medium text-[var(--adf-ui-text)]">{e.label}</span>
-                      <span className="mt-0.5 line-clamp-2 block text-[10.5px] leading-4 text-[var(--adf-ui-text-muted)]">{e.description}</span>
-                    </span>
-                  </button>
+                  />
                 ))}
               </div>
             </section>

@@ -22,7 +22,8 @@
 //   - template writes (/templates*): `templates`;
 //   - W3-F: PUT /agents/:id/{config,files/content,mind} of an open document
 //     that is not running (no runtime raises their frames): `config_changed`
-//     / `file_updated`, with the write's revision and writer.
+//     / `file_updated`, with the write's revision and writer; the same
+//     `config_changed` for a /files/agent/* write that changed its config.
 // Every write to /agents/:id/* runs as its writer (runAsWriter): the client
 // session's client, or `cli` without one, so the revision it takes and the
 // frames it raises name who wrote (W3-F).
@@ -194,15 +195,26 @@ const AGENT_FILE_CONTENT = /^\/agents\/([^/?]+)\/files\/content(?:\?|$)/
 const AGENT_MIND = /^\/agents\/([^/?]+)\/mind(?:\?|$)/
 const AGENT_INBOX = /^\/agents\/([^/?]+)\/inbox(?:\?|$)/
 const BRING_HOME = /^\/registry\/agents\/[^/?]+\/bring-home(?:\?|$)/
+const FILE_AGENT_WRITE = /^\/files\/agent\//
+
+/** A PUT of a resource the client sends whole, and so already shows. */
+function isClientBodyWrite(method: string, url: string): boolean {
+  return method === 'PUT' && [AGENT_CONFIG, AGENT_DOCUMENT, AGENT_MIND, AGENT_FILE_CONTENT].some((re) => re.test(url))
+}
 
 function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext, sessions: ClientSessionRegistry): void {
-  // A write to /agents/:id/* that names its client session: the route
-  // handler's synchronous part (where it calls the RuntimeService write, which
-  // raises config_changed / file_updated synchronously) runs inside this
-  // hook's done(), within runAsClientWrite, so those echo frames skip that
-  // session. Nothing the request queues (a turn, a timer, a startup turn)
-  // inherits the stamp. This MUST stay the last preHandler hook, so done()
-  // calls the handler itself (W2-A's async guard is registered before it).
+  // A write to /agents/:id/* that names its client session runs as that
+  // session's writer (W3-F). Only a PUT whose body is the resource the client
+  // already shows (config, document, mind.md, a file) is also its echo source:
+  // the handler's synchronous part (where the RuntimeService write raises
+  // config_changed / file_updated) runs inside this hook's done(), within
+  // runAsClientWrite, so those frames skip that session. A write the server
+  // derives (Always approve, attaching an MCP server, a provider, an adapter)
+  // reaches the requester too: it sent no config, so the echo is the only way
+  // it learns the new one and its revision. Nothing the request queues (a
+  // turn, a timer, a startup turn) inherits the stamp. This MUST stay the last
+  // preHandler hook, so done() calls the handler itself (W2-A's async guard is
+  // registered before it).
   server.addHook('preHandler', (request, _reply, done) => {
     if (request.method === 'GET' || request.method === 'HEAD' || !AGENT_ROUTE.test(request.url)) {
       done()
@@ -211,7 +223,7 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
     const sessionId = clientSessionOf(request.headers)
     const live = sessionId && sessions.has(sessionId) ? sessionId : null
     runAsWriter(writerOf(sessions, live), () => {
-      if (live) runAsClientWrite(live, () => done())
+      if (live && isClientBodyWrite(request.method, request.url)) runAsClientWrite(live, () => done())
       else done()
     })
   })
@@ -261,6 +273,20 @@ function observeRouteProducers(server: FastifyInstance, ctx: DaemonRouteContext,
             if (typeof content === 'string' && typeof path === 'string' && path !== 'README.md' && path !== 'document.md') {
               sessions.publishExecutor({ ...target, event: { type: 'file_updated', payload: { path, content, ...extra }, timestamp: Date.now() } }, origin)
             }
+          }
+        }
+      } else if (FILE_AGENT_WRITE.test(url)) {
+        // Path-addressed config writes (channel and MCP attach/detach, provider
+        // removal) on an open document: the same announcement as a PUT config
+        // above. Every client gets it, the requester included: its open config
+        // panel did not make this write.
+        const result = parseJson(payload) as { agentId?: unknown; loaded?: unknown; config?: unknown } | null
+        if (result?.loaded === true && typeof result.agentId === 'string' && result.config && !ctx.runtime.getAgent(result.agentId)) {
+          const ref = ctx.runtime.getAgentOrDocument(result.agentId)
+          if (ref) {
+            const { config: current, revision } = ctx.runtime.getAgentConfig(ref.id)
+            const writer = writerOf(sessions, liveSession(sessions, request.headers))
+            sessions.publishPush('config_changed', { filePath: ref.filePath ?? null, config: current, revision, writer }, { agentId: ref.id, filePath: ref.filePath ?? null })
           }
         }
       } else if (inbox) {
