@@ -11,7 +11,7 @@ const ENVNAME = /^\$?\{?[A-Z][A-Z0-9]*(_[A-Z0-9]+)+\}?$/;   // GH_TOKEN, ${API_K
 const SLUG = /^([a-z]+|\d{1,4})([-_.]([a-z]+|\d{1,4}))*$/i; // weekly-digest-2, claude-sonnet-4.5: kept
 const SECRET_KEY = /(^|_)(password|passwd|passcode|passphrase|pwd|pin|secret|token|cookie|credentials?|api_?key|access_?key|secret_?key|private_?key|client_?secret|auth_?token|access_?token|refresh_?token|session_?token)$/;
 const SHAPES = /\b(gh[pousr]_[A-Za-z0-9]{36,}|github_pat_\w{22,}|glpat-[\w-]{20,}|sk-[\w-]{20,}|sk_live_\w{16,}|rk_live_\w{16,}|xox[abprs]-[\w-]{10,}|AKIA[0-9A-Z]{16}|AIza[\w-]{35}|hf_[A-Za-z0-9]{30,}|ntn_\w{30,}|secret_[A-Za-z0-9]{40,}|eyJ[\w-]{10,}\.eyJ[\w-]{10,}\.[\w-]{10,}|\d{8,10}:[\w-]{35})\b/g;
-const ASSIGN = /(^|[\s{,;(*|>-])(["']?)([A-Za-z_][\w.-]*)\2\s*[:=]\**[ \t]*("(?:[^"\\]|\\.)*"|'[^']*'|`[^`]*`|[^,;{}\[\]\s"'`|][^,;{}\]|]*)?/g;
+const ASSIGN = /(^|[\s{,;(*|>-])(["']?)([A-Za-z_][\w.-]*)\2\s*[:=]\**[ \t]*("(?:[^"\\]|\\.)*"|'[^']*'|`[^`]*`|<[\w.-]+>|\$(?:\{[A-Z][A-Z0-9_]*\}|[A-Z][A-Z0-9_]*)(?!\w)|[^,;{}\[\]\s"'`|][^,;{}\]|]*)?/g;
 const WORD = /\b(password|passwd|passcode|passphrase|secret|token|api key|pin)\b/i;
 const TW = 'word|code|combination|combo|log[- ]?in|sign[- ]?in|lock(?:-up|\\w*)|padlock|alarm|keypad|door|gate|safe|wi-?fi|memorable|recovery|password|passcode|passphrase|pin|portal|pw';
 const TRIG = new RegExp('\\b(' + TW + ')s?\\b', 'i');
@@ -30,7 +30,11 @@ const nearLock = (line, off, t) => new RegExp('\\b' + LOCKW + '(\\s+(code|pin|nu
 const yearKeep = (line, off, t) => /^(19|20)\d\d$/.test(t) && !nearLock(line, off, t); // years kept unless a lock word sits next to them
 const keepNum = (line, off, t, b = line.slice(0, off)) => yearKeep(line, off, t) || /^(?=.*\d)[A-Z0-9]{2,}(-[A-Z0-9]{2,})+$/.test(t) && !nearLock(line, off, t) && !CODEN.test(line) || /\b([BHR]WV|RV|hymns?(\s+no\.?)?|psalms?|op(us|\.))\s*#?\s*$/i.test(b) || // part no.
   /^\d{4}$/.test(t) && /\b(card|account|acct)\b.{0,20}\b(ends?|ending)(\s+(in|with))?\s*[:-]?\s*$/i.test(b) || /^\d{2,5}$/.test(t) && /\bports?(\s+(is|number|no\.?|on))?\s*[:=#]?\s*$/i.test(b);
-const asText = f => { const c = f.content; if (/^text\/|json|yaml|xml|markdown|javascript|csv/.test(f.mime_type || 'text/') || !/^[A-Za-z0-9+\/=\s]*$/.test(c)) return c;
+// Match fs_read's isTextMime (src/main/tools/built-in/mime-utils.ts): all other records contain base64.
+const TEXT_MIMES = new Set(['application/json', 'application/xml', 'application/yaml', 'application/x-yaml',
+  'application/javascript', 'application/typescript', 'application/x-sh', 'application/sql', 'application/graphql',
+  'application/xhtml+xml', 'application/x-httpd-php', 'application/x-ndjson', 'application/ndjson', 'application/csv', 'application/toml']);
+const asText = f => { const c = f.content, mime = f.mime_type || ''; if (mime.startsWith('text/') || /\+(json|xml|yaml)$/.test(mime) || TEXT_MIMES.has(mime)) return c;
   const t = Buffer.from(c, 'base64').toString('utf8'); return /[\uFFFD\u0000]/.test(t) ? null : t; }; // base64 for non-text mime; null = binary
 const seedN = l => { const m = l.match(/^\s*(?:\d{1,2}[.)]\s*)?([a-z]{3,8}(?: [a-z]{3,8})*)\s*$/); return m && !m[1].split(' ').some(w => FW.test(w)) ? m[1].split(' ').length : 0; };
 const codeLine = l => { const t = l.replace(LEAD, '').replace(/[`"']/g, '').replace(/\b(\w{4,5}) (\w{4,5})\b/g, '$1-$2').trim().split(/[\s,]+/);
@@ -43,7 +47,8 @@ function prepass(L) { // seeds split over lines; 2FA code lists
   return pre;
 }
 const DATEISH = /^(\d{4}-\d{2}(-\d{2})?|\d{1,2}:\d{2}(:\d{2})?([ap]m)?|\d{1,2}[ap]m|v?\d+(\.\d+)+)$/i;
-const keep = v => !v || /^(true|false|null|none|""|'')$/i.test(v) || ENVNAME.test(v) || /^<.*>$/.test(v) || v.startsWith('[REDACTED');
+const ENVREF = /^\$(?:[A-Z][A-Z0-9_]*|\{[A-Z][A-Z0-9_]*\})$/;
+const keep = v => !v || /^(true|false|null|none|""|'')$/i.test(v) || ENVREF.test(v) || /^<.*>$/.test(v) || v.startsWith('[REDACTED');
 const looksSecret = v => /\d/.test(v) && /[A-Za-z]/.test(v) && !v.includes('://') && !/^[~\/.]/.test(v) && !/\.[a-z]{1,4}$/i.test(v) && !ENVNAME.test(v) && !SLUG.test(v) && !v.startsWith('[REDACTED');
 const H = s => { const f = {}; for (const c of s) f[c] = (f[c] || 0) + 1; return -Object.values(f).reduce((a, n) => a + n / s.length * Math.log2(n / s.length), 0); };
 const risky = t => t.length >= 4 && !t.includes('REDACTED') && !t.includes('/') && !/^<[\w.-]+>$/.test(t) && !/^\d{1,5}-(word|line|char|minute|hour|day|week|month|year|step|page|item|point|mile)s?$/i.test(t) && !/\.[a-z]{1,4}$/i.test(t) && !ENVNAME.test(t) && !DATEISH.test(t) &&
@@ -90,7 +95,7 @@ function scrub(text) {
       const k = key.replace(/([a-z0-9])([A-Z])/g, '$1_$2').toLowerCase();
       if (!SECRET_KEY.test(k)) return m;
       const b = val === undefined ? '' : line.slice(0, off) + m.slice(0, m.length - val.length); // `export VAR=` then prose: no value
-      if (val !== undefined && (/[^\s:=]=\**[ \t]+$/.test(b) && !/\d/.test(val) || val[0] === '`' && b.split('`').length % 2 === 0)) return m;
+      if (val !== undefined && (/\bexport\s+\w+=\s+$/.test(b) && /^(?:then\b|\(\)\s*$)/.test(val) || val[0] === '`' && b.split('`').length % 2 === 0)) return m;
       if (val === undefined) { if (/[:=]\**\s*$/.test(line)) carry = true; return m; }
       const qv = /^["'`]/.test(val) ? val[0] : '';
       const inner = (qv ? val.slice(1, -1) : val.replace(/\s+#.*$/, '')).trim();
@@ -105,7 +110,7 @@ function scrub(text) {
     line = line.replace(PHRASE, (m, w, gap, conn, q, v, off) => { // "the word is X", "padlock is 7731"
       const [, val, tail] = v.match(/^(.*?)([.,;:)!?#]*)$/);
       const head = m.slice(0, m.length - v.length - q.length);
-      if (!val || val.startsWith('[') || ENVNAME.test(val) || val.includes('/') || STOP.test(val) || yearKeep(line, off + m.length - v.length - q.length, val) || /^with$/i.test(conn) && !risky(val)) return m;
+      if (!val || val.startsWith('[') || ENVREF.test(val) || /^<[\w.-]+>$/.test(val) || val.includes('/') || STOP.test(val) || yearKeep(line, off + m.length - v.length - q.length, val) || /^with$/i.test(conn) && !risky(val)) return m;
       if (!/\b(word|pass\w*)(\s+is|:)\s*["'`]?$/i.test(head) && !(/\d/.test(val) && val.length >= 3) && !(/[a-z]/.test(val) && /[A-Z]/.test(val))) return m;
       return head + hit('phrase') + tail + q;
     });
@@ -159,11 +164,38 @@ const BROAD = /\b(pass\w*|pw|pwd|pins?|codes?|combo|combination|keys?|log-?ins?|
 const flagged = text => text.split('\n').filter(l => BROAD.test(l)).length; // step 6: return this count, nothing else
 const unsafe = s => { const u = protect(s, []); return scrub(s).hits.length > 0 || BROAD.test(u) && (u.match(/[^\s"'`()\[\]{},;]+/g) || []).some(t => { const x = t.replace(/[.,:!?#]+$/, ''); return risky(x) && !/^(19|20)\d\d$/.test(x); }); }; // years alone pass; scrub() still catches one beside a lock word
 const strs = v => typeof v === 'string' ? [v] : v && typeof v === 'object' ? Object.entries(v).flat().flatMap(strs) : [];
+// One decoder for extraction fields and page citations. Reject unsafe or excessive ranges before expanding.
+const parseCite = raw => {
+  const m = typeof raw === 'string' && raw.match(/^([^\r\n]+):(\d+)(?:[-–](\d+))?$/);
+  if (!m) return null;
+  const start = Number(m[2]), end = Number(m[3] || m[2]), safe = !unsafe(m[1]);
+  return { raw, path: m[1], start, end, safe, valid: safe && Number.isSafeInteger(start) && Number.isSafeInteger(end) && start > 0 && end >= start && end - start <= 20 };
+};
+// Scan parentheses once; nested regex alternatives can backtrack exponentially on ordinary prose.
+// Full emitted cites preserve spaces, Unicode and balanced filename parentheses. Ambiguous wrappers fail closed.
+const BARE_CITE = /(?<![\w.\/-])[\w.\/-]+\.[A-Za-z]\w{0,4}:\d+(?:[-–]\d+)?/g;
+const pageCites = text => {
+  const out = [], opens = [], suffix = ' in the drop'; let lineStart = 0, plainStart = 0;
+  const bare = end => { for (const m of text.slice(plainStart, end).matchAll(BARE_CITE)) out.push({ ...parseCite(m[0]), index: plainStart + m.index, length: m[0].length, explicit: false }); };
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] === '\n') { opens.length = 0; lineStart = i + 1; }
+    else if (text[i] === '(') opens.push(i);
+    else if (text[i] === ')') {
+      if (text.slice(Math.max(lineStart, i - suffix.length), i) === suffix) {
+        const index = Math.max(plainStart, opens[0] ?? lineStart), raw = text.slice(opens.length ? index + 1 : index, i - suffix.length), parsed = parseCite(raw);
+        bare(index);
+        out.push({ ...parsed, raw, valid: opens.length === 1 && !!parsed?.valid, index, length: i - index + 1, explicit: true });
+        plainStart = i + 1; opens.length = 0;
+      } else opens.pop();
+    }
+  }
+  bare(text.length); return out;
+};
+const citeLines = c => { const p = parseCite(c); return p?.valid ? Array.from({ length: p.end - p.start + 1 }, (_, i) => [p.path, p.start + i]) : []; };
 const sift = o => { let dropped = 0; const out = {}, held = []; // drop model output items that still trip a check; held: cites for heldCheck()
   for (const [k, v] of Object.entries(o || {})) { const a = (Array.isArray(v) ? v : [v]).filter(x => { const bad = strs(x).some(unsafe); dropped += bad;
-    if ((bad || /\(withheld\)/i.test(x?.text)) && /^[\w.\/ -]+:\d+([-–]\d+)?$/.test(x?.cite)) held.push(x.cite); return !bad; }); out[k] = Array.isArray(v) ? a : a[0] ?? null; }
+    if ((bad || /\(withheld\)/i.test(x?.text)) && parseCite(x?.cite)?.valid) held.push(x.cite); return !bad; }); out[k] = Array.isArray(v) ? a : a[0] ?? null; }
   return { out, dropped, held }; };
-const citeLines = c => { const m = c.match(/^(.+):(\d+)(?:[-–](\d+))?$/); return m ? Array.from({ length: Math.min(+(m[3] || m[2]) - m[2], 20) + 1 }, (_, i) => [m[1], +m[2] + i]) : []; };
 async function heldCheck(held, read, root = '') { // cites are relative to D; root: the drop's D path; read: async path => scrubbed source text
   const out = [], seen = new Set(), ind = l => l.match(/^\s*/)[0].length, item = l => /^\s*([-*+]|\d{1,2}[.)])\s/.test(l);
   for (const c of held) { const r = citeLines(c); if (!r.length) continue; const p = r[0][0]; let T; try { T = (await read(root + p))?.split('\n'); } catch (e) { T = null; } if (!T) continue;
@@ -172,26 +204,30 @@ async function heldCheck(held, read, root = '') { // cites are relative to D; ro
     for (const n of ns) { const l = T[n - 1]; if (l == null || !l.trim() || seen.has(p + ':' + n)) continue; seen.add(p + ':' + n); if (!l.includes('[REDACTED')) out.push(p + ':' + n); } }
   return out; } // 'path:line' for each non-empty block line with no marker; write it to risk.json as is. pageFilter() treats page lines citing them strictly
 async function citeCheck(text, read, root = '') { // cites in a page that miss: no such file, past its end, or a blank line. Returns 'path:line' strings
-  const bad = new Set(), F = {};
-  for (const m of text.matchAll(CITE)) { const p = m[1]; if (!(p in F)) { try { F[p] = (await read(root + p))?.split('\n') ?? null; } catch (e) { F[p] = null; } }
-    for (let n = +m[2]; n <= +(m[3] || m[2]); n++) if (!F[p] || !(F[p][n - 1] || '').trim()) bad.add(p + ':' + n); }
+  const bad = new Set(), F = new Map();
+  for (const c of pageCites(text)) {
+    if (!c.valid) { bad.add(c.safe ? c.raw : '[withheld citation]'); continue; }
+    const p = c.path;
+    if (!F.has(p)) { try { F.set(p, (await read(root + p))?.split('\n') ?? null); } catch (e) { F.set(p, null); } }
+    for (const [, n] of citeLines(c.raw)) if (!(F.get(p)?.[n - 1] || '').trim()) bad.add(p + ':' + n);
+  }
   return [...bad]; }
 const reply = r => { let s = typeof r === 'string' ? r : r?.text ?? r?.content ?? r?.output ?? ''; if (Array.isArray(s)) s = s.map(x => x?.text || '').join('');
   return JSON.parse(s.slice(s.indexOf('{'), s.lastIndexOf('}') + 1)); }; // model_invoke reply to JSON; on error return e.name only
 
-const CITE = /([\w.\/-]+\.[A-Za-z]\w{0,4}):(\d+)(?:[-–](\d+))?(?:\s+in the drop)?/g; // MEMORY.md:12 in the drop
 function pageFilter(text, risk = new Set(), mark) { // a generated page -> { text, dropped: [{ line, cites }] }. risk: Set or array of 'path:line' from heldCheck() (risk.json).
   risk = risk instanceof Set ? risk : new Set(risk || []);
   // A line goes if it trips scrub() or unsafe() with its cites taken out, or if it cites a risk line and holds any risky token.
   // mark(cites, n): replacement line (staged skills); without it the line is removed.
-  const L = text.split('\n'), M = L.map(l => [...l.matchAll(CITE)]), bare = L.map(l => l.replace(CITE, ''));
+  const L = text.split('\n'), M = L.map(pageCites), bare = L.map((l, i) => { let end = 0, text = '';
+    for (const c of M[i]) { text += l.slice(end, c.index) + (c.explicit ? '()' : ''); end = c.index + c.length; } return text + l.slice(end); });
   const hit = new Set(scrub(bare.join('\n')).hits.map(h => h.line - 1)), out = [], dropped = [];
-  L.forEach((l, i) => { const b = bare[i], shown = [...new Set(M[i].map(m => m[1] + ':' + m[2] + (m[3] ? '-' + m[3] : '')))];
-    const lines = M[i].flatMap(m => Array.from({ length: Math.min(+(m[3] || m[2]) - m[2], 20) + 1 }, (_, k) => m[1] + ':' + (+m[2] + k)));
+  L.forEach((l, i) => { const b = bare[i], shown = [...new Set(M[i].filter(c => c.safe).map(c => c.raw))];
+    const lines = M[i].flatMap(c => citeLines(c.raw).map(([p, n]) => p + ':' + n));
     const strict = lines.some(c => risk.has(c)) && (protect(b, []).match(/[^\s"'`()\[\]{},;|]+/g) || []).some(t => { const s = t.replace(/[.,:!?#]+$/, ''); return risky(s) && !/^(19|20)\d\d$/.test(s); });
-    if (!(hit.has(i) || unsafe(b) || strict)) return out.push(l);
-    dropped.push({ line: i + 1, cites: shown }); if (mark) out.push(l.match(/^\s*/)[0] + mark(shown, i + 1)); });
+    if (!(hit.has(i) || unsafe(b) || strict || M[i].some(c => !c.safe || c.explicit && !c.valid))) return out.push(l);
+    dropped.push({ line: i + 1, cites: shown }); if (mark) out.push(l.match(/^\s*/)[0] + mark(M[i].filter(c => c.valid).map(c => c.raw), i + 1)); });
   return { text: out.join('\n'), dropped };
 }
-const withheldMark = cites => '[withheld: check your original' + (cites.length ? ', ' + cites.join(', ') : '') + ']'; // staged skills
+const withheldMark = cites => { const valid = cites.filter(c => parseCite(c)?.valid); return '[withheld: check your original' + (valid.length ? ', ' + valid.map(c => '(' + c + ' in the drop)').join(', ') : '') + ']'; }; // staged skills
 module.exports = { scrub, sift, flagged, unsafe, asText, reply, heldCheck, citeCheck, pageFilter, withheldMark, risky, protect, keepNum, R };

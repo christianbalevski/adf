@@ -39,6 +39,8 @@ const T = [['password: hunter2xyz', 'hunter2xyz'], ['ghp_' + 'aB3dE5fG7hJ9kL1mN3
   ['FAKE door code: 4471\n8832 then hash', '8832'], ['FAKE portal password is Tulip9-\nfake22, then Enter', 'fake22'], ['FAKE safe word is Pome-\ngranate for the trip', 'granate'], // value goes on below its marker
   ['FAKE api_key: Zx9fakeQw8\n  Er7fakeLm2 (second line)', 'Er7fakeLm2'], ['FAKE wifi password: Garden24\n\nQz82 is the rest', 'Qz82'],
   ['FAKE\n-----BEGIN PRIVATE KEY-----\nMIIfakeAbc123\nQz9fake\n-----END PRIVATE KEY-----\nafter', ['MIIfakeAbc123', 'Qz9fake']]];
+T.push(['password: "BLUE_BIRD"', 'BLUE_BIRD'], ['API_KEY=REAL_SECRET_VALUE', 'REAL_SECRET_VALUE'], ['password is BLUE_BIRD', 'BLUE_BIRD'],
+  ['API_KEY= REAL_SECRET_VALUE', 'REAL_SECRET_VALUE'], ['password= BLUE_BIRD', 'BLUE_BIRD']);
 const K = ['in 2026', 'since 1998', 'Both thefts in 2026, after the shed lock broke', 'The back door lock was replaced in 2026',
   'Gate code changed since 1998', 'The wifi password was set up for her in 2026', 'Plan for 2026: lock in the venue',
   'the account has read / write access', 'mkdir -p logs', 'sudo -u postgres psql -p 5432', 'docker run -u 1000:1000 -p 8080:80 app',
@@ -57,17 +59,28 @@ const K2 = ['Authorization: Bearer <MAPBOX_TOKEN>', 'Add header `Authorization: 
   'Run `export MAPBOX_TOKEN=` before `node map.js`', 'export MAPBOX_TOKEN= then restart the app', 'Keep replies under a 120-word limit', 'Order 3AJ24 and 4BK22 from the shop',
   'The app goes live next week', 'Gate repairs: ring Hallam on 01539 733905', 'Locksmith: 01539 733905', 'Portal login for job GHB-77314 is in the binder', 'Account ref GHB-77314, call 07700 900123',
   'Train booking ref 7HQ2KD, coach C', 'Ferry booking 7HQ2KD for the 09:40', 'Hotel ref 7HQ2KD; door code comes by text'];
+K2.push('password: $API_KEY', 'password: ${API_KEY}', 'password: <API_KEY>', 'password: "${API_KEY}"');
 const E = [['FAKE [s](https://x.org/?token=Ab12fake) ok', 'FAKE [s](https://x.org/?token=[REDACTED:query]) ok'], ['FAKE <https://x.org/?key=Ab12fake>', 'FAKE <https://x.org/?key=[REDACTED:query]>']]; // exact output
 E.push(['FAKE wifi password: Garden24\n2nd floor router, call 01539 733905\n\nThen lock the shed in 2026', 'FAKE wifi password: [REDACTED:value]\n2nd floor router, call 01539 733905\n\nThen lock the shed in 2026']);
 E.push([asText({ mime_type: 'application/octet-stream', content: btoa('FAKE note') }), 'FAKE note']);
 const bad = T.filter(([s, x]) => [].concat(x).some(v => scrub(s).text.includes(v))).map(([s]) => s).concat(K.filter(s => scrub(s).text !== s), K2.filter(s => scrub(s).text !== s || unsafe(s)), E.filter(([s, o]) => scrub(s).text !== o).map(([s]) => s));
+// fs_read returns text only for the runtime's known MIME types; everything else is base64.
+const decoded = [
+  [{ mime_type: null, content: btoa('password: BLUE_BIRD') }, 'password: BLUE_BIRD'],
+  [{ content: btoa('FAKE note') }, 'FAKE note'],
+  [{ mime_type: 'application/jsonl', content: btoa('{"note":"FAKE"}') }, '{"note":"FAKE"}'],
+  ...['application/x-sh', 'application/typescript', 'application/toml', 'application/graphql', 'application/sql'].map(mime_type => [{ mime_type, content: 'abcdef' }, 'abcdef']),
+  [{ mime_type: 'image/svg+xml', content: '<svg/>' }, '<svg/>'],
+  [{ mime_type: 'application/octet-stream', content: 'AA==' }, null]
+];
+for (const [record, expected] of decoded) if (asText(record) !== expected) bad.push('asText(): ' + record.mime_type);
 if (flagged('the safe word\nlog in here') !== 2) bad.push('flagged()');
 const M = sift({ soul: [{ text: 'Warm and brief', cite: 'SOUL.md:3' }], facts: [{ text: 'FAKE safe word is Pomegranate9', cite: 'SOUL.md:11' }, // mock model output
   { text: 'FAKE wallet Zq9fakeW7', cite: 'MEMORY.md:9' }, { text: 'Gate code is [REDACTED:phrase]', cite: 'MEMORY.md:4' }, { text: 'Choir meets Tuesdays at 19:00', cite: 'memory/2026-10-20.md:2' },
   { text: 'A gate code for the yard (withheld)', cite: 'MEMORY.md:6' }] });
 if (M.dropped !== 2 || M.held.length !== 3 || M.out.facts.length !== 3 || M.out.soul.length !== 1 || /fake/i.test(JSON.stringify(M.out))) bad.push('sift()');
 if (reply({ content: [{ text: 'x {"a": 1} y' }] }).a !== 1) bad.push('reply()');
-const pem = scrub(T[T.length - 1][0]); if (pem.text.split('\n').length !== 6 || pem.hits.map(h => h.line).join() !== '2,3,4,5') bad.push('pem lines');
+const pem = scrub(T.find(([s]) => s.includes('BEGIN PRIVATE KEY'))[0]); if (pem.text.split('\n').length !== 6 || pem.hits.map(h => h.line).join() !== '2,3,4,5') bad.push('pem lines');
 return (async () => {
   if ((await heldCheck(['a.md:1-2', 'a.md:3', 'b.md:1'], async p => ({ 'a.md': 'x\n[REDACTED:value] y\nFAKE' })[p])).length !== 2) bad.push('heldCheck()');
   const B = 'Shop\nFAKE Stripe key:\n  Qz9fakeA1\n  Wq8fakeB2\n\nFAKE Zz9fakeC3\n- FAKE wifi:\n  - Ab1fakeD4\n- FAKE Cd2fakeE5\nFAKE codes:\nHb3fakeF6\n## Next\nZx1fakeG7'; // label-line cites
@@ -86,14 +99,56 @@ return (async () => {
   const SK = ['---', 'name: tiles', 'requires:', '  tools: [sys_fetch]', '---', '## Steps', '1. Read the token in code.', '   curl -H "Authorization: Bearer <MAPBOX_TOKEN>" https://api.mapbox.com',
     '   curl -H "Authorization: Bearer Zx9fakeQw8fakeEr7Lm2" https://api.mapbox.com', 'Tile key Pk7fakeQ2 (SKILL.md:12 in the drop)']; // staged skill: lines marked, placeholders kept
   const sk = pageFilter(SK.join('\n'), new Set(), withheldMark), sl = sk.text.split('\n');
-  if (sk.dropped.map(d => d.line).join() !== '9,10' || sl.length !== 10 || sl[7] !== SK[7] || sl[8] !== '   [withheld: check your original]' || sl[9] !== '[withheld: check your original, SKILL.md:12]') bad.push('pageFilter() skills');
+  if (sk.dropped.map(d => d.line).join() !== '9,10' || sl.length !== 10 || sl[7] !== SK[7] || sl[8] !== '   [withheld: check your original]' || sl[9] !== '[withheld: check your original, (SKILL.md:12 in the drop)]') bad.push('pageFilter() skills');
   if (pageFilter(P.join('\n'), JSON.parse(JSON.stringify(hb))).dropped.map(d => d.line).join() !== '8,9,10,15') bad.push('pageFilter() risk.json array');
   const cc = await citeCheck('x (a.md:2 in the drop) y (a.md:9 in the drop), b.md:1 and a.md:1-3', async p => ({ 'r/a.md': 'l1\nl2\n\n' })[p], 'r/');
   if (cc.join() !== 'a.md:9,b.md:1,a.md:3') bad.push('citeCheck()');
+  const paths = ['memory/old notes.md', 'memory/Montréal.md', 'memory/notes (old).md', 'memory/notes (old (copy)).md', 'memory/May–June.md'];
+  for (const path of paths) {
+    const extracted = sift({ facts: [{ text: '(withheld)', cite: path + ':1' }] });
+    const read = async p => p === 'root/' + path ? '[REDACTED:secret]\nQz9fakeA1' : null;
+    const held = await heldCheck(extracted.held, read, 'root/');
+    const page = '(withheld) Card reader paired with Qz9fakeA1 (' + path + ':2 in the drop)';
+    const filtered = pageFilter(page, held, withheldMark);
+    if (extracted.held[0] !== path + ':1' || held.join() !== path + ':2' || filtered.dropped.length !== 1 ||
+      filtered.text.includes('Qz9fakeA1') || !filtered.text.includes(path + ':2') ||
+      (await citeCheck(page, read, 'root/')).length || (await citeCheck(filtered.text, read, 'root/')).length ||
+      pageFilter(filtered.text, held, withheldMark).dropped.length) bad.push('full citation path: ' + path);
+  }
+  const invalidCites = ['a.md:0', 'a.md:4-1', 'a.md:1-22', 'a.md:1-1000000000', 'a.md:9007199254740992'];
+  for (const cite of invalidCites) {
+    let reads = 0;
+    const read = async () => { reads++; return 'one'; };
+    const errors = await citeCheck(cite, read);
+    const held = await heldCheck([cite], read);
+    const page = 'Ordinary fact (' + cite + ' in the drop)';
+    const marked = pageFilter(page, [], withheldMark);
+    if (errors.join() !== cite || reads || held.length || pageFilter(page).text || marked.dropped.length !== 1 ||
+      pageFilter(marked.text, [], withheldMark).dropped.length) bad.push('invalid citation: ' + cite);
+  }
+  if ((await citeCheck('a.md:1-21', async () => Array(21).fill('line').join('\n'))).length) bad.push('bounded valid citation range');
+  const ordinary = ['Bind the service to localhost.local:0 to auto-assign a port.', '(' + '(old)'.repeat(30) + ' detail'];
+  for (const page of ordinary) if (pageFilter(page).text !== page) bad.push('ordinary parentheses or host:port');
+  const ambiguous = 'Useful detail Qz9fakeA1 (memory/notes (unfinished.md:3 in the drop)';
+  let ambiguousReads = 0;
+  if (pageFilter(ambiguous, ['memory/notes (unfinished.md:3']).text ||
+    !(await citeCheck(ambiguous, async () => { ambiguousReads++; return 'a\nb\nc'; })).length || ambiguousReads) bad.push('ambiguous citation');
+  const twoCites = 'Fact (memory/old notes.md:2 in the drop), also (memory/Montréal.md:2 in the drop)';
+  const requestedPaths = [];
+  if ((await citeCheck(twoCites, async p => { requestedPaths.push(p); return 'a\nb'; })).length ||
+    requestedPaths.join('|') !== 'memory/old notes.md|memory/Montréal.md') bad.push('multiple full citations');
+  const secretCites = ['password: BLUE_BIRD', 'sk-abcdef12345678901234567890'];
+  for (const path of secretCites) {
+    const page = 'Reference (' + path + ':1 in the drop)', filtered = pageFilter(page, [], withheldMark);
+    let reads = 0;
+    const errors = await citeCheck(page, async () => { reads++; return 'line'; });
+    if (!scrub(page).hits.length || filtered.dropped.length !== 1 || filtered.dropped[0].cites.length ||
+      filtered.text !== '[withheld: check your original]' || errors.join() !== '[withheld citation]' || reads) bad.push('credential in citation path');
+  }
   if (pageFilter(sk.text, new Set(), withheldMark).dropped.length || pageFilter(pf.text, risk).dropped.length) bad.push('pageFilter() idempotent');
   const PT = T.filter(([s, x]) => [].concat(x).some(v => pageFilter(s).text.includes(v))).map(([s]) => 'page: ' + s); // every T value is gone from a page
   const PK = K2.filter(s => { const o = pageFilter(s + ' (MEMORY.md:3 in the drop)'); return o.dropped.length || o.text !== s + ' (MEMORY.md:3 in the drop)'; }).map(s => 'page keep: ' + s);
   bad.push(...PT, ...PK);
-  const n = { base: T.length + K.length + K2.length + E.length + 7, page: T.length + K2.length + 4 };
+  const n = { base: T.length + K.length + K2.length + E.length + decoded.length + 7, page: T.length + K2.length + paths.length + invalidCites.length + ordinary.length + secretCites.length + 7 };
   return bad.length ? { selftest: 'FAIL', bad } : { selftest: 'pass', cases: n.base + n.page, ...n }; })();
 };
