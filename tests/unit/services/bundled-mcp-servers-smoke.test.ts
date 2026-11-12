@@ -16,6 +16,30 @@ const electronBin = process.platform === 'win32'
     ? join(root, 'node_modules', 'electron', 'dist', 'Electron.app', 'Contents', 'MacOS', 'Electron')
     : join(root, 'node_modules', 'electron', 'dist', 'electron')
 
+const stop = async (child: ChildProcess) => {
+  if (child.exitCode === null && child.signalCode === null) {
+    const exited = new Promise((r) => child.once('exit', r))
+    child.kill()
+    await exited
+  }
+}
+const waitUntil = async (cond: () => boolean, what: string, ms = 20_000) => {
+  const deadline = Date.now() + ms
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 50))
+  }
+}
+/** Linux only: 127.0.0.1:<port> is in LISTEN, and neither the IPv4 nor the IPv6 wildcard is. */
+const expectLoopbackOnly = (port: number) => {
+  const hex = port.toString(16).toUpperCase().padStart(4, '0')
+  const listening = (file: string) => existsSync(file) ? readFileSync(file, 'utf-8').split('\n').filter((l) => / 0A /.test(l)) : []
+  const v4 = listening('/proc/net/tcp')
+  expect(v4.some((l) => l.includes(` 0100007F:${hex} `))).toBe(true)
+  expect(v4.some((l) => l.includes(` 00000000:${hex} `))).toBe(false)
+  expect(listening('/proc/net/tcp6').some((l) => new RegExp(` [0-9A-F]{32}:${hex} `).test(l))).toBe(false)
+}
+
 describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar servers on Electron-as-Node', () => {
   let dir: string
   beforeAll(() => {
@@ -104,20 +128,6 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar ser
       child.stderr!.on('data', (c: Buffer) => { output += c.toString() })
       return { child, output: () => output }
     }
-    const stop = async (child: ChildProcess) => {
-      if (child.exitCode === null && child.signalCode === null) {
-        const exited = new Promise((r) => child.once('exit', r))
-        child.kill()
-        await exited
-      }
-    }
-    const waitUntil = async (cond: () => boolean, what: string) => {
-      const deadline = Date.now() + 15_000
-      while (!cond()) {
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-        await new Promise((r) => setTimeout(r, 50))
-      }
-    }
     const canConnect = (host: string) => new Promise<boolean>((done) => {
       const s = connect(3000, host)
       s.once('connect', () => { s.destroy(); done(true) })
@@ -127,17 +137,12 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar ser
     it('survives a missing xdg-open and listens on 127.0.0.1 only', async () => {
       const { child, output } = startAuth()
       try {
-        await waitUntil(() => /Could not open a browser/.test(output()) || child.exitCode !== null, 'the opener error')
+        await waitUntil(() => /Could not open a browser/.test(output()) || child.exitCode !== null, 'the opener error', 15_000)
         await new Promise((r) => setTimeout(r, 1500))
         expect(child.exitCode, output()).toBeNull()
         expect(output()).toContain('Please visit this URL to authenticate:')
         expect(await canConnect('127.0.0.1')).toBe(true)
-        // Bound to loopback, not every interface: 127.0.0.1:3000 in LISTEN, no IPv6 wildcard.
-        const v4 = readFileSync('/proc/net/tcp', 'utf-8').split('\n').filter((l) => / 0A /.test(l))
-        expect(v4.some((l) => l.includes(' 0100007F:0BB8 '))).toBe(true)
-        expect(v4.some((l) => l.includes(' 00000000:0BB8 '))).toBe(false)
-        const v6 = existsSync('/proc/net/tcp6') ? readFileSync('/proc/net/tcp6', 'utf-8').split('\n').filter((l) => / 0A /.test(l)) : []
-        expect(v6.some((l) => / [0-9A-F]{32}:0BB8 /.test(l))).toBe(false)
+        expectLoopbackOnly(3000)
       } finally {
         await stop(child)
       }
@@ -149,9 +154,9 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar ser
       chmodSync(join(bin(), 'xdg-open'), 0o755)
       const { child, output } = startAuth()
       try {
-        await waitUntil(() => existsSync(record) || child.exitCode !== null, 'the opener')
+        await waitUntil(() => existsSync(record) || child.exitCode !== null, 'the opener', 15_000)
         expect(child.exitCode, output()).toBeNull()
-        await waitUntil(() => readFileSync(record, 'utf-8').includes('\n'), 'the opener output')
+        await waitUntil(() => readFileSync(record, 'utf-8', 15_000).includes('\n'), 'the opener output')
         expect(readFileSync(record, 'utf-8').trim()).toBe('ELECTRON_RUN_AS_NODE=unset')
       } finally {
         await stop(child)
@@ -179,20 +184,6 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar ser
       child.stdout!.on('data', (c: Buffer) => { output += c.toString() })
       child.stderr!.on('data', (c: Buffer) => { output += c.toString() })
       return { child, output: () => output }
-    }
-    const stop = async (child: ChildProcess) => {
-      if (child.exitCode === null && child.signalCode === null) {
-        const exited = new Promise((r) => child.once('exit', r))
-        child.kill()
-        await exited
-      }
-    }
-    const waitUntil = async (cond: () => boolean, what: string) => {
-      const deadline = Date.now() + 20_000
-      while (!cond()) {
-        if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`)
-        await new Promise((r) => setTimeout(r, 50))
-      }
     }
 
     it('writes the entry, the files it reads beside itself, and the notices', () => {
@@ -252,12 +243,7 @@ describe.skipIf(!existsSync(electronBin))('bundled Gmail and Google Calendar ser
         const refused = await fetch('http://127.0.0.1:3500/oauth2callback?code=x&state=forged')
         expect(refused.status).toBe(403)
         expect(await refused.text()).toContain('Invalid state parameter')
-        // 127.0.0.1:3500 (0DAC) in LISTEN, not every interface.
-        const v4 = readFileSync('/proc/net/tcp', 'utf-8').split('\n').filter((l) => / 0A /.test(l))
-        expect(v4.some((l) => l.includes(' 0100007F:0DAC '))).toBe(true)
-        expect(v4.some((l) => l.includes(' 00000000:0DAC '))).toBe(false)
-        const v6 = existsSync('/proc/net/tcp6') ? readFileSync('/proc/net/tcp6', 'utf-8').split('\n').filter((l) => / 0A /.test(l)) : []
-        expect(v6.some((l) => / [0-9A-F]{32}:0DAC /.test(l))).toBe(false)
+        expectLoopbackOnly(3500)
       } finally {
         await stop(child)
       }

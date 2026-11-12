@@ -1,5 +1,5 @@
 import { spawn as nodeSpawn } from 'child_process'
-import { expandHomeInEnv, inheritableEnv } from '../utils/child-env'
+import { inheritableEnv } from '../utils/child-env'
 import { mcpClientFileEnv } from './mcp-server-home'
 import type { ChildProcess } from 'child_process'
 import { homedir, tmpdir } from 'os'
@@ -250,10 +250,9 @@ export async function runMcpAuthPreflight(
 
   // A bundled server (Studio's executable): Electron/Node settings dropped
   // and config env through the MCP blocklist (bundled-mcp-servers.ts).
-  // Every other preflight keeps the env as configured. A leading ~/ in a
-  // value is the server's HOME, as at spawn (expandHomeInEnv).
-  const preflightEnv = expandHomeInEnv(bundledMcpSpawnEnv(preflightCmd, preflightArgs, inheritableEnv(), { ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) })
-    ?? { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) })
+  // Every other preflight keeps the env as configured.
+  const preflightEnv = bundledMcpSpawnEnv(preflightCmd, preflightArgs, inheritableEnv(), { ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) })
+    ?? { ...inheritableEnv(), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
   log(`[MCP] Auth preflight: ${preflightCmd} ${preflightArgs.join(' ')}`)
 
   // No blanket shell:true — on Windows that routes through cmd.exe with
@@ -328,7 +327,10 @@ export async function runMcpAuthPreflight(
     // boundary — NEVER the host process.env, which carries runtime API keys
     // that must not leak into agent-reachable code.
     const c = opts.container
-    const containerEnv = expandHomeInEnv({ ...(c.home ? { HOME: c.home } : {}), ...mcpClientFileEnv(serverCfg), ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) })
+    const configured = { ...(serverCfg.env ?? {}), ...(opts.resolvedEnv ?? {}) }
+    // Merged last, as at spawn (mcpContainerHomeEnv).
+    const clientFileEnv = c.home ? mcpClientFileEnv({ ...serverCfg, env: configured }, { kind: 'container', home: c.home }) : {}
+    const containerEnv = { ...(c.home ? { HOME: c.home } : {}), ...configured, ...clientFileEnv }
     // Those credential values (API keys, OAuth client secrets) must NOT land on
     // the host podman client's argv: process argv is world-readable
     // (/proc/<pid>/cmdline on Linux, `ps` on macOS) and this preflight stays

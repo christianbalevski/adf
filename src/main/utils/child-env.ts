@@ -54,20 +54,3 @@ export function filterBlockedEnv(env: Record<string, string>): Record<string, st
   }
   return filtered
 }
-
-/**
- * A leading `~/` in every env value an MCP server receives (its config env
- * and the environment it inherits alike), expanded against the HOME
- * (else USERPROFILE) of the env the server is started with: its own home
- * folder when it has one (mcp-server-home.ts), the container home in a
- * container. Servers resolve such a path themselves, mostly against their
- * cwd, not their home. Other values, `~user/…` included, are unchanged, and
- * so is everything when the env names no home.
- */
-export function expandHomeInEnv(env: Record<string, string>): Record<string, string> {
-  const home = env.HOME || env.USERPROFILE
-  if (!home) return env
-  const expanded: Record<string, string> = {}
-  for (const [key, value] of Object.entries(env)) expanded[key] = value.startsWith('~/') ? `${home}/${value.slice(2)}` : value
-  return expanded
-}

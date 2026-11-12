@@ -55,7 +55,7 @@ import type { SettingsService } from '../services/settings.service'
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { AgentState, BackgroundAgentStatus, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig } from '../../shared/types/ipc.types'
-import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration, registrationAppEnv } from '../../shared/utils/mcp-config'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
@@ -1325,14 +1325,9 @@ export class BackgroundAgentManager extends EventEmitter {
       // Whose credentials it uses decides where they live (mcp-server-home.ts).
       const { owner, files: credFiles } = mcpServerCredentials(connCfg, reg, freshConfig.id, agentCredentialStore())
 
-      const appEnvKeys: string[] = []
-      if (reg?.env?.length) {
-        const appEnv: Record<string, string> = {}
-        for (const { key, value } of reg.env) {
-          if (key && value) { appEnv[key] = value; appEnvKeys.push(key) }
-        }
-        if (Object.keys(appEnv).length) connCfg.env = { ...connCfg.env, ...appEnv }
-      }
+      const appEnv = registrationAppEnv(reg)
+      const appEnvKeys = Object.keys(appEnv)
+      if (appEnvKeys.length) connCfg.env = { ...connCfg.env, ...appEnv }
 
       const resolvedEnv = resolveMcpEnvVars(connCfg, (k) => workspace.getIdentityDecrypted(k, derivedKey ?? null))
       const agentEnvKeys = Object.keys(resolvedEnv)
@@ -1505,7 +1500,8 @@ export class BackgroundAgentManager extends EventEmitter {
         // SECURITY: pin the executable identity to the Settings registration
         // (if any) so a tampered .adf command/args can't run under auth.
         const authReg = getRegistrationsForAttach().find((r) => r.name === serverName)
-        const cfg = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
+        const pinned = authReg ? pinServerConfigToRegistration(serverCfg, authReg) : serverCfg
+        const cfg = { ...pinned, env: { ...pinned.env, ...registrationAppEnv(authReg) } }
         const authCfg = { ...cfg }
         const { owner, files: credFiles, capture: credCapture } = mcpServerCredentials(cfg, authReg, freshConfig.id, agentCredentialStore())
         const resolvedEnv = resolveMcpEnvVars(cfg, (k) => workspace.getIdentityDecrypted(k, derivedKey ?? null))
@@ -1545,7 +1541,11 @@ export class BackgroundAgentManager extends EventEmitter {
           try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
         }
         const podmanSvc = this.podmanService
-        if (!container && !willContainerize) authCfg.env = { ...authCfg.env, ...mcpHostHomeEnv(cfg, owner, { ...inheritableEnv(), ...cfg.env }) }
+        if (!container && !willContainerize) {
+          // With identity-resolved values, as at connect, so a stored value wins over the client-file default.
+          const withResolved = { ...cfg, env: { ...cfg.env, ...resolvedEnv } }
+          authCfg.env = { ...authCfg.env, ...mcpHostHomeEnv(withResolved, owner, { ...inheritableEnv(), ...withResolved.env }) }
+        }
         // Host credential target ONLY when routing chose host — a
         // container-intended server without a podman service must not
         // materialize or capture credentials on the host.

@@ -181,7 +181,7 @@ import { resolveContainerCommand } from '../services/container-command-resolver'
 import { ExternalExecutionService } from '../services/external-execution.service'
 import { syncDiscoveredMcpTools, resyncServerTools, diffMcpServerNames } from '../services/mcp-tool-sync'
 import { pickFresherConfig } from '../runtime/config-freshness'
-import { pinServerConfigToRegistration } from '../../shared/utils/mcp-config'
+import { pinServerConfigToRegistration, registrationAppEnv } from '../../shared/utils/mcp-config'
 import { ChannelAdapterManager, createUnavailableAdapter } from '../services/channel-adapter-manager'
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
@@ -4105,19 +4105,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       // Whose credentials it uses decides where they live (mcp-server-home.ts).
       const { owner, files: credFiles } = mcpServerCredentials(connCfg, reg, freshConfig.id, agentCredentialStore())
 
-      const appEnvKeys: string[] = []
-      if (reg?.env?.length) {
-        const appEnv: Record<string, string> = {}
-        for (const { key, value } of reg.env) {
-          if (key && value) {
-            appEnv[key] = value
-            appEnvKeys.push(key)
-          }
-        }
-        if (Object.keys(appEnv).length) {
-          connCfg.env = { ...connCfg.env, ...appEnv }
-        }
-      }
+      const appEnv = registrationAppEnv(reg)
+      const appEnvKeys = Object.keys(appEnv)
+      if (appEnvKeys.length) connCfg.env = { ...connCfg.env, ...appEnv }
 
       const resolvedEnv = resolveMcpEnvVars(connCfg, (key) => capturedWorkspace.getIdentityDecrypted(key, capturedDerivedKey))
       const agentEnvKeys = Object.keys(resolvedEnv)
@@ -4314,7 +4304,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           // (if any) so a tampered .adf command/args can't run under auth or
           // hot-load. The .adf's agent-scoped env values still apply.
           const hotReg = ((settings.get('mcpServers') as McpServerRegistration[] | undefined) ?? []).find((r) => r.name === serverName)
-          const connCfg = hotReg ? pinServerConfigToRegistration(serverCfg, hotReg) : { ...serverCfg }
+          const pinned = hotReg ? pinServerConfigToRegistration(serverCfg, hotReg) : serverCfg
+          const connCfg = { ...pinned, env: { ...pinned.env, ...registrationAppEnv(hotReg) } }
           const { owner, files: credFiles, capture: credCapture } = mcpServerCredentials(connCfg, hotReg, freshConfig.id, agentCredentialStore())
 
           // Resolve uv binary path for pypi packages
@@ -4567,16 +4558,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
             const { owner, files: credFiles } = mcpServerCredentials(connCfg, reg, config.id, agentCredentialStore())
 
             // Merge app-wide credentials from Settings registration (env key/value pairs)
-            const appEnvKeys: string[] = []
-            if (reg?.env?.length) {
-              const appEnv: Record<string, string> = {}
-              for (const { key, value } of reg.env) {
-                if (key && value) { appEnv[key] = value; appEnvKeys.push(key) }
-              }
-              if (Object.keys(appEnv).length) {
-                connCfg.env = { ...connCfg.env, ...appEnv }
-              }
-            }
+            const appEnv = registrationAppEnv(reg)
+            const appEnvKeys = Object.keys(appEnv)
+            if (appEnvKeys.length) connCfg.env = { ...connCfg.env, ...appEnv }
 
             // Resolve env vars from identity keystore (per-agent credentials)
             const resolvedEnv = resolveMcpEnvVars(connCfg, (k) => capturedWorkspace.getIdentityDecrypted(k, capturedDerivedKey))

@@ -21,7 +21,6 @@ import type { Transport, TransportSendOptions } from '@modelcontextprotocol/sdk/
 import type { JSONRPCMessage } from '@modelcontextprotocol/sdk/types.js'
 import { NPM_CACHE_MOUNT } from './podman.service'
 import { ensureManagedBrowserForSpawn } from './managed-browser-hook'
-import { expandHomeInEnv } from '../utils/child-env'
 
 // The SDK's subpath exports break CJS require().  Resolve from the working
 // /client entry and navigate to ../shared/ — same workaround as mcp-client-manager.ts.
@@ -331,8 +330,7 @@ export class PodmanStdioTransport implements Transport {
   private ensureEnvFile(): string | null {
     if (this._envFileBuilt) return this._envFilePath
     this._envFileBuilt = true
-    // A leading ~/ in a value is the server's HOME in the container (expandHomeInEnv).
-    const entries = Object.entries(expandHomeInEnv(this._opts.env ?? {})).filter(([key]) => !BLOCKED_ENV_VARS.has(key))
+    const entries = Object.entries(this._opts.env ?? {}).filter(([key]) => !BLOCKED_ENV_VARS.has(key))
     if (entries.length === 0) return null
     const dir = mkdtempSync(join(tmpdir(), 'adf-mcp-env-'))
     const path = join(dir, 'env')

@@ -46,7 +46,7 @@ import { delimiter, join } from 'path'
 import { getUserDataPath } from '../utils/user-data-path'
 import type { McpServerConfig } from '../../shared/types/adf-v02.types'
 import type { McpServerRegistration } from '../../shared/types/ipc.types'
-import { folderCredentialStore, type CredentialStore } from './mcp-credential-files'
+import { expandCredentialPath, folderCredentialStore, type CredentialHome, type CredentialStore } from './mcp-credential-files'
 import { BUILT_IN_CLIENT_FILES } from '../../shared/utils/google-oauth-client'
 
 /** Who owns a server's credentials: the app (one sign-in for every agent) or one agent. */
@@ -149,29 +149,36 @@ export function mcpHostHomeEnv(cfg: HomeCfg, owner: McpCredentialOwner, base: Re
     keep.npm_config_cache = join(real, '.npm')
     if (!hasEnvKey(base, 'XDG_CACHE_HOME')) keep.UV_CACHE_DIR = join(real, '.cache', 'uv')
   }
-  return { ...homeEnv(home, base, keep), ...linuxBrowserShimEnv(base), ...mcpClientFileEnv(cfg) }
+  return { ...homeEnv(home, base, keep), ...linuxBrowserShimEnv(base), ...mcpClientFileEnv(cfg, { kind: 'host', home }) }
 }
 
 /** Env for a container spawn of a server with credential files (the npm cache stays under the agent home). */
 export function mcpContainerHomeEnv(cfg: HomeCfg, agentHome: string, base: Record<string, string | undefined> = {}): Record<string, string> {
   if (!hasOwnHome(cfg)) return {}
-  return { ...homeEnv(mcpServerContainerHome(cfg, agentHome), base, { npm_config_cache: `${agentHome}/.npm` }), ...mcpClientFileEnv(cfg) }
+  const home = mcpServerContainerHome(cfg, agentHome)
+  return { ...homeEnv(home, base, { npm_config_cache: `${agentHome}/.npm` }), ...mcpClientFileEnv(cfg, { kind: 'container', home }) }
 }
 
 /**
  * The env variable a Google catalog server reads its client file's path from
- * (google-oauth-client.ts), set to its declared `~/` path, which is expanded
- * against the server's HOME at spawn (expandHomeInEnv). Only for a server
- * with its own home, and only when the server's own config env does not set
- * it to a non-empty value (the server treats "" as unset): the client file
- * Settings governs is not overridden by whatever the Studio or daemon process
- * happens to inherit.
+ * (google-oauth-client.ts), set to the absolute path of its declared client
+ * file in `home`, the same path the file is written to (expandCredentialPath).
+ * Only for a server with its own home that declares that file. The server's
+ * own config env wins with any other non-empty value (the server treats "" as
+ * unset); a `~/` value there is resolved against `home` the same way. Nothing
+ * the Studio or daemon process happens to inherit overrides it.
  */
-export function mcpClientFileEnv(cfg: Pick<McpServerConfig, 'credential_files' | 'npm_package' | 'env'>): Record<string, string> {
+export function mcpClientFileEnv(cfg: Pick<McpServerConfig, 'credential_files' | 'npm_package' | 'env'>, home: CredentialHome): Record<string, string> {
   if (!hasOwnHome(cfg)) return {}
   const row = BUILT_IN_CLIENT_FILES.find((f) => f.npmPackage === cfg.npm_package)
-  if (!row?.env || cfg.env?.[row.env]) return {}
-  return { [row.env]: row.path }
+  if (!row?.env || !cfg.credential_files?.some((f) => f.path === row.path)) return {}
+  const configured = cfg.env?.[row.env]
+  if (configured && !configured.startsWith('~/')) return {}
+  try {
+    return { [row.env]: expandCredentialPath(configured || row.path, home) }
+  } catch {
+    return {} // a configured ~/ path that escapes home: left as configured
+  }
 }
 
 type AgentCredentialStore = CredentialStore & { setIdentitySealed: (purpose: string, value: string) => void }

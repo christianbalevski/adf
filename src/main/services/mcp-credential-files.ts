@@ -53,6 +53,9 @@ export interface CredentialHostTarget {
 
 export type CredentialFileTarget = CredentialContainerTarget | CredentialHostTarget
 
+/** What `~` resolves against: a host home, or a container target's home. */
+export type CredentialHome = CredentialHostTarget | Pick<CredentialContainerTarget, 'kind' | 'home'>
+
 /** Structural slice of PodmanService the credential plumbing needs. */
 export interface CredentialCopyService {
   copyToContainer(hostPath: string, containerPath: string, containerName?: string): Promise<void>
@@ -132,7 +135,7 @@ export function folderCredentialStore(home: string, missingHint?: string): Crede
  * Container targets keep absolute paths — traversal is contained by the
  * container itself, and some servers hardcode absolute config paths.
  */
-export function expandCredentialPath(path: string, target: CredentialFileTarget): string {
+export function expandCredentialPath(path: string, target: CredentialHome): string {
   const home = target.kind === 'container' ? target.home : (target.home ?? homedir())
   if (target.kind === 'host') {
     if (path !== '~' && !path.startsWith('~/')) {
