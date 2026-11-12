@@ -180,6 +180,15 @@ export function AgentFiles() {
   const newFileInputRef = useRef<HTMLInputElement>(null)
   const folderRenameRef = useRef<HTMLInputElement>(null)
   const clickTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const folderClickTimersRef = useRef(new Map<string, ReturnType<typeof setTimeout>>())
+
+  useEffect(() => {
+    const timers = folderClickTimersRef.current
+    return () => {
+      timers.forEach(clearTimeout)
+      timers.clear()
+    }
+  }, [filePath, fileFilter, sort])
 
   const toggleDir = useCallback((dirPath: string) => {
     setExpandedDirs((prev) => {
@@ -320,14 +329,15 @@ export function AgentFiles() {
       for (const { path, file } of allFiles) {
         const buffer = await file.arrayBuffer()
         const data = Array.from(new Uint8Array(buffer))
-        await openApi()?.uploadFile(path, data, file.type || undefined)
+        // Choose collision-free names in the backend, including across concurrent drops.
+        await openApi()?.uploadFile(path, data, file.type || undefined, { unique: true })
       }
     } else {
       // Fallback for browsers without webkitGetAsEntry
       for (const file of Array.from(e.dataTransfer.files)) {
         const buffer = await file.arrayBuffer()
         const data = Array.from(new Uint8Array(buffer))
-        await openApi()?.uploadFile(file.name, data, file.type || undefined)
+        await openApi()?.uploadFile(file.name, data, file.type || undefined, { unique: true })
       }
     }
     fetchFiles()
@@ -535,7 +545,11 @@ export function AgentFiles() {
           </button>
           {sort === 'name' && !filtering && expandedDirs.size > 0 && (
             <button
-              onClick={() => setExpandedDirs(new Set())}
+              onClick={() => {
+                folderClickTimersRef.current.forEach(clearTimeout)
+                folderClickTimersRef.current.clear()
+                setExpandedDirs(new Set())
+              }}
               title="Collapse all folders"
               aria-label="Collapse all folders"
               className="w-6 h-6 flex items-center justify-center rounded text-neutral-500 dark:text-neutral-400 hover:text-neutral-800 dark:hover:text-neutral-100 hover:bg-neutral-200 dark:hover:bg-neutral-700 transition-colors cursor-pointer"
@@ -686,19 +700,37 @@ export function AgentFiles() {
                     />
                   </div>
                 ) : (
-                  <div
-                    className="flex items-center gap-1.5 w-full px-2 py-1 rounded hover:bg-neutral-50 dark:hover:bg-neutral-800"
+                  <button
+                    type="button"
+                    onClick={() => { if (!filtering) toggleDir(node.path) }}
+                    aria-expanded={!isCollapsed}
+                    className="flex items-center gap-1.5 w-full px-2 py-1 rounded text-left hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
                     style={{ paddingLeft: `${8 + depth * 16}px` }}
                   >
-                    <button
-                      onClick={() => toggleDir(node.path)}
-                      className="text-[10px] text-[var(--adf-ui-text-subtle)] w-3 text-center shrink-0 hover:text-neutral-600 dark:hover:text-neutral-300 cursor-pointer"
+                    <span
+                      className="text-[10px] text-[var(--adf-ui-text-subtle)] w-3 text-center shrink-0"
                     >
                       {isCollapsed ? '\u25B6' : '\u25BC'}
-                    </button>
+                    </span>
                     <span
-                      className="flex items-center gap-1.5 flex-1 min-w-0 cursor-default"
-                      onDoubleClick={() => startFolderRename(node.path)}
+                      className="flex items-center gap-1.5 flex-1 min-w-0"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        if (filtering) return
+                        const pending = folderClickTimersRef.current.get(node.path)
+                        clearTimeout(pending)
+                        if (pending && e.detail === 1) toggleDir(node.path)
+                        // Keep the row in place until a possible rename double-click.
+                        folderClickTimersRef.current.set(node.path, setTimeout(() => {
+                          folderClickTimersRef.current.delete(node.path)
+                          toggleDir(node.path)
+                        }, 250))
+                      }}
+                      onDoubleClick={() => {
+                        clearTimeout(folderClickTimersRef.current.get(node.path))
+                        folderClickTimersRef.current.delete(node.path)
+                        startFolderRename(node.path)
+                      }}
                       title="Double-click to rename folder"
                     >
                       <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0">
@@ -711,7 +743,7 @@ export function AgentFiles() {
                     <span className="text-[10px] text-[var(--adf-ui-text-subtle)] shrink-0 ml-auto">
                       {fileCount}
                     </span>
-                  </div>
+                  </button>
                 )}
                 {!isCollapsed && node.children.map((child) => renderNode(child, depth + 1))}
               </div>
