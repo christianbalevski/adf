@@ -6,6 +6,7 @@
 import { useEffect, useState } from 'react'
 import { SettingsGroup, SettingsRow, TextInput } from '../ui'
 import { InfoHint } from '../common/DocsLink'
+import { CONTAINER_MEMORY_MAX_MB, CONTAINER_MEMORY_MIN_MB, DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb } from '../../../shared/constants/compute-defaults'
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -18,11 +19,11 @@ export function checkWholeNumber(raw: string, min: number, max: number): Checked
   return { ok: true, value }
 }
 
-/** A container memory cap in MB: 0 for no cap, otherwise from 512 to 32768. */
+/** A container memory cap in MB: 0 for no cap, otherwise in the shared range. */
 export function checkContainerMemory(raw: string): Checked<number> {
   if (raw.trim() === '0') return { ok: true, value: 0 }
-  const checked = checkWholeNumber(raw, 512, 32768)
-  return checked.ok ? checked : { ok: false, error: 'Enter 0 for no limit, or a whole number from 512 to 32768.' }
+  const checked = checkWholeNumber(raw, CONTAINER_MEMORY_MIN_MB, CONTAINER_MEMORY_MAX_MB)
+  return checked.ok ? checked : { ok: false, error: `Enter 0 for no limit, or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}.` }
 }
 
 /** A manual mesh peer: `host:port`, or a bare host (the mesh port is used). */
@@ -88,14 +89,15 @@ export function CommitInput({ value, onCommit, check, className = '', ...props }
   )
 }
 
-export function ContainerMemoryGroup({ value, onChange }: { value: number; onChange: (mb: number) => void }) {
+/** `value` is the saved setting; it shows the cap in force, so an invalid one shows the default. */
+export function ContainerMemoryGroup({ value, onChange }: { value: unknown; onChange: (mb: number) => void }) {
   return (
     <SettingsGroup title="Container memory">
       <SettingsRow label={<>Limit<InfoHint tip="Megabytes per container; 0 means no limit." /></>}>
         <CommitInput
           aria-label="Limit"
           inputMode="numeric"
-          value={String(value)}
+          value={String(effectiveContainerMemoryMb(value) ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb)}
           onCommit={(v) => { const r = checkContainerMemory(v); if (r.ok) onChange(r.value) }}
           check={(v) => { const r = checkContainerMemory(v); return r.ok ? null : r.error }}
           className="!w-24 !text-[12px]"

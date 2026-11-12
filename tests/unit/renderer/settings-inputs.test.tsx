@@ -47,6 +47,10 @@ describe('container memory limit', () => {
     expect(renderToStaticMarkup(<ContainerMemoryGroup value={0} onChange={() => {}} />)).toContain('value="0"')
   })
 
+  it.each([[1024.5, '4096'], [-5, '4096'], [100, '4096'], [undefined, '4096'], ['8192', '8192']])('shows the value in force for a saved %j: %s', (saved, shown) => {
+    expect(renderToStaticMarkup(<ContainerMemoryGroup value={saved as never} onChange={() => {}} />)).toContain(`value="${shown}"`)
+  })
+
   it('commits the number', () => {
     const onChange = vi.fn()
     field(4096, onChange).onCommit('2048')

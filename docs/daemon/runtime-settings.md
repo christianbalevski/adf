@@ -211,7 +211,7 @@ The daemon passes `compute` settings to `PodmanService`.
 | `containerPackages` | Packages installed in compute containers. Omit it to get the defaults (`src/shared/constants/compute-defaults.ts`: Python, Git, Chromium, the desktop/VNC stack, …); a list replaces them entirely |
 | `machineCpus` | CPU allocation for the Podman machine |
 | `machineMemoryMb` | Memory allocation for the Podman machine |
-| `containerMemoryMb` | Memory cap in MB for each ADF-managed container, default `4096`, `0` for no cap. Whole numbers up to 2^53 − 1 are passed to Podman unchanged; anything else that is set gets the default with a logged warning. Applied the next time a container is created, started or reused |
+| `containerMemoryMb` | Memory cap in MB for each ADF-managed container, default `4096`, `0` for no cap. Must be `0` or a whole number from `512` to `32768`, as a number or a numeric string; anything else that is set gets the default with a logged warning. Applied the next time a container is created, started or reused |
 | `containerImage` | Base container image |
 
 Agents can request isolated compute from their own `.adf` config. The daemon settings define the shared environment defaults and host access policy.

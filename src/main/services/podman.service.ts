@@ -19,7 +19,7 @@ import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
 import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
-import { DEFAULT_COMPUTE_SETTINGS, type readComputeSettings } from '../../shared/constants/compute-defaults'
+import { CONTAINER_MEMORY_MAX_MB, CONTAINER_MEMORY_MIN_MB, DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb, type readComputeSettings } from '../../shared/constants/compute-defaults'
 import { killedByTimeout } from '../utils/exec-timeout'
 
 // ---------------------------------------------------------------------------
@@ -732,8 +732,10 @@ interface ProvisionFailure {
 
 const SETUP_STEPS: ReadonlySet<string> = new Set(['install', 'machine_init', 'machine_start', 'check'])
 
-const boundedInt = (n: number, max: number): number | null =>
-  Number.isInteger(n) && n > 0 && n <= max ? n : null
+const boundedInt = (value: unknown, max: number): number | null => {
+  const n = typeof value === 'string' ? Number(value) : value
+  return typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= max ? n : null
+}
 
 export interface HostCapacity {
   memoryMb: number
@@ -771,10 +773,11 @@ const MIB = 1024 * 1024
 const LIFTED_MEMORY = '4611686018427387904' // 2^62; a JS number would print it rounded
 const LIFTED_MEMORY_SWAP = '9223372036854771712' // 2^63 - one page
 
-/** The cap in MB, 0 for none: a whole number as entered, anything else the default. */
-function containerMemoryLimitMb(value: number): number {
-  if (Number.isSafeInteger(value) && value >= 0) return value
-  console.warn(`[Compute] containerMemoryMb ${JSON.stringify(value)} is not a whole number; using ${DEFAULT_SETTINGS.containerMemoryMb} MB`)
+/** The cap in MB, 0 for none; an invalid setting gets the default. */
+function containerMemoryLimitMb(value: unknown): number {
+  const mb = effectiveContainerMemoryMb(value)
+  if (mb !== null) return mb
+  console.warn(`[Compute] containerMemoryMb ${JSON.stringify(value)} is not 0 or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}; using ${DEFAULT_SETTINGS.containerMemoryMb} MB`)
   return DEFAULT_SETTINGS.containerMemoryMb
 }
 
@@ -900,10 +903,10 @@ export class PodmanService extends EventEmitter {
    *  clear the pending promise — a second ensureRunning would then launch a
    *  duplicate concurrent startShared and hit a name conflict. */
   private _sharedRunningSettled = false
-  /** Per container, this run: the memory setting being applied, or in line. */
-  private _memorySyncs = new Map<string, { setting: number; done: Promise<void> }>()
-  /** Only a positive probe is remembered, so a failed or negative one is asked again. */
-  private _memoryController = false
+  /** Per container, this run: the memory setting being applied, in line, or failed at `failedAt`. */
+  private _memorySyncs = new Map<string, { setting: number; done: Promise<void>; failedAt?: number }>()
+  /** A definite probe answer is remembered; null (could not read) is asked again. */
+  private _memoryController: boolean | null = null
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */
   private _shuttingDown = false
@@ -1677,7 +1680,7 @@ export class PodmanService extends EventEmitter {
   ): Promise<ComputeSetupResult> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
-    this._memoryController = false
+    this._memoryController = null
 
     const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
       const cwd = await podmanCwd(cmdArgs)
@@ -2112,30 +2115,31 @@ export class PodmanService extends EventEmitter {
   /** Whether Podman can apply a memory limit; null when it could not say.
    *  exec0 rejects when spawn throws instead of reporting (E2BIG, ENOMEM). */
   private async hasMemoryController(bin: string): Promise<boolean | null> {
-    if (this._memoryController) return true
+    if (this._memoryController !== null) return this._memoryController
     const info = await this.exec0(bin, ['info', '--format', '{{.Host.CgroupControllers}}'], 15_000).catch(() => null)
     if (info?.code !== 0) {
       console.warn('[Compute] Could not read podman info; applying no container memory cap for now')
       return null
     }
-    if (/\bmemory\b/.test(info.stdout)) return this._memoryController = true
-    console.warn('[Compute] The cgroup memory controller is not available to Podman; containers run without a memory cap')
-    return false
+    this._memoryController = /\bmemory\b/.test(info.stdout)
+    if (!this._memoryController) console.warn('[Compute] The cgroup memory controller is not available to Podman; containers run without a memory cap')
+    return this._memoryController
   }
 
   /** Update a running container's limit, as Podman before 5.1 can only update a
    *  live one. Never fatal. Returns whether the container is in line; without a
    *  memory controller there is nothing to bring in line. */
-  private async applyContainerMemoryLimit(containerName: string): Promise<boolean> {
+  private async applyContainerMemoryLimit(containerName: string, setting: number): Promise<boolean> {
     try {
       const bin = await this.requirePodman()
       const current = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.HostConfig.Memory}}'])
       const text = current.stdout.trim()
       if (current.code !== 0 || !/^\d+$/.test(text)) throw new Error('its current limit is unreadable')
-      const args = containerMemoryUpdateArgs(Number(text), this._getSettings())
+      const args = containerMemoryUpdateArgs(Number(text), { containerMemoryMb: setting })
       if (!args) return true
       const controller = await this.hasMemoryController(bin)
       if (controller !== true) return controller === false
+      if (this._shuttingDown) return false
       const result = await this.exec0(bin, ['update', ...args, containerName])
       if (result.code !== 0) throw new Error((result.stderr || result.stdout).slice(0, 200))
       return true
@@ -2146,17 +2150,18 @@ export class PodmanService extends EventEmitter {
   }
 
   /** The one rule for every container in use: in line is a Map lookup; otherwise
-   *  apply once, shared by overlapping callers and after any earlier apply, and
-   *  forget a failure so the next use retries. */
+   *  apply once, shared by overlapping callers and after any earlier apply. A
+   *  failure is retried after PODMAN_MISS_TTL_MS, or at once if the setting changes. */
   private syncMemoryLimit(name: string): Promise<void> {
     const setting = this._getSettings().containerMemoryMb
     const known = this._memorySyncs.get(name)
-    if (known?.setting === setting) return known.done
-    const done = (known?.done ?? Promise.resolve()).then(() => this.applyContainerMemoryLimit(name)).then((inLine) => {
-      if (!inLine && this._memorySyncs.get(name)?.setting === setting) this._memorySyncs.delete(name)
+    if (known?.setting === setting && !(known.failedAt !== undefined && Date.now() - known.failedAt >= PODMAN_MISS_TTL_MS)) return known.done
+    const record = { setting, done: Promise.resolve(), failedAt: undefined as number | undefined }
+    record.done = (known?.done ?? Promise.resolve()).then(() => this.applyContainerMemoryLimit(name, setting)).then((inLine) => {
+      if (!inLine) record.failedAt = Date.now()
     })
-    this._memorySyncs.set(name, { setting, done })
-    return done
+    this._memorySyncs.set(name, record)
+    return record.done
   }
 
   /** Load the peer-isolation firewall in a container that was created with it

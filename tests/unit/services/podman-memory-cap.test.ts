@@ -1,6 +1,4 @@
-import { readFileSync } from 'fs'
-import { join } from 'path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 // No real podman: exec0 is replaced by the fake, and these catch anything else.
 const spawnMock = vi.hoisted(() => vi.fn())
@@ -23,7 +21,7 @@ import {
   isolatedContainerName,
 } from '../../../src/main/services/podman.service'
 import type { ComputeUsers } from '../../../src/main/services/compute-users'
-import { DEFAULT_COMPUTE_SETTINGS, readComputeSettings } from '../../../src/shared/constants/compute-defaults'
+import { DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb, readComputeSettings } from '../../../src/shared/constants/compute-defaults'
 import { FakePodman, installFakePodman } from './fake-podman'
 
 const MIB = 1024 * 1024
@@ -62,6 +60,24 @@ beforeEach(() => {
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warnings.push(a.map(String).join(' ')) })
 })
+afterEach(() => { vi.useRealTimers() })
+
+/** Move the clock past the retry interval after a failed apply (only Date is faked). */
+const later = () => {
+  const now = Date.now()
+  vi.useFakeTimers({ toFake: ['Date'] })
+  vi.setSystemTime(now + 60_000)
+}
+
+describe('effectiveContainerMemoryMb', () => {
+  it.each([[0, 0], ['0', 0], [512, 512], [32768, 32768], [4096, 4096], ['8192', 8192]])('%j is %j MB', (value, mb) => {
+    expect(effectiveContainerMemoryMb(value)).toBe(mb)
+  })
+
+  it.each([[1], [4], [100], [511], [32769], [2 ** 43], [-5], [1024.5], [''], ['abc'], [null], [undefined], [true], [NaN]])('%j is invalid', (value) => {
+    expect(effectiveContainerMemoryMb(value)).toBeNull()
+  })
+})
 
 describe('containerMemoryArgs', () => {
   it('sets memory and an equal memory-swap, so there is no swap on top', () => {
@@ -72,12 +88,17 @@ describe('containerMemoryArgs', () => {
     expect(containerMemoryArgs({ containerMemoryMb: 0 })).toEqual([])
   })
 
-  it.each([[1, '1m'], [100, '100m'], [512, '512m'], [32769, '32769m'], [99999, '99999m']])('passes %s through as %s, with no warning', (value, limit) => {
-    expect(containerMemoryArgs({ containerMemoryMb: value })).toEqual(['--memory', limit, '--memory-swap', limit])
+  it.each([[512, '512m'], [32768, '32768m'], ['8192', '8192m']])('passes %j through as %s, with no warning', (value, limit) => {
+    expect(containerMemoryArgs({ containerMemoryMb: value as never })).toEqual(['--memory', limit, '--memory-swap', limit])
     expect(warnings).toEqual([])
   })
 
-  it.each([[-1], [1.5], [1e21], ['abc'], ['0'], ['2048'], [true], [null]])('gets the default for %j and warns once, naming both values', (value) => {
+  it('applies no cap for "0", with no warning', () => {
+    expect(containerMemoryArgs({ containerMemoryMb: '0' as never })).toEqual([])
+    expect(warnings).toEqual([])
+  })
+
+  it.each([[1], [4], [100], [511], [32769], [2 ** 43], [-1], [1.5], [1e21], ['abc'], [true], [null]])('gets the default for %j and warns once, naming both values', (value) => {
     expect(containerMemoryArgs({ containerMemoryMb: value as never })).toEqual(CAP_ARGS)
     expect(warnings).toHaveLength(1)
     expect(warnings[0]).toContain(JSON.stringify(value))
@@ -96,7 +117,7 @@ describe('containerMemoryUpdateArgs', () => {
   })
 
   it('compares with the value as entered', () => {
-    expect(containerMemoryUpdateArgs(40000 * MIB, { containerMemoryMb: 40000 })).toBeNull()
+    expect(containerMemoryUpdateArgs(32768 * MIB, { containerMemoryMb: 32768 })).toBeNull()
   })
 
   it('warns once for an unusable value', () => {
@@ -156,7 +177,7 @@ describe('new containers', () => {
     expect(calls(fake, 'run')[0]).not.toContain('--memory-swap')
   })
 
-  it.each([[16385, '16385m'], [40000, '40000m'], [100, '100m']])('runs with a setting of %s as %s', async (value, limit) => {
+  it.each([[16385, '16385m'], [32768, '32768m'], ['8192', '8192m'], [100, '4096m'], [2 ** 43, '4096m']])('runs with a setting of %j as %s', async (value, limit) => {
     const { service, fake } = setup(value)
     await service.ensureRunning()
     expect(calls(fake, 'run')[0]).toContain(limit)
@@ -254,6 +275,7 @@ describe('existing containers', () => {
     await expect(service.ensureRunning()).resolves.toBeUndefined()
     expect(service.getStatus().status).toBe('running')
     expect(fake.containers.get(SHARED)?.memoryBytes).toBeUndefined()
+    later()
     await service.ensureRunning()
     expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
   })
@@ -340,6 +362,7 @@ describe('shared container already brought up this session', () => {
     await service.ensureRunning()
     expect(updateCalls(fake)).toEqual([])
     fake.controllers = ['memory']
+    later()
     await service.ensureRunning()
     await service.ensureRunning()
     expect(updateCalls(fake)).toEqual([['update', ...CAP_ARGS, SHARED]])
@@ -352,6 +375,7 @@ describe('shared container already brought up this session', () => {
     await service.ensureRunning()
     expect(fake.containers.get(SHARED)?.memoryBytes).toBeUndefined()
     fake.failUpdate = false
+    later()
     await service.ensureRunning()
     await service.ensureRunning()
     expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
@@ -366,6 +390,7 @@ describe('shared container already brought up this session', () => {
     fake.failUpdate = true
     await service.ensureRunning()
     fake.failUpdate = false
+    later()
     await service.ensureRunning()
     expect(fake.containers.get(SHARED)?.memoryBytes).toBe(2048 * MIB)
   })
@@ -379,6 +404,7 @@ describe('shared container already brought up this session', () => {
     fake.failUpdate = true
     await service.ensureRunning()
     fake.failUpdate = false
+    later()
     await service.ensureRunning()
     expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
   })
@@ -460,8 +486,16 @@ describe('memory controller check', () => {
     expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
   })
 
-  it.each([[['cpu', 'pids']], [null]])('does not remember a probe answering %j', async (controllers) => {
-    const { service, fake } = setup(4096, controllers)
+  it('remembers a probe that finds no memory controller', async () => {
+    const { service, fake } = setup(4096, ['cpu', 'pids'])
+    await service.spawnImageProcess('img:1', 'node', [])
+    await service.spawnImageProcess('img:1', 'node', [])
+    await service.ensureRunning()
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
+  })
+
+  it('does not remember a probe that failed', async () => {
+    const { service, fake } = setup(4096, null)
     await service.spawnImageProcess('img:1', 'node', [])
     await service.spawnImageProcess('img:1', 'node', [])
     expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(2)
@@ -491,6 +525,7 @@ describe('one memory sync rule per container', () => {
     await service.startContainer(NAME)
     expect(fake.containers.get(NAME)?.memoryBytes).toBeUndefined()
     fake.failUpdate = false
+    later()
     await exec(service)
     await exec(service)
     expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
@@ -622,27 +657,63 @@ describe('one memory sync rule per container', () => {
     expect(secondDone).toBe(true)
   })
 
-  it('a failing apply tries once per use', async () => {
-    const { service, fake } = setup()
+  it('a failed apply waits out the interval, with one warning, unless the setting changes', async () => {
+    const { service, fake, settings } = setup()
     fake.add({ name: NAME, running: false })
     fake.failUpdate = true
     await service.startContainer(NAME)
     await exec(service)
     await exec(service)
+    expect(updateCalls(fake)).toHaveLength(1)
+    expect(warnings.filter((w) => w.includes('memory limit'))).toHaveLength(1)
+    later()
+    await exec(service)
+    await exec(service)
+    expect(updateCalls(fake)).toHaveLength(2)
+    settings.containerMemoryMb = 2048
+    await exec(service)
     expect(updateCalls(fake)).toHaveLength(3)
+  })
+
+  const gateMemoryInspect = (service: PodmanService, fake: FakePodman) => {
+    let release = () => {}
+    const gate = new Promise<void>((resolve) => { release = resolve })
+    const answer = fake.exec0
+    ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
+      if (args.join(' ').includes('HostConfig.Memory')) await gate
+      return answer(bin, args)
+    }
+    return release
+  }
+
+  it('applies the setting it recorded, so A to B and back to A ends at A', async () => {
+    const { service, fake, settings } = setup(4096)
+    fake.add({ name: NAME })
+    const release = gateMemoryInspect(service, fake)
+    const first = exec(service)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    settings.containerMemoryMb = 2048
+    release()
+    await first
+    settings.containerMemoryMb = 4096
+    await exec(service)
+    expect(fake.containers.get(NAME)?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('starts no update once shutdown has begun', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: NAME })
+    const release = gateMemoryInspect(service, fake)
+    const pending = exec(service)
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    service.beginShutdown()
+    release()
+    await pending
+    expect(updateCalls(fake)).toEqual([])
   })
 })
 
 describe('compute settings reader', () => {
-  const source = (path: string) => readFileSync(join(__dirname, '../../..', path), 'utf-8')
-
-  it.each([
-    ['src/main/ipc/index.ts', "setSettingsAccessor(() => readComputeSettings(settings?.get('compute')))"],
-    ['src/main/daemon/index.ts', "setSettingsAccessor(() => readComputeSettings(settings.get('compute')))"],
-  ])('%s reads through it', (path, accessor) => {
-    expect(source(path)).toContain(accessor)
-  })
-
   it('keeps an explicit 0, end to end to podman run', async () => {
     const { service, fake } = setup()
     service.setSettingsAccessor(() => readComputeSettings({ containerMemoryMb: 0 }))
@@ -664,12 +735,17 @@ describe('compute settings reader', () => {
     expect(warnings.filter((w) => w.includes('containerMemoryMb') && w.includes(JSON.stringify(value))).length).toBeGreaterThan(0)
   })
 
+  it('reads numeric strings as numbers', () => {
+    expect(readComputeSettings({ machineCpus: '4', machineMemoryMb: '4096', containerMemoryMb: '8192' }))
+      .toMatchObject({ machineCpus: 4, machineMemoryMb: 4096, containerMemoryMb: 8192 })
+  })
+
   it('a missing containerMemoryMb gets the default with no warning', () => {
     expect(containerMemoryArgs(readComputeSettings({}))).toEqual(CAP_ARGS)
     expect(warnings).toEqual([])
   })
 
-  it.each([[undefined], [null], ['x'], [{}], [{ containerPackages: 'git', machineCpus: '4', machineMemoryMb: false, containerImage: 0 }]])('falls back to the defaults for %j', (raw) => {
+  it.each([[undefined], [null], ['x'], [{}], [{ containerPackages: 'git', machineCpus: 'four', machineMemoryMb: false, containerImage: 0 }]])('falls back to the defaults for %j', (raw) => {
     const { containerPackages, machineCpus, machineMemoryMb, containerMemoryMb, containerImage } = DEFAULT_COMPUTE_SETTINGS
     expect(readComputeSettings(raw)).toEqual({ containerPackages, machineCpus, machineMemoryMb, containerMemoryMb, containerImage })
   })

@@ -123,6 +123,19 @@ describe.skipIf(process.platform === 'win32')('adf-browser run under sh', () => 
     expect(box.args()).toContain(SWIFTSHADER_FLAG)
   })
 
+  // The tests above fake setsid (macOS has none); this one runs the real detach.
+  it.runIf(process.platform === 'linux')('start detaches the browser through the real setsid', async () => {
+    const box = await sandbox()
+    rmSync(join(box.argsFile, '..', 'bin', 'setsid'))
+    box.fake('wget', `[ -s '${box.argsFile}' ]`) // CDP answers once the browser has launched
+
+    const result = box.run('start', 'https://example.test/')
+
+    expect(result.status).toBe(0)
+    expect(box.args()).toContain('https://example.test/')
+    expect(box.args()).toContain(SWIFTSHADER_FLAG)
+  })
+
   it('leaves the live log alone when handing a URL to a running browser', async () => {
     const box = await sandbox()
     writeFileSync(box.log, 'live-browser\n')

@@ -1194,7 +1194,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
         if (compute.containerPackages) setComputeContainerPackages(compute.containerPackages.join(', '))
         if (compute.machineCpus) setComputeMachineCpus(compute.machineCpus)
         if (compute.machineMemoryMb) setComputeMachineMemoryMb(compute.machineMemoryMb)
-        if (typeof compute.containerMemoryMb === 'number') setComputeContainerMemoryMb(compute.containerMemoryMb)
+        if (compute.containerMemoryMb !== undefined) setComputeContainerMemoryMb(compute.containerMemoryMb)
         if (compute.containerImage) setComputeContainerImage(compute.containerImage)
         setComputeExecutionTargets(compute.executionTargets ?? [])
       }
