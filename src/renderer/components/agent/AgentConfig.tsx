@@ -4138,7 +4138,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                             <select
                               className="field-input text-[10px] w-20"
                               value={target.scope}
-                              onChange={(e) => updateTarget(ti, { scope: e.target.value as TriggerScopeV3, lambda: e.target.value === 'agent' ? undefined : target.lambda, warm: e.target.value === 'agent' ? undefined : target.warm })}
+                              onChange={(e) => updateTarget(ti, { scope: e.target.value as TriggerScopeV3, lambda: e.target.value === 'agent' ? undefined : target.lambda, warm: e.target.value === 'agent' ? undefined : target.warm, loop: e.target.value === 'system' ? undefined : target.loop })}
                             >
                               <option value="agent">Agent</option>
                               <option value="system">System</option>
@@ -4163,8 +4163,10 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                               ×
                             </button>
                           </div>
-                          {/* Target loop — only meaningful once side loops exist */}
-                          {sideLoops.length > 0 && (
+                          {/* Target loop — agent scope only, and only once side loops exist. A
+                              system target runs a lambda and never wakes a loop; the row
+                              still renders for a stale system+loop config so it can be cleared. */}
+                          {sideLoops.length > 0 && (target.scope !== 'system' || !!target.loop) && (
                             <div className="flex items-center gap-1.5">
                               <span className="text-[10px] text-[var(--adf-ui-text-subtle)] w-10 shrink-0">Loop</span>
                               <select
