@@ -1,7 +1,7 @@
 import type { AdapterRegistration } from '../../shared/types/channel-adapter.types'
 import type { McpServerRegistration, ProviderConfig } from '../../shared/types/ipc.types'
 import { rebaseProviderList } from '../components/providers/provider-save'
-import { rebaseById } from './list-rebase'
+import { rebaseById, sameContent } from './list-rebase'
 
 /**
  * The lists Settings writes whole: providers (and the default), MCP servers,
@@ -43,4 +43,15 @@ export async function listsToWrite(saved: SettingsLists, attempted: SettingsList
   } catch {
     return attempted
   }
+}
+
+/**
+ * Write now only when the MCP server list has unsaved edits: of what main's
+ * by-name sign-in answer reads (mcpAuthSignedIn), it is the only list Settings
+ * saves on a debounce; compute is written at once. A clean flush would still
+ * write and show "Saved"; the provider default load fixup is left to the debounce.
+ * False means the edited list was refused; a by-name read would see the old row.
+ */
+export async function flushIfUnsaved(shown: McpServerRegistration[], saved: McpServerRegistration[], flush: () => Promise<boolean>): Promise<boolean> {
+  return sameContent(shown, saved) || await flush()
 }

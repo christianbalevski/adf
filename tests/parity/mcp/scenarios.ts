@@ -65,6 +65,7 @@ export const mcpAttachCredentialsScenario: ParityScenario = {
     await ctx.invoke(IPC.MCP_CREDENTIAL_GET, { filePath: agent.filePath, serverName: 'acme' })
     await ctx.invoke(IPC.MCP_CREDENTIAL_LIST_FILES, { serverName: 'acme' })
     await ctx.invoke(IPC.MCP_OAUTH_STATUS, { name: 'acme', url: 'https://mcp.example.test/mcp' })
+    await ctx.invoke(IPC.MCP_OAUTH_STATUS, { name: 'acme' })
     await ctx.invoke(IPC.MCP_OAUTH_SIGNOUT, { name: 'acme' })
     await ctx.invoke(IPC.MCP_GET_SERVER_STATUS)
     await ctx.invoke(IPC.MCP_RESTART_SERVER, { name: 'acme' })

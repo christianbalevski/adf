@@ -1,4 +1,5 @@
 import { isOwnerCommandRow } from '../../shared/utils/owner-command-row'
+import { toDisplayState } from '../../shared/utils/display-state'
 import { useEffect } from 'react'
 import type { DisplayAttachment } from '../../shared/utils/file-ref'
 import { useAgentStore, selectLoopSlice, MAIN_LOOP, type AgentState, type AgentLogEntry } from '../stores/agent.store'
@@ -40,32 +41,7 @@ function findLastIndex(log: AgentLogEntry[], match: (entry: AgentLogEntry) => bo
   return -1
 }
 
-/** Map executor internal states to UI display states. */
-export function toDisplayState(executorState: string): AgentState {
-  switch (executorState) {
-    // Executor operational states
-    case 'thinking':
-    case 'tool_use':
-      return 'active'
-    case 'idle':
-      return 'idle'
-    case 'awaiting_approval':
-    case 'awaiting_ask':
-    case 'suspended':
-      return 'suspended'
-    case 'error':
-      return 'error'
-    case 'stopped':
-      return 'off'
-    // ADF display states (pass-through from sys_set_state target)
-    case 'active':
-    case 'hibernate':
-    case 'off':
-      return executorState as AgentState
-    default:
-      return 'off'
-  }
-}
+export { toDisplayState }
 
 /**
  * Apply a re-read document/config only when it actually differs. The turn-end
@@ -164,7 +140,7 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
       case 'state_changed': {
         const payload = event.payload as { state: string }
         const displayState = toDisplayState(payload.state)
-        agentStore.setState(displayState, loop)
+        agentStore.setState(payload.state, loop)
 
         // The executor stopped waiting on its ask (answered, stop, interrupt):
         // a drained ask sends no ask_response, so the form goes with the state.

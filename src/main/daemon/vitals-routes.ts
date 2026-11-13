@@ -12,7 +12,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { AgentVitalsDeps, AgentVitalsService } from '../services/agent-vitals'
 import { overlayLiveStates } from '../services/agent-vitals'
-import { toDisplayState } from '../runtime/display-state'
+import { toDisplayState } from '../../shared/utils/display-state'
 import type { RuntimeAgentRef, RuntimeLiveAgent } from '../runtime/runtime-service'
 import { canonicalizePath } from '../utils/tracked-paths'
 import type { MeshAgentStatus } from '../../shared/types/ipc.types'

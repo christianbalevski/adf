@@ -12110,7 +12110,7 @@
             "name": "url",
             "in": "query",
             "required": false,
-            "description": "Remote server URL. A record is only reported for the URL it was minted for.",
+            "description": "Remote server URL. A record is only reported for the URL it was minted for. Omitted: a Settings server that signs in with its own auth command, answered by name.",
             "schema": {
               "type": "string"
             }
@@ -28526,6 +28526,13 @@
             ],
             "description": "`system` runs a lambda; `agent` wakes a loop"
           },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every scope the timer fires in (adf_timers.scope); absent from daemons before this field; empty if unreadable"
+          },
           "lambda": {
             "type": "string",
             "description": "system: lambda reference, e.g. `lib/sync.ts:run`"
@@ -29861,13 +29868,14 @@
       },
       "McpOAuthStatus": {
         "type": "object",
-        "required": [
-          "signedIn"
-        ],
         "properties": {
           "signedIn": {
             "type": "boolean",
-            "description": "A token is stored for the server name and URL. The token itself is never returned."
+            "description": "A token is stored for the server name and URL, or (no URL) a file the server creates is in its folder. The token itself is never returned. Absent: cannot be told."
+          },
+          "byName": {
+            "type": "boolean",
+            "description": "Present (true) on an answer to a call without a URL. A daemon without it answers such a call with signedIn false for every name; clients read that as cannot be told."
           }
         }
       },

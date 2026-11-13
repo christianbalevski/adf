@@ -10,6 +10,7 @@ import { timersBlocked } from './config-panel-model'
 import { TimersBlockedNotice } from './config-panel-parts'
 import { openConfigSection } from '../../utils/open-config-section'
 import { openApi } from '../../utils/runtime-api'
+import { timerCountdown } from './overview/agent-overview-model'
 
 interface Timer {
   id: number
@@ -58,6 +59,10 @@ function formatRelative(ms: number): string {
   if (hours < 24) return `in ${hours}h ${minutes % 60}m`
   const days = Math.floor(hours / 24)
   return `in ${days}d ${hours % 24}h`
+}
+
+function Countdown({ text }: { text: string | null }) {
+  return text ? <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">{text}</div> : null
 }
 
 function formatDuration(ms: number): string {
@@ -605,6 +610,7 @@ export function AgentTimers() {
   const [showExpired, setShowExpired] = useState(false)
   // The on_timer trigger gates every timer (trigger-evaluator): off, none fire.
   const blocked = useAgentStore((s) => timersBlocked(s.config))
+  const gate = useAgentStore((s) => s.gate)
 
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -695,9 +701,8 @@ export function AgentTimers() {
                   <div className="text-xs font-medium text-neutral-700 dark:text-neutral-300">
                     {new Date(timer.next_wake_at).toLocaleString()}
                   </div>
-                  <div className="text-[10px] text-[var(--adf-ui-text-subtle)] mt-0.5">
-                    {formatRelative(timer.next_wake_at)}
-                  </div>
+                  {/* No countdown when it will not fire on schedule (a Stopped agent), same rule as the overview. */}
+                  <Countdown text={timerCountdown(timer, gate, formatRelative)} />
                   {timer.payload && (
                     <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-1.5 truncate" title={timer.payload}>
                       {timer.payload}

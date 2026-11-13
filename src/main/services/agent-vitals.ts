@@ -646,14 +646,18 @@ export function readUpcoming(q: Sql): UpcomingWake[] {
     readTimers('id, next_wake_at, scope, payload, lambda, NULL AS loop', '') ??
     []
   return timers.map((t) => {
-    let scope: UpcomingWake['scope'] = 'system'
+    // As the runtime reads it (AdfDatabase's timer parser): a bare or legacy value is a one-scope list.
+    let scopes: string[]
     try {
       const parsed = JSON.parse(t.scope ?? '[]') as unknown
-      if (Array.isArray(parsed) && parsed[0] === 'agent') scope = 'agent'
-    } catch { /* default */ }
+      scopes = Array.isArray(parsed) ? parsed : [parsed as string]
+    } catch {
+      scopes = t.scope ? [t.scope] : []
+    }
+    const scope: UpcomingWake['scope'] = scopes[0] === 'agent' ? 'agent' : 'system'
     const text = upcomingText(t.payload)
-    if (scope === 'agent') return { id: t.id, at: t.next_wake_at, scope, loop: t.loop || 'main', ...(text ? { prompt: text } : {}) }
-    return { id: t.id, at: t.next_wake_at, scope, ...(t.lambda ? { lambda: t.lambda } : {}), ...(text ? { input: text } : {}) }
+    if (scope === 'agent') return { id: t.id, at: t.next_wake_at, scope, scopes, loop: t.loop || 'main', ...(text ? { prompt: text } : {}) }
+    return { id: t.id, at: t.next_wake_at, scope, scopes, ...(t.lambda ? { lambda: t.lambda } : {}), ...(text ? { input: text } : {}) }
   })
 }
 

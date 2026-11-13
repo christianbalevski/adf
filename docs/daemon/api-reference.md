@@ -1270,6 +1270,9 @@ Example 200 (`application/json`):
       "id": 0,
       "at": 0,
       "scope": "system",
+      "scopes": [
+        "string"
+      ],
       "lambda": "string",
       "input": "string",
       "loop": "string",
@@ -7604,7 +7607,7 @@ Operation `getMcpOAuthStatus` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `name` | query | string |  | Settings registration name. App-level sign-ins are stored per server name. |
-| `url` | query | string |  | Remote server URL. A record is only reported for the URL it was minted for. |
+| `url` | query | string |  | Remote server URL. A record is only reported for the URL it was minted for. Omitted: a Settings server that signs in with its own auth command, answered by name. |
 
 **Responses**
 
@@ -7618,7 +7621,8 @@ Example 200 (`application/json`):
 
 ```json
 {
-  "signedIn": true
+  "signedIn": true,
+  "byName": true
 }
 ```
 
@@ -14506,6 +14510,9 @@ Example 200 (`application/json`):
       "id": 0,
       "at": 0,
       "scope": "system",
+      "scopes": [
+        "string"
+      ],
       "lambda": "string",
       "input": "string",
       "loop": "string",
@@ -22166,6 +22173,7 @@ One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `
 | `id` | integer | yes |  |
 | `at` | number | yes | next_wake_at (ms epoch) |
 | `scope` | `"system"` \| `"agent"` | yes | `system` runs a lambda; `agent` wakes a loop |
+| `scopes` | string[] |  | Every scope the timer fires in (adf_timers.scope); absent from daemons before this field; empty if unreadable |
 | `lambda` | string |  | system: lambda reference, e.g. `lib/sync.ts:run` |
 | `input` | string |  | system: payload passed to the lambda |
 | `loop` | string |  | agent: loop the wake dispatches to (`main` when the timer names none) |
@@ -22732,7 +22740,8 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 
 | Field | Type | Required | Description |
 |---|---|---|---|
-| `signedIn` | boolean | yes | A token is stored for the server name and URL. The token itself is never returned. |
+| `signedIn` | boolean |  | A token is stored for the server name and URL, or (no URL) a file the server creates is in its folder. The token itself is never returned. Absent: cannot be told. |
+| `byName` | boolean |  | Present (true) on an answer to a call without a URL. A daemon without it answers such a call with signedIn false for every name; clients read that as cannot be told. |
 
 <a id="schema-mcpoauthnamebody"></a>
 

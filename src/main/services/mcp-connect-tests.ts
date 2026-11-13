@@ -20,7 +20,7 @@ import { z } from 'zod'
 import { McpClientManager } from './mcp-client-manager'
 import type { McpAuthPreflightRunner } from './mcp-auth-preflight'
 import { expandCredentialPath, CREDENTIAL_FILE_MAX_BYTES } from './mcp-credential-files'
-import { mcpHostHomeEnv, mcpServerHostHome, removeMcpServerHome } from './mcp-server-home'
+import { mcpCredentialOwner, mcpHostHomeEnv, mcpOwnHostHome, mcpServerHostHome, removeMcpServerHome } from './mcp-server-home'
 import { inheritableEnv } from '../utils/child-env'
 import { writeBundledClientIfAbsent } from './google-bundled-client'
 import { resolveBundledMcpSpawn } from './bundled-mcp-servers'
@@ -448,13 +448,50 @@ export async function ensurePythonRuntime(uvManager: PythonRuntimeUv) {
 }
 
 /**
+ * Whether a Settings server that signs in by running its own auth command
+ * has signed in: a credential file the server creates (declared, not
+ * required) is in its folder (mcp-server-home.ts). Undefined when that
+ * cannot be told: credentials stored per agent, no such file declared, a
+ * server whose Settings sign-in runs in the container, where nothing is
+ * written to the folder (deriveRegistrationTestPlan), or a file under
+ * ~/.config/ while the server's env moves it (XDG_CONFIG_HOME). The
+ * dialog's draftSignedIn drops the answer when an edit changes these inputs;
+ * Settings' flushIfUnsaved writes unsaved edits of the settings read here.
+ */
+export function mcpAuthSignedIn(reg: McpServerRegistration | undefined, compute: ComputeSettings | undefined): boolean | undefined {
+  if (!reg?.auth || mcpCredentialOwner(reg, '').kind !== 'app') return undefined
+  const created = (reg.credentialFiles ?? []).filter((f) => !f.required)
+  if (created.length === 0) return undefined
+  const env = { ...inheritableEnv(), ...Object.fromEntries((reg.env ?? []).filter((e) => e.key && e.value).map((e) => [e.key, e.value])) }
+  if (env.XDG_CONFIG_HOME && created.some((f) => f.path.startsWith('~/.config/'))) return undefined
+  if (deriveRegistrationTestPlan(reg, { hostAccessEnabled: compute?.hostAccessEnabled, mcpOnHost: compute?.mcpOnHost === true }).location !== 'host') return undefined
+  try {
+    const home = mcpOwnHostHome(reg.name, { kind: 'app' })
+    return created.some((f) => existsSync(expandCredentialPath(f.path, { kind: 'host', home })))
+  } catch {
+    return undefined
+  }
+}
+
+/**
  * Whether a valid token is stored (app store) for a remote server, by its
  * registration name and URL: lets the client show a "signed in" indicator.
- * Never returns the token.
+ * Never returns the token. Without a URL, a Settings server by name
+ * (`settings`, the source of its registration): mcpAuthSignedIn, marked
+ * `byName` (a daemon before it answers false for every name).
  */
-export async function mcpOAuthStatus(store: McpAppOAuthStore, rawArgs: unknown): Promise<{ signedIn: boolean }> {
+export async function mcpOAuthStatus(
+  store: McpAppOAuthStore | null | undefined,
+  rawArgs: unknown,
+  settings: { get(key: string): unknown } | undefined,
+): Promise<{ signedIn?: boolean; byName?: true }> {
   const { name, url } = (rawArgs ?? {}) as { name?: unknown; url?: unknown }
-  if (typeof name !== 'string' || !name || typeof url !== 'string' || !url) return { signedIn: false }
+  if (typeof name === 'string' && name && url === undefined) {
+    const reg = (settings?.get('mcpServers') as McpServerRegistration[] | undefined)?.find((r) => r.name === name)
+    const signedIn = mcpAuthSignedIn(reg, settings?.get('compute') as ComputeSettings | undefined)
+    return signedIn === undefined ? { byName: true } : { signedIn, byName: true }
+  }
+  if (!store || typeof name !== 'string' || !name || typeof url !== 'string' || !url) return { signedIn: false }
   try {
     const record = await store.forServer(name).get(url)
     return { signedIn: !!record?.tokens }

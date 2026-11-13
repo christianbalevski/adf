@@ -59,7 +59,7 @@ import { pinServerConfigToRegistration, registrationAppEnv } from '../../shared/
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
 import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 import { mapWithConcurrency, withDeadline } from '../utils/concurrency'
-import { toDisplayState } from './display-state'
+import { toDisplayState } from '../../shared/utils/display-state'
 import { AGENT_LEASED_CODE, processAgentLeases } from './agent-lease'
 import { applyBackgroundEvent, countActiveLoops, type BackgroundMappedEvent } from './background-event-mapping'
 import { inboxSnapshot } from './inbox-snapshot'

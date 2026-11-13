@@ -14,6 +14,8 @@ export interface ConfigConflictState {
 import type { ApprovalEndedBy, ApprovalMeta } from '../../shared/types/ipc.types'
 import type { AskQuestion } from '../../shared/utils/ask-form'
 import type { AskDraft } from '../components/agent/AskForm'
+import { toDisplayState } from '../../shared/utils/display-state'
+import { gateStateOf } from '../../shared/utils/trigger-gate'
 
 /** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
 export type PendingApprovalInfo = { requestId: string } & Partial<ApprovalMeta>
@@ -120,6 +122,11 @@ function archiveAfterReload(archive: LoopArchive, log: AgentLogEntry[]): LoopArc
 export interface LoopSlice {
   /** Display state. For `main` this is the agent-level state (§6.3). */
   state: AgentState
+  /** The state the runtime gates triggers on (gateStateOf): differs from
+   *  `state` while a turn waits on an approval or ask (shown as suspended,
+   *  gated as active). Read for main only: the runtime gates timers on
+   *  main's state, so a side loop's `gate` is kept but not read. */
+  gate: string
   log: AgentLogEntry[]
   /** Monotonically increasing counter bumped on every log mutation. Subscribe to
    *  this instead of `log` when you only need to know *something* changed (e.g.
@@ -159,6 +166,7 @@ export interface LoopSlice {
 function emptySlice(): LoopSlice {
   return {
     state: 'idle',
+    gate: 'idle',
     log: [],
     logVersion: 0,
     structuralVersion: 0,
@@ -196,7 +204,6 @@ function isMainLoop(loop?: string): boolean {
 }
 
 interface AgentStoreState extends LoopSlice {
-  starting: boolean
   sessionId: string | null
   /** Streams for non-main loops, keyed by loop name. Never contains `main`. */
   sideLoops: Record<string, LoopSlice>
@@ -219,8 +226,8 @@ interface AgentStoreState extends LoopSlice {
    */
   viewedLoop: string
 
-  setState: (state: AgentState, loop?: string) => void
-  setStarting: (starting: boolean) => void
+  /** An executor or display state: stores its display state and its gate. */
+  setState: (state: string, loop?: string) => void
   setSessionId: (id: string | null) => void
   addLogEntry: (entry: AgentLogEntry, loop?: string) => void
   settleOwnerCommand: (entry: AgentLogEntry, loop?: string) => void
@@ -325,7 +332,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
 
   return {
     state: 'off',
-    starting: false,
+    gate: 'off',
     sessionId: null,
     log: [],
     logVersion: 0,
@@ -343,8 +350,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     pendingAsks: new Map(),
     pendingSuspend: null,
 
-    setState: (state, loop) => patchSlice(loop, () => ({ state })),
-    setStarting: (starting) => set({ starting }),
+    setState: (state, loop) => patchSlice(loop, () => ({ state: toDisplayState(state) as AgentState, gate: gateStateOf(state) })),
     setSessionId: (sessionId) => set({ sessionId }),
     // NOT capped with a head-drop. That is a separate decision — but the
     // blocker is gone: "Load earlier" pages by the `seq` of the oldest LOADED
@@ -503,7 +509,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       set({
         ...emptySlice(),
         state: 'off',
-        starting: false,
+        gate: 'off',
         sessionId: null,
         sideLoops: {},
         config: null,

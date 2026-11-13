@@ -13,7 +13,7 @@ import { AgentConfigSchema } from '../../../src/main/adf/adf-schema'
 import type { McpServerRegistration } from '../../../src/shared/types/ipc.types'
 import { matchBundledMcpServer } from '../../../src/main/services/bundled-mcp-servers'
 import { buildMcpServerConfigFromRegistration } from '../../../src/shared/utils/mcp-config'
-import { availableRegistryEntries, nextFreeServerName, blankDraft, bundledServerFor, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
+import { availableRegistryEntries, nextFreeServerName, blankDraft, bundledServerFor, draftSignedIn, filterRegistryEntries, hasEmptyRequiredKeys, isDualModeOAuthEntry, isOAuthEntry, mcpTokenConfigured, oauthNeedsSignIn, pendingCredentialFiles, placeholderLabel, registrationSourceLine, setupChecklist } from '../../../src/renderer/components/mcp/McpAddServerModal'
 
 function reg(partial: Partial<McpServerRegistration>): McpServerRegistration {
   return { id: `mcp:${partial.name ?? 'x'}`, name: 'x', ...partial }
@@ -564,6 +564,25 @@ describe('setupChecklist (Add MCP Server steps)', () => {
     expect(before.placeholderArgs).toEqual([])
     expect(before.inputsDone).toBe(false)
     expect(setupChecklist(draft, gmail, { '~/.gmail-mcp/gcp-oauth.keys.json': payload }).inputsDone).toBe(true)
+  })
+
+  it('a verified server signed out of its auth command is not connected; signed in or unknown, it is', () => {
+    const draft = { ...registrationFromRegistryEntry(gmail, 'mcp:gmail'), lastVerifiedAt: 1 }
+    expect(setupChecklist(draft, gmail, {}, new Set(), false).connected).toBe(false)
+    expect(setupChecklist(draft, gmail, {}, new Set(), true).connected).toBe(true)
+    expect(setupChecklist(draft, gmail, {}, new Set(), undefined).connected).toBe(true)
+    // Only a server with an auth command is asked; anything else keeps its stamp.
+    expect(setupChecklist({ ...draft, auth: false }, gmail, {}, new Set(), false).connected).toBe(true)
+  })
+
+  it('the saved row\'s sign-in answer holds for the draft only while its storage and env are the saved ones', () => {
+    const saved = { ...registrationFromRegistryEntry(gmail, 'mcp:gmail'), runLocation: 'host' as const }
+    expect(draftSignedIn(saved, saved, false)).toBe(false)
+    expect(draftSignedIn({ ...saved, args: ['x'] }, saved, true)).toBe(true)
+    expect(draftSignedIn({ ...saved, env: [...(saved.env ?? [])] }, saved, false)).toBe(false)
+    expect(draftSignedIn({ ...saved, credentialStorage: 'agent' }, saved, false)).toBeUndefined()
+    expect(draftSignedIn({ ...saved, env: [...(saved.env ?? []), { key: 'XDG_CONFIG_HOME', value: '/elsewhere' }] }, saved, false)).toBeUndefined()
+    expect(draftSignedIn(saved, null, false)).toBeUndefined()
   })
 
   it('a verified registration counts its required files as stored and itself as connected', () => {

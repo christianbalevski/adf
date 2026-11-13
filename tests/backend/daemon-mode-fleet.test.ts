@@ -279,7 +279,7 @@ describe('emergency stop', () => {
     electronStub.pushes.length = 0
     await invoke(IPC.EMERGENCY_STOP)
     expect(electronStub.pushes.filter((p) => p.channel === IPC.AGENT_EVENT).map((p) => p.args[0])).toEqual([
-      { type: 'state_changed', payload: { state: 'stopped' }, timestamp: expect.any(Number) },
+      { type: 'state_changed', payload: { state: 'off' }, timestamp: expect.any(Number) },
     ])
     // Not listed as running again.
     expect(handle.bridge.runningAgents().some((a) => a.agentId === OPEN)).toBe(false)

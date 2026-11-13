@@ -10,6 +10,10 @@ import { DaemonError, type FolderAgent, type TrackDirResult, type TrackedDirEntr
 import type { TuiStore } from '../../state/store'
 import type { TuiState } from '../../state/types'
 import { completePath, lockedNote, type PathCompletionOptions } from './model'
+import { cjs } from '../../interop'
+import * as autostartTextNs from '../../../../shared/constants/autostart-text'
+
+const { NOT_AUTOSTART_TEXT } = cjs(autostartTextNs)
 
 export const TRACK_OVERLAY = 'fleet.track'
 export const UNTRACK_OVERLAY = 'fleet.untrack'
@@ -107,7 +111,7 @@ export function folderAgentNextStep(agent: FolderAgent): string {
   switch (agent.status) {
     case 'loaded': return 'Enter opens its chat.'
     case 'needs_review': return `Not reviewed on this daemon yet, so it was not loaded${agent.autostart ? ' (it is set to autostart)' : ''}. Enter reviews it: see what it can do, then accept and load it.`
-    case 'not_autostart': return 'Not set to autostart, so it does not load on its own. Enter loads it now.'
+    case 'not_autostart': return `${NOT_AUTOSTART_TEXT} Enter loads it now.`
     case 'stopped': return agent.error ? 'Enter tries to load it again.' : 'Set to autostart but not loaded (stopped). Enter loads and starts it.'
     case 'password_protected': return 'Its identity is password-protected, so autostart skips it. Load it with /load <file> and unlock it.'
     case 'unreadable': return 'Not a loadable agent file.'

@@ -13,6 +13,7 @@ import { Tooltip } from '../../common/Tooltip'
 import { useRuntime } from '../../../stores/runtimes.store'
 import { meshWebsiteUrl } from '../../../../shared/utils/agent-website-url'
 import { openApi } from '../../../utils/runtime-api'
+import { servesHttp } from '../../../../shared/utils/serving'
 
 /** Every card-face chip (Public, Verified owner, Website, Computer) is this box, so they share one height. */
 export const CHIP = 'inline-flex h-5 items-center gap-1 rounded border border-[var(--rule)] px-1.5 text-[11px] leading-none'
@@ -35,11 +36,7 @@ export function useAgentSurfaces(): AgentSurfaces {
   const agentState = useAgentStore((s) => s.state)
   const agentOn = agentState !== 'off'
 
-  const isServing = !!(
-    config?.serving?.public?.enabled ||
-    config?.serving?.shared?.enabled ||
-    (config?.serving?.api && config.serving.api.length > 0)
-  )
+  const isServing = servesHttp(config?.serving)
   const [mesh, setMesh] = useState<{ running: boolean; port: number; host: string } | null>(null)
   useEffect(() => {
     setMesh(null)

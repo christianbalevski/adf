@@ -498,9 +498,9 @@ export interface AdfApi {
   /** Phase 4 HTTP OAuth: clear the app-level sign-in of a remote server (by registration name). */
   mcpOAuthSignOut: (args: { name: string }) =>
     Promise<{ success: boolean; error?: string }>
-  /** Phase 4 HTTP OAuth: whether a valid token is stored for a remote server (by registration name, bound to its URL). */
-  mcpOAuthStatus: (args: { name: string; url: string }) =>
-    Promise<{ signedIn: boolean }>
+  /** Phase 4 HTTP OAuth: whether a valid token is stored for a remote server (by registration name, bound to its URL); without a URL, whether a Settings auth server has signed in (undefined: cannot tell; byName marks that answer). */
+  mcpOAuthStatus: (args: { name: string; url?: string }) =>
+    Promise<{ signedIn?: boolean; byName?: true }>
   onMcpInstallProgress: (callback: (event: McpInstallProgress) => void) => () => void
   onMcpServerStatusChanged: (callback: (event: McpServerStatusEvent) => void) => () => void
 

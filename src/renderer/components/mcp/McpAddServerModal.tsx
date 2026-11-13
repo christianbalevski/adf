@@ -15,6 +15,7 @@ import { McpServerLogs } from './McpServerLogs'
 import { McpHttpOAuthToggle } from './McpHttpOAuthToggle'
 import { BrandIcon } from './BrandIcon'
 import { useSettingsApi } from '../settings/settings-runtime'
+import { sameContent } from '../../utils/list-rebase'
 
 /** One-line boundary statement shown on host-located servers. */
 export const HOST_BOUNDARY_TEXT = 'Runs on the host as your user account, with its file and network access.'
@@ -60,6 +61,8 @@ interface McpAddServerModalProps {
    * mcpServers array reference changes.
    */
   onOAuthChanged?: () => void
+  /** The dashboard's sign-in state of the server being edited (undefined: unknown). */
+  signedIn?: boolean
   /**
    * Connect failed because Podman isn't set up (result.computeUnavailable):
    * the dashboard shows the compute sheet. `runOnHost` sets this draft to run
@@ -239,13 +242,15 @@ export function bundledFilePaths(
  * Required credential files count as provided once picked or once a Connect
  * has stored them (lastVerifiedAt); files the host fills itself
  * (`bundledPaths`) are not asked for. Env keys stored per agent live in the
- * .adf, so they never hold the step open.
+ * .adf, so they never hold the step open. A server signed out of its own
+ * auth command (authNeedsSignIn) is not connected, whatever it once verified.
  */
 export function setupChecklist(
-  draft: Pick<McpServerRegistration, 'args' | 'env' | 'credentialFiles' | 'lastVerifiedAt' | 'credentialStorage'>,
+  draft: Pick<McpServerRegistration, 'args' | 'env' | 'credentialFiles' | 'lastVerifiedAt' | 'credentialStorage' | 'auth'>,
   entry: Pick<McpRegistryEntry, 'args' | 'requiredEnvKeys'> | undefined,
   filePayloads: Record<string, unknown>,
   bundledPaths: ReadonlySet<string> = new Set(),
+  signedIn?: boolean,
 ): { placeholderArgs: number[]; requiredEnv: string[]; requiredFiles: string[]; inputsDone: boolean; connected: boolean } {
   const placeholderArgs = (entry?.args ?? [])
     .map((arg, i) => (REGISTRY_ARG_PLACEHOLDER_RE.test(arg) && i < (draft.args ?? []).length ? i : -1))
@@ -260,7 +265,7 @@ export function setupChecklist(
     requiredEnv,
     requiredFiles,
     inputsDone: !hasUnresolvedPlaceholderArgs(draft.args) && envDone && filesDone,
-    connected: !!draft.lastVerifiedAt,
+    connected: !!draft.lastVerifiedAt && !authNeedsSignIn(draft, signedIn),
   }
 }
 
@@ -333,6 +338,33 @@ export function oauthNeedsSignIn(
 }
 
 /**
+ * Whether a server that signs in by running its own auth command has not
+ * (main found no file the server creates in its folder: signedIn === false).
+ * It may still start and list tools, every one of which fails.
+ */
+export function authNeedsSignIn(
+  reg: Pick<McpServerRegistration, 'auth'>,
+  signedIn: boolean | undefined,
+): boolean {
+  return !!reg.auth && signedIn === false
+}
+
+/**
+ * The dashboard's sign-in state belongs to the saved row (main reads saved
+ * settings): it holds for the draft only while the draft keeps the saved
+ * credential storage and env (mcpAuthSignedIn's inputs; a location change
+ * already clears lastVerifiedAt); otherwise unknown.
+ */
+export function draftSignedIn(
+  draft: Pick<McpServerRegistration, 'credentialStorage' | 'env'>,
+  editing: Pick<McpServerRegistration, 'credentialStorage' | 'env'> | null,
+  signedIn: boolean | undefined,
+): boolean | undefined {
+  const same = !!editing && draft.credentialStorage === editing.credentialStorage && sameContent(draft.env, editing.env)
+  return same ? signedIn : undefined
+}
+
+/**
  * Whether a server's "Needs keys" health chip should fire: at least one
  * required env key is empty AND the server is neither OAuth (those need a
  * sign-in, not env keys) nor per-agent credential storage (keys live in the
@@ -387,7 +419,7 @@ export function McpAddServerModal(props: McpAddServerModalProps) {
   return <McpAddServerModalBody {...props} />
 }
 
-function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged, onComputeNeeded, onEnableHostAccessNow, mcpOnHost }: McpAddServerModalProps) {
+function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAccessEnabled, onEnableHostAccess, onSave, onRemove, onOAuthChanged, signedIn, onComputeNeeded, onEnableHostAccessNow, mcpOnHost }: McpAddServerModalProps) {
   // The runtime the Settings picker shows (multi-runtime.md §6.3); api outside Settings.
   const api = useSettingsApi()
   const [mode, setMode] = useState<'choose' | 'form'>('choose')
@@ -570,6 +602,9 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
         registration: { ...draft, authArgs: commitAuthArgs() },
         credentialFiles: credentialFiles.length ? credentialFiles : undefined,
       })
+      // Authentication may write credentials even if the subsequent MCP
+      // connection fails. Ask for the actual sign-in state in either case.
+      if (result?.oauthRan || result?.authRan) onOAuthChanged?.()
       if (result?.success) {
         const current = draftRef.current
         if (current && sameExecutableIdentity(current, tested) && current.runLocation === tested.runLocation) {
@@ -580,9 +615,6 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           // draft no longer is — drop it, no stamp.
           setTest({ phase: 'idle' })
         }
-        // A browser OAuth sign-in stored a token main-side without touching the
-        // server list — let the dashboard refresh its stale sign-in chip.
-        if (result.oauthRan) onOAuthChanged?.()
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
         if (result?.computeUnavailable && onComputeNeeded) {
@@ -624,7 +656,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
   const catalogEntry = draft ? catalogRef.current?.entry : undefined
   // Required files the host fills itself move under Advanced, as an override.
   const bundledPaths = bundledFilePaths(draft, bundledCredentialFiles, hostAccessEnabled, mcpOnHost)
-  const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads, bundledPaths) : null
+  const checklist = draft ? setupChecklist(draft, catalogEntry, filePayloads, bundledPaths, draftSignedIn(draft, editing, signedIn)) : null
   // Settings sign-in needs the host even after a client file is chosen.
   const showBuiltInOffHost = !!draft && bundledPaths.size === 0
     && bundledFilePaths({ ...draft, runLocation: 'host' }, bundledCredentialFiles, true).size > 0
@@ -1119,7 +1151,7 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
                 )}
                 <button onClick={handleConnect} className="text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200">Reconnect</button>
               </div>
-            ) : draft.lastVerifiedAt && test.phase === 'idle' ? (
+            ) : draft.lastVerifiedAt && checklist.connected && test.phase === 'idle' ? (
               <div className="flex items-center gap-3 text-[11px]">
                 <span className="text-green-600 dark:text-green-400 font-medium">Verified {new Date(draft.lastVerifiedAt).toLocaleDateString()}</span>
                 <button onClick={handleConnect} disabled={!canLaunch || hasPlaceholders} className="text-[var(--adf-ui-text-subtle)] hover:text-neutral-600 dark:hover:text-neutral-200 disabled:opacity-40">Reconnect</button>

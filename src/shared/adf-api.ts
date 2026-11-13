@@ -415,7 +415,7 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.MCP_REGISTRY_GET),
   mcpOAuthSignOut: (args: { name: string }) =>
     ipcRenderer.invoke(IPC.MCP_OAUTH_SIGNOUT, args),
-  mcpOAuthStatus: (args: { name: string; url: string }) =>
+  mcpOAuthStatus: (args: { name: string; url?: string }) =>
     ipcRenderer.invoke(IPC.MCP_OAUTH_STATUS, args),
   onMcpInstallProgress: (callback) => {
     const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onMcpInstallProgress']>) => callback(data)

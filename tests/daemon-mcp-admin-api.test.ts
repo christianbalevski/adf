@@ -4,6 +4,9 @@
 // manager, the OAuth flow and the auth preflight are faked; no process is
 // spawned and no PodmanService is constructed.
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'fs'
+import { tmpdir } from 'os'
+import { join } from 'path'
 
 const h = vi.hoisted(() => {
   class FakeManager {
@@ -226,6 +229,30 @@ describe('OAuth status and sign-out', () => {
     expect(out.json()).toEqual({ success: true })
     expect(store.forServer).toHaveBeenLastCalledWith('remote')
     expect(view.invalidate).toHaveBeenCalledWith('', 'all')
+  })
+
+  it('a Settings server that signs in with its own auth command is answered by name, without a store or url', async () => {
+    const userData = mkdtempSync(join(tmpdir(), 'adf-daemon-authstatus-'))
+    const prev = process.env.ADF_USER_DATA_DIR
+    process.env.ADF_USER_DATA_DIR = userData
+    cleanups.push(() => {
+      if (prev === undefined) delete process.env.ADF_USER_DATA_DIR
+      else process.env.ADF_USER_DATA_DIR = prev
+      rmSync(userData, { recursive: true, force: true })
+    })
+    const gmail = {
+      id: 'g', name: 'gmail', type: 'npm', npmPackage: '@gongrzhe/server-gmail-autoauth-mcp', auth: true, runLocation: 'host',
+      credentialFiles: [{ path: '~/.gmail-mcp/gcp-oauth.keys.json', required: true }, { path: '~/.gmail-mcp/credentials.json' }],
+    }
+    const server = setup({}, { mcpServers: [gmail, { ...gmail, id: 'a', name: 'gmail-agent', credentialStorage: 'agent' }] })
+    const folder = join(userData, 'mcp-home', 'app', 'gmail', '.gmail-mcp')
+    mkdirSync(folder, { recursive: true })
+    writeFileSync(join(folder, 'gcp-oauth.keys.json'), '{}')
+    expect((await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?name=gmail' })).json()).toEqual({ signedIn: false, byName: true })
+    writeFileSync(join(folder, 'credentials.json'), '{}')
+    expect((await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?name=gmail' })).json()).toEqual({ signedIn: true, byName: true })
+    // Unknown: no signedIn key at all.
+    expect((await server.inject({ method: 'GET', url: '/admin/mcp/oauth/status?name=gmail-agent' })).json()).toEqual({ byName: true })
   })
 
   it('without a store: signed out, and sign-out refuses', async () => {

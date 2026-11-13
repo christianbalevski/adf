@@ -1,4 +1,4 @@
-import type { AgentState } from '../../shared/types/ipc.types'
+import type { AgentState } from '../types/ipc.types'
 
 /** Map executor internal states to display states for the UI. */
 export function toDisplayState(executorState: string): AgentState {

@@ -6786,7 +6786,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   // Phase 4 HTTP OAuth: whether a valid token is stored (app store) for a URL —
   // lets the renderer show a "signed in" indicator without exposing the token.
-  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => mcpOAuthStatus(getAppOAuthStore(), rawArgs))
+  // Without a URL: whether a Settings auth server has signed in (mcpAuthSignedIn).
+  ipcMain.handle(IPC.MCP_OAUTH_STATUS, async (_event, rawArgs: unknown) => mcpOAuthStatus(getAppOAuthStore(), rawArgs, settings))
 
   ipcMain.handle(IPC.MCP_INSTALL_PACKAGE, async (_event, rawArgs: unknown) => {
     const v = validateMcpArgs(McpPackageArgs, rawArgs)

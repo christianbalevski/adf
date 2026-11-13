@@ -25,7 +25,6 @@ import {
   contentsRows,
   dayTooltip,
   ESTIMATED_TIP,
-  formatUntil,
   hasActivity,
   sparkHeights,
   sparkSummary,
@@ -36,6 +35,7 @@ import {
   timerRowText,
   visibleItems,
   waitingItems,
+  wakeCountdown,
   type ContentsKey,
   type ShelfSpine,
   type WaitingItem
@@ -89,6 +89,7 @@ function Section({ title, aside, children }: { title: string; aside?: React.Reac
 // =============================================================================
 
 function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
+  const gate = useAgentStore((s) => s.gate)
   const log = useAgentStore((s) => s.log)
   const structuralVersion = useAgentStore((s) => s.structuralVersion)
   const approvals = useAgentStore((s) => s.pendingApprovals)
@@ -145,7 +146,7 @@ function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
                 </span>
               </button>
             ) : (
-              <TimerRow t={r.t} now={now} />
+              <TimerRow t={r.t} when={wakeCountdown(r.t, gate, now)} />
             )}
           </li>
         ))}
@@ -165,7 +166,7 @@ const openTimers = (): void => useAppStore.getState().expandRightPanelToTab('age
  * system: `lambda` then its input, both mono. agent: the loop as a tag, then
  * the start of the prompt. Shortened text shows in full in the tooltip.
  */
-function TimerRow({ t, now }: { t: UpcomingWake; now: number }) {
+function TimerRow({ t, when }: { t: UpcomingWake; when: string | null }) {
   const v = timerRowText(t)
   const tip = v.full ? (v.kind === 'lambda' && v.head ? `${v.head} ${v.full}` : v.full) : ''
   return (
@@ -179,7 +180,7 @@ function TimerRow({ t, now }: { t: UpcomingWake; now: number }) {
           {v.kind === 'lambda' && v.text && ' '}
           {v.text && <span className={v.mono ? `${MONO} text-[var(--ink-muted)]` : ''}>{v.text}</span>}
         </span>
-        <span className={WHEN}>{formatUntil(t.at, now)}</span>
+        {when && <span className={WHEN}>{when}</span>}
       </button>
     </Tooltip>
   )

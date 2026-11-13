@@ -83,7 +83,9 @@ import {
   foldStep,
   hasActivity,
   levelBarParts,
+  nextFiringWake,
   overviewFacts,
+  stoppedNotice,
   parseStoredLevels,
   powerSections,
   powerTooltip,
@@ -94,7 +96,12 @@ import {
   type LevelBarParts,
   type PowerItem
 } from './agent-overview-model'
-import { openApi } from '../../../utils/runtime-api'
+import { servesHttp } from '../../../../shared/utils/serving'
+import { openApi, openAgentKey, useOpenAgentKey } from '../../../utils/runtime-api'
+import { captureAgentView, isCurrentAgentView } from '../../../utils/agent-view'
+import { wakeFires } from '../../../../shared/utils/trigger-gate'
+import { startForegroundAgent } from '../../../utils/start-agent'
+import { Button } from '../../ui'
 
 const ORBITAL_SIZE = 64
 const PULSE_MS = 1200
@@ -112,12 +119,17 @@ const STAT_NAMES: Record<StatKey, string> = {
 // Data
 // =============================================================================
 
+/** getTimers reads the foreground workspace, which can change before the view does. */
+export function readOverviewTimers(key: string) {
+  const view = captureAgentView()
+  if (key !== openAgentKey() || !isCurrentAgentView(view)) return undefined
+  return openApi()?.getTimers().then((result) => isCurrentAgentView(view) ? result : null)
+}
 const readVitals: OverviewReader<AgentVitals> = (filePath, force) => openApi()?.getAgentVitals?.(filePath, { force })
 
 /** What the agent is doing right now, for the state line and orbital motion. */
-function useLiveActivity(nextWakeAt: number | undefined, now: number): { state: AgentState; label: string; toolRunning: boolean; waiting: boolean } {
+function useLiveActivity(nextWakeAt: number | undefined, now: number, starting: boolean): { state: AgentState; label: string; toolRunning: boolean; waiting: boolean } {
   const state = useAgentStore((s) => s.state)
-  const starting = useAgentStore((s) => s.starting)
   const log = useAgentStore((s) => s.log)
   const structuralVersion = useAgentStore((s) => s.structuralVersion)
   const approvals = useAgentStore((s) => s.pendingApprovals.size + Object.values(s.sideLoops).reduce((n, l) => n + l.pendingApprovals.size, 0))
@@ -256,8 +268,15 @@ export function AgentOverview() {
   const config = useAgentStore((s) => s.config)
   const seed = useOpenAgentOrbitalSeed()
   const state = useAgentStore((s) => s.state)
+  const gate = useAgentStore((s) => s.gate)
   const vitals = useOverviewRead(filePath, state, config, readVitals)
   const activity = useOverviewRead(filePath, state, config, readActivity)
+  const openKey = useOpenAgentKey()
+  const previewWake = activity?.upcoming.find((timer) => wakeFires(timer, gate))?.at
+  // Only a full preview with no eligible timer can hide a later runnable one.
+  // Avoid polling retained timer history when the small preview answers it.
+  const needsTimers = gate !== 'off' && previewWake === undefined && activity?.upcoming.length === 3
+  const timers = useOverviewRead(needsTimers ? openKey : null, state, config, readOverviewTimers)
   const rootRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [metricsExpanded, setMetricsExpanded] = useState(false)
@@ -269,7 +288,11 @@ export function AgentOverview() {
   useEffect(() => setMetricsExpanded(false), [filePath])
   const chartFolded = folded.chart
   const [now, setNow] = useState(() => Date.now())
-  const live = useLiveActivity(vitals?.nextWakeAt, now)
+  // Upcoming is only a preview; the next eligible timer may be outside its three rows.
+  const nextWakeAt = previewWake ?? nextFiringWake(timers?.timers, gate)
+  // The store tracks starts in flight for every path (title bar, sidebar, here, reattach).
+  const starting = useAppStore((s) => (openKey ? s.startingFilePaths.has(openKey) : false))
+  const live = useLiveActivity(nextWakeAt, now, starting)
   const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 30_000)
@@ -289,12 +312,22 @@ export function AgentOverview() {
   // The state line already says when an idle agent wakes.
   const showsWake = /\bwake/i.test(live.label)
   // Age moved to the footer; the facts line keeps what changes week to week.
-  const facts = vitals ? overviewFacts(vitals, now).filter((f) => f.id !== 'age' && !(showsWake && f.id === 'wake')) : []
+  const facts = vitals ? overviewFacts({ ...vitals, nextWakeAt }, now).filter((f) => f.id !== 'age' && !(showsWake && f.id === 'wake')) : []
   const age = vitals?.createdAt && Number.isFinite(vitals.ageDays) ? ageFooter(vitals.createdAt, vitals.ageDays) : null
   const size = vitals?.fileBytes !== undefined ? formatBytes(vitals.fileBytes) : null
   const footer = [age, size].filter(Boolean).join(' · ')
   const surfaces = useAgentSurfaces()
   const hasSurfaces = !!(surfaces.website || surfaces.computer)
+  // No config yet (still loading): no notice, rather than a flash of one.
+  const notice = config
+    ? stoppedNotice({
+        gate,
+        autostart: !!config.autostart,
+        waitingTimers: activity?.upcoming.length ?? 0,
+        serving: servesHttp(config.serving),
+        starting,
+      })
+    : null
   if (chartFolded && activity) facts.push({ id: 'messages', text: sparkFact(activity.daily) })
 
   return (
@@ -332,6 +365,12 @@ export function AgentOverview() {
               {live.label}
               {model && <span className="text-[var(--ink-muted)]">{live.label && ' · '}<span className="font-mono text-[11.5px]">{model}</span></span>}
             </p>
+          )}
+          {notice && (
+            <div className="mt-1 flex flex-wrap items-center justify-center gap-x-2 gap-y-1 text-[12px] leading-[18px] text-[var(--ink-muted)]">
+              <span>{notice}</span>
+              <Button onClick={() => void startForegroundAgent()} size="compact" variant="primary" className="text-[11px]">Start agent</Button>
+            </div>
           )}
         </header>
 

@@ -14,6 +14,7 @@
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { AgentActivity } from '../../../src/shared/types/agent-vitals.types'
 import type { ConnectionsView, RuntimeView } from '../../../src/shared/types/connection.types'
 
 ;(globalThis as { React?: typeof React }).React = React
@@ -31,6 +32,14 @@ vi.mock('zustand', async (importOriginal) => {
 
 /** Which effects run inline: all of them, or those whose source matches. */
 const effects = vi.hoisted(() => ({ match: null as RegExp | null, errors: [] as unknown[] }))
+const overview = vi.hoisted(() => ({ activity: null as AgentActivity | null, reader: null as unknown }))
+vi.mock('../../../src/renderer/components/agent/overview/useOverviewRead', async (importOriginal) => {
+  const original = await importOriginal<typeof import('../../../src/renderer/components/agent/overview/useOverviewRead')>()
+  return { ...original, useOverviewRead: (...args: Parameters<typeof original.useOverviewRead>) => {
+    if (overview.activity && args[3] === overview.reader) return overview.activity
+    return original.useOverviewRead(...args)
+  } }
+})
 vi.mock('react', async (importOriginal) => {
   const r = await importOriginal<typeof import('react')>()
   const inline = ((fn: () => unknown) => {
@@ -92,12 +101,12 @@ async function page(runtimes: RuntimeView[], opts: { local?: Record<string, unkn
   return { local, remote }
 }
 
-afterEach(() => { vi.unstubAllGlobals() })
+afterEach(() => { vi.unstubAllGlobals(); overview.activity = null; overview.reader = null })
 
 /** The runtime Settings pages, each as Settings renders it for the picked runtime. */
 const PAGES: Array<{ name: string; render: () => Promise<React.ReactElement> }> = [
   { name: 'providers', render: async () => { const { ProviderAgentOverrides } = await import('../../../src/renderer/components/providers/ProviderAgentOverrides'); return <ProviderAgentOverrides provider={{ id: 'p-1', type: 'openai', name: 'p-1', baseUrl: '', apiKey: '', defaultModel: 'model-1' } as never} apiKeyPlaceholder="" /> } },
-  { name: 'mcp', render: async () => { const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard'); return <McpStatusDashboard mcpServers={[]} onServersChanged={() => {}} /> } },
+  { name: 'mcp', render: async () => { const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard'); return <McpStatusDashboard mcpServers={[]} onServersChanged={() => {}} flushSave={async () => true} /> } },
   { name: 'channels', render: async () => { const { ChannelsPanel } = await import('../../../src/renderer/components/adapters/ChannelsPanel'); return <ChannelsPanel adapters={[]} onAdaptersChanged={() => {}} /> } },
   { name: 'usage', render: async () => { const { TokenUsageSection } = await import('../../../src/renderer/components/settings/UsageSection'); return <TokenUsageSection /> } },
   { name: 'templates', render: async () => { const { AgentTemplatesTab } = await import('../../../src/renderer/components/settings/AgentTemplatesTab'); return <AgentTemplatesTab providers={[]} defaultProviderId={undefined} onOpenProviders={() => {}} /> } },
@@ -211,4 +220,54 @@ describe('C1: a reloaded main window', () => {
     expect(localOpen.remote).toEqual([])
     expect(localOpen.doc).toMatchObject({ filePath: '/agents/agent-2.adf', runtimeId: 'local' })
   }, 60_000)
+})
+
+describe('overview next wake reads beyond a full blocked preview', () => {
+  it.each([
+    { gate: 'suspended', count: 3, scope: 'agent', reads: true },
+    { gate: 'suspended', count: 2, scope: 'agent', reads: false },
+    { gate: 'idle', count: 3, scope: 'agent', reads: false },
+    { gate: 'suspended', count: 3, scope: 'system', reads: false },
+    { gate: 'off', count: 3, scope: 'agent', reads: false },
+  ])('reads all timers only when needed: $gate, $count $scope preview rows', async ({ gate, count, scope, reads }) => {
+    const { local, remote } = await page([LOCAL, REMOTE])
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    useAgentStore.getState().setState(gate)
+    const { readActivity } = await import('../../../src/renderer/components/agent/overview/OverviewActivity')
+    overview.reader = readActivity
+    overview.activity = {
+      filePath: PATH, computedAt: 0, live: true, daily: [],
+      upcoming: Array.from({ length: count }, (_, id) => ({ id, at: id + 1, scope: scope as 'agent' | 'system', scopes: [scope] })),
+      contents: { mind: { files: 0, tokens: 0, updatedThisWeek: 0, strata: { older: 0, quarter: 0, month: 0, week: 0 } }, skills: { count: 0, tokens: 0 }, tables: { count: 0, rows: 0 } },
+    }
+    const { AgentOverview } = await import('../../../src/renderer/components/agent/overview/AgentOverview')
+    renderToStaticMarkup(<AgentOverview />)
+    await flush()
+    await flush()
+    expect(remote.names().includes('getTimers')).toBe(reads)
+    expect(local.names()).not.toContain('getTimers')
+  }, 30_000)
+
+  it('does not read during navigation and discards a timer response from a previous runtime', async () => {
+    let finish!: (value: { timers: [] }) => void
+    const { local, remote } = await page([LOCAL, REMOTE], { remote: { getTimers: () => new Promise((resolve) => { finish = resolve }) } })
+    const { useDocumentStore } = await import('../../../src/renderer/stores/document.store')
+    const { beginAgentSwitch, endAgentSwitch } = await import('../../../src/renderer/stores/editor-tabs.store')
+    const { openAgentKey } = await import('../../../src/renderer/utils/runtime-api')
+    const { readOverviewTimers } = await import('../../../src/renderer/components/agent/overview/AgentOverview')
+    useDocumentStore.getState().setFilePath(PATH, HOST_1)
+    const key = openAgentKey()!
+    beginAgentSwitch()
+    try { expect(readOverviewTimers(key)).toBeUndefined() } finally { endAgentSwitch() }
+    expect(remote.names()).not.toContain('getTimers')
+    const pending = readOverviewTimers(key)
+    expect(remote.names()).toContain('getTimers')
+    useDocumentStore.getState().setFilePath(PATH, 'local')
+    finish({ timers: [] })
+    expect(await pending).toBeNull()
+    expect(readOverviewTimers(key)).toBeUndefined()
+    expect(local.names()).not.toContain('getTimers')
+  }, 30_000)
 })
