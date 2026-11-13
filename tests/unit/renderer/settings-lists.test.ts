@@ -66,10 +66,14 @@ describe('the providers shown after a save', () => {
 describe('a flush asked for by MCP Servers before it reads sign-in state', () => {
   it('writes only when the shown MCP server list differs from the saved one (it takes no provider list, so the load fixup writes nothing)', async () => {
     const writes: string[] = []
-    const flush = async () => { writes.push('write') }
-    await flushIfUnsaved([server('m1')], [server('m1')], flush)
+    const flush = async () => { writes.push('write'); return true }
+    expect(await flushIfUnsaved([server('m1')], [server('m1')], flush)).toBe(true)
     expect(writes).toEqual([])
-    await flushIfUnsaved([server('m1'), server('m2')], [server('m1')], flush)
+    expect(await flushIfUnsaved([server('m1'), server('m2')], [server('m1')], flush)).toBe(true)
     expect(writes).toEqual(['write'])
   })
+})
+
+it('propagates a refused list save to the sign-in probe', async () => {
+  expect(await flushIfUnsaved([server('edited')], [server('saved')], async () => false)).toBe(false)
 })

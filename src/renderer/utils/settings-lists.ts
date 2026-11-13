@@ -50,7 +50,8 @@ export async function listsToWrite(saved: SettingsLists, attempted: SettingsList
  * by-name sign-in answer reads (mcpAuthSignedIn), it is the only list Settings
  * saves on a debounce; compute is written at once. A clean flush would still
  * write and show "Saved"; the provider default load fixup is left to the debounce.
+ * False means the edited list was refused; a by-name read would see the old row.
  */
-export async function flushIfUnsaved(shown: McpServerRegistration[], saved: McpServerRegistration[], flush: () => Promise<void>): Promise<void> {
-  if (!sameContent(shown, saved)) await flush()
+export async function flushIfUnsaved(shown: McpServerRegistration[], saved: McpServerRegistration[], flush: () => Promise<boolean>): Promise<boolean> {
+  return sameContent(shown, saved) || await flush()
 }

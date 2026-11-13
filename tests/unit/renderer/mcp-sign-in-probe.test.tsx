@@ -39,7 +39,22 @@ vi.mock('react', async (importOriginal) => {
   return { ...r, default: { ...r, useEffect: inline, useLayoutEffect: inline, useState }, useEffect: inline, useLayoutEffect: inline, useState }
 })
 
-afterEach(() => { vi.unstubAllGlobals(); applied.length = 0 })
+const actions = vi.hoisted(() => new Map<string, (event: { stopPropagation: () => void }) => void>())
+const computeSheet = vi.hoisted(() => ({ acceptMcpOnHost: undefined as (() => Promise<boolean>) | undefined }))
+vi.mock('../../../src/renderer/components/mcp/ComputeNeededSheet', () => ({
+  ComputeNeededSheet: (props: { acceptMcpOnHost?: () => Promise<boolean> }) => {
+    computeSheet.acceptMcpOnHost = props.acceptMcpOnHost
+    return null
+  },
+}))
+vi.mock('../../../src/renderer/components/common/Tooltip', () => ({
+  Tooltip: ({ tip, children }: { tip: string; children: React.ReactElement<{ onClick?: (event: { stopPropagation: () => void }) => void; children?: unknown }> }) => {
+    if (children.props.onClick) actions.set(children.props.children === 'Allow' ? 'Allow' : tip, children.props.onClick)
+    return children
+  },
+}))
+
+afterEach(() => { vi.unstubAllGlobals(); applied.length = 0; actions.clear() })
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
@@ -47,7 +62,7 @@ async function probed(servers: McpServerRegistration[]): Promise<unknown[]> {
   const calls: unknown[] = []
   vi.stubGlobal('window', { adfApi: { mcpOAuthStatus: async (args: unknown) => { calls.push(args); return {} } } })
   const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard')
-  renderToStaticMarkup(<McpStatusDashboard mcpServers={servers} onServersChanged={() => {}} flushSave={async () => { calls.push('flushSave') }} />)
+  renderToStaticMarkup(<McpStatusDashboard mcpServers={servers} onServersChanged={() => {}} flushSave={async () => { calls.push('flushSave'); return true }} />)
   await flush()
   return calls
 }
@@ -57,7 +72,7 @@ async function probedHanging(servers: McpServerRegistration[], answer: unknown =
   const calls: unknown[] = []
   vi.stubGlobal('window', { adfApi: { mcpOAuthStatus: async (args: unknown) => { calls.push(args); return answer } } })
   const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard')
-  renderToStaticMarkup(<McpStatusDashboard mcpServers={servers} onServersChanged={() => {}} flushSave={() => { calls.push('flushSave'); return new Promise<void>(() => {}) }} />)
+  renderToStaticMarkup(<McpStatusDashboard mcpServers={servers} onServersChanged={() => {}} flushSave={() => { calls.push('flushSave'); return new Promise<boolean>(() => {}) }} />)
   await flush()
   return calls
 }
@@ -102,4 +117,93 @@ describe('rows asked whether they are signed in', () => {
     ])
     expect(calls).toEqual(['flushSave', { name: 'stale' }])
   })
+})
+
+const authRow: McpServerRegistration = {
+  id: 'g', name: 'gmail', type: 'npm', npmPackage: '@gongrzhe/server-gmail-autoauth-mcp',
+  auth: true, runLocation: 'host', credentialStorage: 'app',
+}
+
+describe('sign-in refresh after Settings actions', () => {
+  it.each(['refused', 'rejected'])('drops by-name answers after a %s save, without blocking URL answers', async (failure) => {
+    const calls: unknown[] = []
+    vi.stubGlobal('window', { adfApi: { mcpOAuthStatus: async (args: unknown) => {
+      calls.push(args)
+      return { byName: true, signedIn: false }
+    } } })
+    const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard')
+    renderToStaticMarkup(<McpStatusDashboard
+      mcpServers={[{ ...authRow, credentialStorage: 'agent' }, { id: 'r', name: 'remote', type: 'http', url: 'https://mcp.example.test/mcp', oauth: true }]}
+      onServersChanged={() => {}}
+      flushSave={async () => { if (failure === 'rejected') throw new Error('not saved'); return false }}
+    />)
+    await flush()
+    expect(calls).toEqual([{ name: 'remote', url: 'https://mcp.example.test/mcp' }])
+    expect(applied).toContainEqual({}) // Removes a prior by-name answer instead of reusing it.
+    expect(applied.some((value) => Object.hasOwn(value as object, 'g'))).toBe(false)
+  })
+
+  it('waits for inline Allow to finish saving compute, then asks again without a registration edit', async () => {
+    let saved = false
+    let finish!: () => void
+    const commit = new Promise<void>((resolve) => { finish = () => { saved = true; resolve() } })
+    const reads: boolean[] = []
+    vi.stubGlobal('window', { adfApi: { mcpOAuthStatus: async () => {
+      reads.push(saved)
+      return saved ? { byName: true, signedIn: false } : { byName: true }
+    } } })
+    const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard')
+    renderToStaticMarkup(<McpStatusDashboard mcpServers={[authRow]} onServersChanged={() => {}}
+      flushSave={async () => true} hostAccessEnabled={false} onAllowHost={() => commit} />)
+    await flush()
+    expect(reads).toEqual([false])
+    expect(actions.has('Allow')).toBe(true)
+    actions.get('Allow')!({ stopPropagation() {} })
+    await flush()
+    expect(reads).toEqual([false])
+    finish()
+    await flush()
+    expect(reads).toEqual([false, true])
+    expect(applied).toContainEqual({ g: false })
+  })
+
+  it('refreshes when Re-authorize writes credentials but the MCP connection fails', async () => {
+    let signedIn = false
+    const reads: boolean[] = []
+    vi.stubGlobal('window', { adfApi: {
+      mcpOAuthStatus: async () => { reads.push(signedIn); return { byName: true, signedIn } },
+      testMcpRegistration: async () => { signedIn = true; return { success: false, authRan: true, error: 'tools/list failed' } },
+    } })
+    const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard')
+    renderToStaticMarkup(<McpStatusDashboard mcpServers={[authRow]} onServersChanged={() => {}} flushSave={async () => true} />)
+    await flush()
+    actions.get('Re-authorize')!({ stopPropagation() {} })
+    await flush()
+    expect(reads).toEqual([false, true])
+    expect(applied).toContainEqual({ g: true })
+  })
+})
+
+it('returns a completed host write without waiting for an unrelated hanging sign-in probe', async () => {
+  let saved = false
+  let finish!: () => void
+  const commit = new Promise<boolean>((resolve) => { finish = () => { saved = true; resolve(true) } })
+  const reads: boolean[] = []
+  vi.stubGlobal('window', { adfApi: { mcpOAuthStatus: () => {
+    reads.push(saved)
+    return new Promise(() => {})
+  } } })
+  const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard')
+  renderToStaticMarkup(<McpStatusDashboard mcpServers={[authRow]} onServersChanged={() => {}}
+    flushSave={async () => true} onAcceptMcpOnHost={() => commit} />)
+  await flush()
+  let result: boolean | undefined
+  void computeSheet.acceptMcpOnHost!().then((value) => { result = value })
+  await flush()
+  expect(result).toBeUndefined()
+  expect(reads).toEqual([false])
+  finish()
+  await flush()
+  expect(result).toBe(true)
+  expect(reads).toEqual([false, true])
 })

@@ -602,6 +602,9 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
         registration: { ...draft, authArgs: commitAuthArgs() },
         credentialFiles: credentialFiles.length ? credentialFiles : undefined,
       })
+      // Authentication may write credentials even if the subsequent MCP
+      // connection fails. Ask for the actual sign-in state in either case.
+      if (result?.oauthRan || result?.authRan) onOAuthChanged?.()
       if (result?.success) {
         const current = draftRef.current
         if (current && sameExecutableIdentity(current, tested) && current.runLocation === tested.runLocation) {
@@ -612,10 +615,6 @@ function McpAddServerModalBody({ open, onClose, editing, existingServers, hostAc
           // draft no longer is — drop it, no stamp.
           setTest({ phase: 'idle' })
         }
-        // A sign-in (browser OAuth, or the server's auth command) stored a
-        // token main-side without touching the server list — let the
-        // dashboard refresh its stale sign-in state.
-        if (result.oauthRan || result.authRan) onOAuthChanged?.()
       } else {
         setTest({ phase: 'done', success: false, error: result?.error ?? 'Failed to connect', stderrTail: result?.stderrTail, notes: result?.notes, location: result?.location })
         if (result?.computeUnavailable && onComputeNeeded) {

@@ -57,17 +57,17 @@ export function signedInAnswer(byUrl: boolean, r: { signedIn?: boolean; byName?:
 interface McpStatusDashboardProps {
   mcpServers: McpServerRegistration[]
   onServersChanged: (servers: McpServerRegistration[]) => void
-  /** Write pending Settings edits now: main answers sign-in state from saved settings. */
-  flushSave: () => Promise<void>
+  /** Write pending Settings edits; false means by-name status would read stale settings. */
+  flushSave: () => Promise<boolean>
   /** Settings → Compute master toggle; used to surface host-location conflicts inline. */
   hostAccessEnabled?: boolean
   /** Invoked from the conflict note so the user can enable host access without tab-hopping. */
-  onEnableHostAccess?: () => void
+  onEnableHostAccess?: () => Promise<void>
   /** settings.compute.hostApproved and its recorded sources: with hostAccessEnabled, where a host choice really runs. */
   hostApproved?: string[]
   hostApprovedSources?: Record<string, string>
   /** Allow on a host registration that does not run on the host yet (asks first). */
-  onAllowHost?: (reg: McpServerRegistration) => void
+  onAllowHost?: (reg: McpServerRegistration) => Promise<void>
   /** settings.compute.mcpOnHost: every MCP server that didn't choose the container runs on this computer. */
   mcpOnHost?: boolean
   /** Turn on host access / mcpOnHost without asking again (the compute sheet already asked). Resolve false when not saved. */
@@ -124,13 +124,13 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
   const refreshOAuthStatus = useCallback(async () => {
     const gen = ++oauthRefreshGen.current
     const rows = mcpServersRef.current.filter((s) => httpOAuthRow(s) || !!s.auth)
-    const flushed = rows.some((s) => !httpOAuthRow(s)) ? flushSave().catch(() => {}) : undefined
+    const flushed = rows.some((s) => !httpOAuthRow(s)) ? flushSave().catch(() => false) : undefined
     await Promise.all(rows.map(async (s) => {
       const byUrl = httpOAuthRow(s)
-      if (!byUrl) await flushed
+      const saved = byUrl || await flushed
       let signedIn: boolean | undefined
       try {
-        signedIn = signedInAnswer(byUrl, await api?.mcpOAuthStatus(byUrl ? { name: s.name, url: s.url! } : { name: s.name }))
+        if (saved) signedIn = signedInAnswer(byUrl, await api?.mcpOAuthStatus(byUrl ? { name: s.name, url: s.url! } : { name: s.name }))
       } catch { /* unknown */ }
       // Each answer is applied as it lands, unless a newer refresh (e.g. the one
       // handleOAuthSignOut fires after invalidating the token) superseded it.
@@ -143,6 +143,14 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
       })
     }))
   }, [httpOAuthRow, flushSave])
+
+  // Placement is saved independently of the registration list. Read status
+  // after that write settles, including a refusal that rolls placement back.
+  const afterComputeChange = async <T,>(change: () => Promise<T>): Promise<T> => {
+    const result = await change()
+    void refreshOAuthStatus()
+    return result
+  }
 
   /** Sign out of an OAuth server (clears the stored token), then refresh state. */
   const handleOAuthSignOut = async (reg: McpServerRegistration) => {
@@ -283,6 +291,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
     setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: true } }))
     try {
       const result = await api?.testMcpRegistration({ registration: reg })
+      if (!result?.success && (result?.authRan || result?.oauthRan)) void refreshOAuthStatus()
       if (result?.success) {
         setReconnectResults((prev) => ({ ...prev, [reg.id]: { loading: false, count: result.tools.length } }))
         // Identity guard: the test ran against `reg` as captured at click
@@ -312,7 +321,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
               const latest = mcpServersRef.current.find((s) => s.id === reg.id) ?? reg
               next = { ...latest, runLocation: 'host' as const }
               onServersChanged(mcpServersRef.current.map((s) => (s.id === reg.id ? next : s)))
-              return hostAccessEnabled || !onEnableHostAccessNow ? true : onEnableHostAccessNow()
+              return hostAccessEnabled || !onEnableHostAccessNow ? true : afterComputeChange(onEnableHostAccessNow)
             },
           })
         }
@@ -352,13 +361,13 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
         editing={editingServer}
         existingServers={mcpServers}
         hostAccessEnabled={hostAccessEnabled}
-        onEnableHostAccess={onEnableHostAccess}
+        onEnableHostAccess={onEnableHostAccess ? () => { void afterComputeChange(onEnableHostAccess) } : undefined}
         onSave={handleModalSave}
         onRemove={handleRemove}
         onOAuthChanged={refreshOAuthStatus}
         signedIn={editingServer ? oauthSignedIn[editingServer.id] : undefined}
         onComputeNeeded={(name, actions) => setComputeSheet({ name, pinnedToContainer: actions.pinnedToContainer, retry: actions.retry, runOnHost: actions.runOnHost })}
-        onEnableHostAccessNow={onEnableHostAccessNow}
+        onEnableHostAccessNow={onEnableHostAccessNow ? () => afterComputeChange(onEnableHostAccessNow) : undefined}
         mcpOnHost={mcpOnHost}
       />
 
@@ -374,7 +383,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
         }}
         runOnHost={computeSheet?.runOnHost}
         // Offered only when it would move this server: not already on, and not pinned to the container.
-        acceptMcpOnHost={(mcpOnHost && hostAccessEnabled) || computeSheet?.pinnedToContainer ? undefined : onAcceptMcpOnHost}
+        acceptMcpOnHost={(mcpOnHost && hostAccessEnabled) || computeSheet?.pinnedToContainer ? undefined : onAcceptMcpOnHost ? () => afterComputeChange(onAcceptMcpOnHost) : undefined}
       />
 
       {/* Server list */}
@@ -442,7 +451,7 @@ export function McpStatusDashboard({ mcpServers, onServersChanged, flushSave, ho
                               <Tooltip tip={allowHostTip(placement.gap)}>
                                 <button
                                   type="button"
-                                  onClick={(e) => { e.stopPropagation(); onAllowHost(reg) }}
+                                  onClick={(e) => { e.stopPropagation(); void afterComputeChange(() => onAllowHost(reg)) }}
                                   className="rounded px-1 py-0.5 text-[11px] font-medium text-amber-700 hover:bg-amber-100 dark:text-amber-400 dark:hover:bg-amber-900/30"
                                 >
                                   Allow

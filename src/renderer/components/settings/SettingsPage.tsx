@@ -1279,7 +1279,10 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
     await pendingSave.current?.()
   }, [])
   /** flushSave for MCP Servers' sign-in asks: only when the MCP server list is unsaved. */
-  const flushUnsaved = useCallback(() => flushIfUnsaved(shownLists.current.mcpServers, savedLists.current.mcpServers, flushSave), [flushSave])
+  const flushUnsaved = useCallback(() => flushIfUnsaved(shownLists.current.mcpServers, savedLists.current.mcpServers, async () => {
+    clearTimeout(saveTimer.current)
+    return await pendingSave.current?.() === true
+  }), [])
 
   /** Show `next` now and write it; a refusal puts `prev` back. */
   const persist = <T,>(patch: Record<string, unknown>, set: (value: T) => void, next: T, prev: T) => {
@@ -1975,8 +1978,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
               hostAccessEnabled={computeHostAccessEnabled}
               hostApproved={computeHostApproved}
               hostApprovedSources={computeHostApprovedSources}
-              onAllowHost={(reg) => void allowRegistrationOnHost(reg)}
-              onEnableHostAccess={() => { void confirm(HOST_ACCESS_CONFIRM).then((yes) => { if (yes) void persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled) }) }}
+              onAllowHost={allowRegistrationOnHost}
+              onEnableHostAccess={async () => { if (await confirm(HOST_ACCESS_CONFIRM)) await persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled) }}
               mcpOnHost={computeMcpOnHost}
               onEnableHostAccessNow={() => persistCompute('hostAccessEnabled', setComputeHostAccessEnabled, true, computeHostAccessEnabled)}
               onAcceptMcpOnHost={acceptMcpOnHostNow}

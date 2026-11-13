@@ -97,7 +97,7 @@ afterEach(() => { vi.unstubAllGlobals() })
 /** The runtime Settings pages, each as Settings renders it for the picked runtime. */
 const PAGES: Array<{ name: string; render: () => Promise<React.ReactElement> }> = [
   { name: 'providers', render: async () => { const { ProviderAgentOverrides } = await import('../../../src/renderer/components/providers/ProviderAgentOverrides'); return <ProviderAgentOverrides provider={{ id: 'p-1', type: 'openai', name: 'p-1', baseUrl: '', apiKey: '', defaultModel: 'model-1' } as never} apiKeyPlaceholder="" /> } },
-  { name: 'mcp', render: async () => { const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard'); return <McpStatusDashboard mcpServers={[]} onServersChanged={() => {}} flushSave={async () => {}} /> } },
+  { name: 'mcp', render: async () => { const { McpStatusDashboard } = await import('../../../src/renderer/components/mcp/McpStatusDashboard'); return <McpStatusDashboard mcpServers={[]} onServersChanged={() => {}} flushSave={async () => true} /> } },
   { name: 'channels', render: async () => { const { ChannelsPanel } = await import('../../../src/renderer/components/adapters/ChannelsPanel'); return <ChannelsPanel adapters={[]} onAdaptersChanged={() => {}} /> } },
   { name: 'usage', render: async () => { const { TokenUsageSection } = await import('../../../src/renderer/components/settings/UsageSection'); return <TokenUsageSection /> } },
   { name: 'templates', render: async () => { const { AgentTemplatesTab } = await import('../../../src/renderer/components/settings/AgentTemplatesTab'); return <AgentTemplatesTab providers={[]} defaultProviderId={undefined} onOpenProviders={() => {}} /> } },
