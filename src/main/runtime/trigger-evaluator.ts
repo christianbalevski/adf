@@ -25,6 +25,7 @@ import { currentSourceOrUnknown } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { onDispatchDropped } from './system-dispatch-limits'
+import { EXECUTOR_WORK_STATES, gateStateOf, scopeFires } from '../../shared/utils/trigger-gate'
 
 const TIMER_POLL_INTERVAL_MS = 5000
 
@@ -122,10 +123,6 @@ function computeUnifiedDiff(filePath: string, before: string, after: string): st
 
 type DisplayState = 'active' | 'idle' | 'hibernate' | 'suspended' | 'off'
 
-/** Executor states that mean "running a turn" — sub-states of the `active`
- *  display state. They reach setDisplayState through state_changed. */
-const EXECUTOR_WORK_STATES = new Set(['thinking', 'tool_use', 'awaiting_approval', 'awaiting_ask'])
-
 /**
  * Watches for trigger conditions and emits "trigger" events
  * when the agent should execute a turn.
@@ -145,8 +142,6 @@ export class TriggerEvaluator extends EventEmitter {
 
   // State gating
   private displayState: DisplayState = 'idle'
-  /** The executor is in one of EXECUTOR_WORK_STATES (gated as 'active'; see gateState). */
-  private executorWorking = false
 
   // Hibernate nudge: fires after configured interval since the last trigger while in hibernate
   private lastTriggerAt: number = Date.now()
@@ -194,7 +189,6 @@ export class TriggerEvaluator extends EventEmitter {
     const prev = this.displayState
     // Stored as reported (getDisplayState is read by diagnostics and Studio).
     // Gating maps work states to `active` — see gateState.
-    this.executorWorking = EXECUTOR_WORK_STATES.has(state)
     this.displayState = state as DisplayState
     // Reset nudge timer when leaving hibernate
     if (prev === 'hibernate' && state !== 'hibernate') {
@@ -229,35 +223,12 @@ export class TriggerEvaluator extends EventEmitter {
    *  is `active` — agent-scope triggers arriving now are queued by the executor
    *  and run at the turn boundary. Everything else gates as reported. */
   private gateState(): string {
-    return this.executorWorking ? 'active' : this.displayState
+    return gateStateOf(this.displayState)
   }
 
-  /**
-   * Determine if a trigger should fire given the current display state and scope.
-   *
-   * System scope: fires in all states except `off`
-   * Agent scope:
-   *   active/idle → all triggers
-   *   hibernate    → only on_timer (direct user chat is dispatched separately)
-   *   suspended/off → nothing
-   */
+  /** Whether a trigger of this scope and type fires now (the shared gate rule). */
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
-    if (scope === 'system') {
-      return this.gateState() !== 'off'
-    }
-    // Agent scope
-    switch (this.gateState()) {
-      case 'active':
-      case 'idle':
-        return true
-      case 'hibernate':
-        return triggerType === 'on_timer'
-      case 'suspended':
-      case 'off':
-        return false
-      default:
-        return false
-    }
+    return scopeFires(scope, triggerType, this.gateState())
   }
 
   // ===========================================================================
@@ -458,7 +429,7 @@ export class TriggerEvaluator extends EventEmitter {
       if (!this.shouldFire(target.scope, triggerType)) continue
       // The agent's own activity never wakes it while it is working: the wake
       // would follow the very turn that caused it, endlessly.
-      if (target.scope === 'agent' && this.executorWorking && this.observesOwnActivity(triggerType, event)) continue
+      if (target.scope === 'agent' && EXECUTOR_WORK_STATES.has(this.displayState) && this.observesOwnActivity(triggerType, event)) continue
       if (!this.matchesFilter(triggerType, target, filterData)) continue
 
       // Self-generated file writes are suppressed unless a target asks for

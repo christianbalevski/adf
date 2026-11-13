@@ -9,7 +9,9 @@ import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
 import fleet from '../../src/main/tui/views/fleet/index'
 import runtime from '../../src/main/tui/views/runtime/index'
-import { completeFolder } from '../../src/main/tui/views/fleet/folders'
+import { completeFolder, folderAgentNextStep } from '../../src/main/tui/views/fleet/folders'
+import type { FolderAgent } from '../../src/main/tui/api/types'
+import { NOT_AUTOSTART_TEXT } from '../../src/shared/constants/autostart-text'
 import { openRuntime } from '../../src/main/tui/views/runtime/state'
 import { MOCK_AGENTS_DIR, startMockDaemon, type MockDaemon } from './fixtures/mock-daemon'
 import { renderTui, wrapped, type RenderedTui } from './fixtures/render'
@@ -66,6 +68,10 @@ describe('tracked folders', () => {
     const result = completeFolder(join(tmp, 'te'))
     expect(result.value).toBe(join(tmp, 'team-agents') + sep)
     expect(completeFolder(`${tmp}${sep}`).candidates.sort()).toEqual([`other${sep}`, `team-agents${sep}`])
+  })
+
+  it('says why a not-autostart agent was not loaded', () => {
+    expect(folderAgentNextStep({ status: 'not_autostart' } as FolderAgent)).toContain(NOT_AUTOSTART_TEXT)
   })
 
   it('f opens "Track a folder": Tab completes, Enter tracks, a duplicate stays in the dialog', async () => {

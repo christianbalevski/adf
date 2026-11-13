@@ -45,7 +45,7 @@ describe('background event mapping: purity', () => {
   it('imports nothing but types, the display-state map and the main-loop name', () => {
     const source = readFileSync(join(__dirname, '../../../src/main/runtime/background-event-mapping.ts'), 'utf-8')
     const specifiers = [...source.matchAll(/^import\s.*?from\s+'([^']+)'/gm)].map(m => m[1])
-    expect(specifiers.sort()).toEqual(['../../shared/types/ipc.types', '../adf/derive-loop-config', './display-state'])
+    expect(specifiers.sort()).toEqual(['../../shared/types/ipc.types', '../../shared/utils/display-state', '../adf/derive-loop-config'])
     expect(source).not.toMatch(/\brequire\(/)
   })
 

@@ -8,6 +8,7 @@ import {
   foldStep,
   formatUntil,
   hasActivity,
+  nextFiringWake,
   rowsLabel,
   sparkFact,
   sparkHeights,
@@ -15,11 +16,16 @@ import {
   formatAgo,
   memorySpines,
   tableSpines,
+  timerCountdown,
   timerRowText,
+  stoppedNotice,
   waitingItems,
+  wakeCountdown,
   type FoldState
 } from '../../../src/renderer/components/agent/overview/agent-overview-model'
 import type { ActivityDay, UpcomingWake } from '../../../src/shared/types/agent-vitals.types'
+import { NOT_AUTOSTART_TEXT } from '../../../src/shared/constants/autostart-text'
+import { useAgentStore } from '../../../src/renderer/stores/agent.store'
 
 const MIN = 60_000
 
@@ -34,7 +40,7 @@ describe('relative times', () => {
 })
 
 describe('timer rows', () => {
-  const wake = (w: Partial<UpcomingWake>): UpcomingWake => ({ id: 1, at: 0, scope: 'system', ...w })
+  const wake = (w: Partial<UpcomingWake>): UpcomingWake => ({ id: 1, at: 0, scope: 'system', scopes: ['system'], ...w })
 
   it('system: lambda then single-line JSON input, mono', () => {
     expect(timerRowText(wake({ lambda: 'lib/sync.ts:run', input: '{\n  "full": true,\n  "n": 2\n}' }))).toEqual({
@@ -270,5 +276,66 @@ describe('overflow folds', () => {
   it('waits for a measured height', () => {
     const s = foldStep(empty, ORDER, both, 700, 0)
     expect(s).toBe(empty)
+  })
+})
+
+describe('a Stopped agent with something waiting', () => {
+  const sentence = NOT_AUTOSTART_TEXT
+  const base = { gate: 'off', autostart: false, waitingTimers: 1, serving: false, starting: false }
+
+  it('says why it is stopped when a timer or a served page waits', () => {
+    expect(stoppedNotice(base)).toBe(sentence)
+    expect(stoppedNotice({ ...base, waitingTimers: 0, serving: true })).toBe(sentence)
+  })
+
+  it('says nothing when nothing waits, when it would autostart, or when it is running', () => {
+    expect(stoppedNotice({ ...base, waitingTimers: 0 })).toBeNull()
+    expect(stoppedNotice({ ...base, autostart: true })).toBeNull()
+    for (const gate of ['idle', 'active', 'hibernate', 'suspended', 'error'] as const) {
+      expect(stoppedNotice({ ...base, gate, serving: true }), gate).toBeNull()
+    }
+  })
+
+  it('says nothing for a hard-aborted agent that is still loaded (gate stopped)', () => {
+    expect(stoppedNotice({ ...base, gate: 'stopped' })).toBeNull()
+    expect(stoppedNotice({ ...base, gate: 'off' })).toBe(sentence)
+  })
+
+  it('says nothing while a start or reattach is in flight (the store reads off until it lands)', () => {
+    // openFile on a running agent: resetAgent() before the reattach answers.
+    const store = useAgentStore.getState()
+    store.setState('idle')
+    store.reset()
+    const { gate } = useAgentStore.getState()
+    expect(gate).toBe('off')
+    expect(stoppedNotice({ ...base, gate })).toBe(sentence)
+    expect(stoppedNotice({ ...base, gate, starting: true })).toBeNull()
+    // applyReattach
+    useAgentStore.getState().setState('idle')
+    expect(stoppedNotice({ ...base, gate: useAgentStore.getState().gate, starting: true })).toBeNull()
+    useAgentStore.getState().reset()
+  })
+})
+
+describe('wake displays follow the gate', () => {
+  const agentWake: UpcomingWake = { id: 1, at: 5 * MIN, scope: 'agent', scopes: ['agent'] }
+  const systemWake: UpcomingWake = { id: 2, at: 9 * MIN, scope: 'system', scopes: ['system'] }
+
+  it('the overview next wake (facts line, "wakes in") is the first row that fires', () => {
+    expect(nextFiringWake([agentWake, systemWake], 'off')).toBeUndefined()
+    expect(nextFiringWake([agentWake, systemWake], 'idle')).toBe(5 * MIN)
+    expect(nextFiringWake([agentWake, systemWake], 'stopped')).toBe(9 * MIN)
+    expect(nextFiringWake(undefined, 'idle')).toBeUndefined()
+  })
+
+  it('an Upcoming row has a countdown only when it fires', () => {
+    expect(wakeCountdown(agentWake, 'off', 0)).toBeNull()
+    expect(wakeCountdown(agentWake, 'idle', 0)).toBe('in 5 min')
+  })
+
+  it('a Timers tab row has a countdown only when it fires', () => {
+    const fmt = (at: number) => `at ${at}`
+    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, 'off', fmt)).toBeNull()
+    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, 'idle', fmt)).toBe(`at ${5 * MIN}`)
   })
 })

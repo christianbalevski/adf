@@ -28526,6 +28526,13 @@
             ],
             "description": "`system` runs a lambda; `agent` wakes a loop"
           },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Every scope the timer fires in (adf_timers.scope); absent from daemons before this field; empty if unreadable"
+          },
           "lambda": {
             "type": "string",
             "description": "system: lambda reference, e.g. `lib/sync.ts:run`"

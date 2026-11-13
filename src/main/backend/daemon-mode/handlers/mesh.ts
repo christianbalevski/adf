@@ -146,8 +146,8 @@ interface EmergencyStopResult { success: boolean; error?: string; skipped?: stri
  * After a partial stop the open agent was detached, so the window saw none
  * of its teardown. Show where it ended: still running (the daemon named it in
  * `failed`, or it has a status) is attached again with its current state;
- * gone (404) gets the foreground `state_changed: stopped`, as embedded's
- * AGENT_STOP would show, since the status bar no longer resets the window
+ * gone (404) gets the foreground `state_changed: off` (unloaded, as the
+ * bridge reports any unload), since the status bar no longer resets the window
  * after a partial stop. Its bridge entry is not recreated (no file path).
  */
 async function resyncAfterPartialStop(ctx: DaemonModeContext, agentId: string, _result: EmergencyStopResult): Promise<void> {
@@ -161,7 +161,7 @@ async function resyncAfterPartialStop(ctx: DaemonModeContext, agentId: string, _
     else ctx.log.warn(`[EmergencyStop] Could not read the open agent's state after a partial stop: ${errorMessage(err)}`)
   }
   ctx.bridge.attach(agentId)
-  const state = status?.runtimeState ?? (gone ? 'stopped' : null)
+  const state = status?.runtimeState ?? (gone ? 'off' : null)
   if (!state) return
   ctx.log.log(gone
     ? `[EmergencyStop] ${ctx.session.filePath} stopped in the partial stop`

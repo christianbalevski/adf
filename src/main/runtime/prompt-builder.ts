@@ -6,6 +6,7 @@
  */
 
 import type { AgentConfig } from '@shared/types/adf-v02.types'
+import { servesHttp } from '../../shared/utils/serving'
 
 export interface PromptContext {
   config: AgentConfig
@@ -58,9 +59,7 @@ export function assemblePrompt(ctx: PromptContext): string {
 
   // 6. HTTP serving — full guide when any serving feature is configured;
   // otherwise a short stub so the agent knows the capability exists.
-  const serving = ctx.config.serving
-  const servingConfigured = !!(serving?.public?.enabled || serving?.shared?.enabled || (serving?.api && serving.api.length > 0))
-  push(ctx.toolPrompts[servingConfigured ? '_serving' : '_serving_stub'])
+  push(ctx.toolPrompts[servesHttp(ctx.config.serving) ? '_serving' : '_serving_stub'])
 
   // 7. Skills — always. The runtime indexes `skills/` for every agent and
   // materializes `skills-registry.json` at workspace open, so the section's

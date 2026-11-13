@@ -15,6 +15,7 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, memoryBytes, readAgentActivity, readMemoryStrata, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import { localDateKey } from '../../../src/shared/utils/date-key'
 import { DEFAULT_MIND_LOG_CONTENT } from '../../../src/shared/types/adf-v02.types'
+import { wakeFires } from '../../../src/shared/utils/trigger-gate'
 
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-activity-'))
 const file = join(dir, 'agent-1.adf')
@@ -99,13 +100,35 @@ beforeAll(() => {
 describe('readAgentActivity', () => {
   it('reads the next three live timers as raw pieces', () => {
     const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
-    expect(a.upcoming[0]).toEqual({ id: expect.any(Number), at: now + 5 * 60_000, scope: 'agent', loop: 'main', prompt: 'Check the inbox' })
-    expect(a.upcoming[1]).toEqual({ id: expect.any(Number), at: now + HOUR, scope: 'system', lambda: 'lib/sync.ts:run', input: '{"full":true}' })
+    expect(a.upcoming[0]).toEqual({ id: expect.any(Number), at: now + 5 * 60_000, scope: 'agent', scopes: ['agent'], loop: 'main', prompt: 'Check the inbox' })
+    expect(a.upcoming[1]).toEqual({ id: expect.any(Number), at: now + HOUR, scope: 'system', scopes: ['system'], lambda: 'lib/sync.ts:run', input: '{"full":true}' })
     expect(a.upcoming[2]).toEqual(expect.objectContaining({ scope: 'agent', loop: 'critic' }))
     expect(a.upcoming[2].prompt).toHaveLength(1000)
     expect(a.upcoming[2].prompt?.endsWith('…')).toBe(true)
     expect(a.upcoming).toHaveLength(3)
     expect('recent' in a).toBe(false)
+  })
+
+  it('carries every scope of a mixed timer, so its row keeps its countdown in suspended', () => {
+    sql('INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, created_at, expired) VALUES (?, ?, ?, ?, ?, ?, 0)',
+      [JSON.stringify({ mode: 'once', at: now + 1000 }), now + 1000, 'both', JSON.stringify(['agent', 'system']), null, now])
+    const row = readAgentActivity((s, p) => ws.querySQL(s, p), now).upcoming[0]
+    sql("DELETE FROM adf_timers WHERE payload = 'both'")
+    expect(row).toEqual(expect.objectContaining({ scope: 'agent', scopes: ['agent', 'system'] }))
+    // The Upcoming row's rule (OverviewActivity): the system half fires while suspended.
+    expect(wakeFires(row, 'suspended')).toBe(true)
+  })
+
+  it('reads a non-array or unparseable scope as the runtime does (AdfDatabase timer parser)', () => {
+    const insert = (payload: string, scope: string) => sql('INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, created_at, expired) VALUES (?, ?, ?, ?, ?, ?, 0)',
+      [JSON.stringify({ mode: 'once', at: now + 1000 }), now + 1000, payload, scope, null, now])
+    for (const [scope, scopes] of [['"agent"', ['agent']], ['agent', ['agent']], ['system', ['system']]] as const) {
+      insert('odd', scope)
+      const row = readAgentActivity((s, p) => ws.querySQL(s, p), now).upcoming[0]
+      sql("DELETE FROM adf_timers WHERE payload = 'odd'")
+      expect(row, scope).toEqual(expect.objectContaining({ scope: scopes[0], scopes }))
+      expect(wakeFires(row, 'idle'), scope).toBe(true)
+    }
   })
 
   it('counts messages of every role and loop per local day, today last', () => {

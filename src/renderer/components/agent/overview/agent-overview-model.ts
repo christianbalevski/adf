@@ -7,7 +7,9 @@
 
 import type { AgentState } from '../../../../shared/types/ipc.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
+import { NOT_AUTOSTART_TEXT } from '../../../../shared/constants/autostart-text'
 import { summarizeAsk, type AskQuestion } from '../../../../shared/utils/ask-form'
+import { timerFires, wakeFires } from '../../../../shared/utils/trigger-gate'
 import { MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
 import type { ActivityDay, AgentContents, ExperienceStat, MemoryFileSize, PowerStat, SkillSize, StatFactor, TableSize, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
@@ -452,6 +454,21 @@ export function configTargetFor(configPath: string): ConfigTarget {
 // Activity sections
 // =============================================================================
 
+/**
+ * Why a Stopped agent is not doing what it was set up to do, when it has
+ * something waiting (a timer, or it serves over HTTP) and will not start on its own.
+ * `gate` is 'off' when the agent is not loaded (hard abort gates 'stopped'),
+ * and also while a start or reattach is in flight (the store is reset to off
+ * until it lands), so `starting` hides the notice then.
+ * The TUI shows the same sentence with its key hint; the overview offers
+ * Start agent beside it.
+ */
+export function stoppedNotice(v: { gate: string; autostart: boolean; waitingTimers: number; serving: boolean; starting: boolean }): string | null {
+  if (v.starting || v.gate !== 'off' || v.autostart) return null
+  if (v.waitingTimers === 0 && !v.serving) return null
+  return NOT_AUTOSTART_TEXT
+}
+
 /** "in 4 min", "in 3 h", "in 2 days", "due". */
 export function formatUntil(at: number, now: number): string {
   const ms = at - now
@@ -462,6 +479,21 @@ export function formatUntil(at: number, now: number): string {
   const h = Math.round(ms / 3_600_000)
   if (h < 48) return `in ${h} h`
   return `in ${Math.round(ms / 86_400_000)} days`
+}
+
+/** The overview's next wake (facts line, "wakes in"): the first Upcoming row that fires in this gate. */
+export function nextFiringWake(upcoming: readonly UpcomingWake[] | undefined, gate: string): number | undefined {
+  return upcoming?.find((t) => wakeFires(t, gate))?.at
+}
+
+/** An Upcoming row's countdown, or null when the row will not fire in this gate. */
+export function wakeCountdown(t: UpcomingWake, gate: string, now: number): string | null {
+  return wakeFires(t, gate) ? formatUntil(t.at, now) : null
+}
+
+/** A Timers tab row's countdown, or null when the timer will not fire in this gate (same rule as the overview). */
+export function timerCountdown(timer: { scope: readonly string[]; next_wake_at: number }, gate: string, format: (at: number) => string): string | null {
+  return timerFires(timer.scope, gate) ? format(timer.next_wake_at) : null
 }
 
 const MAIN_LOOP_NAME = 'main'

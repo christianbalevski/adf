@@ -539,6 +539,15 @@ describe('event bridge: focus and lifecycle', () => {
     expect(live()).toEqual(['a2-live', 'a2-held-1', 'a2-held-2'])
   })
 
+  it('Studio\'s own start (held) pushes no start state: the reply carries it', async () => {
+    const { session, bridge, pushes } = setup()
+    await focus(session, FILE_1, null)
+    const release = bridge.holdForeground(FILE_1)
+    started(bridge, AGENT_1, FILE_1, 'idle')
+    release()
+    expect(pushes).toEqual([])
+  })
+
   it('a fresh start of the open file adds nothing to the background list', async () => {
     const { session, bridge, batched } = setup()
     await focus(session, FILE_1, null)
@@ -547,19 +556,41 @@ describe('event bridge: focus and lifecycle', () => {
     expect(batched).toEqual([])
   })
 
-  it('the open file started elsewhere (CLI) gives the session its agent id; stopped elsewhere, the chat panel learns it once', async () => {
+  it('the open file started elsewhere (CLI) gives the session its agent id and the chat panel its start state; stopped elsewhere, it learns off, once', async () => {
     const { session, bridge, pushes } = setup()
     await focus(session, FILE_1, null)
-    started(bridge, AGENT_1, FILE_1)
+    started(bridge, AGENT_1, FILE_1, 'hibernate')
     expect(session.agentId).toBe(AGENT_1)
     bridge.handleFrame({ kind: 'host', agentId: AGENT_1, filePath: FILE_1, type: 'agent_stopped', payload: {}, timestamp: 9 })
-    expect(pushes).toEqual([{ channel: IPC.AGENT_EVENT, args: [{ type: 'state_changed', payload: { state: 'stopped' }, timestamp: 9 }] }])
+    expect(pushes).toEqual([
+      { channel: IPC.AGENT_EVENT, args: [{ type: 'state_changed', payload: { state: 'hibernate' }, timestamp: 5 }] },
+      { channel: IPC.AGENT_EVENT, args: [{ type: 'state_changed', payload: { state: 'off' }, timestamp: 9 }] },
+    ])
+  })
+
+  it('a hard abort (executor stopped) followed by an unload elsewhere: the chat panel learns both, ending off', async () => {
+    const { session, bridge, pushes } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    started(bridge, AGENT_1, FILE_1)
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event: { type: 'state_changed', payload: { state: 'stopped' }, timestamp: 9 } })
+    bridge.handleFrame({ kind: 'host', agentId: AGENT_1, filePath: FILE_1, type: 'agent_stopped', payload: {}, timestamp: 10 })
+    expect(pushes.map((p) => (p.args[0] as { payload: { state: string } }).payload.state)).toEqual(['idle', 'stopped', 'off'])
+  })
+
+  it('an executor off followed by its unload: off once', async () => {
+    const { session, bridge, pushes } = setup()
+    await focus(session, FILE_1, AGENT_1)
+    started(bridge, AGENT_1, FILE_1)
+    bridge.handleFrame({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event: { type: 'state_changed', payload: { state: 'off' }, timestamp: 9 } })
+    bridge.handleFrame({ kind: 'host', agentId: AGENT_1, filePath: FILE_1, type: 'agent_stopped', payload: {}, timestamp: 10 })
+    expect(pushes.map((p) => (p.args[0] as { payload: { state: string } }).payload.state)).toEqual(['idle', 'off'])
   })
 
   it('AGENT_STOP detaches: the teardown events of the open agent never reach the renderer (embedded detaches its host first)', async () => {
     const { session, bridge, pushes } = setup()
     await focus(session, FILE_1, AGENT_1)
     started(bridge, AGENT_1, FILE_1)
+    pushes.length = 0
     bridge.detach(AGENT_1)
     bridge.handleFrame({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event: { type: 'state_changed', payload: { state: 'stopped' }, timestamp: 10 } })
     bridge.handleFrame({ kind: 'host', agentId: AGENT_1, filePath: FILE_1, type: 'agent_stopped', payload: {}, timestamp: 11 })
@@ -567,21 +598,22 @@ describe('event bridge: focus and lifecycle', () => {
     // Cleared by the unload: a later start is seen again.
     started(bridge, AGENT_1, FILE_1)
     bridge.handleFrame({ kind: 'executor', agentId: AGENT_1, filePath: FILE_1, event: { type: 'state_changed', payload: { state: 'idle' }, timestamp: 12 } })
-    expect(pushes.map((p) => p.channel)).toEqual([IPC.AGENT_EVENT])
+    expect(pushes.map((p) => p.channel)).toEqual([IPC.AGENT_EVENT, IPC.AGENT_EVENT])
   })
 
-  it('resync stops the agents that died during the gap: agent_stopped for listed ones, stopped on AGENT_EVENT for the open one', async () => {
+  it('resync stops the agents that died during the gap: agent_stopped for listed ones, off on AGENT_EVENT for the open one', async () => {
     const { session, bridge, batched, pushes, daemon } = setup()
     await focus(session, FILE_1, AGENT_1)
     started(bridge, AGENT_1, FILE_1)
     started(bridge, AGENT_2, FILE_2)
     batched.length = 0
+    pushes.length = 0
     daemon.routes.set('GET /agents', () => [])
     daemon.routes.set('GET /tracked-dirs', () => ({ maxDepth: 5, directories: [] }))
     daemon.routes.set('GET /approvals', () => ({ pending: [], history: [] }))
     await bridge.handleGap({ reason: 'epoch_changed' })
     expect(batched).toEqual([{ type: 'agent_stopped', payload: { filePath: FILE_2 }, timestamp: expect.any(Number) }])
-    expect(pushes[0]).toEqual({ channel: IPC.AGENT_EVENT, args: [{ type: 'state_changed', payload: { state: 'stopped' }, timestamp: expect.any(Number) }] })
+    expect(pushes[0]).toEqual({ channel: IPC.AGENT_EVENT, args: [{ type: 'state_changed', payload: { state: 'off' }, timestamp: expect.any(Number) }] })
     expect(bridge.runningAgents()).toEqual([])
   })
 
@@ -603,7 +635,7 @@ describe('event bridge: focus and lifecycle', () => {
     await bridge.handleGap({ reason: 'epoch_changed' })
     await new Promise((r) => setTimeout(r, 0))
     expect(batched.filter((e) => e.type === 'agent_stopped')).toEqual([])
-    expect(pushes.filter((p) => p.channel === IPC.AGENT_EVENT && (p.args[0] as { payload?: { state?: string } })?.payload?.state === 'stopped')).toEqual([])
+    expect(pushes.filter((p) => p.channel === IPC.AGENT_EVENT && (p.args[0] as { payload?: { state?: string } })?.payload?.state === 'off')).toEqual([])
     expect(bridge.runningAgents().map((a) => a.agentId).sort()).toEqual([AGENT_1, AGENT_2].sort())
     expect(outcome).toBeUndefined()
     bridge.failTurns('stopped')

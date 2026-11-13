@@ -69,7 +69,7 @@ import { CREDENTIALS_UNLOCK_HINT, detectLockedEnvelopes, type AgentRuntimePrompt
 import { emitAgentDerivedKeyChanged } from './agent-runtime-signals'
 import { applyBackgroundEvent, type BackgroundMappingState } from './background-event-mapping'
 import { deriveHandle } from '../utils/handle'
-import { toDisplayState } from './display-state'
+import { toDisplayState } from '../../shared/utils/display-state'
 import type { AgentHostBindings, AgentStopMode, AssembledAgentBase, HostAttachment } from './assemble-agent'
 import { LoopPoolError, stripLoopNameMarker } from './loop-pool'
 import { runOwnerCommand, OwnerCommandRefusedError, type OwnerCommandResult } from './owner-command'

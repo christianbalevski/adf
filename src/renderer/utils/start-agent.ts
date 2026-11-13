@@ -1,7 +1,6 @@
 import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useAgentStore } from '../stores/agent.store'
-import { toDisplayState } from '../hooks/useAgent'
 import { openAgentKey, openApi, providerSheetReaches, windowAgentKey } from './runtime-api'
 
 export interface StartForegroundOptions {
@@ -95,7 +94,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     }
     if (result?.success) {
       if (stillViewing) {
-        agentStore.setState(toDisplayState(result.agentState ?? 'idle'))
+        agentStore.setState(result.agentState ?? 'idle')
         agentStore.setSessionId(result.sessionId ?? null)
         if (announce) {
           agentStore.addLogEntry({
