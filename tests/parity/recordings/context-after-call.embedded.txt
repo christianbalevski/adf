@@ -1565,6 +1565,7 @@ adf-settings.json:
   compactionPrompt: "You are a conversation compactor. Read the transcript between an AI agent and its environment and write a present-tense status briefing: bullets organized by topic, under 1500 words. Keep current task state, key decisions and their reasoning, exact paths, names, IDs, and values in play, pending work and next steps, constraints or preferences discovered, open questions and hunches the agent was carrying, and anything surprising or still unexplained. Keep exact details; a vague summary is useless. Keep every open thread; anything dropped here is gone. Transcript role tags carry the loop seq when known (`[USER S137]` / `[ASSISTANT S137]`), so when a bullet derives from specific messages, cite them (`[S137]`) and the summary stays traceable to the archived history in adf_audit."
   compute:
     containerImage: "docker.io/library/node:20-slim"
+    containerMemoryMb: 4096
     containerPackages:
       - "python3-pip"
       - "nftables"

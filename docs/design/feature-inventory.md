@@ -1063,7 +1063,7 @@ Grouped by area, then category.
 - **ChatGPT-subscription daemon auth** — `POST /auth/chatgpt/start` returns a browser auth URL for headless sign-in.
 - **MCP settings block** — global `mcpServers` registrations; agents opt in per `.adf` `config.mcp.servers`; unregistered-with-no-metadata servers are skipped, not fatal.
 - **Adapter settings block** — global registrations for adapter type/package; credentials always live in agent `adf_identity`, never in daemon settings; deprecated `env`/`credentialStorage` fields ignored at runtime.
-- **Compute settings** — `hostAccessEnabled`, `hostApproved`, `containerPackages`, `machineCpus/MemoryMb`, `containerImage` passed straight to `PodmanService`.
+- **Compute settings** — `hostAccessEnabled`, `hostApproved`, `containerPackages`, `machineCpus/MemoryMb`, `containerMemoryMb`, `containerImage` passed straight to `PodmanService`.
 - **Mesh settings** — `meshEnabled`/`meshLan`/`meshPort`, overridable via `MESH_HOST`/`MESH_PORT` env vars.
 - **Live PATCH/GET/PUT `/settings` endpoints** — whole-object or single-key read/write, written back to the JSON file; some settings need a daemon restart to take effect.
 - **Plaintext secret warning** — manually written daemon settings store `apiKey`/`env` values as plain JSON; filesystem permissions are the only protection.
@@ -1523,7 +1523,7 @@ Grouped by area, then category.
 
 - **Detect-and-guide install model** — Podman is not bundled; `podman-bootstrap.ts` detects binary, version, and VM-machine state, offering install/start guidance (incl. WSL prerequisite on Windows).
 - **PodmanService** (2400+ lines) — shared and per-agent container lifecycle, exec, file transfer, browser/CDP integration, package install, exec logging.
-- **Shared compute container** — default Debian-based Node image with configurable CPU/memory (`machineCpus`, `machineMemoryMb`, `containerImage`, `containerPackages`).
+- **Shared compute container** — default Debian-based Node image with configurable CPU/memory (`machineCpus`, `machineMemoryMb`, `containerMemoryMb`, `containerImage`, `containerPackages`).
 - **Isolated per-agent compute** — `config.compute.enabled` starts a dedicated container and workspace mount for that agent.
 - **compute_exec / fs_transfer tools** — always registered by the daemon builder; report actual available targets even when compute is absent.
 - **Host access two-tier gate** — `compute.host_access` (agent) plus daemon-wide `hostAccessEnabled`/`hostApproved` list; approved-by-source-package matching prevents name-squatting host grants.

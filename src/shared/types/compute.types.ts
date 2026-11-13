@@ -74,6 +74,8 @@ export interface ComputeAppSettings {
   containerPackages: string[]
   machineCpus: number
   machineMemoryMb: number
+  /** Per-container memory cap in MB for ADF-managed containers. 0 = no cap. */
+  containerMemoryMb: number
   containerImage: string
   executionTargets: ExecutionTarget[]
 }

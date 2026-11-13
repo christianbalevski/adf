@@ -4,7 +4,9 @@
  * "Saving"). The checks are pure so tests can run them without a DOM.
  */
 import { useEffect, useState } from 'react'
-import { TextInput } from '../ui'
+import { SettingsGroup, SettingsRow, TextInput } from '../ui'
+import { InfoHint } from '../common/DocsLink'
+import { CONTAINER_MEMORY_MAX_MB, CONTAINER_MEMORY_MIN_MB, DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb } from '../../../shared/constants/compute-defaults'
 
 export type Checked<T> = { ok: true; value: T } | { ok: false; error: string }
 
@@ -15,6 +17,12 @@ export function checkWholeNumber(raw: string, min: number, max: number): Checked
   const value = Number(text)
   if (value < min || value > max) return { ok: false, error: `Enter a whole number from ${min} to ${max}.` }
   return { ok: true, value }
+}
+
+/** A container memory cap in MB: 0 for no cap, otherwise in the shared range. */
+export function checkContainerMemory(raw: string): Checked<number> {
+  const mb = effectiveContainerMemoryMb(raw)
+  return mb !== null ? { ok: true, value: mb } : { ok: false, error: `Enter 0 for no limit, or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}.` }
 }
 
 /** A manual mesh peer: `host:port`, or a bare host (the mesh port is used). */
@@ -44,8 +52,10 @@ export function checkPeerAddress(raw: string): Checked<string> {
  * puts the saved value back. A refused value stays in the field with the
  * reason under it, and nothing is written.
  */
-export function CommitInput({ value, onCommit, check, className = '', ...props }: {
+export function CommitInput({ value, saved = value, onCommit, check, className = '', ...props }: {
   value: string
+  /** The stored value, when the field shows another (an invalid one shows its default). */
+  saved?: string
   onCommit: (value: string) => void
   /** Null when the value is fine; otherwise the reason it is refused. */
   check?: (value: string) => string | null
@@ -55,7 +65,7 @@ export function CommitInput({ value, onCommit, check, className = '', ...props }
   useEffect(() => { setDraft(value); setError(null) }, [value])
 
   const commit = () => {
-    if (draft === value) { setError(null); return }
+    if (draft === saved) { setError(null); return }
     const problem = check?.(draft) ?? null
     setError(problem)
     if (!problem) onCommit(draft)
@@ -77,5 +87,24 @@ export function CommitInput({ value, onCommit, check, className = '', ...props }
       />
       {error && <span role="alert" className="text-[11px] text-[var(--adf-ui-danger)]">{error}</span>}
     </span>
+  )
+}
+
+/** `value` is the saved setting; it shows the cap in force, so an invalid one shows the default. */
+export function ContainerMemoryGroup({ value, onChange }: { value: unknown; onChange: (mb: number) => void }) {
+  return (
+    <SettingsGroup title="Container memory">
+      <SettingsRow label={<>Limit<InfoHint tip="Megabytes per container; 0 means no limit." /></>}>
+        <CommitInput
+          aria-label="Limit"
+          inputMode="numeric"
+          value={String(effectiveContainerMemoryMb(value) ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb)}
+          saved={String(value)}
+          onCommit={(v) => { const r = checkContainerMemory(v); if (r.ok) onChange(r.value) }}
+          check={(v) => { const r = checkContainerMemory(v); return r.ok ? null : r.error }}
+          className="!w-24 !text-[12px]"
+        />
+      </SettingsRow>
+    </SettingsGroup>
   )
 }
