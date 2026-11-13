@@ -39,7 +39,8 @@ import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
-import { CommitInput, checkWholeNumber } from './settings-inputs'
+import { CommitInput, ContainerMemoryGroup, checkWholeNumber } from './settings-inputs'
+import { DEFAULT_COMPUTE_SETTINGS } from '../../../shared/constants/compute-defaults'
 import { PromptEditor, PromptSectionRows } from './PromptEditor'
 import { SaveIndicator, SettingsSaveProvider, SettingsToasts, settingsWriteOutcome, useSettingsSave } from './settings-save'
 import type { ComputePrerequisite as Prerequisite, ContainerOverview, ContainerSummary, ExecutionTarget, LocalContainerExecutionTarget, PodmanAvailability } from '../../../shared/types/compute.types'
@@ -1009,6 +1010,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
   const [computeContainerPackages, setComputeContainerPackages] = useState('python3, python3-pip, git, curl')
   const [computeMachineCpus, setComputeMachineCpus] = useState(2)
   const [computeMachineMemoryMb, setComputeMachineMemoryMb] = useState(2048)
+  const [computeContainerMemoryMb, setComputeContainerMemoryMb] = useState(DEFAULT_COMPUTE_SETTINGS.containerMemoryMb)
   const [computeContainerImage, setComputeContainerImage] = useState('docker.io/library/node:20-alpine')
   const [computeExecutionTargets, setComputeExecutionTargets] = useState<ExecutionTarget[]>([])
   const [nativeNotifications, setNativeNotifications] = useState(true)
@@ -1179,7 +1181,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
       setAgentsFolder((settings.agentsFolder as string) ?? '')
       const compute = settings.compute as {
         hostAccessEnabled?: boolean; hostApproved?: string[]; hostApprovedSources?: Record<string, string>; mcpOnHost?: boolean;
-        containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerImage?: string;
+        containerPackages?: string[]; machineCpus?: number; machineMemoryMb?: number; containerMemoryMb?: number; containerImage?: string;
         executionTargets?: ExecutionTarget[];
       } | undefined
       if (compute) {
@@ -1192,6 +1194,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
         if (compute.containerPackages) setComputeContainerPackages(compute.containerPackages.join(', '))
         if (compute.machineCpus) setComputeMachineCpus(compute.machineCpus)
         if (compute.machineMemoryMb) setComputeMachineMemoryMb(compute.machineMemoryMb)
+        if (compute.containerMemoryMb !== undefined) setComputeContainerMemoryMb(compute.containerMemoryMb)
         if (compute.containerImage) setComputeContainerImage(compute.containerImage)
         setComputeExecutionTargets(compute.executionTargets ?? [])
       }
@@ -2016,6 +2019,8 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
             setMachineCpus={(v) => void persistCompute('machineCpus', setComputeMachineCpus, v, computeMachineCpus)}
             machineMemoryMb={computeMachineMemoryMb}
             setMachineMemoryMb={(v) => void persistCompute('machineMemoryMb', setComputeMachineMemoryMb, v, computeMachineMemoryMb)}
+            containerMemoryMb={computeContainerMemoryMb}
+            setContainerMemoryMb={(v) => void persistCompute('containerMemoryMb', setComputeContainerMemoryMb, v, computeContainerMemoryMb)}
             containerImage={computeContainerImage}
             setContainerImage={(v) => void persistCompute('containerImage', setComputeContainerImage, v, computeContainerImage)}
             executionTargets={computeExecutionTargets}
@@ -2044,6 +2049,7 @@ function ComputeTab({
   containerPackages, setContainerPackages,
   machineCpus, setMachineCpus,
   machineMemoryMb, setMachineMemoryMb,
+  containerMemoryMb, setContainerMemoryMb,
   containerImage, setContainerImage,
   executionTargets, setExecutionTargets,
 }: {
@@ -2061,6 +2067,8 @@ function ComputeTab({
   setMachineCpus: (v: number) => void
   machineMemoryMb: number
   setMachineMemoryMb: (v: number) => void
+  containerMemoryMb: number
+  setContainerMemoryMb: (v: number) => void
   containerImage: string
   setContainerImage: (v: string) => void
   executionTargets: ExecutionTarget[]
@@ -2360,7 +2368,7 @@ function ComputeTab({
     <SettingsGroup
       title="Default container"
       description="Applies to new containers and rebuilds."
-      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS and Windows; on Linux, containers use this computer's resources."
+      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS; on Windows (WSL), they have no effect; on Linux, containers use this computer's resources."
     >
       <SettingsRow label="Image">
         <CommitInput
@@ -2404,6 +2412,8 @@ function ComputeTab({
         />
       </SettingsRow>
     </SettingsGroup>
+
+    <ContainerMemoryGroup value={containerMemoryMb} onChange={setContainerMemoryMb} />
 
     <SettingsGroup className="overflow-hidden">
       <button
