@@ -409,6 +409,7 @@ describe('PodmanService lifecycle hardening', () => {
     ;(service as any).ensureMachine = ensureMachine
     ;(service as any).ensureContainerRunning = ensureContainerRunning
     ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).applyContainerMemoryLimit = vi.fn().mockResolvedValue(true)
 
     const first = service.ensureRunning()
     const second = service.ensureRunning()
@@ -416,6 +417,7 @@ describe('PodmanService lifecycle hardening', () => {
     await first
     await service.ensureRunning()
     expect(ensureContainerRunning).toHaveBeenCalledTimes(1)
+    expect((service as any).applyContainerMemoryLimit).toHaveBeenCalledTimes(1)
   })
 
   it('clears the ensureRunning memo on failure so recovery retries', async () => {
@@ -427,6 +429,7 @@ describe('PodmanService lifecycle hardening', () => {
       .mockResolvedValue(undefined)
     ;(service as any).ensureContainerRunning = ensureContainerRunning
     ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).applyContainerMemoryLimit = vi.fn().mockResolvedValue(true)
 
     await expect(service.ensureRunning()).rejects.toThrow('boom')
     await expect(service.ensureRunning()).resolves.toBeUndefined()
@@ -440,6 +443,7 @@ describe('PodmanService lifecycle hardening', () => {
     const ensureContainerRunning = vi.fn().mockResolvedValue(undefined)
     ;(service as any).ensureContainerRunning = ensureContainerRunning
     ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).applyContainerMemoryLimit = vi.fn().mockResolvedValue(true)
     await service.ensureRunning()
 
     ;(service as any).noteContainerExec('adf-mcp', { code: 1, stderr: 'Error: container adf-mcp is not running' })
@@ -578,6 +582,7 @@ describe('PodmanService lifecycle hardening', () => {
     const ensureContainerRunning = vi.fn().mockImplementation(() => gate)
     ;(service as any).ensureContainerRunning = ensureContainerRunning
     ;(service as any).applyPeerFirewall = vi.fn().mockResolvedValue(undefined)
+    ;(service as any).applyContainerMemoryLimit = vi.fn().mockResolvedValue(true)
 
     const first = service.ensureRunning()
     await new Promise((resolve) => setImmediate(resolve))

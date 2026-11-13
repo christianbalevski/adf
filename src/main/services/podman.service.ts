@@ -19,6 +19,7 @@ import { createServer } from 'net'
 import { checkPodmanAvailability } from './podman-bootstrap'
 import { processComputeUsers, type ComputeUsers, type OtherComputeUsers } from './compute-users'
 import type { ContainerOverview, ContainerSummary, ContainerPhase, ContainerPhaseEvent, ComputeSetupResult } from '../../shared/types/compute.types'
+import { CONTAINER_MEMORY_MAX_MB, CONTAINER_MEMORY_MIN_MB, DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb, numeric, type readComputeSettings } from '../../shared/constants/compute-defaults'
 import { killedByTimeout } from '../utils/exec-timeout'
 
 // ---------------------------------------------------------------------------
@@ -413,9 +414,12 @@ cdp_up() { wget -q -T 2 -t 1 -O /dev/null http://127.0.0.1:${BROWSER_CDP_PORT}/j
 # sandbox on. The sandbox would guard nothing: the agent already controls the
 # container as root, and the container is the boundary. --test-type drops the
 # "unsupported command-line flag" bar that would say otherwise.
+# --enable-unsafe-swiftshader: no GPU here, and without it WebGL is unavailable and pages fall back to paths that can
+# misbehave. It renders on the CPU; "unsafe" because page shaders run through SwiftShader. With --no-sandbox, a page that
+# exploits it is root in this container, and can write the npm cache that all managed containers share.
 launch() {
   sed -i 's/"exit_type":"Crashed"/"exit_type":"Normal"/' "$PROFILE/Default/Preferences" 2>/dev/null
-  exec '${chromium}' --no-sandbox --test-type --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
+  exec '${chromium}' --no-sandbox --test-type --enable-unsafe-swiftshader --disable-dev-shm-usage --start-maximized --no-first-run --no-default-browser-check --password-store=basic --restore-last-session --hide-crash-restore-bubble --lang='${identity.locale}' --user-data-dir="$PROFILE" --remote-debugging-address=127.0.0.1 --remote-debugging-port=${BROWSER_CDP_PORT} "$@" </dev/null >>/tmp/adf-browser/chromium.log 2>&1
 }
 # Browser (main) processes only — renderers/zygotes carry --type= and follow their parent.
 browser_pids() {
@@ -447,7 +451,8 @@ case "$cmd" in
     setsid -f "$0" launch-detached "$@" </dev/null >/dev/null 2>&1
     i=0; while ! cdp_up && [ $i -lt 100 ]; do i=$((i+1)); sleep 0.25; done
     cdp_up || { echo "managed Chromium did not come up; see /tmp/adf-browser/chromium.log" >&2; exit 1; } ;;
-  launch-detached) launch "$@" ;;
+  # Rotate here, once per fresh browser: launch() also hands URLs to a running one, whose log this would cut.
+  launch-detached) mv -f /tmp/adf-browser/chromium.log /tmp/adf-browser/chromium.log.1 2>/dev/null; launch "$@" ;;
   stop)
     touch "$HOLD"
     kill_browser || { echo "managed Chromium still running" >&2; exit 1; } ;;
@@ -681,12 +686,7 @@ export function containerAgentHome(isolated: boolean, agentId: string): string {
   return `${containerWorkspacePath(isolated, agentId)}/home`
 }
 
-export interface ComputeEnvSettings {
-  containerPackages: string[]
-  machineCpus: number
-  machineMemoryMb: number
-  containerImage: string
-}
+export type ComputeEnvSettings = ReturnType<typeof readComputeSettings>
 
 // ---------------------------------------------------------------------------
 // Service
@@ -696,6 +696,7 @@ const DEFAULT_SETTINGS: ComputeEnvSettings = {
   containerPackages: ['python3-full', 'python3-pip', 'nftables', 'iproute2', 'git', 'curl', 'wget', 'jq', 'unzip', 'ca-certificates', 'openssh-client', 'procps', 'chromium', 'chromium-driver', 'fonts-liberation', 'fonts-noto-core', 'fonts-noto-color-emoji', 'fonts-dejavu-core', 'tzdata', 'libnss3', 'libatk-bridge2.0-0', 'libdrm2', 'libgbm1', 'libasound2', 'tigervnc-standalone-server', 'novnc', 'websockify', 'dbus-x11', 'openbox', 'tint2', 'jgmenu', 'pcmanfm', 'lxterminal', 'mousepad', 'lxappearance', 'elementary-xfce-icon-theme', 'desktop-file-utils', 'xdotool', 'scrot', 'xclip', 'xterm', 'x11-xserver-utils'],
   machineCpus: 2,
   machineMemoryMb: 2048,
+  containerMemoryMb: DEFAULT_COMPUTE_SETTINGS.containerMemoryMb,
   containerImage: 'docker.io/library/node:20-slim',
 }
 
@@ -730,8 +731,8 @@ interface ProvisionFailure {
 const SETUP_STEPS: ReadonlySet<string> = new Set(['install', 'machine_init', 'machine_start', 'check'])
 
 const boundedInt = (value: unknown, max: number): number | null => {
-  const n = typeof value === 'string' ? Number(value) : value
-  return typeof n === 'number' && Number.isInteger(n) && n > 0 && n <= max ? n : null
+  const n = numeric(value)
+  return n !== undefined && Number.isInteger(n) && n > 0 && n <= max ? n : null
 }
 
 export interface HostCapacity {
@@ -758,6 +759,43 @@ export function machineSize(
     memoryMb: boundedInt(cfg.machineMemoryMb, host.memoryMb) ?? DEFAULT_SETTINGS.machineMemoryMb,
     cpus: boundedInt(cfg.machineCpus, host.cpus) ?? DEFAULT_SETTINGS.machineCpus,
   }
+}
+
+const MIB = 1024 * 1024
+/**
+ * Podman has no way to clear a memory limit on an existing container:
+ * `--memory -1` is refused as a negative size and `--memory 0` leaves the
+ * limit as it was. A limit the kernel cannot reach is the equivalent. The
+ * swap value is larger so that swap stays unlimited too.
+ */
+const LIFTED_MEMORY = '4611686018427387904' // 2^62; a JS number would print it rounded
+const LIFTED_MEMORY_SWAP = '9223372036854771712' // 2^63 - one page
+
+/** The cap in MB, 0 for none; an invalid setting gets the default. */
+function containerMemoryLimitMb(value: unknown): number {
+  const mb = effectiveContainerMemoryMb(value)
+  if (mb !== null) return mb
+  console.warn(`[Compute] containerMemoryMb ${JSON.stringify(value)} is not 0 or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}; using ${DEFAULT_COMPUTE_SETTINGS.containerMemoryMb} MB`)
+  return DEFAULT_COMPUTE_SETTINGS.containerMemoryMb
+}
+
+/** Memory args for every ADF-managed container. An equal `--memory-swap` means no swap on top. */
+export function containerMemoryArgs(cfg: Pick<ComputeEnvSettings, 'containerMemoryMb'>): string[] {
+  const mb = containerMemoryLimitMb(cfg.containerMemoryMb)
+  return mb > 0 ? ['--memory', `${mb}m`, '--memory-swap', `${mb}m`] : []
+}
+
+/** The `podman update` args for a container at `currentBytes`, or null when it is in line. */
+export function containerMemoryUpdateArgs(
+  currentBytes: number,
+  cfg: Pick<ComputeEnvSettings, 'containerMemoryMb'>,
+): string[] | null {
+  const mb = containerMemoryLimitMb(cfg.containerMemoryMb)
+  if (mb === 0) {
+    const limited = currentBytes > 0 && currentBytes < Number(LIFTED_MEMORY)
+    return limited ? ['--memory', LIFTED_MEMORY, '--memory-swap', LIFTED_MEMORY_SWAP] : null
+  }
+  return currentBytes === mb * MIB ? null : containerMemoryArgs({ containerMemoryMb: mb })
 }
 
 const PODMAN_MISS_TTL_MS = 60_000
@@ -863,6 +901,10 @@ export class PodmanService extends EventEmitter {
    *  clear the pending promise — a second ensureRunning would then launch a
    *  duplicate concurrent startShared and hit a name conflict. */
   private _sharedRunningSettled = false
+  /** Per container, this run: the memory setting being applied, in line, or failed at `failedAt`.
+   *  A cleared record has no setting but keeps `done`, so the next apply still runs after the last. */
+  private _memorySyncs = new Map<string, { setting?: unknown; done: Promise<void>; failedAt?: number }>()
+  private _memoryController: boolean | null = null
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */
   private _shuttingDown = false
@@ -992,13 +1034,14 @@ export class PodmanService extends EventEmitter {
    * Ensure the shared container is running.
    * Handles: machine init (macOS/Windows), image pull, container create & start.
    * Memoized process-wide: called per MCP server per agent, so after the first
-   * success this resolves without any podman round-trips. The memo is cleared
+   * success it makes no podman call while the container's memory limit is in
+   * line; a changed setting or failed apply is synced here. The memo is cleared
    * on failure and whenever the container is observed dead (stop/exec error),
    * so recovery re-runs the full bring-up.
    */
   ensureRunning(): Promise<void> {
     if (this._shuttingDown) return Promise.reject(new Error('Compute environment is shutting down'))
-    if (this._sharedRunning) return this._sharedRunning
+    if (this._sharedRunning) return this._sharedRunningSettled ? this.syncMemoryLimit(SHARED_CONTAINER) : this._sharedRunning
     this._sharedRunningSettled = false
     const tracked = this.startShared().then(
       () => {
@@ -1050,6 +1093,7 @@ export class PodmanService extends EventEmitter {
       await this.ensureContainerRunning(bin, SHARED_CONTAINER, { kind: 'shared' })
       await this.applyPeerFirewall(bin, SHARED_CONTAINER)
       this.setStatus('running')
+      await this.syncMemoryLimit(SHARED_CONTAINER)
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err)
       this.setStatus('error', msg)
@@ -1092,6 +1136,7 @@ export class PodmanService extends EventEmitter {
       this._sharedRunningSettled = false
     }
     this.bumpContainerGeneration(name)
+    this.clearMemorySync(name, true)
     this._browserReadyPending.delete(name)
   }
 
@@ -1191,6 +1236,7 @@ export class PodmanService extends EventEmitter {
       await this.ensureMachine(bin)
       await this.ensureContainerRunning(bin, name, { kind: 'agent', agentId, agentName, browser: browserEnabled })
       await this.applyPeerFirewall(bin, name)
+      await this.syncMemoryLimit(name)
       await this.ensurePipPackages(bin, name, pipPackages)
       console.log(`[Compute] Isolated container ${name} ready`)
     })().finally(() => {
@@ -1515,6 +1561,8 @@ export class PodmanService extends EventEmitter {
     if (result.code === 0) {
       await this.applyPeerFirewall(bin, name)
       this.setPhase(name, 'ready')
+      this.clearMemorySync(name)
+      await this.syncMemoryLimit(name)
     }
     return result.code === 0
   }
@@ -1627,6 +1675,7 @@ export class PodmanService extends EventEmitter {
   ): Promise<ComputeSetupResult> {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
+    this._memoryController = null
 
     const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
       const cwd = await podmanCwd(cmdArgs)
@@ -1751,7 +1800,8 @@ export class PodmanService extends EventEmitter {
       await this.exec0(bin, ['pull', image], 120_000)
     }
 
-    const runArgs: string[] = ['run', '--rm', '-i', '--init', '--network=bridge']
+    const memoryArgs = await this.hasMemoryController(bin) ? containerMemoryArgs(this._getSettings()) : []
+    const runArgs: string[] = ['run', '--rm', '-i', '--init', '--network=bridge', ...memoryArgs]
     if (cwd) runArgs.push('-w', cwd)
     if (env) {
       for (const [k, v] of Object.entries(env)) {
@@ -1896,6 +1946,7 @@ export class PodmanService extends EventEmitter {
         // (Clear per-run caches directly; the shared ensureRunning memo stays
         // intact because this very call is what backs it.)
         this.bumpContainerGeneration(containerName)
+        this.clearMemorySync(containerName)
         this._browserReadyPending.delete(containerName)
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
         this.setPhase(containerName, 'ready', undefined, agentId)
@@ -1912,6 +1963,7 @@ export class PodmanService extends EventEmitter {
 
     // First-time setup: create + provision
     console.log(`[Compute] Creating container ${containerName}...`)
+    this.clearMemorySync(containerName)
     {
       const cfg = this._getSettings()
       const image = cfg.containerImage || DEFAULT_SETTINGS.containerImage
@@ -1939,7 +1991,8 @@ export class PodmanService extends EventEmitter {
       // --init: PID 1 is otherwise `sleep infinity`, which never reaps — every
       // dead exec-session child would linger as a zombie. Podman injects a
       // reaping init that runs the command below as its child.
-      const runArgs = ['run', '-d', '--init', '--name', containerName, '--network=bridge',
+      const memoryArgs = await this.hasMemoryController(bin) ? containerMemoryArgs(cfg) : []
+      const runArgs = ['run', '-d', '--init', '--name', containerName, '--network=bridge', ...memoryArgs,
         // Shared npm/npx cache across all managed containers: second+ agent
         // resolves `npx -y <pkg>` from a warm cache instead of the registry.
         '-v', `${NPM_CACHE_VOLUME}:${NPM_CACHE_MOUNT}`,
@@ -2053,6 +2106,66 @@ export class PodmanService extends EventEmitter {
       this.setPhase(containerName, 'ready', undefined, agentId)
     }
     if (browserWanted) this.kickBrowserReady(containerName)
+  }
+
+  /** Whether Podman can apply a memory limit; null when it could not say. A definite answer is
+   *  kept; after null Podman is asked again next time. exec0 rejects when spawn throws instead of
+   *  reporting (E2BIG, ENOMEM). */
+  private async hasMemoryController(bin: string): Promise<boolean | null> {
+    if (this._memoryController !== null) return this._memoryController
+    const info = await this.exec0(bin, ['info', '--format', '{{.Host.CgroupControllers}}'], 15_000).catch(() => null)
+    if (info?.code !== 0) {
+      console.warn('[Compute] Could not read podman info; applying no container memory cap for now')
+      return null
+    }
+    this._memoryController = /\bmemory\b/.test(info.stdout)
+    if (!this._memoryController) console.warn('[Compute] The cgroup memory controller is not available to Podman; containers run without a memory cap')
+    return this._memoryController
+  }
+
+  /** Update a running container's limit, as Podman before 5.1 can only update a
+   *  live one. Never fatal. Returns whether the container is in line; without a
+   *  memory controller there is nothing to bring in line. */
+  private async applyContainerMemoryLimit(containerName: string, setting: unknown): Promise<boolean> {
+    try {
+      const bin = await this.requirePodman()
+      const current = await this.execStatus(bin, ['container', 'inspect', containerName, '--format', '{{.HostConfig.Memory}}'])
+      const text = current.stdout.trim()
+      if (current.code !== 0 || !/^\d+$/.test(text)) throw new Error(current.stderr.trim().slice(0, 200) || 'its current limit is unreadable')
+      const args = containerMemoryUpdateArgs(Number(text), { containerMemoryMb: setting })
+      if (!args) return true
+      const controller = await this.hasMemoryController(bin)
+      if (controller !== true) return controller === false
+      if (this._shuttingDown) return false
+      const result = await this.exec0(bin, ['update', ...args, containerName])
+      if (result.code !== 0) throw new Error((result.stderr || result.stdout).slice(0, 200))
+      return true
+    } catch (err) {
+      console.warn(`[Compute] Could not update the memory limit of ${containerName}:`, err instanceof Error ? err.message : err)
+      return false
+    }
+  }
+
+  /** The one rule for every container in use: in line is a Map lookup; otherwise
+   *  apply once, shared by overlapping callers and after any earlier apply. A
+   *  failure is retried after PODMAN_MISS_TTL_MS, or at once if the setting changes. */
+  private syncMemoryLimit(name: string): Promise<void> {
+    const setting = this._getSettings().containerMemoryMb
+    const known = this._memorySyncs.get(name)
+    if (known && known.setting === setting && !(known.failedAt !== undefined && performance.now() - known.failedAt >= PODMAN_MISS_TTL_MS)) return known.done
+    const record = { setting, done: Promise.resolve(), failedAt: undefined as number | undefined }
+    record.done = (known?.done ?? Promise.resolve()).then(() => this.applyContainerMemoryLimit(name, setting)).then((inLine) => {
+      if (!inLine) record.failedAt = performance.now()
+    })
+    this._memorySyncs.set(name, record)
+    return record.done
+  }
+
+  /** A new run: check the limit again, after any apply still running. A dead-container
+   *  signal (`keepFailed`) leaves a failed apply to wait out its interval. */
+  private clearMemorySync(name: string, keepFailed = false): void {
+    const known = this._memorySyncs.get(name)
+    if (known && !(keepFailed && known.failedAt !== undefined)) this._memorySyncs.set(name, { done: known.done })
   }
 
   /** Load the peer-isolation firewall in a container that was created with it
@@ -2520,6 +2633,7 @@ export class PodmanService extends EventEmitter {
     timeout = 30_000
   ): Promise<{ stdout: string; stderr: string; code: number; timedOut: boolean }> {
     const bin = await this.requirePodman()
+    await this.syncMemoryLimit(containerName)
     const start = Date.now()
     const result = await this.exec0(bin, [
       'exec', '-w', cwd, containerName,
