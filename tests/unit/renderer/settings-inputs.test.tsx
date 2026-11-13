@@ -8,11 +8,18 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import React from 'react'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { describe, expect, it } from 'vitest'
-import { CommitInput, checkPeerAddress, checkWholeNumber } from '../../../src/renderer/components/settings/settings-inputs'
+import { describe, expect, it, vi } from 'vitest'
+import { CommitInput, ContainerMemoryGroup, checkContainerMemory, checkPeerAddress, checkWholeNumber } from '../../../src/renderer/components/settings/settings-inputs'
 
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
+
+// The last TextInput rendered, so a test can blur it without a DOM.
+const lastInput = vi.hoisted(() => ({ props: {} as { onBlur?: () => void; onChange?: (e: { target: { value: string } }) => void } }))
+vi.mock('../../../src/renderer/components/ui', async (orig) => {
+  const real = await orig<typeof import('../../../src/renderer/components/ui')>()
+  return { ...real, TextInput: (props: object) => { lastInput.props = props; return React.createElement(real.TextInput, props) } }
+})
 
 const page = () => readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
 
@@ -23,6 +30,73 @@ describe('whole numbers (workers, CPUs, memory, port)', () => {
     for (const bad of ['', '-1', '1.5', 'abc', '257', '4e2']) {
       expect(checkWholeNumber(bad, 0, 256), bad).toEqual({ ok: false, error: 'Enter a whole number from 0 to 256.' })
     }
+  })
+})
+
+describe('container memory limit', () => {
+  it('accepts 0 (no limit) and the range; refuses the gap between them', () => {
+    expect(checkContainerMemory('0')).toEqual({ ok: true, value: 0 })
+    expect(checkContainerMemory(' 512 ')).toEqual({ ok: true, value: 512 })
+    expect(checkContainerMemory('32768')).toEqual({ ok: true, value: 32768 })
+    expect(checkContainerMemory('00'), 'the service reads "00" as 0').toEqual({ ok: true, value: 0 })
+    for (const bad of ['', '1', '511', '32769', '-1', '1.5', 'abc', '1e3', '0x200', '4096.0']) {
+      expect(checkContainerMemory(bad), bad).toEqual({ ok: false, error: 'Enter 0 for no limit, or a whole number from 512 to 32768.' })
+    }
+  })
+
+  // No DOM here: call the component and find the field's handlers wherever it sits in the element tree.
+  type Field = { value: string; onCommit: (v: string) => void; check: (v: string) => string | null }
+  const find = (node: unknown): Field | undefined => {
+    if (!React.isValidElement(node)) return Array.isArray(node) ? node.map(find).find(Boolean) : undefined
+    return node.type === CommitInput ? node.props as Field : find((node.props as { children?: unknown }).children)
+  }
+  const field = (value: number, onChange: (v: number) => void) => find(ContainerMemoryGroup({ value, onChange }))!
+
+  it('shows a saved 0', () => {
+    expect(renderToStaticMarkup(<ContainerMemoryGroup value={0} onChange={() => {}} />)).toContain('value="0"')
+  })
+
+  it.each([[1024.5, '4096'], [-5, '4096'], [100, '4096'], [undefined, '4096'], ['8192', '8192']])('shows the value in force for a saved %j: %s', (saved, shown) => {
+    expect(renderToStaticMarkup(<ContainerMemoryGroup value={saved as never} onChange={() => {}} />)).toContain(`value="${shown}"`)
+  })
+
+  it('commits the number', () => {
+    const onChange = vi.fn()
+    field(4096, onChange).onCommit('2048')
+    field(4096, onChange).onCommit('0')
+    expect(onChange.mock.calls).toEqual([[2048], [0]])
+  })
+
+  it('commits the default over an invalid saved value, which it shows', () => {
+    const onChange = vi.fn()
+    renderToStaticMarkup(<ContainerMemoryGroup value={100 as never} onChange={onChange} />)
+    lastInput.props.onBlur?.()
+    expect(onChange.mock.calls).toEqual([[4096]])
+  })
+
+  it('commits nothing when the shown value is the saved one', () => {
+    const onChange = vi.fn()
+    renderToStaticMarkup(<ContainerMemoryGroup value={4096} onChange={onChange} />)
+    lastInput.props.onBlur?.()
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('refuses out-of-range input with the reason and commits nothing', () => {
+    const onChange = vi.fn()
+    const input = field(4096, onChange)
+    expect(input.check('100')).toBe('Enter 0 for no limit, or a whole number from 512 to 32768.')
+    expect(input.check('2048')).toBeNull()
+    input.onCommit('100')
+    expect(onChange).not.toHaveBeenCalled()
+  })
+
+  it('the page loads and saves it under containerMemoryMb', () => {
+    const src = page()
+    expect(src).toContain('<ContainerMemoryGroup value={containerMemoryMb} onChange={setContainerMemoryMb} />')
+    expect(src).toContain('containerMemoryMb={computeContainerMemoryMb}')
+    expect(src).toContain("persistCompute('containerMemoryMb', setComputeContainerMemoryMb, v, computeContainerMemoryMb)")
+    expect(src).toContain('setComputeContainerMemoryMb(compute.containerMemoryMb)')
+    expect(src).not.toContain('if (compute.containerMemoryMb)') // a truthiness check would drop a saved 0
   })
 })
 

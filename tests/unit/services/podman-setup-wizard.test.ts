@@ -110,6 +110,7 @@ describe('machineSize', () => {
   it('uses valid settings and falls back on missing or bogus values', () => {
     expect(machineSize({ machineMemoryMb: 8192, machineCpus: 6 }, host)).toEqual({ memoryMb: 8192, cpus: 6 })
     expect(machineSize({ machineMemoryMb: '4096' as never, machineCpus: 4 }, host)).toEqual({ memoryMb: 4096, cpus: 4 })
+    expect(machineSize({ machineMemoryMb: 4096, machineCpus: '4' as never }, host)).toEqual({ memoryMb: 4096, cpus: 4 })
     const defaults = machineSize({ machineMemoryMb: 0, machineCpus: 0 }, host)
     expect(machineSize({ machineMemoryMb: 'abc' as never, machineCpus: -2 }, host)).toEqual(defaults)
     expect(machineSize({ machineMemoryMb: 1.5, machineCpus: undefined as never }, host)).toEqual(defaults)

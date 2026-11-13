@@ -10,7 +10,6 @@ import { CodeSandboxService } from '../runtime/code-sandbox'
 import { MeshManager } from '../runtime/mesh-manager'
 import { createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
-import { type ComputeEnvSettings } from '../services/podman.service'
 import { createComputeService } from '../services/compute-service-factory'
 import { setManagedBrowserEnsurer } from '../services/managed-browser-hook'
 import { SandboxPackagesService } from '../services/sandbox-packages.service'
@@ -47,7 +46,7 @@ import { purgeAllScratchDirs, purgeStaleProcessDirs } from '../utils/scratch-dir
 import { killAllTracked } from '../utils/child-registry'
 import { withDeadline } from '../utils/concurrency'
 import { AdfDatabase } from '../adf/adf-database'
-import { DEFAULT_COMPUTE_SETTINGS } from '../../shared/constants/compute-defaults'
+import { readComputeSettings } from '../../shared/constants/compute-defaults'
 import { CLIENT_API_VERSION, takeLaunchEnv } from './routes/meta-routes'
 import { daemonGapRouteDeps } from './routes/gap-deps'
 import { RuntimeDiscovery } from '../services/runtime-discovery'
@@ -727,24 +726,4 @@ function registerAgentWithMesh(event: RuntimeAgentLoadedEvent): void {
 
 function ensureMeshServer(): void {
   meshServerBinder.ensure()
-}
-
-// Compute defaults come from the shared single source of truth — a local copy
-// previously drifted and launched containers without the VNC/desktop packages.
-function readComputeSettings(raw: unknown): ComputeEnvSettings {
-  const compute = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
-  return {
-    containerPackages: Array.isArray(compute.containerPackages)
-      ? compute.containerPackages.filter((pkg): pkg is string => typeof pkg === 'string')
-      : DEFAULT_COMPUTE_SETTINGS.containerPackages,
-    machineCpus: typeof compute.machineCpus === 'number'
-      ? compute.machineCpus
-      : DEFAULT_COMPUTE_SETTINGS.machineCpus,
-    machineMemoryMb: typeof compute.machineMemoryMb === 'number'
-      ? compute.machineMemoryMb
-      : DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
-    containerImage: typeof compute.containerImage === 'string'
-      ? compute.containerImage
-      : DEFAULT_COMPUTE_SETTINGS.containerImage,
-  }
 }

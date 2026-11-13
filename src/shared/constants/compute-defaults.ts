@@ -51,6 +51,7 @@ export const DEFAULT_COMPUTE_SETTINGS = {
   ] as string[],
   machineCpus: 2,
   machineMemoryMb: 2048,
+  containerMemoryMb: 4096,
   containerImage: 'docker.io/library/node:20-slim',
   executionTargets: [] as unknown[],
 }
@@ -58,4 +59,36 @@ export const DEFAULT_COMPUTE_SETTINGS = {
 /** A deep, independently mutable copy of the compute defaults. */
 export function cloneComputeDefaults(): Record<string, unknown> {
   return JSON.parse(JSON.stringify(DEFAULT_COMPUTE_SETTINGS)) as Record<string, unknown>
+}
+
+/** The range for a container memory cap in MB, besides 0 for none. */
+export const CONTAINER_MEMORY_MIN_MB = 512
+export const CONTAINER_MEMORY_MAX_MB = 32768
+
+/** A number, or a string of plain digits as one; undefined for anything else. */
+export function numeric(value: unknown): number | undefined {
+  const n = typeof value === 'string' ? (/^\d+$/.test(value.trim()) ? Number(value) : undefined) : value
+  return typeof n === 'number' && Number.isFinite(n) ? n : undefined
+}
+
+/** The container memory cap in force for a raw setting, in MB: 0 (none) or a whole number in range; null if invalid. */
+export function effectiveContainerMemoryMb(raw: unknown): number | null {
+  const mb = numeric(raw)
+  if (mb === undefined) return null
+  return mb === 0 || (Number.isInteger(mb) && mb >= CONTAINER_MEMORY_MIN_MB && mb <= CONTAINER_MEMORY_MAX_MB) ? mb : null
+}
+
+/** The compute settings Podman uses, from an untyped store: a missing or wrong-typed key gets its default. */
+export function readComputeSettings(raw: unknown) {
+  const compute = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
+  return {
+    containerPackages: Array.isArray(compute.containerPackages)
+      ? compute.containerPackages.filter((pkg): pkg is string => typeof pkg === 'string')
+      : DEFAULT_COMPUTE_SETTINGS.containerPackages,
+    machineCpus: numeric(compute.machineCpus) ?? DEFAULT_COMPUTE_SETTINGS.machineCpus,
+    machineMemoryMb: numeric(compute.machineMemoryMb) ?? DEFAULT_COMPUTE_SETTINGS.machineMemoryMb,
+    // Judged, with a warning, where it is used (podman.service containerMemoryLimitMb).
+    containerMemoryMb: compute.containerMemoryMb === undefined ? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb as unknown : compute.containerMemoryMb,
+    containerImage: typeof compute.containerImage === 'string' ? compute.containerImage : DEFAULT_COMPUTE_SETTINGS.containerImage,
+  }
 }
