@@ -112,13 +112,13 @@ When no compute config is set, agents still have access to the shared container 
 
 ### Container memory limit
 
-Each ADF-managed container is limited to 4096 MB by default, set under Settings → Compute → Container memory (`containerMemoryMb`). `0` turns the limit off. However it is set (Settings, `PATCH /settings`, a hand edit), the value must be 0 or a whole number from 512 to 32768, as a number or a numeric string. Anything else that is set, including `null`, gets the default with a logged warning, and Settings shows the default. A change applies the next time a container is created, started or reused, without recreating it. Where the cgroup memory controller is not available, the limit is skipped and a warning is logged.
+Each ADF-managed container is limited to 4096 MB by default, set under Settings → Compute → Container memory (`containerMemoryMb`). `0` turns the limit off. However it is set (Settings, `PATCH /settings`, a hand edit), the value must be 0 or a whole number from 512 to 32768, as a number or a string of digits. Anything else that is set, including `null`, gets the default with a logged warning, and Settings shows the default; leaving the field saves it in place of the invalid value. A change applies the next time a container is created, started or reused, without recreating it. Where the cgroup memory controller is not available, the limit is skipped and a warning is logged.
 
 When a container reaches its limit, the kernel kills a process in it. No swap is available beyond the limit. Existing containers get the limit on their next use after an upgrade. A process that already has pages in swap can be killed later, when it touches those pages, even though the update succeeded. ADF does not detect or report these kills.
 
-The limit does not protect a Podman machine with 4 GB of memory or less at the default: one container can still use all of it. Lower the limit to protect a small machine.
+The limit does not protect a Podman machine with 4 GB of memory or less at the default: one container can still use all of it. Lower the limit to protect a small machine. This does not apply on Windows (WSL), where the machine's CPUs and Memory settings have no effect.
 
-On Podman before 5.1, which some native Linux distributions ship, `podman inspect` does not show a limit set by `podman update`. There, the update repeats each time the container starts, and `0` lifts such a limit only when the container restarts.
+`podman inspect` can stay stale after updating a stopped container. Then the update repeats each time the container is used, which is harmless, and `0` lifts such a limit only when the container restarts.
 
 ## Tools
 

@@ -52,8 +52,10 @@ export function checkPeerAddress(raw: string): Checked<string> {
  * puts the saved value back. A refused value stays in the field with the
  * reason under it, and nothing is written.
  */
-export function CommitInput({ value, onCommit, check, className = '', ...props }: {
+export function CommitInput({ value, saved = value, onCommit, check, className = '', ...props }: {
   value: string
+  /** The stored value, when the field shows another (an invalid one shows its default). */
+  saved?: string
   onCommit: (value: string) => void
   /** Null when the value is fine; otherwise the reason it is refused. */
   check?: (value: string) => string | null
@@ -63,7 +65,7 @@ export function CommitInput({ value, onCommit, check, className = '', ...props }
   useEffect(() => { setDraft(value); setError(null) }, [value])
 
   const commit = () => {
-    if (draft === value) { setError(null); return }
+    if (draft === saved) { setError(null); return }
     const problem = check?.(draft) ?? null
     setError(problem)
     if (!problem) onCommit(draft)
@@ -97,6 +99,7 @@ export function ContainerMemoryGroup({ value, onChange }: { value: unknown; onCh
           aria-label="Limit"
           inputMode="numeric"
           value={String(effectiveContainerMemoryMb(value) ?? DEFAULT_COMPUTE_SETTINGS.containerMemoryMb)}
+          saved={String(value)}
           onCommit={(v) => { const r = checkContainerMemory(v); if (r.ok) onChange(r.value) }}
           check={(v) => { const r = checkContainerMemory(v); return r.ok ? null : r.error }}
           className="!w-24 !text-[12px]"

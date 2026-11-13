@@ -21,7 +21,7 @@ import {
   isolatedContainerName,
 } from '../../../src/main/services/podman.service'
 import type { ComputeUsers } from '../../../src/main/services/compute-users'
-import { DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb, readComputeSettings } from '../../../src/shared/constants/compute-defaults'
+import { DEFAULT_COMPUTE_SETTINGS, effectiveContainerMemoryMb, numeric, readComputeSettings } from '../../../src/shared/constants/compute-defaults'
 import { FakePodman, installFakePodman } from './fake-podman'
 
 const MIB = 1024 * 1024
@@ -59,15 +59,14 @@ beforeEach(() => {
   availabilityMock.mockReset()
   vi.spyOn(console, 'log').mockImplementation(() => {})
   vi.spyOn(console, 'warn').mockImplementation((...a: unknown[]) => { warnings.push(a.map(String).join(' ')) })
+  vi.useFakeTimers({ toFake: ['Date', 'performance'] }) // no timers are faked
 })
 afterEach(() => { vi.useRealTimers() })
 
-/** Move the clock past the retry interval after a failed apply (only Date is faked). */
-const later = () => {
-  const now = Date.now()
-  vi.useFakeTimers({ toFake: ['Date'] })
-  vi.setSystemTime(now + 60_000)
-}
+/** Move both clocks past the retry interval after a failed apply or probe. */
+const later = () => { vi.advanceTimersByTime(60_000) }
+/** The host clock steps back an hour; elapsed time does not. */
+const clockStepsBack = () => { vi.setSystemTime(Date.now() - 3_600_000) }
 
 describe('effectiveContainerMemoryMb', () => {
   it.each([[0, 0], ['0', 0], [512, 512], [32768, 32768], [4096, 4096], ['8192', 8192]])('%j is %j MB', (value, mb) => {
@@ -387,6 +386,18 @@ describe('shared container already brought up this session', () => {
     expect(updateCalls(fake)).toHaveLength(2)
   })
 
+  it('a host clock that steps back does not stretch the back-off after a failed update', async () => {
+    const { service, fake } = setup()
+    fake.add({ name: SHARED })
+    fake.failUpdate = true
+    await service.ensureRunning()
+    fake.failUpdate = false
+    clockStepsBack()
+    later()
+    await service.ensureRunning()
+    expect(fake.containers.get(SHARED)?.memoryBytes).toBe(4096 * MIB)
+  })
+
   it('retries a changed setting whose update failed', async () => {
     const { service, fake, settings } = setup()
     fake.add({ name: SHARED, memoryBytes: 4096 * MIB })
@@ -501,15 +512,56 @@ describe('memory controller check', () => {
     expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
   })
 
-  it('asks again after a failed probe, once the interval has passed', async () => {
+  it('asks again on each one-shot after a failed probe', async () => {
     const { service, fake } = setup(4096, null)
     const probes = () => calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))
     await service.spawnImageProcess('img:1', 'node', [])
     await service.spawnImageProcess('img:1', 'node', [])
-    expect(probes()).toHaveLength(1)
-    later()
-    await service.spawnImageProcess('img:1', 'node', [])
     expect(probes()).toHaveLength(2)
+    fake.controllers = ['memory']
+    await service.spawnImageProcess('img:1', 'node', [])
+    expect(probes()).toHaveLength(3)
+    expect(spawnMock.mock.calls[2][1]).toEqual(expect.arrayContaining(CAP_ARGS))
+  })
+
+  it('a create after a failed probe asks again and passes --memory', async () => {
+    const { service, fake } = setup(4096, null)
+    await service.spawnImageProcess('img:1', 'node', [])
+    fake.controllers = ['memory']
+    await service.ensureRunning()
+    expect(calls(fake, 'run')[0]).toEqual(expect.arrayContaining(CAP_ARGS))
+  })
+
+  it('a start after a failed probe asks again and caps the container', async () => {
+    const { service, fake } = setup(4096, null)
+    fake.add({ name: 'adf-agent-1', running: false })
+    await service.spawnImageProcess('img:1', 'node', [])
+    fake.controllers = ['memory']
+    await service.startContainer('adf-agent-1')
+    expect(fake.containers.get('adf-agent-1')?.memoryBytes).toBe(4096 * MIB)
+  })
+
+  it('after an apply failed on a failed probe, an exec on that container within the interval neither probes nor applies', async () => {
+    const { service, fake } = setup(4096, null)
+    fake.add({ name: 'adf-agent-1' })
+    await service.execInContainer('adf-agent-1', '/workspace', 'true')
+    fake.controllers = ['memory']
+    await service.execInContainer('adf-agent-1', '/workspace', 'true')
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
+    expect(updateCalls(fake)).toEqual([])
+  })
+
+  it('an exec after a dead-container error does not probe again inside the interval', async () => {
+    const { service, fake } = setup(4096, null)
+    fake.add({ name: 'adf-agent-1' })
+    await service.execInContainer('adf-agent-1', '/workspace', 'true') // the probe fails, so the apply fails
+    fake.controllers = ['memory']
+    fake.containers.get('adf-agent-1')!.running = false
+    await service.execInContainer('adf-agent-1', '/workspace', 'true') // finds it stopped
+    fake.containers.get('adf-agent-1')!.running = true
+    await service.execInContainer('adf-agent-1', '/workspace', 'true')
+    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
+    expect(updateCalls(fake)).toEqual([])
   })
 
   it('probes again after the setup wizard changes the machine', async () => {
@@ -612,7 +664,7 @@ describe('one memory sync rule per container', () => {
     fake.controllers = undefined // the create's probe fails, so it runs uncapped
     const answer = fake.exec0
     ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
-      if (args[0] === 'run') { fake.controllers = ['memory']; later() } // and the failed probe's interval passes
+      if (args[0] === 'run') fake.controllers = ['memory'] // podman info answers again, inside the failed probe's interval
       return answer(bin, args)
     }
     await bringUpAgent(service)
@@ -793,6 +845,34 @@ describe('compute settings reader', () => {
   it('reads numeric machine strings as numbers, and leaves containerMemoryMb to the service', () => {
     expect(readComputeSettings({ machineCpus: '4', machineMemoryMb: '4096', containerMemoryMb: '8192' }))
       .toMatchObject({ machineCpus: 4, machineMemoryMb: 4096, containerMemoryMb: '8192' })
+  })
+
+  it('passes a stored containerMemoryMb through, end to end to podman run', async () => {
+    expect(readComputeSettings({ containerMemoryMb: 2048 }).containerMemoryMb).toBe(2048)
+    const { service, fake } = setup()
+    service.setSettingsAccessor(() => readComputeSettings({ containerMemoryMb: 2048 }))
+    await service.ensureRunning()
+    expect(calls(fake, 'run')[0]).toEqual(expect.arrayContaining(['--memory', '2048m', '--memory-swap', '2048m']))
+  })
+
+  it.each([['1e3'], ['0x200'], ['512.0'], ['+512'], ['-1'], ['']])('numeric() refuses the string %j', (value) => {
+    expect(numeric(value)).toBeUndefined()
+  })
+
+  it('numeric() reads plain digits, trimmed, and leaves numbers as they are', () => {
+    expect(numeric(' 512 ')).toBe(512)
+    expect(numeric('0')).toBe(0)
+    expect(numeric(1.5)).toBe(1.5)
+    expect(numeric(1e3)).toBe(1000)
+  })
+
+  it.each([['1e3'], ['0x200'], ['512.0']])('gets the default, with a warning, for containerMemoryMb %j', (value) => {
+    expect(containerMemoryArgs({ containerMemoryMb: value })).toEqual(CAP_ARGS)
+    expect(warnings).toHaveLength(1)
+  })
+
+  it('reads a machineCpus of "0x4" as unset', () => {
+    expect(readComputeSettings({ machineCpus: '0x4' }).machineCpus).toBe(DEFAULT_COMPUTE_SETTINGS.machineCpus)
   })
 
   it('a missing containerMemoryMb gets the default with no warning', () => {

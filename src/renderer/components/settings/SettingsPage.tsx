@@ -2365,7 +2365,7 @@ function ComputeTab({
     <SettingsGroup
       title="Default container"
       description="Applies to new containers and rebuilds."
-      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS; on Windows (WSL), Memory has no effect; on Linux, containers use this computer's resources."
+      hint="Packages install with apt-get on Debian-based images and apk on Alpine. CPUs and Memory size the Podman machine on macOS; on Windows (WSL), they have no effect; on Linux, containers use this computer's resources."
     >
       <SettingsRow label="Image">
         <CommitInput

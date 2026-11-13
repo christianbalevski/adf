@@ -14,6 +14,13 @@ import { CommitInput, ContainerMemoryGroup, checkContainerMemory, checkPeerAddre
 // Vitest compiles JSX with the classic runtime (the renderer build uses the automatic one).
 ;(globalThis as { React?: typeof React }).React = React
 
+// The last TextInput rendered, so a test can blur it without a DOM.
+const lastInput = vi.hoisted(() => ({ props: {} as { onBlur?: () => void; onChange?: (e: { target: { value: string } }) => void } }))
+vi.mock('../../../src/renderer/components/ui', async (orig) => {
+  const real = await orig<typeof import('../../../src/renderer/components/ui')>()
+  return { ...real, TextInput: (props: object) => { lastInput.props = props; return React.createElement(real.TextInput, props) } }
+})
+
 const page = () => readFileSync(join(__dirname, '../../../src/renderer/components/settings/SettingsPage.tsx'), 'utf-8')
 
 describe('whole numbers (workers, CPUs, memory, port)', () => {
@@ -58,6 +65,20 @@ describe('container memory limit', () => {
     field(4096, onChange).onCommit('2048')
     field(4096, onChange).onCommit('0')
     expect(onChange.mock.calls).toEqual([[2048], [0]])
+  })
+
+  it('commits the default over an invalid saved value, which it shows', () => {
+    const onChange = vi.fn()
+    renderToStaticMarkup(<ContainerMemoryGroup value={100 as never} onChange={onChange} />)
+    lastInput.props.onBlur?.()
+    expect(onChange.mock.calls).toEqual([[4096]])
+  })
+
+  it('commits nothing when the shown value is the saved one', () => {
+    const onChange = vi.fn()
+    renderToStaticMarkup(<ContainerMemoryGroup value={4096} onChange={onChange} />)
+    lastInput.props.onBlur?.()
+    expect(onChange).not.toHaveBeenCalled()
   })
 
   it('refuses out-of-range input with the reason and commits nothing', () => {

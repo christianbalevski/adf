@@ -904,9 +904,8 @@ export class PodmanService extends EventEmitter {
   /** Per container, this run: the memory setting being applied, in line, or failed at `failedAt`.
    *  A cleared record has no setting but keeps `done`, so the next apply still runs after the last. */
   private _memorySyncs = new Map<string, { setting?: unknown; done: Promise<void>; failedAt?: number }>()
-  /** A definite probe answer is remembered; null (could not read) is asked again after PODMAN_MISS_TTL_MS. */
+  /** A definite probe answer is remembered; null (could not read) is asked again on the next probe. */
   private _memoryController: boolean | null = null
-  private _memoryProbeMissAt = 0
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */
   private _shuttingDown = false
@@ -1678,7 +1677,6 @@ export class PodmanService extends EventEmitter {
     if (!SETUP_STEPS.has(step)) return { success: false, error: `Unknown step: ${step}` }
     this.podmanMissAt = 0
     this._memoryController = null
-    this._memoryProbeMissAt = 0
 
     const run = async (cmd: string, cmdArgs: string[], timeout = 300_000): Promise<{ stdout: string; stderr: string; code: number; error?: string }> => {
       const cwd = await podmanCwd(cmdArgs)
@@ -2111,14 +2109,13 @@ export class PodmanService extends EventEmitter {
     if (browserWanted) this.kickBrowserReady(containerName)
   }
 
-  /** Whether Podman can apply a memory limit; null when it could not say.
-   *  exec0 rejects when spawn throws instead of reporting (E2BIG, ENOMEM). */
+  /** Whether Podman can apply a memory limit; null when it could not say. A definite answer is
+   *  kept; after null Podman is asked again next time. exec0 rejects when spawn throws instead of
+   *  reporting (E2BIG, ENOMEM). */
   private async hasMemoryController(bin: string): Promise<boolean | null> {
     if (this._memoryController !== null) return this._memoryController
-    if (Date.now() - this._memoryProbeMissAt < PODMAN_MISS_TTL_MS) return null
     const info = await this.exec0(bin, ['info', '--format', '{{.Host.CgroupControllers}}'], 15_000).catch(() => null)
     if (info?.code !== 0) {
-      this._memoryProbeMissAt = Date.now()
       console.warn('[Compute] Could not read podman info; applying no container memory cap for now')
       return null
     }
@@ -2156,10 +2153,10 @@ export class PodmanService extends EventEmitter {
   private syncMemoryLimit(name: string): Promise<void> {
     const setting = this._getSettings().containerMemoryMb
     const known = this._memorySyncs.get(name)
-    if (known && known.setting === setting && !(known.failedAt !== undefined && Date.now() - known.failedAt >= PODMAN_MISS_TTL_MS)) return known.done
+    if (known && known.setting === setting && !(known.failedAt !== undefined && performance.now() - known.failedAt >= PODMAN_MISS_TTL_MS)) return known.done
     const record = { setting, done: Promise.resolve(), failedAt: undefined as number | undefined }
     record.done = (known?.done ?? Promise.resolve()).then(() => this.applyContainerMemoryLimit(name, setting)).then((inLine) => {
-      if (!inLine) record.failedAt = Date.now()
+      if (!inLine) record.failedAt = performance.now()
     })
     this._memorySyncs.set(name, record)
     return record.done

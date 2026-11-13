@@ -65,9 +65,9 @@ export function cloneComputeDefaults(): Record<string, unknown> {
 export const CONTAINER_MEMORY_MIN_MB = 512
 export const CONTAINER_MEMORY_MAX_MB = 32768
 
-/** A number, or a numeric string as one; undefined for anything else. */
+/** A number, or a string of plain digits as one; undefined for anything else. */
 export function numeric(value: unknown): number | undefined {
-  const n = typeof value === 'string' && value.trim() !== '' ? Number(value) : value
+  const n = typeof value === 'string' ? (/^\d+$/.test(value.trim()) ? Number(value) : undefined) : value
   return typeof n === 'number' && Number.isFinite(n) ? n : undefined
 }
 
