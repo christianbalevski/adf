@@ -654,7 +654,7 @@ describe('one memory sync rule per container', () => {
     fake.controllers = undefined // the create's probe fails, so it runs uncapped
     const answer = fake.exec0
     ;(service as unknown as { exec0: FakePodman['exec0'] }).exec0 = async (bin, args) => {
-      if (args[0] === 'run') fake.controllers = ['memory'] // podman info answers again, inside the failed probe's interval
+      if (args[0] === 'run') fake.controllers = ['memory'] // podman info answers again; the apply right after the create asks it
       return answer(bin, args)
     }
     await bringUpAgent(service)
