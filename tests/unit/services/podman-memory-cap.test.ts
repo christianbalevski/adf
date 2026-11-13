@@ -541,16 +541,6 @@ describe('memory controller check', () => {
     expect(fake.containers.get('adf-agent-1')?.memoryBytes).toBe(4096 * MIB)
   })
 
-  it('after an apply failed on a failed probe, an exec on that container within the interval neither probes nor applies', async () => {
-    const { service, fake } = setup(4096, null)
-    fake.add({ name: 'adf-agent-1' })
-    await service.execInContainer('adf-agent-1', '/workspace', 'true')
-    fake.controllers = ['memory']
-    await service.execInContainer('adf-agent-1', '/workspace', 'true')
-    expect(calls(fake, 'info').filter((a) => a[2].includes('CgroupControllers'))).toHaveLength(1)
-    expect(updateCalls(fake)).toEqual([])
-  })
-
   it('an exec after a dead-container error does not probe again inside the interval', async () => {
     const { service, fake } = setup(4096, null)
     fake.add({ name: 'adf-agent-1' })

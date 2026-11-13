@@ -904,7 +904,6 @@ export class PodmanService extends EventEmitter {
   /** Per container, this run: the memory setting being applied, in line, or failed at `failedAt`.
    *  A cleared record has no setting but keeps `done`, so the next apply still runs after the last. */
   private _memorySyncs = new Map<string, { setting?: unknown; done: Promise<void>; failedAt?: number }>()
-  /** A definite probe answer is remembered; null (could not read) is asked again on the next probe. */
   private _memoryController: boolean | null = null
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */

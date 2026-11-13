@@ -116,9 +116,9 @@ Each ADF-managed container is limited to 4096 MB by default, set under Settings 
 
 When a container reaches its limit, the kernel kills a process in it. No swap is available beyond the limit. Existing containers get the limit on their next use after an upgrade. A process that already has pages in swap can be killed later, when it touches those pages, even though the update succeeded. ADF does not detect or report these kills.
 
-The limit does not protect a Podman machine with 4 GB of memory or less at the default: one container can still use all of it. Lower the limit to protect a small machine. This does not apply on Windows (WSL), where the machine's CPUs and Memory settings have no effect.
+The limit does not protect a Podman machine with 4 GB of memory or less at the default: one container can still use all of it. Lower the limit to protect a small machine. On Windows (WSL), the machine's CPUs and Memory settings have no effect: WSL sizes the machine, by default to half this computer's memory.
 
-`podman inspect` can stay stale after updating a stopped container. Then the update repeats each time the container is used, which is harmless, and `0` lifts such a limit only when the container restarts.
+`podman inspect` can stay stale after `podman update` (on a stopped container, and on Podman before 5.1). Then the update repeats when the container is next started or found stopped, which is harmless, and `0` lifts such a limit only when the container restarts.
 
 ## Tools
 

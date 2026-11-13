@@ -21,7 +21,7 @@ export function checkWholeNumber(raw: string, min: number, max: number): Checked
 
 /** A container memory cap in MB: 0 for no cap, otherwise in the shared range. */
 export function checkContainerMemory(raw: string): Checked<number> {
-  const mb = /^\d+$/.test(raw.trim()) ? effectiveContainerMemoryMb(raw) : null
+  const mb = effectiveContainerMemoryMb(raw)
   return mb !== null ? { ok: true, value: mb } : { ok: false, error: `Enter 0 for no limit, or a whole number from ${CONTAINER_MEMORY_MIN_MB} to ${CONTAINER_MEMORY_MAX_MB}.` }
 }
 
