@@ -481,9 +481,12 @@ export function formatUntil(at: number, now: number): string {
   return `in ${Math.round(ms / 86_400_000)} days`
 }
 
-/** The overview's next wake (facts line, "wakes in"): the first Upcoming row that fires in this gate. */
-export function nextFiringWake(upcoming: readonly UpcomingWake[] | undefined, gate: string): number | undefined {
-  return upcoming?.find((t) => wakeFires(t, gate))?.at
+/** The next wake across all timers, independent of the three-row Upcoming preview. */
+export function nextFiringWake(timers: readonly { next_wake_at: number; scope: readonly string[]; expired?: boolean | number }[] | undefined, gate: string): number | undefined {
+  return timers?.reduce<number | undefined>((next, timer) => {
+    if (timer.expired || !timerFires(timer.scope, gate)) return next
+    return next === undefined ? timer.next_wake_at : Math.min(next, timer.next_wake_at)
+  }, undefined)
 }
 
 /** An Upcoming row's countdown, or null when the row will not fire in this gate. */

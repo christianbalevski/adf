@@ -319,12 +319,22 @@ describe('a Stopped agent with something waiting', () => {
 
 describe('wake displays follow the gate', () => {
   const agentWake: UpcomingWake = { id: 1, at: 5 * MIN, scope: 'agent', scopes: ['agent'] }
-  const systemWake: UpcomingWake = { id: 2, at: 9 * MIN, scope: 'system', scopes: ['system'] }
 
-  it('the overview next wake (facts line, "wakes in") is the first row that fires', () => {
-    expect(nextFiringWake([agentWake, systemWake], 'off')).toBeUndefined()
-    expect(nextFiringWake([agentWake, systemWake], 'idle')).toBe(5 * MIN)
-    expect(nextFiringWake([agentWake, systemWake], 'stopped')).toBe(9 * MIN)
+  it('the overview next wake is the earliest eligible unexpired timer, beyond the preview limit', () => {
+    // getTimers is not limited to Upcoming's first three rows, nor required
+    // to be sorted by wake time. Keep expired history out of the summary.
+    const timers = [
+      { next_wake_at: MIN, scope: ['agent'] },
+      { next_wake_at: 2 * MIN, scope: ['agent'] },
+      { next_wake_at: 3 * MIN, scope: ['agent'] },
+      { next_wake_at: 9 * MIN, scope: ['system'] },
+      { next_wake_at: 5 * MIN, scope: ['system', 'agent'] },
+      { next_wake_at: 0, scope: ['system'], expired: 1 },
+    ]
+    expect(nextFiringWake(timers, 'off')).toBeUndefined()
+    expect(nextFiringWake(timers, 'idle')).toBe(MIN)
+    expect(nextFiringWake(timers, 'suspended')).toBe(5 * MIN)
+    expect(nextFiringWake(timers, 'error')).toBe(5 * MIN)
     expect(nextFiringWake(undefined, 'idle')).toBeUndefined()
   })
 

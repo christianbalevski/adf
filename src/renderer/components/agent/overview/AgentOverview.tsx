@@ -97,7 +97,9 @@ import {
   type PowerItem
 } from './agent-overview-model'
 import { servesHttp } from '../../../../shared/utils/serving'
-import { openApi, useOpenAgentKey } from '../../../utils/runtime-api'
+import { openApi, openAgentKey, useOpenAgentKey } from '../../../utils/runtime-api'
+import { captureAgentView, isCurrentAgentView } from '../../../utils/agent-view'
+import { wakeFires } from '../../../../shared/utils/trigger-gate'
 import { startForegroundAgent } from '../../../utils/start-agent'
 import { Button } from '../../ui'
 
@@ -117,6 +119,12 @@ const STAT_NAMES: Record<StatKey, string> = {
 // Data
 // =============================================================================
 
+/** getTimers reads the foreground workspace, which can change before the view does. */
+export function readOverviewTimers(key: string) {
+  const view = captureAgentView()
+  if (key !== openAgentKey() || !isCurrentAgentView(view)) return undefined
+  return openApi()?.getTimers().then((result) => isCurrentAgentView(view) ? result : null)
+}
 const readVitals: OverviewReader<AgentVitals> = (filePath, force) => openApi()?.getAgentVitals?.(filePath, { force })
 
 /** What the agent is doing right now, for the state line and orbital motion. */
@@ -263,6 +271,12 @@ export function AgentOverview() {
   const gate = useAgentStore((s) => s.gate)
   const vitals = useOverviewRead(filePath, state, config, readVitals)
   const activity = useOverviewRead(filePath, state, config, readActivity)
+  const openKey = useOpenAgentKey()
+  const previewWake = activity?.upcoming.find((timer) => wakeFires(timer, gate))?.at
+  // Only a full preview with no eligible timer can hide a later runnable one.
+  // Avoid polling retained timer history when the small preview answers it.
+  const needsTimers = gate !== 'off' && previewWake === undefined && activity?.upcoming.length === 3
+  const timers = useOverviewRead(needsTimers ? openKey : null, state, config, readOverviewTimers)
   const rootRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const [metricsExpanded, setMetricsExpanded] = useState(false)
@@ -274,10 +288,9 @@ export function AgentOverview() {
   useEffect(() => setMetricsExpanded(false), [filePath])
   const chartFolded = folded.chart
   const [now, setNow] = useState(() => Date.now())
-  // The next wake that will fire: the first Upcoming row whose scopes fire in this gate.
-  const nextWakeAt = nextFiringWake(activity?.upcoming, gate)
+  // Upcoming is only a preview; the next eligible timer may be outside its three rows.
+  const nextWakeAt = previewWake ?? nextFiringWake(timers?.timers, gate)
   // The store tracks starts in flight for every path (title bar, sidebar, here, reattach).
-  const openKey = useOpenAgentKey()
   const starting = useAppStore((s) => (openKey ? s.startingFilePaths.has(openKey) : false))
   const live = useLiveActivity(nextWakeAt, now, starting)
   const pulsing = useLevelUpPulse(vitals?.did, vitals?.stats.experience.level)
