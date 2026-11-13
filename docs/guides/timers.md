@@ -241,7 +241,7 @@ Timers are polled on a **5-second tick** — the runtime wakes every 5s, collect
 
 When a timer fires:
 
-1. Due rows are **settled first, before firing** — one-shot/exhausted timers are flagged `expired = 1`; recurring ones have `next_wake_at` advanced in place. (Settling first means a crash mid-fire cannot refire the batch on the next tick.)
+1. Due rows are **settled first, before firing** — one-shot/exhausted timers are flagged `expired = 1`; recurring ones have `next_wake_at` advanced in place. (Settling first means a crash mid-fire cannot refire the batch on the next tick.) A row that `on_timer` admits in at least one of its scopes, and that the agent's state blocks in all of those scopes, is not settled; see [Missed Timers](#missed-timers).
 2. `run_count` is incremented and `last_fired_at` is updated
 3. Payload is delivered to scope handler(s) that pass the dual-check
 4. **One-time / exhausted timers are NOT deleted** — they are flagged `expired = 1` and kept as history. `getDueTimers` selects only `expired = 0` rows, so an expired timer never fires again.
@@ -262,6 +262,8 @@ If the runtime loads an ADF with past-due timers (e.g., the app was closed), cat
 | **Cron** | Fire once, recompute the next future occurrence from now |
 
 This prevents a flood of catch-up fires. However many intervals were missed, the timer fires once and gets back on schedule from the current time.
+
+The same rule covers a timer the agent's state (its main loop's state) blocks. Agent scope does not fire while the agent is `suspended`, in `error` or `off`, and system scope does not fire while it is `off`. A timer that `on_timer` admits in at least one of its scopes and that comes due while its state blocks all of those scopes is not settled: it stays due and fires on the first tick after the agent's state admits one of those scopes. A released timer is queued like any trigger; if the turn it waits behind ends in error, suspended, hibernate or off, it is lost. A timer with both scopes whose system half can fire does fire then, and is settled, so its agent half is not delivered later; this happens even when the timer has no lambda, so nothing runs.
 
 ## Timer Storage
 

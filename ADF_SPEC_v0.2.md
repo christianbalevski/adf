@@ -1533,12 +1533,15 @@ A system-scope lambda receives the event object. An agent-scope target does not 
 
 ### 7.5 State Gating
 
+State gating uses the main loop's state; executor work states gate as `active`, and `error` is the main loop's executor state (§6.1).
+
 | State | System scope | Agent scope |
 |-------|--------------|-------------|
 | `active` | Fires | Runs |
 | `idle` | Fires | Fires |
 | `hibernate` | Fires | `on_timer` only |
 | `suspended` | Fires | No |
+| `error` | Fires | No |
 | `off` | No | No |
 
 ### 7.6 Timer Schedules
@@ -1590,6 +1593,8 @@ When a timer comes due, the runtime:
 A runtime MUST NOT delete expired timers as part of firing; they remain as history. If the runtime cannot deliver a `once` fire (backpressure or a dropped dispatch), it clears `expired` so that the timer fires later.
 
 After downtime, a runtime fires each missed timer once on load and then schedules its next occurrence. A runtime MUST NOT fire every missed occurrence.
+
+A timer that `on_timer` admits in at least one of its scopes is not settled while the state gate (§7.5), read from the main loop's state, blocks all of those scopes. A runtime MUST NOT set `expired`, advance `next_wake_at`, increment `run_count` or set `last_fired_at` for it; the timer stays due and fires once, as a missed timer, on the first check after the gate admits one of those scopes.
 
 When a loop is deleted, the runtime deletes its unlocked timers and logs `loop_timers_dropped`; locked timers are kept.
 

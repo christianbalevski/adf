@@ -36,11 +36,11 @@ Entering hibernate (or off) **drops the queued agent-scope trigger backlog** —
 
 ### Suspended
 
-A safety state set by the runtime when an agent hits its `limits.max_active_turns` limit. The agent cannot resume on its own — it requires explicit owner approval through a human-in-the-loop dialog. If the owner doesn't respond within the `limits.suspend_timeout_ms` window (default: 20 minutes), or denies, the agent transitions to `off`.
+A safety state set by the runtime when an agent hits its `limits.max_active_turns` limit. The agent cannot resume on its own — it requires explicit owner approval through a human-in-the-loop dialog. If the owner doesn't respond within the `limits.suspend_timeout_ms` window (default: 20 minutes), or denies, the agent transitions to `off`. An agent-scope timer that comes due in suspended is held; see [Missed Timers](timers.md#missed-timers).
 
 ### Error
 
-The agent encountered a **structural** failure — something wrong with the executor itself, such as a corrupt session, a bad code path, or a tool registry fault. The error state persists rather than silently recovering. **Agent-scope** triggers are held back while in error — only a direct user message wakes the LLM loop and recovers the agent back to active. **System-scope** triggers, however, keep firing: the scope gate blocks only agent scope, and system scope fires in every state except `off`. So lambdas, log handlers, and system timers continue to run in error state; only the expensive LLM loop is quiesced. This keeps genuine failures visible without silently looping retries.
+The agent encountered a **structural** failure — something wrong with the executor itself, such as a corrupt session, a bad code path, or a tool registry fault. The error state persists rather than silently recovering. **Agent-scope** triggers are held back while in error — only a direct user message wakes the LLM loop and recovers the agent back to active. **System-scope** triggers, however, keep firing: the scope gate blocks only agent scope, and system scope fires in every state except `off`. So lambdas, log handlers, and system timers continue to run in error state; only the expensive LLM loop is quiesced. An agent-scope timer that comes due in error is held; see [Missed Timers](timers.md#missed-timers). This keeps genuine failures visible without silently looping retries.
 
 **What does not trigger error state.** Transient external failures — provider rate limits (429), provider outages (5xx), network timeouts, connection resets — are treated as **operational**, not structural. The executor classifies these inside its turn-loop catch block and returns the agent to `idle` instead of `error`. The agent's timers and triggers keep firing, and the next attempt may succeed. A provider being unreachable for an hour leaves the agent idle, not destroyed.
 
@@ -56,7 +56,7 @@ Structural failures write with `level = "error"`, `event = "turn_error"`. Agents
 
 ### Off
 
-Completely stopped. No triggers fire. The agent must be manually restarted. Use this to fully disable an agent. In ADF Studio this is **Off** in the title bar; on the daemon it is `POST /agents/{id}/stop` (`adf stop <agent>`). Off ends the running turn at once, so no further tool starts, and kills every host shell the agent started.
+Completely stopped. No triggers fire. The agent must be manually restarted. A timer that comes due while the agent is off stays due and fires once after it is started (see [Missed Timers](timers.md#missed-timers)). Use this to fully disable an agent. In ADF Studio this is **Off** in the title bar; on the daemon it is `POST /agents/{id}/stop` (`adf stop <agent>`). Off ends the running turn at once, so no further tool starts, and kills every host shell the agent started.
 
 **Hard-off guarantee.** Transitioning to `off` is a full teardown, not a soft pause. The runtime unregisters the agent from the mesh, disconnects all MCP servers, stops all channel adapters, closes WS connections, and destroys the code sandbox. After `off`, the agent is unreachable from the network — messages addressed to it fail to route. Restart re-establishes these connections from scratch.
 

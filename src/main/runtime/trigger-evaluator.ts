@@ -804,6 +804,24 @@ export class TriggerEvaluator extends EventEmitter {
     }
     if (due.length === 0) return
 
+    // on_timer trigger config is a gate, not a router: the timer owns what
+    // runs, the trigger decides which of its scopes may. A timer that config
+    // admits but the state gate blocks in every admitted scope is not settled:
+    // it stays due and fires on the first tick the gate lets it through,
+    // coalesced like any missed timer.
+    const timerCfg = this.getTriggerConfig('on_timer')
+    const scopesToFire = new Map<number, TriggerScopeV3[]>()
+    due = due.filter(timer => {
+      const admitted = timerCfg?.enabled
+        ? timer.scope.filter(scope => (timerCfg.targets ?? []).some(t => t.scope === scope))
+        : []
+      const scopes = admitted.filter(scope => this.shouldFire(scope, 'on_timer'))
+      if (admitted.length > 0 && scopes.length === 0) return false
+      scopesToFire.set(timer.id, scopes)
+      return true
+    })
+    if (due.length === 0) return
+
     const now = Date.now()
 
     // Settle all due timers BEFORE firing: one-shot/exhausted timers are
@@ -861,12 +879,8 @@ export class TriggerEvaluator extends EventEmitter {
     const timerAgentId = this.config.id
     for (const timer of due) {
       if (!settled.has(timer.id)) continue
-      // on_timer trigger config is a gate, not a router.
-      // The timer owns what runs. The trigger controls whether it's allowed.
-      const cfg = this.getTriggerConfig('on_timer')
-      if (!cfg?.enabled) continue
-
-      const targets = cfg.targets ?? []
+      const scopes = scopesToFire.get(timer.id) ?? []
+      if (scopes.length === 0) continue
 
       // Create one event per timer, dispatch per scope
       const timerWithUpdatedCount = { ...timer, run_count: timer.run_count + 1, last_fired_at: now }
@@ -876,13 +890,7 @@ export class TriggerEvaluator extends EventEmitter {
         data: { timer: timerWithUpdatedCount },
       })
 
-      // Process each scope in the timer's scope array
-      for (const scope of timer.scope) {
-        // Check gate: does on_timer.targets include a target with this scope?
-        const gateTarget = targets.find(t => t.scope === scope)
-        if (!gateTarget) continue
-        if (!this.shouldFire(scope, 'on_timer')) continue
-
+      for (const scope of scopes) {
         withSource('system:timer', timerAgentId, () => {
           emitUmbilicalEvent({
             event_type: 'timer.fired',

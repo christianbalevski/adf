@@ -1153,6 +1153,9 @@ describe('TriggerEvaluator', () => {
       vi.advanceTimersByTime(5000)
 
       expect(events.length).toBe(0)
+      // Held, not settled: it fires once the agent leaves suspended.
+      expect(ws.expireTimers).not.toHaveBeenCalled()
+      expect(ws.advanceTimer).not.toHaveBeenCalled()
 
       evaluator.dispose()
     })
