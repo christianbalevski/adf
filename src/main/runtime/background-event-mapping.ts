@@ -1,6 +1,6 @@
 import type { AdfFileCreatedPayload, AgentState, BackgroundAdfFileCreatedEvent, BackgroundAgentEvent, BackgroundAgentStatusEvent } from '../../shared/types/ipc.types'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
-import { toDisplayState } from './display-state'
+import { toDisplayState } from '../../shared/utils/display-state'
 
 /**
  * Executor/host event → background event mapping for agents without a focused

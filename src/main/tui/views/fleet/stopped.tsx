@@ -13,6 +13,10 @@ import { Spinner } from '../../ui/Spinner'
 import { folderName, stoppedError, stoppedLabel, type TrackedAgent } from '../../state/tracked'
 import type { TuiStore } from '../../state/store'
 import type { TuiState } from '../../state/types'
+import { cjs } from '../../interop'
+import * as autostartTextNs from '../../../../shared/constants/autostart-text'
+
+const { NOT_AUTOSTART_TEXT } = cjs(autostartTextNs)
 
 /** viewState key: `'all'` (default) or `'running'` (hide not-loaded tracked agents). */
 export const AGENTS_FILTER_KEY = 'fleet.agentsFilter'
@@ -95,7 +99,7 @@ export function StoppedAgentPanel({ entry, width, height, focused, what }: { ent
       : a.status === 'unreadable'
         ? 'Not a loadable agent file.'
         : a.status === 'not_autostart'
-          ? 'Not set to autostart, so it only runs when you start it.'
+          ? NOT_AUTOSTART_TEXT
           : 'Set to autostart, but not running in the daemon now.'
   return (
     <Box flexDirection="column" width={width} height={height} paddingX={1}>

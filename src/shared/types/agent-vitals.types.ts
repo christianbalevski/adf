@@ -229,6 +229,9 @@ export interface UpcomingWake {
   at: number
   /** 'system' runs a lambda; 'agent' wakes a loop. */
   scope: 'system' | 'agent'
+  /** Every scope the timer fires in (adf_timers.scope); empty if unreadable.
+   *  Older daemons omit it: read it through wakeFires (trigger-gate). */
+  scopes?: string[]
   /** system: lambda reference, e.g. `lib/sync.ts:run`. */
   lambda?: string
   /** system: payload passed to the lambda, as stored (at most UPCOMING_TEXT_MAX chars). */

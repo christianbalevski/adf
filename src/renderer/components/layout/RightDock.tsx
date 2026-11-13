@@ -15,6 +15,7 @@ import { useCompactNavigationStore } from '../../stores/compact-navigation.store
 import { dockStateKey, elementAtPath, elementPath, readDockState, writeDockState, type DockScroll } from '../../stores/dock-panel-state'
 import { Tooltip } from '../common/Tooltip'
 import { IS_MAC } from '../../utils/platform'
+import { useOpenAgentKey } from '../../utils/runtime-api'
 import { ACCELERATORS, formatKey } from '../../../shared/constants/keyboard-shortcuts'
 
 const DOCK_TABS: readonly RightPanel[] = ['overview', 'loop', 'inbox', 'files', 'agent']
@@ -50,6 +51,7 @@ export function RightDock({ reserveWindowControls = false, compact = false }: { 
   const setAgentSubTab = storedSetSubTab
   const toggleRightPanel = useAppStore((s) => s.toggleRightPanel)
   const filePath = useDocumentStore((s) => s.filePath)
+  const agentKey = useOpenAgentKey()
   const unreadInboxCount = useInboxStore((s) => s.unreadCount)
   const contentRef = useRef<HTMLDivElement>(null)
   // Loops keeps its own scroll (it follows the tail); every other panel gets
@@ -149,7 +151,7 @@ export function RightDock({ reserveWindowControls = false, compact = false }: { 
       >
         {/* Keyed by placement as well as agent: moving the chat remounts it so
             the virtualised stream re-measures at the new panel width. */}
-        {rightPanel === 'overview' && <AgentOverview />}
+        {rightPanel === 'overview' && <AgentOverview key={agentKey} />}
         {rightPanel === 'loop' && <AgentLoop key={`side:${filePath ?? ''}`} />}
         {rightPanel === 'inbox' && <InboxPanel />}
         {rightPanel === 'files' && <AgentFiles />}

@@ -88,7 +88,7 @@ adf pair                      # lists the ADF computers it finds; or: adf pair <
   on private networks. On Linux, open the port in ufw or firewalld if they
   run (`adf daemon remote status` prints the commands).
 - It works while the daemon runs. A daemon ADF Studio started stops when
-  Studio quits unless **Keep the daemon running** is on; Studio asks first
+  Studio quits unless **Keep running after Studio quits** is on; Studio asks first
   when other computers are connected.
 
 Design and every rule: [remote-access.md](../design/remote-access.md).

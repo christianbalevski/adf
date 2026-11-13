@@ -3,7 +3,7 @@ import { IPC } from '../../../shared/constants/ipc-channels'
 import type { DaemonClient, AgentSummary, AgentStatus } from '../../../shared/daemon-client'
 import type { AgentExecutionEvent, AgentState, BackgroundAgentEvent, NotificationsSnapshot } from '../../../shared/types/ipc.types'
 import { applyBackgroundEvent, countActiveLoops, type BackgroundMappingState } from '../../runtime/background-event-mapping'
-import { toDisplayState } from '../../runtime/display-state'
+import { toDisplayState } from '../../../shared/utils/display-state'
 import { turnEndOf, type ClientFrame, type ExecutorFrame, type HostFrame, type PushFrame, type PushTopic, type StreamGap, type TurnFrame } from './client-stream'
 import { dirname, win32 } from 'node:path'
 import type { DaemonModeSession } from './session'
@@ -736,8 +736,17 @@ export class EventBridge {
       if (typeof frame.payload.handle === 'string') agent.handle = frame.payload.handle
       if (typeof frame.payload.state === 'string') agent.mapping.state = frame.payload.state as AgentState
       // The open file's agent was started elsewhere (CLI, another client):
-      // the session learns its id, so its contents and events follow.
-      if (focused && frame.agentId) this.deps.session.noteAgent(filePath, frame.agentId)
+      // the session learns its id, so its contents and events follow, and the
+      // chat panel its start state (an idle or hibernate start emits no state).
+      if (focused && frame.agentId) {
+        this.deps.session.noteAgent(filePath, frame.agentId)
+        if (typeof frame.payload.state === 'string') {
+          agent.lastForegroundState = frame.payload.state
+          // Studio's own start (held): its reply carries this state already.
+          const own = [...this.holds].some((h) => this.deps.session.samePath(h.filePath, filePath))
+          if (!own) this.sendForeground(agent.agentId, filePath, { type: 'state_changed', payload: { state: frame.payload.state }, timestamp: frame.timestamp })
+        }
+      }
     }
     const stopped = frame.type === 'agent_stopped' || frame.type === 'agent_start_failed'
     if (stopped && frame.agentId) {
@@ -768,12 +777,13 @@ export class EventBridge {
   /**
    * The open file's agent went away without this client stopping it (the CLI,
    * an `off`, a crash, or a resync that no longer finds it): the renderer's
-   * chat panel learns it as the executor's own `stopped`, once.
+   * chat panel learns it as `off` (unloaded), once. `stopped` stays the
+   * executor's own hard abort of a still-loaded agent.
    */
   private foregroundStopped(agent: BridgeAgent, timestamp: number): void {
-    if (agent.lastForegroundState === 'stopped') return
-    agent.lastForegroundState = 'stopped'
-    this.sendForeground(agent.agentId, agent.filePath, { type: 'state_changed', payload: { state: 'stopped' }, timestamp })
+    if (agent.lastForegroundState === 'off') return
+    agent.lastForegroundState = 'off'
+    this.sendForeground(agent.agentId, agent.filePath, { type: 'state_changed', payload: { state: 'off' }, timestamp })
   }
 
   private onPush(frame: PushFrame): void {
