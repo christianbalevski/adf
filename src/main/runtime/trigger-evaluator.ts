@@ -239,10 +239,7 @@ export class TriggerEvaluator extends EventEmitter {
    * Agent scope:
    *   active/idle → all triggers
    *   hibernate    → only on_timer (direct user chat is dispatched separately)
-   *   suspended/error/off → nothing
-   *
-   * checkTimers leaves a timer due, rather than settling it, when this gate
-   * blocks every scope its config admits.
+   *   suspended/off → nothing
    */
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
     if (scope === 'system') {
