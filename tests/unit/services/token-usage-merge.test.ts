@@ -189,12 +189,22 @@ describe('sanitizeUsageData', () => {
 describe('TokenUsageService — backup survives a damaged ledger', () => {
   const bak = (dir: string) => join(dir, 'token-usage.json.bak')
 
-  it('a flush writes the backup alongside the ledger', () => {
+  it('a flush first backs up the last good ledger it read (before its own delta)', () => {
+    const seed = { '2026-08-01': { p: { m: { input: 50, output: 5 } } } }
+    const dir = makeDir(seed)
+    const service = new TokenUsageService()
+    service.recordUsage('p', 'm', 3, 4)
+    service.flush()
+    expect(JSON.parse(readFileSync(bak(dir), 'utf-8'))).toEqual(seed)
+    expect(onDisk(dir)[today].p.m).toEqual({ input: 3, output: 4 })
+  })
+
+  it('an empty ledger is never backed up', () => {
     const dir = makeDir()
     const service = new TokenUsageService()
     service.recordUsage('p', 'm', 3, 4)
     service.flush()
-    expect(JSON.parse(readFileSync(bak(dir), 'utf-8'))[today].p.m).toEqual({ input: 3, output: 4 })
+    expect(existsSync(bak(dir))).toBe(false)
   })
 
   it('a zero-filled ledger (OS crash) resumes from the backup instead of starting empty', () => {
@@ -214,10 +224,11 @@ describe('TokenUsageService — backup survives a damaged ledger', () => {
   })
 
   it('clearAll empties the backup so a later damaged ledger cannot resurrect cleared history', () => {
-    const dir = makeDir()
+    const dir = makeDir({ '2026-08-01': { p: { m: { input: 9, output: 9 } } } })
     const service = new TokenUsageService()
     service.recordUsage('p', 'm', 9, 9)
     service.flush()
+    expect(existsSync(bak(dir))).toBe(true)
     service.clearAll()
     expect(JSON.parse(readFileSync(bak(dir), 'utf-8'))).toEqual({})
 
