@@ -4,7 +4,6 @@ import {
   openSync,
   writeSync,
   readFileSync,
-  writeFileSync,
   renameSync,
   existsSync,
   copyFileSync,
@@ -21,6 +20,33 @@ const RENAME_ATTEMPTS = 3
 const RENAME_RETRY_DELAY_MS = 50
 /** Temp files older than this are considered abandoned and are cleaned up. */
 const STALE_TMP_AGE_MS = 60 * 60 * 1000
+
+/**
+ * Write `text` to `path` and fsync before closing. Without the fsync, NTFS
+ * (and ext4 without data=ordered) can commit a later rename and the new file
+ * size before the data blocks: a power loss or OS crash then leaves the
+ * destination full of NUL bytes — a whole ledger lost to one bad shutdown.
+ */
+function writeFileDurableSync(path: string, text: string, mode?: number): void {
+  const fd = openSync(path, 'w', mode)
+  try {
+    writeSync(fd, text, null, 'utf-8')
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/** Async twin of `writeFileDurableSync`. */
+async function writeFileDurable(path: string, text: string, mode?: number): Promise<void> {
+  const fh = await fsp.open(path, 'w', mode)
+  try {
+    await fh.writeFile(text, 'utf-8')
+    await fh.sync()
+  } finally {
+    await fh.close()
+  }
+}
 
 /** Synchronous sleep without spinning (Node allows Atomics.wait on the main thread). */
 function sleepSync(ms: number): void {
@@ -44,8 +70,9 @@ function existingFileMode(path: string): number | null {
 
 /**
  * Atomically persist JSON: write to a process-unique sibling temp file, then
- * rename. rename() on the same volume is atomic on both NTFS and POSIX, so a
- * crash mid-write can never leave a truncated file at `path`.
+ * rename. rename() on the same volume is atomic on both NTFS and POSIX, and the temp
+ * file is fsynced first, so a crash or power loss mid-write can never leave a
+ * truncated or zero-filled file at `path`.
  *
  * The temp name embeds pid + random bytes so concurrent writers (Studio and
  * the daemon share adf-settings.json) never interleave into one temp file.
@@ -63,7 +90,7 @@ export function writeJsonAtomic(path: string, data: unknown): void {
   const json = JSON.stringify(data, null, 2)
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   try {
-    writeFileSync(tmp, json, { encoding: 'utf-8', mode: existingFileMode(path) ?? 0o600 })
+    writeFileDurableSync(tmp, json, existingFileMode(path) ?? 0o600)
     for (let attempt = 1; ; attempt++) {
       try {
         renameSync(tmp, path)
@@ -73,7 +100,7 @@ export function writeJsonAtomic(path: string, data: unknown): void {
         if (attempt >= RENAME_ATTEMPTS) {
           // Destination held open elsewhere — last resort: direct overwrite,
           // accepting non-atomicity over never persisting at all.
-          writeFileSync(path, json, 'utf-8')
+          writeFileDurableSync(path, json)
           try {
             unlinkSync(tmp)
           } catch {
@@ -259,7 +286,7 @@ async function writeJsonAtomicOnce(path: string, data: unknown): Promise<void> {
   const json = JSON.stringify(data, null, 2)
   const tmp = `${path}.${process.pid}.${randomBytes(4).toString('hex')}.tmp`
   try {
-    await fsp.writeFile(tmp, json, { encoding: 'utf-8', mode: (await existingFileModeAsync(path)) ?? 0o600 })
+    await writeFileDurable(tmp, json, (await existingFileModeAsync(path)) ?? 0o600)
     for (let attempt = 1; ; attempt++) {
       try {
         await fsp.rename(tmp, path)
@@ -269,7 +296,7 @@ async function writeJsonAtomicOnce(path: string, data: unknown): Promise<void> {
         if (attempt >= RENAME_ATTEMPTS) {
           // Same last resort as the sync path: a direct, non-atomic overwrite
           // beats never persisting at all.
-          await fsp.writeFile(path, json, 'utf-8')
+          await writeFileDurable(path, json)
           await fsp.unlink(tmp).catch(() => {})
           break
         }

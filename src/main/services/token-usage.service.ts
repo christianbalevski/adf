@@ -136,9 +136,17 @@ function mergeUsage(target: TokenUsageData, delta: TokenUsageData): TokenUsageDa
  * what the Usage chart and the home tile display. Rows written by versions
  * before this were keyed by the UTC date; they carry no time-of-day, so
  * nothing can re-bucket them — they stay where they are.
+ *
+ * Backup: at most once per BACKUP_INTERVAL_MS a successful flush also writes
+ * `token-usage.json.bak`. When the main file is unreadable (quarantined), the
+ * ledger resumes from the backup instead of starting empty, so a damaged file
+ * costs at most one interval of history, not all of it.
  */
 export class TokenUsageService {
   private filePath: string
+  private backupPath: string
+  /** When this process last wrote the backup (0 = not yet). */
+  private lastBackupAt = 0
   private data: TokenUsageData = {}
   /** Recorded since the last successful flush; folded onto disk on save. */
   private pending: TokenUsageData = {}
@@ -152,10 +160,12 @@ export class TokenUsageService {
    *  writing leaves the in-memory view to the synchronous one. */
   private saveGeneration = 0
   private static readonly SAVE_DEBOUNCE_MS = 5000
+  private static readonly BACKUP_INTERVAL_MS = 60 * 60 * 1000
 
   constructor() {
     const userDataPath = getUserDataPath()
     this.filePath = join(userDataPath, 'token-usage.json')
+    this.backupPath = `${this.filePath}.bak`
     this.data = this.readDisk() ?? {}
   }
 
@@ -167,14 +177,51 @@ export class TokenUsageService {
    */
   private readDisk(): TokenUsageData | null {
     const result = readJsonOrQuarantine<unknown>(this.filePath)
-    if (result.quarantinedTo) {
-      console.error(`[TokenUsage] token-usage.json was unreadable; moved aside to ${result.quarantinedTo}`)
-    }
     if (result.corruptUnpreserved) {
       console.error('[TokenUsage] token-usage.json is corrupt and could not be moved aside; leaving it untouched')
       return null
     }
+    if (result.quarantinedTo) {
+      console.error(`[TokenUsage] token-usage.json was unreadable; moved aside to ${result.quarantinedTo}`)
+      const backup = readJsonOrQuarantine<unknown>(this.backupPath)
+      if (backup.data !== null) {
+        // Put the backup back in place so every later read — this process's
+        // flushes and the other process's — merges onto it, not onto nothing.
+        const restored = sanitizeUsageData(backup.data)
+        try {
+          writeJsonAtomic(this.filePath, restored)
+          console.error('[TokenUsage] Restored token-usage.json from token-usage.json.bak')
+        } catch (err) {
+          console.error('[TokenUsage] Failed to restore token-usage.json from token-usage.json.bak:', err)
+        }
+        return restored
+      }
+    }
     return sanitizeUsageData(result.data)
+  }
+
+  /**
+   * Refresh the backup after a successful flush. A clear always rewrites it
+   * (empty), so a later damaged main file can never resurrect cleared history.
+   * Best effort: a failed backup never fails the flush.
+   */
+  private writeBackup(merged: TokenUsageData, clearing: boolean, sync: boolean): void {
+    const now = Date.now()
+    if (!clearing && now - this.lastBackupAt < TokenUsageService.BACKUP_INTERVAL_MS) return
+    this.lastBackupAt = now
+    if (sync) {
+      try {
+        writeJsonAtomic(this.backupPath, merged)
+      } catch (err) {
+        console.error('[TokenUsage] Failed to write token-usage.json.bak:', err)
+      }
+    } else {
+      // Snapshot: commitSave folds later deltas into `merged` before the
+      // queued write serializes it.
+      writeJsonAtomicAsync(this.backupPath, structuredClone(merged)).catch((err) => {
+        console.error('[TokenUsage] Failed to write token-usage.json.bak:', err)
+      })
+    }
   }
 
   /**
@@ -261,6 +308,7 @@ export class TokenUsageService {
       this.restoreDelta(prepared.delta, prepared.clearing)
       return false
     }
+    this.writeBackup(prepared.merged, prepared.clearing, true)
     this.commitSave(prepared.merged)
     return true
   }
@@ -294,6 +342,7 @@ export class TokenUsageService {
     }
     // A synchronous flush/clear ran while this write was in flight: it is
     // authoritative for the in-memory view, so don't overwrite it here.
+    this.writeBackup(prepared.merged, prepared.clearing, false)
     if (generation !== this.saveGeneration) return true
     this.commitSave(prepared.merged)
     return true
