@@ -20,6 +20,9 @@
  * for the requested selected-agent marker and distinct sidebar hover tint.
  * approvals-panel.html and mesh-on.html were updated on 2026-10-31 for plain
  * UI copy (the approvals heading, two Mesh tooltips, the loading line).
+ * The five status-bar baselines were updated on 2026-11-14 for the
+ * requested narrow-width status bar (labels give way to icons, the model
+ * name loses its middle, Kill always stays on screen).
  * Every other baseline is d00491a0's.
  *
  * Normalization: React's useId ids (`:R…:` / `«r…»`) are replaced by their
