@@ -13508,6 +13508,18 @@
           },
           {
             "$ref": "#/components/parameters/FilePathQuery"
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": false,
+            "description": "`1` adds `revision`: the file's current revision, the one a write's `baseRevision` is checked against (as `X-ADF-Revision` on GET …/files/raw). The daemon reads the bytes to compute it and sends none.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
           }
         ],
         "responses": {
@@ -30814,6 +30826,10 @@
           "text": {
             "type": "boolean",
             "description": "Studio's file viewer reads it as text (by extension)"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "The file's current revision; only with `revision=1` (or for an agent with no .adf file)"
           }
         }
       },

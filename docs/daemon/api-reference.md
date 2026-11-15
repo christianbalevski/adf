@@ -4363,6 +4363,7 @@ Operation `getAgentFileMeta` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `path` | query | string | yes | File path inside the agent |
+| `revision` | query | `"1"` |  | `1` adds `revision`: the file's current revision, the one a write's `baseRevision` is checked against (as `X-ADF-Revision` on GET …/files/raw). The daemon reads the bytes to compute it and sends none. |
 
 **Responses**
 
@@ -4386,7 +4387,8 @@ Example 200 (`application/json`):
   "authorized": true,
   "created_at": "string",
   "updated_at": "string",
-  "text": true
+  "text": true,
+  "revision": 0
 }
 ```
 
@@ -23209,6 +23211,7 @@ The path → id rule. `loaded`: the /agents/{id} routes take `agentId` now. Not 
 | `created_at` | string |  |  |
 | `updated_at` | string |  |  |
 | `text` | boolean | yes | Studio's file viewer reads it as text (by extension) |
+| `revision` | integer |  | The file's current revision; only with `revision=1` (or for an agent with no .adf file) |
 
 <a id="schema-rawfilewriteresult"></a>
 
