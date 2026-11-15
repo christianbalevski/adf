@@ -235,7 +235,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     // W3-F: the revision an editor saves over (writeInternalFile's baseRevision), as embedded.
     const revision = Number(res.headers.get('x-adf-revision') ?? NaN)
     if (text) return { content: buf.toString('utf-8'), binary: false, ...info, ...(Number.isSafeInteger(revision) ? { revision } : {}) }
-    return { content: buf.toString('base64'), binary: true, ...info }
+    return { content: buf.toString('base64'), binary: true, ...info, ...(Number.isSafeInteger(revision) ? { revision } : {}) }
   },
 
   [IPC.AGENT_STATUS]: async (ctx, _event, opts?: { mediaFor?: string }) => {

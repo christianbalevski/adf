@@ -6,6 +6,7 @@ import { readdir, realpath } from 'node:fs/promises'
 import { basename, dirname, join, resolve } from 'node:path'
 import { AdfDatabase } from '../adf/adf-database'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { atomicBatchFailure, commitFileBatch, type AgentFileBatchResult } from './file-batch'
 import { readArchivedChatPage, type ArchivedChatPage } from '../adf/archived-loop-page'
 import { mcpEnvCredentialsOnly } from '../../shared/utils/mcp-config'
 import { removeMcpServerHome } from '../services/mcp-server-home'
@@ -2872,6 +2873,24 @@ export class RuntimeService extends EventEmitter {
       })
     }
     return { agentId: target.id, success: true, revision: fileRevision(target.workspace, path, currentResourceWriter()).revision }
+  }
+
+  /**
+   * Several files of one agent in one transaction (AdfWorkspace.writeFilesAtomic):
+   * every file carries `mustNotExist` or the `baseRevision` it was read at, and
+   * any refusal leaves every file as it was. Answers the revision each path
+   * now has.
+   */
+  writeAgentFiles(agentId: string, files: unknown): AgentFileBatchResult {
+    const target = this.requireTarget(agentId)
+    try {
+      const revisions = commitFileBatch(target.workspace, files, currentResourceWriter(), (commit) => runAsApiWrite(target.id, commit))
+      return { agentId: target.id, success: true, revisions }
+    } catch (err) {
+      const refused = atomicBatchFailure(err)
+      if (refused) throw new RuntimeLoopError(refused.message, refused.status, refused.code, refused.details)
+      throw err
+    }
   }
 
   deleteAgentFile(agentId: string, path: string): { agentId: string; success: boolean } {

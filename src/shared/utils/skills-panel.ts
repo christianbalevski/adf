@@ -10,7 +10,8 @@
  */
 
 import { ADF_SKILLS_REGISTRY_URL } from '../constants/adf-defaults'
-import type { SkillCatalogEntry } from '../schemas/skills-catalog.schema'
+import { MAX_SKILL_FILE_BYTES } from '../schemas/skills-catalog.schema'
+import type { DiscoveredSkillPackage, DiscoveredSkillSource, SkillCatalogEntry } from '../schemas/skills-catalog.schema'
 
 export const SKILLS_REGISTRY_PATH = 'skills-registry.json'
 export const SKILLS_STATE_PATH = 'skills-state.json'
@@ -21,7 +22,7 @@ export const SKILL_MANIFEST = /^skills\/([^/]+)\/SKILL\.md$/
 /** Indexer bounds, restated for the panel's diagnostics (src/main/adf/skill-indexer.ts). */
 export const MAX_SKILLS = 48
 export const MAX_REGISTRY_BYTES = 32 * 1024
-export const MAX_SKILL_FILE_BYTES = 256 * 1024
+export { MAX_SKILL_FILE_BYTES }
 
 export interface RegistryEntry {
   name: string
@@ -235,6 +236,21 @@ export interface CatalogSourceResult {
   /** Entries the main-side schema parser rejected individually. */
   dropped?: number
   error?: string
+  /** Packages a GitHub URL resolved to, listed before their SKILL.md is read. */
+  discovered?: DiscoveredSkillSource
+}
+
+/**
+ * One source's fetch answer as a result row: entries, publisher, dropped
+ * count and, for a GitHub source, its discovered packages. Shared by the
+ * Studio browser and the terminal app.
+ */
+export function toCatalogSourceResult(
+  url: string,
+  result: { ok: true; entries: SkillCatalogEntry[]; publisher?: string; dropped: number; discovered?: DiscoveredSkillSource } | { ok: false; error: string } | null | undefined,
+): CatalogSourceResult {
+  if (!result?.ok) return { url, ok: false, entries: [], error: (result && !result.ok && result.error) || 'Unavailable' }
+  return { url, ok: true, entries: result.entries, publisher: result.publisher, dropped: result.dropped, ...(result.discovered ? { discovered: result.discovered } : {}) }
 }
 
 /** A catalog entry plus the source it came from, for the badge on its card. */
@@ -257,53 +273,6 @@ export function catalogSourceLabel(url: string, publisher?: string): string {
   } catch {
     return url
   }
-}
-
-/**
- * Merge every source into one list, FIRST-WINS by name — the same rule the
- * single-source browser applied to duplicates within one document, now applied
- * across documents in SOURCE-LIST ORDER. So a source listed earlier in Settings
- * outranks a later one claiming the same skill name, and precedence is a thing
- * the human arranges rather than a thing this module pins.
- *
- * Failed sources contribute nothing and block nothing. The merged list is
- * sorted by name; the source each entry survived from rides along for its badge.
- */
-export function mergeCatalogResults(results: CatalogSourceResult[]): MergedCatalogEntry[] {
-  const merged: MergedCatalogEntry[] = []
-  const seen = new Set<string>()
-  for (const result of results) {
-    if (!result.ok) continue
-    const sourceLabel = catalogSourceLabel(result.url, result.publisher)
-    for (const entry of result.entries) {
-      if (seen.has(entry.name)) continue
-      seen.add(entry.name)
-      merged.push({ ...entry, sourceUrl: result.url, sourceLabel })
-    }
-  }
-  return merged.sort((a, b) => a.name.localeCompare(b.name))
-}
-
-/**
- * Live search over the merged list: case-insensitive substring on name or
- * description, with NAME matches ranked above description-only matches. Someone
- * typing a skill they already know the name of should not have to scroll past
- * every entry that merely mentions it. Order within each group is preserved
- * (the merge already sorted it), and an empty query is the identity filter.
- */
-export function filterCatalogEntries<T extends { name: string; description: string }>(
-  entries: T[],
-  query: string
-): T[] {
-  const needle = query.trim().toLowerCase()
-  if (!needle) return entries
-  const byName: T[] = []
-  const byDescription: T[] = []
-  for (const entry of entries) {
-    if (entry.name.toLowerCase().includes(needle)) byName.push(entry)
-    else if (entry.description.toLowerCase().includes(needle)) byDescription.push(entry)
-  }
-  return [...byName, ...byDescription]
 }
 
 /* -------------------------------------------------------------------------- */
@@ -366,4 +335,161 @@ export function unindexedHint(): string {
     'description must be one line under 500 characters, and the file must be under ' +
     `${Math.round(MAX_SKILL_FILE_BYTES / 1024)} KB. The catalog also stops at ${MAX_SKILLS} skills or ` +
     `${Math.round(MAX_REGISTRY_BYTES / 1024)} KB, whichever comes first.`
+}
+
+/* -------------------------------------------------------------------------- */
+/* Browser cards: catalog entries and discovered packages                     */
+/* -------------------------------------------------------------------------- */
+
+/** What a loaded SKILL.md says it is (skill-import.ts, `ok` decisions only). */
+export interface LoadedManifestName {
+  name: string
+  description: string
+}
+
+/**
+ * One card of the browser. A catalog entry is identified by its validated
+ * name, as before. A discovered package is identified by its source and
+ * folder (`pkg.id`) — never by a name, which is the manifest's and unknown
+ * until it loads — so two folders of one repository that claim the same name
+ * are two cards, told apart by path.
+ */
+export type CatalogCard =
+  | { kind: 'entry'; key: string; sourceUrl: string; sourceLabel: string; manifestUrl: string; entry: MergedCatalogEntry }
+  | {
+      kind: 'package'
+      key: string
+      sourceUrl: string
+      sourceLabel: string
+      manifestUrl: string
+      pkg: DiscoveredSkillPackage
+      source: DiscoveredSkillSource
+    }
+
+/**
+ * Cards for every source, in SOURCE-LIST order (a pasted source is first, so
+ * its cards are first). Within a source, catalog entries by name, then its
+ * discovered packages by folder. A name a catalog document lists that an
+ * earlier source's catalog already listed is left out, as before; packages
+ * are never merged away. Two cards may name the same skill: both install into
+ * the same slot, `skills/<name>/`, and the slot rule asks before replacing.
+ */
+export function buildCatalogCards(results: CatalogSourceResult[]): CatalogCard[] {
+  const cards: CatalogCard[] = []
+  const seen = new Set<string>()
+  for (const result of results) {
+    if (!result.ok) continue
+    const sourceLabel = catalogSourceLabel(result.url, result.publisher)
+    const entries = result.entries.filter((entry) => !seen.has(entry.name)).sort((a, b) => a.name.localeCompare(b.name))
+    for (const entry of entries) {
+      seen.add(entry.name)
+      cards.push({ kind: 'entry', key: `entry:${entry.name}`, sourceUrl: result.url, sourceLabel, manifestUrl: entry.raw_url, entry: { ...entry, sourceUrl: result.url, sourceLabel } })
+    }
+    for (const pkg of result.discovered?.packages ?? []) {
+      cards.push({ kind: 'package', key: pkg.id, sourceUrl: result.url, sourceLabel, manifestUrl: pkg.raw_url, pkg, source: result.discovered! })
+    }
+  }
+  return cards
+}
+
+/** The name a card installs under, when it is known: a catalog entry's, or a loaded manifest's. */
+export function cardName(card: CatalogCard, loaded: LoadedManifestName | null): string | null {
+  return card.kind === 'entry' ? card.entry.name : loaded?.name ?? null
+}
+
+/** The folder a discovered package lives in, for display (`<repo>/<dir>`). */
+export function cardPath(card: CatalogCard): string | null {
+  if (card.kind !== 'package') return card.entry.path ?? null
+  return card.pkg.dir ? `${card.source.repository}/${card.pkg.dir}` : card.source.repository
+}
+
+/**
+ * Search over cards: name, then description, then path. A discovered package
+ * whose manifest has not loaded matches on its path only, which is why the
+ * browser says how many descriptions are loaded.
+ */
+export function filterCatalogCards(
+  cards: CatalogCard[],
+  query: string,
+  loaded: (manifestUrl: string) => LoadedManifestName | null,
+): CatalogCard[] {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return cards
+  const byName: CatalogCard[] = []
+  const byOther: CatalogCard[] = []
+  for (const card of cards) {
+    const manifest = card.kind === 'package' ? loaded(card.manifestUrl) : null
+    const name = cardName(card, manifest)
+    const description = card.kind === 'entry' ? card.entry.description : manifest?.description ?? ''
+    const path = cardPath(card) ?? ''
+    if (name && name.toLowerCase().includes(needle)) byName.push(card)
+    else if (description.toLowerCase().includes(needle) || path.toLowerCase().includes(needle)) byOther.push(card)
+  }
+  return [...byName, ...byOther]
+}
+
+/** Cards shown per page of the browser; "Show more" adds another page. */
+export const CATALOG_PAGE_SIZE = 24
+
+/* -------------------------------------------------------------------------- */
+/* The browser's one source list                                               */
+/* -------------------------------------------------------------------------- */
+
+/**
+ * One source the catalog browser reads: a configured one (Settings → Skills)
+ * or a transient one pasted into the browser for this dialog-open only (never
+ * saved). `request` names the fetch whose answer the row is waiting for; a
+ * late answer to an older request, or for a row removed meanwhile, is dropped.
+ */
+export interface BrowserSource {
+  url: string
+  transient: boolean
+  request: number
+  /** null while the fetch is in flight. */
+  result: CatalogSourceResult | null
+}
+
+/** The configured list, every row waiting for its fetch. */
+export function configuredBrowserSources(urls: string[], request: (url: string) => number): BrowserSource[] {
+  return urls.map((url) => ({ url, transient: false, request: request(url), result: null }))
+}
+
+/**
+ * Add a pasted URL ahead of everything else, so its cards come first. A URL
+ * already in the list is not added twice: its row is fetched again in place,
+ * configured or not.
+ */
+export function addBrowserSource(sources: BrowserSource[], url: string, request: number): BrowserSource[] {
+  if (sources.some((s) => s.url === url)) return sources.map((s) => (s.url === url ? { ...s, request, result: null } : s))
+  return [{ url, transient: true, request, result: null }, ...sources]
+}
+
+/** Record a fetch's answer, only if the row still exists and still waits for that request. */
+export function settleBrowserSource(sources: BrowserSource[], url: string, request: number, result: CatalogSourceResult): BrowserSource[] {
+  return sources.map((s) => (s.url === url && s.request === request ? { ...s, result } : s))
+}
+
+/** Remove a pasted source; configured ones are removed in Settings. */
+export function removeBrowserSource(sources: BrowserSource[], url: string): BrowserSource[] {
+  return sources.filter((s) => !(s.url === url && s.transient))
+}
+
+/** The answered rows, in list order: what the cards are built from. */
+export function browserResults(sources: BrowserSource[]): CatalogSourceResult[] {
+  return sources.flatMap((s) => (s.result ? [s.result] : []))
+}
+
+/**
+ * What a card says about where it would install. A name only names a slot,
+ * `skills/<name>/`: a slot already holding files is "Name in use", never
+ * "Installed", because nothing records which package put them there (another
+ * package with the same name, a newer version, or local edits all look alike).
+ * Installing into it is an explicit replacement of the files the package
+ * ships; files it does not ship are kept.
+ */
+export function installSlot(name: string | null, installedNames: ReadonlySet<string>): { inUse: boolean; badge: string | null; action: string; title: string | undefined } {
+  const inUse = name !== null && installedNames.has(name)
+  return inUse
+    ? { inUse, badge: 'Name in use', action: 'Replace existing files', title: `skills/${name}/ already has files. Installing replaces the ones this package ships (asks first) and keeps the rest.` }
+    : { inUse, badge: null, action: 'Install', title: name ? `Write skills/${name}/` : undefined }
 }

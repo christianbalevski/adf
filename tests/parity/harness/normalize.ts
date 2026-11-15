@@ -182,6 +182,13 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     if (rootRe) s = s.replace(rootRe, (m) => rootToken.get(m) ?? m)
     for (const { re, to } of portRes) s = s.replace(re, to)
     if (s.includes('code_challenge=')) s = oauthAuthorizationUrl(s)
+    // Rule R18 (string form) — a W3-F revision quoted in a refusal sentence
+    // (resource-revisions.ts staleRevisionMessage: `revision N`, `baseRevision N`,
+    // `(now N)`, N the 16-digit revision): numbered as the `revision` keys are,
+    // not read as an R8 instant. Only those three spellings; any other number
+    // in prose keeps R8. Hides: the number only.
+    s = s.replace(/\b(revision|baseRevision) (\d{16})\b/g, (_m, word: string, n: string) => `${word} ${numbered('rev', n)}`)
+    s = s.replace(/\(now (\d{16})\)/g, (_m, n: string) => `(now ${numbered('rev', n)})`)
     for (const { value, name } of named) s = s.split(value).join(`<${name}>`)
 
     // Rule R4 — other DIDs. Agent DIDs are minted from fresh random keys on
@@ -356,6 +363,10 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
       // went over the wrong revision shows. Hides: the number only. The
       // `writer` of a change is compared as is.
       if (key && REVISION_KEYS.has(key)) return numbered('rev', String(value))
+      // Rule R18 (map form) — the `revisions` map (path → revision) of a
+      // multi-file write's answer (DOC_WRITE_INTERNAL_FILES): the same numbering,
+      // for direct values of a key named exactly `revisions` only.
+      if (key && path.endsWith(`.${key}`) && /(^|\.)revisions$/.test(path.slice(0, -key.length - 1))) return numbered('rev', String(value))
       // Rule R8 (numeric form): epoch-ms numbers in the run window.
       if (Number.isInteger(value) && inWindow(value)) {
         seen.push(value)

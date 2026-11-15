@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 346 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 347 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -32,7 +32,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Agents](#tag-agents) (33)
 - [Loops](#tag-loops) (9)
 - [Chat](#tag-chat) (8)
-- [Files](#tag-files) (15)
+- [Files](#tag-files) (16)
 - [Identity (agent)](#tag-identity-agent) (23)
 - [Owner identity](#tag-owner-identity) (11)
 - [Credentials](#tag-credentials) (10)
@@ -3723,6 +3723,7 @@ The agent's virtual file system, including its primary document and mind.
 | GET | [`/agents/{id}/files/content`](#op-getagentfilecontent) | Read one file |
 | PUT | [`/agents/{id}/files/content`](#op-writeagentfilecontent) | Write one file |
 | DELETE | [`/agents/{id}/files/content`](#op-deleteagentfilecontent) | Delete one file |
+| POST | [`/agents/{id}/files/batch`](#op-writeagentfilesbatch) | Write several files atomically |
 | POST | [`/agents/{id}/files/rename`](#op-renameagentfile) | Rename a file |
 | POST | [`/agents/{id}/files/rename-folder`](#op-renameagentfolder) | Rename a folder (path prefix) |
 | PATCH | [`/agents/{id}/files/protection`](#op-setagentfileprotection) | Set a file's protection |
@@ -3915,6 +3916,71 @@ Example 200 (`application/json`):
 {
   "agentId": "Xk3v9QpLm2",
   "success": true
+}
+```
+
+<a id="op-writeagentfilesbatch"></a>
+
+### POST `/agents/{id}/files/batch`
+
+**Write several files atomically**
+
+All files or none, in one transaction. Each file carries exactly one precondition: `mustNotExist` (a create) or the `baseRevision` it was read at. Every path, duplicate, size bound, read-only protection and precondition is checked before anything is written; any refusal writes nothing and fires nothing. Only the listed paths are written (no file is removed); existing protections are kept. File-change triggers and events fire after the commit; a listener that fails then does not undo it. At most 256 files and 8 MiB of content (before base64).
+
+Operation `writeAgentFilesBatch` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+
+**Request body** (required): [FileBatchBody](#schema-filebatchbody)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `files` | object[] | yes |  |
+| `files[].path` | string | yes |  |
+| `files[].content` | string |  | Text (UTF-8). Exactly one of content / contentBase64. |
+| `files[].contentBase64` | string |  | Exact bytes |
+| `files[].mimeType` | string |  |  |
+| `files[].mustNotExist` | boolean |  | The file must not exist yet. Exactly one of mustNotExist / baseRevision. |
+| `files[].baseRevision` | integer |  | The revision the file was read at |
+
+```json
+{
+  "files": [
+    {
+      "path": "string",
+      "content": "string",
+      "contentBase64": "string",
+      "mimeType": "string",
+      "mustNotExist": true,
+      "baseRevision": 0
+    }
+  ]
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [FileBatchResult](#schema-filebatchresult) | Every file written |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [StaleRevisionError](#schema-stalerevisionerror) | W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead. |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "Xk3v9QpLm2",
+  "success": true,
+  "revisions": {}
 }
 ```
 
@@ -14768,7 +14834,7 @@ Agent registry, curated MCP registry and skill catalogs.
 | POST | [`/registry/agents/{id}/bring-home`](#op-bringregistryagenthome) | Copy a registry agent into the agents folder |
 | GET | [`/registry/mcp`](#op-getmcpregistry) | Curated MCP registry |
 | GET | [`/catalog/skills`](#op-getskillscatalog) | Fetch a skill catalog |
-| GET | [`/catalog/skills/package`](#op-getskillpackage) | Fetch a SKILL.md package |
+| GET | [`/catalog/skills/package`](#op-getskillpackage) | Fetch a SKILL.md, or one package resource as bytes |
 
 <a id="op-getagentregistry"></a>
 
@@ -14903,7 +14969,7 @@ Example 200 (`application/json`):
 
 **Fetch a skill catalog**
 
-https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s).
+https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s). A github.com repository page, `tree/…` folder page, or `blob/…` page of a SKILL.md or marketplace.json is resolved to one commit and listed in `discovered`, unauthenticated, through the GitHub API. Any other URL (github.com `raw/…` and `?raw=` forms included) is fetched once: a JSON catalog document is parsed as before, and a raw.githubusercontent.com SKILL.md or marketplace.json body is discovered the same way.
 
 Operation `getSkillsCatalog` · bearer token
 
@@ -14931,7 +14997,8 @@ Example 200 (`application/json`):
   ],
   "publisher": null,
   "dropped": 0,
-  "error": "string"
+  "error": "string",
+  "discovered": {}
 }
 ```
 
@@ -14939,7 +15006,9 @@ Example 200 (`application/json`):
 
 ### GET `/catalog/skills/package`
 
-**Fetch a SKILL.md package**
+**Fetch a SKILL.md, or one package resource as bytes**
+
+Without `binary`: a SKILL.md as text (at most 256 KB) with `import`, how it would install (name, `adf` declaration, any description adjustment). With `binary=1`: one package resource as base64 bytes (at most 8 MiB, an install batch's whole bound). https only, through the catalog guard.
 
 Operation `getSkillPackage` · bearer token
 
@@ -14948,6 +15017,7 @@ Operation `getSkillPackage` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `url` | query | string | yes | SKILL.md URL (https) |
+| `binary` | query | `"1"` |  | `1`: the exact bytes, base64 |
 
 **Responses**
 
@@ -14963,6 +15033,9 @@ Example 200 (`application/json`):
 {
   "ok": true,
   "content": "string",
+  "import": {},
+  "contentBase64": "string",
+  "size": 0,
   "error": "string"
 }
 ```
@@ -22637,6 +22710,7 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 | `publisher` | any |  |  |
 | `dropped` | integer |  |  |
 | `error` | string |  |  |
+| `discovered` | object |  | For a GitHub URL: `repository`, `sha` (the one commit every URL names), `ref`, `scope`, `url`, `packages` (each with `id`, `dir`, `raw_url`, `totalBytes`, `files` (license files flagged `license`), optional `problem`), and `problems` (what was named but not listed, and notes). |
 
 <a id="schema-skillpackageresult"></a>
 
@@ -22646,6 +22720,9 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 |---|---|---|---|
 | `ok` | boolean | yes |  |
 | `content` | string |  | SKILL.md text |
+| `import` | object |  | How the SKILL.md installs: `ok`, `name`, `description`, `manifest` (the bytes to install), `changes` (description adjustments; empty when installed as published), `compat` (the `adf` declaration), or `error`. |
+| `contentBase64` | string |  | With `binary`: the resource bytes |
+| `size` | integer |  |  |
 | `error` | string |  |  |
 
 <a id="schema-mcpprobebody"></a>
@@ -23899,3 +23976,27 @@ Type: object \| object \| object
 | `generation` | string |  | The web:tab-generation handshake value. The Studio client waits for the first handshake and includes this on every invocation; a different generation returns 409 web_tab_reset before the handler executes. |
 | `channel` | string | yes | A shared Studio IPC channel. Availability and argument/result shapes are defined by the shared renderer API and this daemon version. |
 | `args` | any[] | yes | Positional arguments in the shared IPC shape; no second browser-specific API mapping. |
+
+<a id="schema-filebatchbody"></a>
+
+### FileBatchBody
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `files` | object[] | yes |  |
+| `files[].path` | string | yes |  |
+| `files[].content` | string |  | Text (UTF-8). Exactly one of content / contentBase64. |
+| `files[].contentBase64` | string |  | Exact bytes |
+| `files[].mimeType` | string |  |  |
+| `files[].mustNotExist` | boolean |  | The file must not exist yet. Exactly one of mustNotExist / baseRevision. |
+| `files[].baseRevision` | integer |  | The revision the file was read at |
+
+<a id="schema-filebatchresult"></a>
+
+### FileBatchResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes | Agent id |
+| `success` | boolean | yes |  |
+| `revisions` | map<string, integer> |  | The revision each written path has now |

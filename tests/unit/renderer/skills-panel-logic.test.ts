@@ -1,18 +1,14 @@
 import { describe, it, expect } from 'vitest'
 import { ADF_SKILLS_REGISTRY_URL } from '../../../src/shared/constants/adf-defaults'
-import type { SkillCatalogEntry } from '../../../src/shared/schemas/skills-catalog.schema'
 import {
   MAX_CATALOG_SOURCES,
   addCatalogSource,
   catalogSourceLabel,
-  filterCatalogEntries,
   isCatalogUrl,
-  mergeCatalogResults,
   mergeDisabledList,
   normalizeCatalogSources,
   parseSkillsRegistry,
-  sanitizeDisplayText,
-  type CatalogSourceResult
+  sanitizeDisplayText
 } from '../../../src/renderer/utils/skills-panel'
 
 /**
@@ -244,124 +240,5 @@ describe('catalogSourceLabel', () => {
 
   it('falls back to the raw string when the URL will not parse', () => {
     expect(catalogSourceLabel('not a url')).toBe('not a url')
-  })
-})
-
-describe('mergeCatalogResults', () => {
-  const entry = (name: string, description = `${name} does things`): SkillCatalogEntry => ({
-    name,
-    description,
-    raw_url: `https://example.com/${name}/SKILL.md`
-  })
-
-  const ok = (url: string, entries: SkillCatalogEntry[], publisher?: string): CatalogSourceResult =>
-    ({ url, ok: true, entries, publisher })
-
-  it('merges every source and sorts the result by name', () => {
-    const merged = mergeCatalogResults([
-      ok(ADF_SKILLS_REGISTRY_URL, [entry('zeta')]),
-      ok(OTHER, [entry('alpha')])
-    ])
-    expect(merged.map((e) => e.name)).toEqual(['alpha', 'zeta'])
-  })
-
-  it('is first-wins on a duplicate name: an earlier source cannot be redefined', () => {
-    const merged = mergeCatalogResults([
-      ok(ADF_SKILLS_REGISTRY_URL, [entry('shared', 'the first-party one')]),
-      ok(OTHER, [entry('shared', 'an impostor')])
-    ])
-    expect(merged).toHaveLength(1)
-    expect(merged[0].description).toBe('the first-party one')
-    expect(merged[0].sourceUrl).toBe(ADF_SKILLS_REGISTRY_URL)
-  })
-
-  it('precedence is LIST ORDER, not identity: the default listed second loses', () => {
-    const merged = mergeCatalogResults([
-      ok(OTHER, [entry('shared', 'listed first')]),
-      ok(ADF_SKILLS_REGISTRY_URL, [entry('shared', 'the first-party one')])
-    ])
-    expect(merged).toHaveLength(1)
-    expect(merged[0].description).toBe('listed first')
-    expect(merged[0].sourceUrl).toBe(OTHER)
-  })
-
-  it('badges each surviving entry with the source it came from', () => {
-    const merged = mergeCatalogResults([
-      ok(ADF_SKILLS_REGISTRY_URL, [entry('alpha')], 'ADF'),
-      ok(OTHER, [entry('beta')])
-    ])
-    expect(merged.map((e) => [e.name, e.sourceLabel, e.sourceUrl])).toEqual([
-      ['alpha', 'ADF', ADF_SKILLS_REGISTRY_URL],
-      ['beta', 'example.com', OTHER]
-    ])
-  })
-
-  it('contributes nothing from a failed source and blocks nothing', () => {
-    const merged = mergeCatalogResults([
-      { url: ADF_SKILLS_REGISTRY_URL, ok: false, entries: [], error: 'Network unreachable' },
-      ok(OTHER, [entry('alpha')])
-    ])
-    expect(merged.map((e) => e.name)).toEqual(['alpha'])
-    // With the built-in source down, the next source legitimately owns the name.
-    expect(merged[0].sourceUrl).toBe(OTHER)
-  })
-
-  it('collapses a duplicate within one source too', () => {
-    const merged = mergeCatalogResults([ok(OTHER, [entry('alpha', 'first'), entry('alpha', 'second')])])
-    expect(merged).toHaveLength(1)
-    expect(merged[0].description).toBe('first')
-  })
-
-  it('handles no sources and all-failed sources without throwing', () => {
-    expect(mergeCatalogResults([])).toEqual([])
-    expect(mergeCatalogResults([{ url: OTHER, ok: false, entries: [], error: 'nope' }])).toEqual([])
-  })
-
-  it('does not mutate the entries it was handed', () => {
-    const source = entry('alpha')
-    mergeCatalogResults([ok(OTHER, [source])])
-    expect(source).not.toHaveProperty('sourceUrl')
-  })
-})
-
-describe('filterCatalogEntries', () => {
-  // Deliberately ordered so a description-only match (archivist) sorts BEFORE
-  // both name matches: ranking that did nothing would leave it first.
-  const entries = [
-    { name: 'archivist', description: 'files every note away' },
-    { name: 'note-taker', description: 'writes things down' },
-    { name: 'reporter', description: 'summarizes a note into a report' },
-    { name: 'notebook', description: 'NOTEWORTHY behaviour' },
-    { name: 'zeta', description: 'nothing relevant' }
-  ]
-
-  it('returns everything for an empty or whitespace query', () => {
-    expect(filterCatalogEntries(entries, '')).toBe(entries)
-    expect(filterCatalogEntries(entries, '   ')).toBe(entries)
-  })
-
-  it('ranks name matches above description-only matches', () => {
-    expect(filterCatalogEntries(entries, 'note').map((e) => e.name))
-      .toEqual(['note-taker', 'notebook', 'archivist', 'reporter'])
-  })
-
-  it('is case-insensitive on both fields', () => {
-    expect(filterCatalogEntries(entries, 'NOTE').map((e) => e.name))
-      .toEqual(['note-taker', 'notebook', 'archivist', 'reporter'])
-    expect(filterCatalogEntries(entries, 'ZETA').map((e) => e.name)).toEqual(['zeta'])
-  })
-
-  it('counts an entry once, in its name group, when both fields match', () => {
-    const both = [{ name: 'note', description: 'a note about notes' }]
-    expect(filterCatalogEntries(both, 'note')).toHaveLength(1)
-  })
-
-  it('preserves the merge order within each rank group', () => {
-    expect(filterCatalogEntries(entries, 'e').map((e) => e.name))
-      .toEqual(['note-taker', 'reporter', 'notebook', 'zeta', 'archivist'])
-  })
-
-  it('returns nothing when the query matches nothing', () => {
-    expect(filterCatalogEntries(entries, 'kubernetes')).toEqual([])
   })
 })

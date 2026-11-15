@@ -1,6 +1,7 @@
 ---
 name: tool-search
 description: Search the runtime tool catalog by fuzzy matching a natural-language need against tool names, descriptions, and full JSON schemas, then reveal bounded high-confidence enabled matches without changing enablement or security controls.
+adf: ">=0.2"
 requires:
   tools: [sys_lambda, sys_get_config]
 ---

@@ -44,6 +44,47 @@ empty. Merge precedence is list order: a name published by more than one catalog
 resolves to whichever source is listed first. That preference governs Studio's
 browser only; it never changes what an agent can fetch for itself.
 
+A source can also be a public GitHub URL: a repository page
+(`https://github.com/<owner>/<repo>`), a folder (`…/tree/<ref>/<path>`), one
+`SKILL.md` (`…/blob/<ref>/…/SKILL.md`, or its `raw.githubusercontent.com` URL),
+or a Claude (`.claude-plugin/marketplace.json`) or Codex
+(`.agents/plugins/marketplace.json`) marketplace. Add one in Settings, or paste
+it at the top of the browser: a pasted URL joins the list of sources first, for
+that browser session only (it is not saved), and can be removed again. Cards
+follow the source list, so a pasted source's cards come first. A pasted URL
+already in the list is fetched again in place and keeps its position. Any other URL (a
+JSON catalog document, including one addressed through github.com `raw/…` or
+`?raw=`) is fetched once and read as before, with no GitHub API request.
+
+For a GitHub source, Studio resolves the URL to one commit, lists every
+`SKILL.md` in that commit's tree, and pins every file it later fetches to that
+commit, so the preview and the install read the same bytes. Packages show by
+folder until their `SKILL.md` loads (a page at a time; **Load all** reads the
+rest); the name is the manifest's. A marketplace member that lives in another
+repository or at another URL is listed as a note, not followed. Requests are
+unauthenticated, and GitHub allows 60 API requests an hour per address, shared
+with everything else on it. Each open of a GitHub source resolves its ref again
+(the default branch, or a branch or tag and any annotated-tag levels). Complete
+tree listings are cached by tree in the process that reads them (Studio, the
+daemon in daemon mode, or the terminal app), at most eight at a time; a truncated listing is never
+cached. So the number of requests per open varies. A repository too large to list in one answer, more
+than 2,000 packages, or a package over 256 files or 8 MiB in all
+is refused with the reason, never listed in part. Symbolic links and submodules
+make a package not installable. License and notice files of the folders above a
+package are installed with it under `LICENSES/<folder>/`. The terminal app only
+counts a GitHub source's packages on its row: it runs that discovery itself, so
+each `/skills` open with a GitHub source configured spends 2–3 unauthenticated
+API requests from the terminal's address. It answers a GitHub page given to
+`/skills add` (a repository, folder or `blob/…` page) or a marketplace URL with
+"GitHub packages are browsed and installed in Studio."; browse and install them
+in Studio. A `raw.githubusercontent.com` `SKILL.md` URL installs that one file,
+as any `SKILL.md` URL does.
+
+A package that does not declare a valid `adf` version in its frontmatter is
+labelled **Not ADF-native**, in the browser and in the installed list. The label
+describes the declaration only: it is not a review and does not say whether the
+package works in ADF.
+
 ## Package layout
 
 Install each package under one direct child of `skills/`:
@@ -179,14 +220,40 @@ permits.
 
 The next reindex picks it up. Files land at protection `none` and unauthorized,
 and `requires` is a checklist you verify (see above) — installing grants
-nothing. In Studio, the Skills panel's catalog browser does the same three
-steps behind an Install button — including the ordering, when the entry lists
-`files`: Studio fetches every resource, writes them, and writes `SKILL.md` last,
-reporting any resource that did not arrive without failing the install.
+nothing. In Studio, the Skills panel's catalog browser does the same steps
+behind an Install button, as one atomic write: Studio fetches every resource as
+exact bytes first, then writes the whole package in one transaction (any
+failure writes nothing), into the agent the install started under. Closing the
+browser cancels an install that has not written yet. A skill's name is its
+folder, `skills/<name>/`. When that folder already has any file, the card says
+**Name in use** (nothing records which package wrote them), and installing
+always asks first, listing the files it replaces and the files it keeps, even
+when it overwrites nothing. If any file it replaces changes before you confirm,
+nothing is written; the files it keeps are not written and are left as they
+are. Two cards can name the same skill, and both install into the same folder.
+The terminal app's `/skills add` follows the same rule: an occupied name is
+shown as name in use, and installing asks first, listing the files it replaces
+and keeps; declining writes nothing. After a write the browser says what it wrote and to which agent; whether the
+index lists the skill is shown in the Skills panel, whose Problems list gives
+the index's reason when it does not.
 Clicking a catalog card first opens a preview of
 that skill's `SKILL.md` — frontmatter, full instructions, and the resources the
 entry ships — so you read what a package actually says before installing it, and
 Escape steps back to the grid.
+
+The index's own reader decides what installs unchanged: a `SKILL.md` it already
+reads is installed byte for byte. A package written for another environment
+often has a `description` it does not accept (a YAML block scalar, or more than
+500 characters). Studio then installs it **adjusted on install**, and the
+preview says so first: the description is folded onto one line and, if still
+too long, cut at the last sentence (or word) within 500 characters. Only that
+frontmatter line changes. Such a file must be valid YAML with no duplicate
+keys, so nothing is lost in the rewrite. The full original description is added
+at the top of the body, with a comment saying the file was adjusted on install
+and where it came from; every other line and file is installed as published,
+and no `adf` marker is added. A name the index cannot use, duplicate keys, or
+YAML that does not parse are refused with the reason. Nothing in an installed
+package is run, and its tools and paths are not adapted.
 
 ## Enable, disable, and uninstall
 

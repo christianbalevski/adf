@@ -2,7 +2,8 @@
 // terminal app.
 //
 //   GET /catalog/skills?url=           SKILLS_CATALOG_GET
-//   GET /catalog/skills/package?url=   SKILLS_PACKAGE_GET
+//   GET /catalog/skills/package?url=   SKILLS_PACKAGE_GET (a SKILL.md as text, with its import decision)
+//   GET /catalog/skills/package?url=&binary=1   one package resource as exact bytes (base64)
 //
 // Pure network reads through the shared catalog guard
 // (services/skills-catalog-fetch.ts): https only, SSRF/egress guard (the
@@ -12,11 +13,15 @@
 // applies to these explicit reads.
 
 import type { FastifyInstance } from 'fastify'
-import { fetchSkillPackage, fetchSkillsCatalog } from '../../services/skills-catalog-fetch'
+import { fetchSkillPackage, fetchSkillPackageBytes, fetchSkillsCatalog } from '../../services/skills-catalog-fetch'
 import type { DaemonRouteContext } from './index'
 
 export function registerCatalogRoutes(server: FastifyInstance, _ctx: DaemonRouteContext): void {
   server.get<{ Querystring: { url?: string } }>('/catalog/skills', async (request) => fetchSkillsCatalog(request.query.url))
 
-  server.get<{ Querystring: { url?: string } }>('/catalog/skills/package', async (request) => fetchSkillPackage(request.query.url))
+  server.get<{ Querystring: { url?: string; binary?: string } }>('/catalog/skills/package', async (request) => (
+    request.query.binary === '1'
+      ? fetchSkillPackageBytes(request.query.url)
+      : fetchSkillPackage(request.query.url)
+  ))
 }

@@ -17,7 +17,7 @@ import { fetchSkillPackage, fetchSkillsCatalog } from '../../../src/main/service
 import { ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus } from '../../../src/main/services/mcp-connect-tests'
 import { getComputeBrowserInfo } from '../../../src/main/services/compute-browser-info'
 import { isolatedContainerName } from '../../../src/main/services/podman.service'
-import { MAX_CATALOG_BYTES, MAX_SKILL_PACKAGE_BYTES } from '../../../src/shared/schemas/skills-catalog.schema'
+import { MAX_CATALOG_BYTES, MAX_SKILL_FILE_BYTES } from '../../../src/shared/schemas/skills-catalog.schema'
 
 const fetchMock = vi.fn()
 beforeEach(() => { fetchMock.mockReset(); guarded.fn.mockReset(); vi.stubGlobal('fetch', fetchMock) })
@@ -55,10 +55,12 @@ describe('skills catalog fetches', () => {
   it('package: https only, binary refused, text returned', async () => {
     expect(await fetchSkillPackage('ftp://x')).toEqual({ ok: false, error: 'Package URL must be https' })
     guarded.fn.mockResolvedValueOnce({ bytes: Buffer.from([0, 1]) })
-    expect(await fetchSkillPackage('https://x.test/SKILL.md')).toEqual({ ok: false, error: 'SKILL.md is not text' })
-    expect(guarded.fn).toHaveBeenLastCalledWith('https://x.test/SKILL.md', { maxBytes: MAX_SKILL_PACKAGE_BYTES, timeoutMs: 10_000 })
+    // The fetch hands the bytes over; refusing them is the import decision's (one owner).
+    expect(await fetchSkillPackage('https://x.test/SKILL.md')).toMatchObject({ ok: true, import: { ok: false, error: 'SKILL.md is not text' } })
+    expect(guarded.fn).toHaveBeenLastCalledWith('https://x.test/SKILL.md', { maxBytes: MAX_SKILL_FILE_BYTES, timeoutMs: 10_000 })
     guarded.fn.mockResolvedValueOnce({ bytes: Buffer.from('# Skill') })
-    expect(await fetchSkillPackage('https://x.test/SKILL.md')).toEqual({ ok: true, content: '# Skill' })
+    // The text is unchanged; the import decision rides beside it (no frontmatter: not installable).
+    expect(await fetchSkillPackage('https://x.test/SKILL.md')).toEqual({ ok: true, content: '# Skill', import: { ok: false, error: 'missing YAML frontmatter', compat: { native: false, reason: 'unreadable', detail: 'missing YAML frontmatter' } } })
   })
 })
 

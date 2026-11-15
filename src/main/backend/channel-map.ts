@@ -331,6 +331,9 @@ export const CHANNEL_MAP = {
   [IPC.DOC_SET_FILE_AUTHORIZED]: proxied('invoke', ['PATCH /agents/:id/files/authorized']),
   [IPC.DOC_READ_INTERNAL_FILE]: proxied('invoke', ['GET /agents/:id/files/meta', 'GET /agents/:id/files/raw']),
   [IPC.DOC_WRITE_INTERNAL_FILE]: proxied('invoke', ['PUT /agents/:id/files/content']),
+  [IPC.DOC_WRITE_INTERNAL_FILES]: proxied('invoke', ['POST /agents/:id/files/batch'], {
+    note: 'The expected file is checked against the session and the agent id resolved before the request; the request is id-addressed.',
+  }),
   [IPC.DOC_DOWNLOAD_INTERNAL_FILE]: proxied('invoke', ['GET /agents/:id/files/raw'], { note: 'Save dialog and the write stay in Studio main.' }),
 
   // --- Meta, logs, tasks, local tables ---------------------------------------

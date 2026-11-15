@@ -1,6 +1,7 @@
 ---
 name: telegram-remote-hil
 description: Set up owner-only remote human approvals over Telegram for ADF HIL tasks, with explicit principal ID binding, reply correlation, and expiry.
+adf: ">=0.2"
 requires:
   tools: [fs_read, fs_write, sys_get_config, sys_update_config, sys_code, db_query, msg_send, sys_set_timer, sys_list_timers, db_execute]
 ---

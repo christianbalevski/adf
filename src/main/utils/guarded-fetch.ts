@@ -88,12 +88,12 @@ export function addressCheck(target: URL, guard: FetchGuardOptions, kind: 'fetch
 }
 
 /** One GET over node:http(s), connecting only to addresses `guardedLookup` checked. */
-function pinnedGet(url: string, signal: AbortSignal, guard: FetchGuardOptions): Promise<Response> {
+function pinnedGet(url: string, signal: AbortSignal, guard: FetchGuardOptions, headers?: Record<string, string>): Promise<Response> {
   const target = new URL(url)
   const check = addressCheck(target, guard)
   const send = target.protocol === 'https:' ? httpsRequest : httpRequest
   return new Promise<Response>((resolve, reject) => {
-    const req = send(target, { method: 'GET', signal, lookup: guardedLookup(check) }, (res: IncomingMessage) => {
+    const req = send(target, { method: 'GET', signal, lookup: guardedLookup(check), ...(headers ? { headers } : {}) }, (res: IncomingMessage) => {
       const headers = new Headers()
       for (const [name, value] of Object.entries(res.headers)) {
         if (value === undefined) continue
@@ -324,6 +324,30 @@ export interface GuardedFetchBody {
 
 export interface GuardedFetchFailure {
   error: string
+  /** The HTTP status of a non-2xx answer; absent for a network or guard failure. */
+  status?: number
+  /** The response headers the caller named in `keepHeaders`, when that answer sent them. */
+  headers?: Record<string, string>
+}
+
+/**
+ * Request headers a guarded fetch may send. Only these two: a catalog read
+ * carries no credentials, cookies or authorization, ever, and nothing a
+ * caller passes beyond them is sent.
+ */
+export const GUARDED_FETCH_HEADERS = new Set(['accept', 'user-agent'])
+
+/** The allowlisted headers of `headers`; a name outside GUARDED_FETCH_HEADERS throws (a caller bug, not remote data). */
+export function guardedFetchHeaders(headers: Record<string, string> | undefined): Record<string, string> | undefined {
+  if (!headers) return undefined
+  const out: Record<string, string> = {}
+  for (const [name, value] of Object.entries(headers)) {
+    const key = name.toLowerCase()
+    if (!GUARDED_FETCH_HEADERS.has(key)) throw new Error(`guardedFetch does not send the ${name} header`)
+    if (typeof value !== 'string' || /[\r\n]/.test(value)) throw new Error(`guardedFetch: invalid ${name} header value`)
+    out[key] = value
+  }
+  return out
 }
 
 export type GuardedFetchResult = GuardedFetchBody | GuardedFetchFailure
@@ -351,6 +375,10 @@ export interface GuardedFetchOptions {
    * Cloud metadata addresses stay blocked (ssrf-guard isCloudMetadataIp).
    */
   allowLinkLocal?: boolean
+  /** `accept` and `user-agent` only (GUARDED_FETCH_HEADERS), sent on every hop. */
+  headers?: Record<string, string>
+  /** Response headers (lower-case names) to copy onto a non-2xx failure; nothing else is returned. */
+  keepHeaders?: readonly string[]
 }
 
 /** Narrow a GuardedFetchResult without repeating the `'error' in x` dance. */
@@ -411,6 +439,7 @@ export async function guardedFetch(
   } catch {
     return { error: `invalid URL: ${String(url).slice(0, 200)}` }
   }
+  const headers = guardedFetchHeaders(options.headers)
 
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
@@ -433,8 +462,8 @@ export async function guardedFetch(
 
       // Behind an env proxy the proxy resolves the host (ssrf-guard envProxyFor): nothing to pin.
       const response = globalThis.fetch === NATIVE_FETCH && !envProxyFor(current)
-        ? await pinnedGet(current, controller.signal, guard)
-        : await fetch(current, { signal: controller.signal, redirect: 'manual' })
+        ? await pinnedGet(current, controller.signal, guard, headers)
+        : await fetch(current, { signal: controller.signal, redirect: 'manual', ...(headers ? { headers } : {}) })
       if (response.status >= 300 && response.status <= 399) {
         const location = response.headers.get('location')
         if (!location) return { error: `redirect without a location header (HTTP ${response.status})` }
@@ -447,7 +476,15 @@ export async function guardedFetch(
         }
         continue
       }
-      if (!response.ok) return { error: `HTTP ${response.status} ${response.statusText}`.trim() }
+      if (!response.ok) {
+        try { await response.body?.cancel() } catch { /* best effort */ }
+        const kept: Record<string, string> = {}
+        for (const name of options.keepHeaders ?? []) {
+          const value = response.headers.get(name)
+          if (value !== null) kept[name.toLowerCase()] = value
+        }
+        return { error: `HTTP ${response.status} ${response.statusText}`.trim(), status: response.status, ...(Object.keys(kept).length ? { headers: kept } : {}) }
+      }
 
       // Cheap precheck: a server that declares an oversized body is refused
       // before a single byte is read.

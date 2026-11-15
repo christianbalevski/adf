@@ -11,16 +11,18 @@
 import * as panelNs from '../../../shared/utils/skills-panel'
 import * as previewNs from '../../../shared/utils/skill-preview'
 import * as schemaNs from '../../../shared/schemas/skills-catalog.schema'
+import * as githubNs from '../../services/skills-github'
 import type { CatalogSourceResult, MergedCatalogEntry, ParsedRegistry, SkillProblem } from '../../../shared/utils/skills-panel'
 import type { FileListEntry } from '../api/types'
 import { cjs } from '../interop'
 
 const {
-  SKILLS_REGISTRY_PATH, MAX_SKILL_FILE_BYTES, estimateTokens, installedSkillNames, isCatalogUrl,
+  SKILLS_REGISTRY_PATH, estimateTokens, installedSkillNames, isCatalogUrl,
   parseSkillsRegistry, sanitizeDisplayText, skillProblems,
 } = cjs(panelNs)
 const { splitSkillDocument } = cjs(previewNs)
 const { SKILL_NAME } = cjs(schemaNs)
+const { classifyGithubSource } = cjs(githubNs)
 
 export const SKILLS_OVERLAY = 'skills'
 
@@ -53,8 +55,12 @@ export function parseAddTarget(raw: string | undefined): AddTarget {
   if (!value) return { kind: 'catalog', query: '' }
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
     if (!isCatalogUrl(value)) return { kind: 'invalid', error: 'Only https:// URLs can be fetched.' }
-    let pathname = ''
-    try { pathname = new URL(value).pathname } catch { /* isCatalogUrl already parsed it */ }
+    let url: URL | null = null
+    try { url = new URL(value) } catch { /* isCatalogUrl already parsed it */ }
+    const pathname = url?.pathname ?? ''
+    // A raw SKILL.md installs as one file, as before; every other GitHub source is Studio's.
+    const rawManifest = url?.hostname === 'raw.githubusercontent.com' && /\/SKILL\.md$/.test(pathname)
+    if (!rawManifest && classifyGithubSource(value)) return { kind: 'invalid', error: 'GitHub packages are browsed and installed in Studio.' }
     return /\.md$/i.test(pathname) ? { kind: 'package-url', url: value } : { kind: 'catalog-url', url: value }
   }
   if (looksLikePath(value)) return { kind: 'local', path: value }
@@ -183,47 +189,7 @@ export interface SkillPackage {
 export const packageKey = (source: PackageSource): string =>
   source.type === 'catalog' ? `catalog:${source.entry.sourceUrl}#${source.entry.name}` : source.type === 'url' ? `url:${source.url}` : `disk:${source.path}`
 
-const frontmatterField = (manifest: string, key: string): string | undefined =>
-  splitSkillDocument(manifest).fields.find(f => f.key === key)?.value
-
 export const isSkillName = (value: string | undefined | null): value is string => !!value && SKILL_NAME.test(value)
-
-/** Refusals that apply to every SKILL.md before it is written (the indexer's own bounds). */
-export function manifestProblem(manifest: string): string | null {
-  if (Buffer.byteLength(manifest, 'utf-8') > MAX_SKILL_FILE_BYTES) return `SKILL.md is over ${Math.round(MAX_SKILL_FILE_BYTES / 1024)} KB, the indexer would reject it`
-  if (manifest.slice(0, 8192).includes('\u0000')) return 'SKILL.md is not text'
-  return null
-}
-
-/**
- * Name + warnings for a package that is not a catalog entry: the frontmatter
- * `name` when it is a valid skill name, else the folder it sits in. The
- * indexer publishes a package only when the two agree, so a mismatch is said
- * before Install rather than discovered after.
- */
-export function packageIdentity(manifest: string, fallback: string | undefined): { name: string; description: string; warnings: string[] } | { error: string } {
-  const declared = frontmatterField(manifest, 'name')
-  const description = frontmatterField(manifest, 'description') ?? ''
-  const name = isSkillName(declared) ? declared : isSkillName(fallback) ? fallback : null
-  if (!name) {
-    return { error: declared ? `"${safe(declared)}" is not a skill name (lowercase kebab-case, e.g. pdf-tools)` : 'SKILL.md has no `name:` in its frontmatter and the folder name is not a skill name' }
-  }
-  const warnings: string[] = []
-  if (!declared) warnings.push(`SKILL.md has no \`name:\` in its frontmatter: installed as ${name}, but the indexer will not publish it until it says name: ${name}`)
-  else if (declared !== name) warnings.push(`frontmatter name "${safe(declared)}" is not a valid skill name: installed as ${name}, not indexed until it matches`)
-  if (!description) warnings.push('SKILL.md has no `description:`: the indexer will not publish it')
-  return { name, description, warnings }
-}
-
-/** The folder a SKILL.md URL sits in (`…/skills/pdf/SKILL.md` -> `pdf`). */
-export function urlFolderName(url: string): string | undefined {
-  try {
-    const segments = new URL(url).pathname.split('/').filter(Boolean)
-    return segments.length >= 2 ? decodeURIComponent(segments[segments.length - 2]) : undefined
-  } catch {
-    return undefined
-  }
-}
 
 export function hostLabel(url: string): string {
   try { return new URL(url).hostname } catch { return url }
@@ -250,8 +216,8 @@ export type PackageState =
 
 export type InstallState =
   | { status: 'installing' }
-  | { status: 'done'; warnings: string[] }
-  | { status: 'error'; error: string; warnings: string[] }
+  | { status: 'done' }
+  | { status: 'error'; error: string }
 
 export interface CatalogSession {
   loading: boolean

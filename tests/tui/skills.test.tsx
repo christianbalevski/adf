@@ -8,6 +8,8 @@ import { createTheme } from '../../src/main/tui/app/theme'
 import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
 import { setSkillsFetchSeams } from '../../src/main/tui/skills/catalog'
+import { importSkillManifest } from '../../src/shared/utils/skill-import'
+import { parseSkillFrontmatter } from '../../src/main/adf/skill-indexer'
 import { collectCommands } from '../../src/main/tui/commands/registry'
 import { BUILTIN_COMMANDS } from '../../src/main/tui/commands/builtin/index'
 import { VIEWS } from '../../src/main/tui/views/registry'
@@ -24,9 +26,12 @@ const CATALOG = [
   { name: 'pdf-tools', description: 'Read and fill PDF forms', raw_url: 'https://catalog.test/skills/pdf-tools/SKILL.md', files: [{ path: 'scripts/fill.py', raw_url: 'https://catalog.test/skills/pdf-tools/scripts/fill.py' }] },
   { name: 'standup', description: 'Write the daily standup from the inbox', raw_url: 'https://catalog.test/skills/standup/SKILL.md' },
 ]
+const PASTED_URL = 'https://pasted.test/c.json'
+const RAW_SKILL = 'https://raw.githubusercontent.com/o/r/main/skills/raw-one/SKILL.md'
 const REMOTE: Record<string, string> = {
   'https://catalog.test/skills/pdf-tools/SKILL.md': skillMd('pdf-tools', 'Read and fill PDF forms', '# PDF tools\n\nRun `scripts/fill.py` with the form.'),
   'https://catalog.test/skills/pdf-tools/scripts/fill.py': 'print("fill")\n',
+  [RAW_SKILL]: skillMd('raw-one', 'One file from a raw URL', '# Raw one'),
   'https://catalog.test/skills/standup/SKILL.md': skillMd('standup', 'Write the daily standup from the inbox', '# Standup'),
 }
 
@@ -78,8 +83,11 @@ afterAll(() => {
 
 beforeEach(async () => {
   setSkillsFetchSeams({
-    catalog: async url => (url === CATALOG_URL ? { ok: true, entries: CATALOG, publisher: 'Catalog Test', dropped: 0 } : { ok: false, error: 'HTTP 404' }),
-    text: async url => (REMOTE[url] !== undefined ? { ok: true, content: REMOTE[url] } : { ok: false, error: 'HTTP 404' }),
+    catalog: async url => (url === CATALOG_URL ? { ok: true, entries: CATALOG, publisher: 'Catalog Test', dropped: 0 }
+      : url === PASTED_URL ? { ok: true, entries: [{ name: 'zz-pasted', description: 'From the pasted catalog', raw_url: 'https://pasted.test/zz/SKILL.md' }], publisher: 'Pasted', dropped: 0 }
+        : { ok: false, error: 'HTTP 404' }),
+    text: async url => (REMOTE[url] !== undefined ? { ok: true, content: REMOTE[url], import: importSkillManifest(REMOTE[url], url, parseSkillFrontmatter) } : { ok: false, error: 'HTTP 404' }),
+    bytes: async url => (REMOTE[url] !== undefined ? { ok: true, contentBase64: Buffer.from(REMOTE[url]).toString('base64'), size: Buffer.byteLength(REMOTE[url]) } : { ok: false, error: 'HTTP 404' }),
   })
   mock = await startMockDaemon({ stepMs: 5 })
   writes = []
@@ -105,6 +113,11 @@ beforeEach(async () => {
     if (m && (method === 'PUT' || method === 'DELETE')) {
       writes.push(`${method} ${url.searchParams.get('path')}`)
       reindex(decodeURIComponent(m[1]))
+    }
+    const batch = url.pathname.match(/^\/agents\/([^/]+)\/files\/batch$/)
+    if (batch && method === 'POST' && response.ok) {
+      writes.push(`BATCH ${(JSON.parse(String(init?.body)).files as Array<{ path: string }>).map(f => f.path).join(' ')}`)
+      reindex(decodeURIComponent(batch[1]))
     }
     return response
   }
@@ -238,14 +251,24 @@ describe('/skills', () => {
     expect(frame).toContain('Also installs 1 file under skills/pdf-tools/: scripts/fill.py')
     expect(fixture.text('agent-1', 'skills/pdf-tools/SKILL.md')).toBeUndefined()
     await tui.press(KEY.enter)
-    await tui.waitFor('Installed in agent-1')
-    expect(writes.filter(w => w.includes('pdf-tools'))).toEqual(['PUT skills/pdf-tools/scripts/fill.py', 'PUT skills/pdf-tools/SKILL.md'])
+    await tui.waitFor('Written to skills/pdf-tools/ in agent-1')
+    // One atomic batch, resources first and SKILL.md last (was one PUT per file).
+    expect(writes.filter(w => w.includes('pdf-tools'))).toEqual(['BATCH skills/pdf-tools/scripts/fill.py skills/pdf-tools/SKILL.md'])
     expect(fixture.text('agent-1', 'skills/pdf-tools/SKILL.md')).toBe(REMOTE['https://catalog.test/skills/pdf-tools/SKILL.md'])
     await tui.press(KEY.esc)
-    frame = await tui.waitFor('installed')
+    frame = await tui.waitFor('name in use')
+    expect(frame).not.toContain('installed')
     await tui.press(KEY.esc)
     await tui.press(KEY.esc)
     await tui.waitFor('3 skills, 1 muted')
+  })
+
+  // NE-F2: the terminal app sorted every source's entries by name into one list; Studio's cards follow the source list.
+  it('catalog entries follow the source list: a catalog given to /skills add lists first', async () => {
+    const tui = await mount()
+    await slash(tui, `/skills add ${PASTED_URL}`)
+    const frame = await tui.waitFor(f => f.includes('zz-pasted') && f.includes('pdf-tools'))
+    expect(frame.indexOf('zz-pasted')).toBeLessThan(frame.indexOf('pdf-tools'))
   })
 
   it('/skills add <name> jumps straight to that catalog entry', async () => {
@@ -255,6 +278,21 @@ describe('/skills', () => {
     expect(frame).toContain('standup')
     await tui.press(KEY.enter)
     await tui.waitFor(() => !!fixture.text('agent-1', 'skills/standup/SKILL.md'))
+  })
+
+  // F4 (r4): the r3 change answered a raw GitHub SKILL.md with "use Studio"; base installed it as one file.
+  it('/skills add <raw GitHub SKILL.md> previews and installs that one file, asking before an occupied slot', async () => {
+    const tui = await mount()
+    await slash(tui, `/skills add ${RAW_SKILL}`)
+    await tui.waitFor('One file from a raw URL')
+    await tui.press(KEY.enter)
+    await tui.waitFor('Written to skills/raw-one/ in agent-1')
+    expect(fixture.text('agent-1', 'skills/raw-one/SKILL.md')).toBe(REMOTE[RAW_SKILL])
+    expect(writes.filter(w => w.includes('raw-one'))).toEqual(['BATCH skills/raw-one/SKILL.md'])
+    await tui.press(KEY.enter)
+    await tui.waitFor('skills/raw-one/ already has files')
+    await tui.press('n')
+    expect(writes.filter(w => w.includes('raw-one'))).toHaveLength(1)
   })
 
   it('/skills add <folder> previews and installs a package from disk', async () => {
@@ -269,6 +307,32 @@ describe('/skills', () => {
     expect(fixture.text('agent-1', 'skills/notes-helper/refs/style.md')).toBe('# Style')
     await tui.press(KEY.esc)
     await tui.waitFor(() => store.getState().overlays.length === 0)
+  })
+
+  // BI-F1: the terminal app replaced an occupied skills/<name>/ without asking and called it "installed".
+  it('an occupied slot is "name in use"; installing asks, listing replaced and kept files; declining writes nothing', async () => {
+    fixture.put('agent-1', 'skills/notes-helper/SKILL.md', '---\nname: notes-helper\ndescription: Someone else\'s.\n---\n')
+    fixture.put('agent-1', 'skills/notes-helper/mine.md', '# mine')
+    const before = writes.length
+    const tui = await mount()
+    await slash(tui, `/skills add ${join(scratch, 'notes-helper')}`)
+    let frame = await tui.waitFor('See refs/style.md')
+    expect(frame).toContain('name in use')
+    expect(frame).toContain('replace')
+    await tui.press(KEY.enter)
+    frame = await tui.waitFor('skills/notes-helper/ already has files')
+    expect(frame).toContain('Replaces: skills/notes-helper/SKILL.md')
+    expect(frame).toContain('skills/notes-helper/mine.md')
+    await tui.press('n')
+    await tui.waitFor('See refs/style.md')
+    expect(writes.slice(before)).toEqual([])
+    expect(fixture.text('agent-1', 'skills/notes-helper/SKILL.md')).toContain("Someone else's.")
+    await tui.press(KEY.enter)
+    await tui.waitFor('skills/notes-helper/ already has files')
+    await tui.press('y')
+    await tui.waitFor('Written to skills/notes-helper/ in agent-1')
+    expect(fixture.text('agent-1', 'skills/notes-helper/refs/style.md')).toBe('# Style')
+    expect(fixture.text('agent-1', 'skills/notes-helper/mine.md')).toBe('# mine')
   })
 
   it.each([[80, 24], [120, 34]])('fits %ix%i: list, preview, catalog, package', async (columns, rows) => {

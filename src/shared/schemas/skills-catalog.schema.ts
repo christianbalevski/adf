@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import { FILE_BATCH_MAX_FILES } from '../types/file-batch.types'
 
 /**
  * Skill catalog documents — the install side of file-backed skills.
@@ -15,8 +16,28 @@ import { z } from 'zod'
  * what this agent has.
  */
 
+/** The index's description bound (characters): one place, read by the indexer, the catalog schema and import. */
+export const SKILL_DESCRIPTION_MAX = 500
+
 /** Same kebab shape the indexer enforces — a catalog entry that can never index is not an entry. */
 export const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
+
+/** The index's reading of one frontmatter scalar (bare, double-quoted, or single-quoted): skill-indexer and the `adf` label. */
+export function indexScalar(raw: string): string | null {
+  const value = raw.trim()
+  if (!value) return null
+  if (value.startsWith('"')) {
+    try {
+      const parsed = JSON.parse(value)
+      return typeof parsed === 'string' ? parsed : null
+    } catch { return null }
+  }
+  if (value.startsWith("'")) {
+    if (!value.endsWith("'")) return null
+    return value.slice(1, -1).replace(/''/g, "'")
+  }
+  return value
+}
 
 /**
  * Segments a package resource path may carry. Deliberately narrow — no spaces,
@@ -25,14 +46,24 @@ export const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
  */
 const PATH_SEGMENT = /^[A-Za-z0-9._-]+$/
 
-/** Resources per package, SKILL.md excluded — it is always fetched from `raw_url`. */
-export const MAX_PACKAGE_FILES = 32
+/**
+ * Resources one package may ship beside SKILL.md: one atomic batch
+ * (FILE_BATCH_MAX_FILES, SKILL.md and license files counted) less the
+ * manifest. The batch's bytes bound (FILE_BATCH_MAX_BYTES) is the package's.
+ */
+export const MAX_PACKAGE_FILES = FILE_BATCH_MAX_FILES - 1
+
+/** Packages one GitHub URL may list. More is refused with a reason, never truncated. */
+export const MAX_DISCOVERED_PACKAGES = 2000
+
+/** Bytes of one GitHub tree listing (the largest probed repository lists in 2.5 MB). */
+export const MAX_GITHUB_TREE_BYTES = 8 * 1024 * 1024
 
 /** Ceiling for a fetched catalog document, mirroring the registry's own 32KB cap generously. */
 export const MAX_CATALOG_BYTES = 512 * 1024
 
-/** Ceiling for one fetched SKILL.md — the indexer rejects anything larger anyway. */
-export const MAX_SKILL_PACKAGE_BYTES = 256 * 1024
+/** The index's SKILL.md byte bound: one place, read by the indexer, the fetch cap and import. */
+export const MAX_SKILL_FILE_BYTES = 256 * 1024
 
 /**
  * Characters a catalog string may never contain.
@@ -47,7 +78,8 @@ export const MAX_SKILL_PACKAGE_BYTES = 256 * 1024
 // eslint-disable-next-line no-control-regex
 const UNSAFE_TEXT = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
 
-const safeText = (value: string): boolean => !UNSAFE_TEXT.test(value)
+/** No control or bidirectional-override character (see UNSAFE_TEXT). */
+export const safeText = (value: string): boolean => !UNSAFE_TEXT.test(value)
 const UNSAFE_TEXT_MESSAGE = 'must not contain control or bidirectional-override characters'
 
 /**
@@ -80,6 +112,51 @@ export function resolvePackageFilePath(name: string, raw: unknown): string | nul
   return relative
 }
 
+/** A package-relative resource path ADF installs: safe segments only, never SKILL.md itself. */
+export function isSafePackageRelativePath(relative: string): boolean {
+  if (!relative || relative === 'SKILL.md' || relative.length > 512) return false
+  return relative.split('/').every((segment) => segment !== '.' && segment !== '..' && PATH_SEGMENT.test(segment))
+}
+
+/**
+ * A package found in a GitHub repository, before its SKILL.md is read. Its
+ * identity is its source and folder (`id`), never a name: the name is the
+ * manifest's, known only once it loads, and two folders of one repository
+ * may well claim the same one. Every URL names one commit.
+ */
+export interface DiscoveredSkillPackage {
+  /** `<source url>#<repository folder>`: unique within a browser session. */
+  id: string
+  /** Repository folder of the package ('' for the repository root). */
+  dir: string
+  /** The SKILL.md, pinned to the commit. */
+  raw_url: string
+  /** SKILL.md, resources and license files together, from tree sizes. */
+  totalBytes: number
+  /** Everything installed beside SKILL.md, package-relative, pinned. */
+  files: Array<{ path: string; raw_url: string; size: number; license?: boolean }>
+  /** Why the package cannot be installed (bounds, symlinks, paths), decided from the tree. */
+  problem?: string
+}
+
+/** What a GitHub URL resolved to. */
+export interface DiscoveredSkillSource {
+  kind: 'github'
+  /** `<owner>/<repo>`. */
+  repository: string
+  /** The one commit every URL below names. */
+  sha: string
+  /** The branch or tag the URL named, `HEAD` for the default branch, or the sha. */
+  ref: string
+  /** Repository path the URL scoped to ('' for the root; a marketplace.json path). */
+  scope: string
+  /** Pinned github.com URL of the scope. */
+  url: string
+  packages: DiscoveredSkillPackage[]
+  /** Things named but not listed (external marketplace members) and notes (no license). */
+  problems: string[]
+}
+
 /** One resource a package ships beside its manifest. */
 const SkillPackageFileSchema = z.object({
   path: z.string().min(1).refine(safeText, UNSAFE_TEXT_MESSAGE),
@@ -101,7 +178,7 @@ const SkillPackageFileSchema = z.object({
  */
 export const SkillCatalogEntrySchema = z.object({
   name: z.string().regex(SKILL_NAME),
-  description: z.string().min(1).max(500).refine(safeText, UNSAFE_TEXT_MESSAGE),
+  description: z.string().min(1).max(SKILL_DESCRIPTION_MAX).refine(safeText, UNSAFE_TEXT_MESSAGE),
   /** Path inside the publishing repo — display only. */
   path: z.string().min(1).refine(safeText, UNSAFE_TEXT_MESSAGE).optional(),
   /** Where the SKILL.md body is fetched from on install. */

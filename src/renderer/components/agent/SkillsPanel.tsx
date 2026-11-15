@@ -2,8 +2,7 @@ import { Fragment, useState, useEffect, useCallback, useMemo, useRef } from 'rea
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useEditorTabsStore } from '../../stores/editor-tabs.store'
-import type { SkillCatalogEntry } from '../../../shared/schemas/skills-catalog.schema'
+import { useAgentSwitching, useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { DocsLink, InfoHint } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
@@ -14,31 +13,48 @@ import {
   MAX_SKILLS,
   MAX_REGISTRY_BYTES,
   MAX_SKILL_FILE_BYTES,
+  CATALOG_PAGE_SIZE,
+  installSlot,
+  addBrowserSource,
+  browserResults,
+  configuredBrowserSources,
+  removeBrowserSource,
+  settleBrowserSource,
+  toCatalogSourceResult,
+  buildCatalogCards,
+  cardName,
+  cardPath,
   catalogSourceLabel,
   estimateTokens,
-  filterCatalogEntries,
+  filterCatalogCards,
   isCatalogUrl,
-  mergeCatalogResults,
   normalizeCatalogSources,
-  parseSkillsRegistry,
   sanitizeDisplayText,
+  type BrowserSource,
+  type CatalogCard,
   type CatalogSourceResult,
-  type MergedCatalogEntry,
+  type LoadedManifestName,
   type ParsedRegistry,
   type RegistryEntry
 } from '../../../shared/utils/skills-panel'
+import { adfCompatLabel, importAs, type AdfCompat } from '../../../shared/utils/skill-import'
+import { slotOf } from '../../../shared/utils/skill-install-plan'
 import { renderMarkdownToSafeHtml, useMarkdownHighlightVersion } from '../../utils/markdown'
+import { createDebouncedRefresh, isFileUpdatedEvent } from '../../utils/agent-files'
 import { elideMiddle, splitSkillDocument } from '../../../shared/utils/skill-preview'
-import { agentChanged, setSkillMuted, syncOpenTab } from '../../utils/skills-state'
+import { setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { Dialog } from '../common/Dialog'
-import { openApi, useOpenRuntime } from '../../utils/runtime-api'
+import { apiFor, openApi, useOpenRuntime } from '../../utils/runtime-api'
+import { captureAgentView, isCurrentAgentView } from '../../utils/agent-view'
+import { readSkillsPanel } from '../../utils/skills-panel-refresh'
+import { commitSkillInstall, installFromCard, manifestName, prepareSkillInstall, toManifestState, type InstallOutcome, type InstallRequest, type ManifestState, type PreparedInstall } from '../../utils/skill-install'
 
 /**
  * Skills — the human half of file-backed skills (design doc §4).
  *
  * Everything here is a file operation, never a config edit:
  *
- *   install / remove  →  write or delete skills/<name>/SKILL.md
+ *   install / remove  →  write a package into skills/<name>/ in one batch, or delete that folder
  *   mute / unmute     →  edit the `disabled` list in skills-state.json
  *
  * Both paths run through the workspace write choke point, which reindexes and
@@ -48,44 +64,41 @@ import { openApi, useOpenRuntime } from '../../utils/runtime-api'
  *
  * Two hazards shape the code below.
  *
- * 1. DOC_WRITE_INTERNAL_FILE carries no agent identity: it lands in whichever
- *    workspace main has open when it arrives. A ten-second catalog fetch can
- *    easily outlive the agent it started under, so every write captures the
- *    panel's agent (the open document's filePath) beforehand and is abandoned
- *    if the agent changed or a switch is in flight (see beginAgentSwitch).
+ * 1. A file write lands in whichever agent the backend has in the foreground.
+ *    An install captures the view it started under (file, runtime, view
+ *    generation) and the runtime's API, re-checks the view after every await,
+ *    and sends ONE batch (DOC_WRITE_INTERNAL_FILES) that names the file it
+ *    means; the backend compares that with its open file in the same turn it
+ *    commits. Nothing is written piecemeal, so there is no half-installed
+ *    package to clean up.
  * 2. skills-state.json is read-modify-write, so two toggles racing lose one
- *    edit. Both hazards are handled in utils/skills-state.ts, whose write queue
- *    is shared with the composer's `/skills disable|enable` commands; the
+ *    edit. That is handled in utils/skills-state.ts, whose write queue is
+ *    shared with the composer's `/skills disable|enable` commands; the
  *    checkbox here is optimistic with rollback so the UI never stalls on IPC.
  */
 
 interface FileEntry {
   path: string
   size: number
-}
-
-/**
- * What one Install click did.
- *
- * `error` non-null means the package did not land: the manifest was never
- * written, so the indexer never saw it. `warnings` is the partial case — the
- * skill installed and works, but a resource it ships did not arrive, which is
- * worth saying out loud and is not a failure of the install.
- */
-interface InstallOutcome {
-  error: string | null
-  warnings: string[]
+  protection?: 'read_only' | 'no_delete' | 'none'
 }
 
 const NO_BUSY: ReadonlySet<string> = new Set()
+const NO_FILES: FileEntry[] = []
+const NO_COMPAT: Record<string, AdfCompat> = {}
+/** The identity a panel snapshot belongs to. */
+const viewKey = (view: { filePath: string | null; runtimeId: string; viewGeneration: number }) => `${view.runtimeId}|${view.viewGeneration}|${view.filePath ?? ''}`
 
 export function SkillsPanel() {
   const filePath = useDocumentStore((s) => s.filePath)
   const config = useAgentStore((s) => s.config)
 
-  const [files, setFiles] = useState<FileEntry[]>([])
-  const [registry, setRegistry] = useState<ParsedRegistry | null>(null)
-  const [registryBytes, setRegistryBytes] = useState(0)
+  /**
+   * What the panel last read, and for which view. Only the current view's
+   * snapshot is ever shown; any other (the previous agent, or this agent
+   * before a switch away and back) shows as loading, never as rows.
+   */
+  const [shown, setShown] = useState<{ key: string; files: FileEntry[]; registry: ParsedRegistry | null; compat: Record<string, AdfCompat>; error?: string } | null>(null)
   const [busy, setBusy] = useState<ReadonlySet<string>>(NO_BUSY)
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const [notice, setNotice] = useState<string | null>(null)
@@ -124,21 +137,13 @@ export function SkillsPanel() {
   const refreshSeq = useRef(0)
   const refresh = useCallback(async (): Promise<boolean> => {
     const seq = ++refreshSeq.current
-    const owner = useDocumentStore.getState().filePath
+    // One view, one runtime API, for the whole refresh (utils/skills-panel-refresh.ts).
+    const view = captureAgentView()
     try {
-      const listed = await openApi()?.getInternalFiles()
-      const [registryFile, stateFile] = await Promise.all([
-        openApi()?.readInternalFile(SKILLS_REGISTRY_PATH),
-        openApi()?.readInternalFile(SKILLS_STATE_PATH)
-      ])
-      if (seq !== refreshSeq.current) return false
-      if (useDocumentStore.getState().filePath !== owner) return false
-
-      const fileList = listed?.files ?? []
-      const parsed = parseSkillsRegistry(registryFile?.content)
-      setFiles(fileList)
-      setRegistryBytes(fileList.find((f) => f.path === SKILLS_REGISTRY_PATH)?.size ?? 0)
-      setRegistry(parsed)
+      const snapshot = await readSkillsPanel(view, apiFor(view.runtimeId))
+      if (seq !== refreshSeq.current || !snapshot || !isCurrentAgentView(view)) return false
+      const { registry: parsed, registryFile, stateFile } = snapshot
+      setShown({ key: viewKey(view), files: snapshot.files, registry: parsed, compat: snapshot.compat })
       // Retire every optimistic toggle the catalog now reflects (or that names
       // a skill the catalog no longer has).
       setOverrides((prev) => {
@@ -154,39 +159,52 @@ export function SkillsPanel() {
       if (!registryFile?.binary) syncOpenTab(SKILLS_REGISTRY_PATH, registryFile?.content)
       if (!stateFile?.binary) syncOpenTab(SKILLS_STATE_PATH, stateFile?.content)
       return parsed !== null
-    } catch {
+    } catch (err) {
+      // A read that failed for the view still showing is said, with Retry; it never stays "Loading".
+      if (seq === refreshSeq.current && isCurrentAgentView(view)) {
+        setShown({ key: viewKey(view), files: [], registry: null, compat: {}, error: err instanceof Error ? err.message : String(err) })
+      }
       return false
     }
   }, [])
 
+  // A new view (another file, another runtime, or the same file opened again)
+  // is read once the switch to it is over: during the switch the open agent
+  // is not settled, so a read then is refused (isCurrentAgentView) and would
+  // leave nothing to show.
+  const viewRuntime = useDocumentStore((s) => s.runtimeId)
+  const viewGeneration = useDocumentStore((s) => s.viewGeneration)
+  const switching = useAgentSwitching()
   useEffect(() => {
-    void refresh()
-  }, [filePath, refresh])
+    if (!switching) void refresh()
+  }, [filePath, viewRuntime, viewGeneration, switching, refresh])
+  const current = shown?.key === viewKey({ filePath, runtimeId: viewRuntime, viewGeneration }) ? shown : null
+  const files = current?.files ?? NO_FILES
+  const registry = current?.registry ?? null
+  const compat = current?.compat ?? NO_COMPAT
+  const registryBytes = files.find((f) => f.path === SKILLS_REGISTRY_PATH)?.size ?? 0
 
   /**
-   * Live updates. Every writer that is not Studio itself — the agent's fs_write,
-   * a lambda, the daemon, and the indexer's own registry write —
-   * surfaces as a `file_updated` event (assemble-agent.ts), so the panel follows
-   * the same push channel its siblings use instead of guessing at a settle
-   * delay. Debounced: one install fires several of these in a row.
+   * Live updates, as the Files panel follows them (AgentFiles.tsx): the
+   * runtime's `file_updated` for a text write, or the workspace `files`
+   * signal, which every writer raises, whether a runtime is attached or not
+   * (a stopped agent's document included). The indexer's registry rewrite
+   * raises it too, so the index's answer reaches the panel. One debounced
+   * refresh per burst.
    */
   const runtime = useOpenRuntime()
   useEffect(() => {
-    let debounce: ReturnType<typeof setTimeout> | null = null
-    const unsubscribe = openApi()?.onAgentEvent?.((event: AgentExecutionEvent) => {
-      if (event?.type !== 'file_updated') return
-      const path = (event.payload as { path?: string } | undefined)?.path
-      if (!path) return
-      if (path !== SKILLS_REGISTRY_PATH && path !== SKILLS_STATE_PATH && !SKILL_MANIFEST.test(path)) return
-      if (debounce) clearTimeout(debounce)
-      debounce = setTimeout(() => {
-        debounce = null
-        void refresh()
-      }, 150)
+    const live = createDebouncedRefresh(() => void refresh(), 150)
+    const offEvent = openApi()?.onAgentEvent?.((event: AgentExecutionEvent) => {
+      if (isFileUpdatedEvent(event)) live.trigger()
+    })
+    const offData = openApi()?.onWorkspaceDataChanged?.(({ scope }) => {
+      if (scope === 'files') live.trigger()
     })
     return () => {
-      if (debounce) clearTimeout(debounce)
-      unsubscribe?.()
+      live.cancel()
+      offEvent?.()
+      offData?.()
     }
   }, [refresh, runtime])
 
@@ -199,6 +217,8 @@ export function SkillsPanel() {
     }
     return names
   }, [files])
+  /** Slots holding any file at all (a name is a slot): what the catalog's "Name in use" reads. Display only. */
+  const occupiedNames = useMemo(() => new Set(files.flatMap((f) => slotOf(f.path) ?? [])), [files])
 
   /** Registry entries with any pending toggle applied. */
   const skills: RegistryEntry[] = useMemo(() => {
@@ -302,74 +322,25 @@ export function SkillsPanel() {
     }
   }, [later, markBusy, refresh, setRowError])
 
-  /**
-   * Install = write the package; the indexer does the rest. The fetches are
-   * remote and slow, so the agent identity captured up front is re-checked
-   * after them before anything touches the VFS.
-   *
-   * An entry carrying `files` is a whole package — scripts, references,
-   * `agents/openai.yaml` — and every one of them is written RESOURCES FIRST,
-   * `SKILL.md` LAST (design doc §3.5). The indexer keys on the manifest path, so
-   * that ordering is what keeps a half-arrived package from ever being indexed
-   * or injected. Entries with no `files` are the schema-1 case and behave
-   * exactly as before: one manifest, one write.
-   *
-   * A resource that will not fetch or write is reported and skipped rather than
-   * aborting the install — the skill's instructions are the part that matters,
-   * and a missing reference file is a thing a human can see and re-run.
-   */
-  const handleInstall = useCallback(async (entry: SkillCatalogEntry): Promise<InstallOutcome> => {
-    const owner = useDocumentStore.getState().filePath
-    markBusy(entry.name, true)
+  /** Prepare an install (skill-install.ts): every byte fetched, the batch planned, nothing written yet. */
+  const prepareInstall = useCallback(async (request: InstallRequest): Promise<InstallOutcome> => {
+    markBusy(request.key, true)
     try {
-      const directory = `skills/${entry.name}`
-      const manifestPath = `${directory}/SKILL.md`
-      const pkg = await openApi()?.getSkillPackage(entry.raw_url)
-      if (!pkg?.ok) return { error: pkg?.error ?? 'Fetch failed', warnings: [] }
-
-      // Resources ride the same capped, SSRF-guarded package IPC as the
-      // manifest. Fetch them all before writing anything, so the write phase is
-      // short and the agent-identity check in front of it stays meaningful.
-      const warnings: string[] = []
-      const resources: Array<{ path: string; content: string }> = []
-      for (const file of entry.files ?? []) {
-        const fetched = await openApi()?.getSkillPackage(file.raw_url)
-        if (!fetched?.ok) {
-          warnings.push(`${file.path} — ${fetched?.error ?? 'Fetch failed'}`)
-          continue
-        }
-        resources.push({ path: `${directory}/${file.path}`, content: fetched.content })
-      }
-
-      const blocked = agentChanged(owner)
-      if (blocked) return { error: blocked, warnings: [] }
-
-      for (const resource of resources) {
-        const ok = await openApi()?.writeInternalFile(resource.path, resource.content)
-        if (!ok?.success) {
-          warnings.push(`${resource.path} — could not write`)
-          continue
-        }
-        syncOpenTab(resource.path, resource.content)
-      }
-
-      // The manifest goes last, and only to the agent this install started
-      // under: the resource writes above are more IPC round trips, and a
-      // workspace switch during them must not publish a package here.
-      const moved = agentChanged(owner)
-      if (moved) return { error: moved, warnings }
-      const written = await openApi()?.writeInternalFile(manifestPath, pkg.content)
-      if (!written?.success) return { error: `Could not write ${manifestPath}.`, warnings }
-      syncOpenTab(manifestPath, pkg.content)
-      await refresh()
-      later(600, () => void refresh())
-      return { error: null, warnings }
-    } catch (err) {
-      return { error: err instanceof Error ? err.message : String(err), warnings: [] }
+      return await prepareSkillInstall(request, refresh)
     } finally {
-      markBusy(entry.name, false)
+      markBusy(request.key, false)
     }
-  }, [later, markBusy, refresh])
+  }, [markBusy, refresh])
+
+  /** Write a prepared install (an explicit replacement) as ONE batch. */
+  const commitInstall = useCallback(async (prepared: PreparedInstall): Promise<InstallOutcome> => {
+    markBusy(prepared.key, true)
+    try {
+      return await commitSkillInstall(prepared, refresh)
+    } finally {
+      markBusy(prepared.key, false)
+    }
+  }, [markBusy, refresh])
 
   /** Open any workspace file in the editor — the registry button and every row. */
   const openInEditor = useCallback(async (path: string) => {
@@ -392,14 +363,14 @@ export function SkillsPanel() {
   const catalogUnreadable = registry === null && registryBytes > 0
   const showNotGenerated = registry === null && registryBytes === 0 && installedNames.size > 0
   const showNothingInstalled =
-    !catalogUnreadable && !showNotGenerated && skills.length === 0 && problems.length === 0
+    !!current && !current.error && !catalogUnreadable && !showNotGenerated && skills.length === 0 && problems.length === 0
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
       <div className="flex items-center justify-between px-3 pt-3 pb-1">
         <div className="flex items-center gap-2 text-xs text-neutral-500 dark:text-neutral-400">
-          <span>{skills.length} skill{skills.length !== 1 ? 's' : ''} installed</span>
+          <span>{current?.error ? 'Could not read skills' : current ? `${skills.length} skill${skills.length !== 1 ? 's' : ''} installed` : 'Loading skills…'}</span>
           <DocsLink href={DOCS.skills} />
         </div>
         <button
@@ -418,6 +389,13 @@ export function SkillsPanel() {
 
       {/* Installed list */}
       <div className="flex-1 overflow-y-auto px-3 pb-3 space-y-2">
+        {current?.error && (
+          <p className="text-[11px] text-red-600 dark:text-red-400 py-8 text-center">
+            Could not read skills: {sanitizeDisplayText(current.error)}{' '}
+            <button onClick={() => void refresh()} className="text-blue-500 hover:text-blue-600 dark:text-blue-400 cursor-pointer">Retry</button>
+          </p>
+        )}
+
         {showNothingInstalled && (
           <div className="text-center py-8">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -469,8 +447,11 @@ export function SkillsPanel() {
           >
             <div className="flex items-start justify-between gap-2">
               <div className="flex-1 min-w-0">
-                <div className="text-xs font-medium text-neutral-700 dark:text-neutral-300 font-mono truncate">
-                  {sanitizeDisplayText(skill.name)}
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <span className="text-xs font-medium text-neutral-700 dark:text-neutral-300 font-mono truncate" title={sanitizeDisplayText(skill.name)}>
+                    {sanitizeDisplayText(skill.name)}
+                  </span>
+                  {compat[skill.name] && <CompatChip compat={compat[skill.name]} />}
                 </div>
                 {skill.enabled ? (
                   <p className="text-[11px] text-neutral-500 dark:text-neutral-400 mt-1 leading-relaxed">
@@ -571,277 +552,342 @@ export function SkillsPanel() {
       <CatalogDialog
         open={catalogOpen}
         onClose={() => setCatalogOpen(false)}
-        installedNames={installedNames}
+        occupiedNames={occupiedNames}
         busy={busy}
-        onInstall={handleInstall}
+        onPrepare={prepareInstall}
+        onCommit={commitInstall}
       />
     </div>
   )
 }
 
 /**
- * Catalog browser — a marketplace over every configured source at once.
+ * Catalog browser — a marketplace over every configured source at once, or
+ * over one URL pasted at the top of it.
  *
  * The source list is an APP preference (Settings → Skills), not agent config:
  * the dialog reads `skillCatalogSources` each time it opens and fetches every
  * source concurrently in the main process, since the renderer's CSP blocks
- * remote origins. The list is the whole truth — the first-party registry is in
- * it as an ordinary entry when the human kept it, and absent when they did not,
- * so an empty list is a legitimate state the dialog says out loud. Results merge
- * first-wins by name in LIST ORDER, so precedence is what Settings shows, and
- * one source failing costs its own row and nothing else.
+ * remote origins. Catalog entries merge first-wins by name in LIST ORDER.
+ *
+ * A pasted URL (a GitHub repository, folder, SKILL.md or marketplace.json, or
+ * any catalog document) is added first to the same source list. A GitHub
+ * source lists packages straight from the repository tree, pinned to one
+ * commit; their SKILL.md files load a page at a time (and all at once only
+ * when asked), so a repository of hundreds of skills costs no more requests
+ * than the cards on screen. A package is its source and folder until its
+ * manifest loads; its name is the manifest's.
  *
  * Catalog text is remote data. Names, descriptions, publishers and error
- * strings are all sanitized before they are painted, so a bidi override in an
- * upstream document cannot make an entry claim to be something it is not — the
- * second layer behind the main-side schema, which rejects those characters
- * per-entry rather than failing a whole document.
+ * strings are all sanitized before they are painted.
  *
  * The dialog has two views, not two dialogs: clicking a card swaps the grid for
- * that skill's preview and Escape (or the breadcrumb) swaps it back, the same
- * in-place step the MCP add-server modal and the agent review dialog use. A
- * second stacked modal over a `<dialog>` would take the Escape key with it.
+ * that skill's preview and Escape (or the breadcrumb) swaps it back.
  */
 function CatalogDialog({
   open,
   onClose,
-  installedNames,
+  occupiedNames,
   busy,
-  onInstall
+  onPrepare,
+  onCommit
 }: {
   open: boolean
   onClose: () => void
-  installedNames: Set<string>
+  occupiedNames: Set<string>
   busy: ReadonlySet<string>
-  onInstall: (entry: SkillCatalogEntry) => Promise<InstallOutcome>
+  onPrepare: (request: InstallRequest) => Promise<InstallOutcome>
+  onCommit: (prepared: PreparedInstall) => Promise<InstallOutcome>
 }) {
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
 
-  /** The resolved source list from app settings. `null` until it has been read. */
-  const [sources, setSources] = useState<string[] | null>(null)
-  const [results, setResults] = useState<CatalogSourceResult[]>([])
-  const [loading, setLoading] = useState(false)
-  const [query, setQuery] = useState('')
-  /** Install failures, per entry, so one bad row never blanks the grid. */
-  const [installErrors, setInstallErrors] = useState<Record<string, string>>({})
-  /** Resources an otherwise-successful install could not bring along. */
-  const [installWarnings, setInstallWarnings] = useState<Record<string, string[]>>({})
-
-  /** The entry being previewed, or null for the grid. */
-  const [preview, setPreview] = useState<MergedCatalogEntry | null>(null)
-
   /**
-   * Fetched SKILL.md bodies, keyed by raw_url and kept for the life of one
-   * dialog-open. Flipping between cards is then free, and reopening the browser
-   * is the refresh — the same rule the source list already follows, so a preview
-   * can never be older than the catalog it was opened from.
+   * The one list of sources the browser reads, in precedence order: pasted
+   * URLs first (this dialog-open only, never saved), then the configured list.
+   * `null` until the configured list has been read.
    */
-  const [previews, setPreviews] = useState<Map<string, PreviewState>>(() => new Map())
+  const [sources, setSources] = useState<BrowserSource[] | null>(null)
+  const [query, setQuery] = useState('')
+  const [pasteInput, setPasteInput] = useState('')
+  const [pasteError, setPasteError] = useState<string | null>(null)
+  /** Install outcomes per card key. */
+  const [outcomes, setOutcomes] = useState<Record<string, { error?: string; notice?: string }>>({})
+  /** A prepared install that replaces existing files, waiting for explicit confirmation. */
+  const [confirm, setConfirm] = useState<PreparedInstall | null>(null)
+  const [pageSize, setPageSize] = useState(CATALOG_PAGE_SIZE)
+
+  /** The card being previewed, or null for the grid. */
+  const [preview, setPreview] = useState<CatalogCard | null>(null)
 
   /**
-   * Which dialog-open a preview fetch belongs to. A slow fetch that resolves
-   * after the dialog closed and reopened must not repopulate the cache that its
-   * own open cleared.
+   * Fetched SKILL.md files, keyed by their URL, for the life of one
+   * dialog-open: previews, card details and Install all read this one copy,
+   * so what was previewed is exactly what installs.
+   */
+  const [previews, setPreviews] = useState<Map<string, ManifestState>>(() => new Map())
+
+  /**
+   * Which dialog-open work belongs to. Closing the dialog or unmounting the
+   * panel ends it: a late answer is dropped, and an install that has not
+   * written yet is cancelled (it checks this before every step).
    */
   const sessionRef = useRef(0)
+  useEffect(() => () => { sessionRef.current++ }, [])
+  /** Source fetch ids, so a late answer for a replaced or removed row is dropped. */
+  const requestRef = useRef(0)
+  /** Manifest loads waiting or running, so a URL is fetched once. */
+  const queueRef = useRef<{ waiting: string[]; running: number; known: Set<string> }>({ waiting: [], running: 0, known: new Set() })
 
-  /**
-   * Re-read the preference on every open. Sources are edited in Settings — a
-   * different part of the app, with no change event to subscribe to — so
-   * opening the browser is the refresh, and there is no Load button to press.
-   */
+  /** Fetch one source into its row, if the row still waits for this request. */
+  const fetchSource = useCallback(async (url: string, request: number) => {
+    const session = sessionRef.current
+    let result: CatalogSourceResult
+    try {
+      result = toCatalogSourceResult(url, await openApi()?.getSkillsCatalog(url))
+    } catch (err) {
+      result = { url, ok: false, entries: [], error: err instanceof Error ? err.message : String(err) }
+    }
+    if (session === sessionRef.current) setSources((prev) => (prev ? settleBrowserSource(prev, url, request, result) : prev))
+  }, [])
+
   useEffect(() => {
-    if (!open) return
-    let cancelled = false
+    // Closing ends this dialog-open: an install it started stops before writing.
+    if (!open) { sessionRef.current++; return }
     setQuery('')
-    setInstallErrors({})
-    setInstallWarnings({})
+    setOutcomes({})
+    setConfirm(null)
     setPreview(null)
     setPreviews(new Map())
+    setSources(null)
+    setPasteError(null)
+    setPageSize(CATALOG_PAGE_SIZE)
     sessionRef.current++
-    // Held from the moment the dialog opens: without it the gap before the
-    // preference read resolves paints "These sources list no skills."
-    setLoading(true)
+    const session = sessionRef.current
+    queueRef.current = { waiting: [], running: 0, known: new Set() }
     void (async () => {
       const stored = (await openApi()?.getSettings?.()) as unknown as
         { skillCatalogSources?: unknown } | undefined
-      if (!cancelled) setSources(normalizeCatalogSources(stored?.skillCatalogSources))
+      if (session !== sessionRef.current) return
+      const rows = configuredBrowserSources(normalizeCatalogSources(stored?.skillCatalogSources), () => ++requestRef.current)
+      // A URL pasted while Settings was being read stays first.
+      setSources((prev) => [...(prev ?? []).filter((s) => s.transient), ...rows.filter((r) => !(prev ?? []).some((s) => s.url === r.url))])
+      for (const row of rows) void fetchSource(row.url, row.request)
     })()
-    return () => { cancelled = true }
-  }, [open])
+  }, [open, fetchSource])
 
-  /**
-   * Fetch every source concurrently. A rejected promise — which used to strand
-   * the dialog on "Loading catalog…" forever — is caught per source and becomes
-   * that source's own failure row, so the rest of the marketplace still paints.
-   */
-  useEffect(() => {
-    if (!open || sources === null) return
-    let cancelled = false
-    setLoading(true)
-    void (async () => {
-      const settled = await Promise.all(
-        sources.map(async (url): Promise<CatalogSourceResult> => {
-          try {
-            const result = await openApi()?.getSkillsCatalog(url)
-            if (!result?.ok) {
-              return { url, ok: false, entries: [], error: result?.error ?? 'Unavailable' }
-            }
-            return {
-              url,
-              ok: true,
-              entries: result.entries,
-              publisher: result.publisher,
-              dropped: result.dropped
-            }
-          } catch (err) {
-            return { url, ok: false, entries: [], error: err instanceof Error ? err.message : String(err) }
-          }
-        })
-      )
-      if (cancelled) return
-      setResults(settled)
-      setLoading(false)
-    })()
-    return () => { cancelled = true }
-  }, [open, sources])
-
-  const merged = useMemo(() => mergeCatalogResults(results), [results])
-  const visible = useMemo(() => filterCatalogEntries(merged, query), [merged, query])
-  const failures = useMemo(() => results.filter((result) => !result.ok), [results])
-
-  /**
-   * The one install path, shared by the card button and the preview's. Both
-   * report into the same per-entry maps, so opening a preview after a failed
-   * card install shows the failure that already happened.
-   */
-  const install = useCallback(async (entry: MergedCatalogEntry) => {
-    const clear = <T,>(prev: Record<string, T>): Record<string, T> => {
-      if (!(entry.name in prev)) return prev
-      const next = { ...prev }
-      delete next[entry.name]
-      return next
-    }
-    setInstallErrors(clear)
-    setInstallWarnings(clear)
-    const outcome = await onInstall(entry)
-    if (outcome.error) setInstallErrors((prev) => ({ ...prev, [entry.name]: outcome.error as string }))
-    if (outcome.warnings.length) {
-      setInstallWarnings((prev) => ({ ...prev, [entry.name]: outcome.warnings }))
-    }
-  }, [onInstall])
-
-  /**
-   * Fetch one entry's SKILL.md for preview through the SAME package IPC install
-   * uses — https-only, SSRF-guarded, capped at 256KB in the main process. A
-   * preview is a fetch and nothing else: it writes no file and touches no agent,
-   * which is the entire point of reading a skill before installing it.
-   */
-  const loadPreview = useCallback(async (entry: MergedCatalogEntry) => {
-    const url = entry.raw_url
+  /** Fetch one SKILL.md through the package IPC (https-only, guarded, capped) into the shared cache. */
+  const loadManifest = useCallback(async (url: string): Promise<ManifestState> => {
     const session = sessionRef.current
     setPreviews((prev) => new Map(prev).set(url, { status: 'loading' }))
-    let next: PreviewState
+    let next: ManifestState
     try {
-      const pkg = await openApi()?.getSkillPackage(url)
-      next = pkg?.ok
-        ? { status: 'ready', content: pkg.content }
-        : { status: 'error', error: pkg?.error ?? 'Fetch failed' }
+      next = toManifestState(await openApi()?.getSkillPackage(url))
     } catch (err) {
       next = { status: 'error', error: err instanceof Error ? err.message : String(err) }
     }
-    if (session !== sessionRef.current) return
-    setPreviews((prev) => new Map(prev).set(url, next))
+    if (session === sessionRef.current) setPreviews((prev) => new Map(prev).set(url, next))
+    return next
   }, [])
 
-  const openPreview = (entry: MergedCatalogEntry): void => {
-    setPreview(entry)
-    // A cached failure stays put; the preview's own Retry is what refetches it.
-    if (!previews.has(entry.raw_url)) void loadPreview(entry)
+  /** Queue manifest loads, at most four at a time. */
+  const enqueue = useCallback((urls: string[]) => {
+    const queue = queueRef.current
+    for (const url of urls) {
+      if (queue.known.has(url)) continue
+      queue.known.add(url)
+      queue.waiting.push(url)
+    }
+    const session = sessionRef.current
+    const pump = () => {
+      if (session !== sessionRef.current) return
+      while (queue.running < 4 && queue.waiting.length > 0) {
+        const url = queue.waiting.shift()!
+        queue.running++
+        void loadManifest(url).finally(() => {
+          queue.running--
+          pump()
+        })
+      }
+    }
+    pump()
+  }, [loadManifest])
+
+  const results = useMemo(() => browserResults(sources ?? []), [sources])
+  const loadedName = useCallback((url: string): LoadedManifestName | null => manifestName(previews.get(url)), [previews])
+  const cards = useMemo(() => buildCatalogCards(results), [results])
+  const visible = useMemo(() => filterCatalogCards(cards, query, loadedName), [cards, query, loadedName])
+  const page = useMemo(() => visible.slice(0, pageSize), [visible, pageSize])
+  const failures = useMemo(() => results.filter((result) => !result.ok), [results])
+  const pending = (sources ?? []).filter((s) => s.result === null).length
+  const packageCards = useMemo(() => cards.filter((card) => card.kind === 'package'), [cards])
+  // Only descriptions that actually arrived count as loaded; failures are counted apart.
+  const readyCount = packageCards.filter((card) => previews.get(card.manifestUrl)?.status === 'ready').length
+  const failedCount = packageCards.filter((card) => previews.get(card.manifestUrl)?.status === 'error').length
+
+  // The cards on screen load their manifests; nothing else does unless asked.
+  useEffect(() => {
+    if (!open) return
+    enqueue(page.filter((card) => card.kind === 'package').map((card) => card.manifestUrl))
+  }, [open, page, enqueue])
+
+  const setOutcome = useCallback((key: string, outcome: InstallOutcome) => {
+    setOutcomes((prev) => ({ ...prev, [key]: { ...(outcome.error ? { error: outcome.error } : {}), ...(outcome.notice ? { notice: outcome.notice } : {}) } }))
+  }, [])
+
+  /** Prepare an install from the manifest already loaded (loading it first if needed). */
+  const install = useCallback(async (card: CatalogCard, fromPreview: boolean) => {
+    // The agent this click means, captured before anything is awaited, and
+    // the dialog-open it belongs to (closing the dialog ends it).
+    const view = captureAgentView()
+    const session = sessionRef.current
+    const active = () => session === sessionRef.current
+    setOutcomes((prev) => {
+      if (!(card.key in prev)) return prev
+      const next = { ...prev }
+      delete next[card.key]
+      return next
+    })
+    const result = await installFromCard({
+      view,
+      active,
+      key: card.key,
+      manifestUrl: card.manifestUrl,
+      files: card.kind === 'entry' ? card.entry.files ?? [] : card.pkg.files,
+      ...(card.kind === 'entry' ? { expectedName: card.entry.name } : {}),
+      fromPreview,
+      cached: previews.get(card.manifestUrl),
+      load: () => loadManifest(card.manifestUrl),
+    }, onPrepare)
+    if (!active()) return
+    if (result.kind === 'preview') setPreview(card)
+    else if (result.outcome.confirm) setConfirm(result.outcome.confirm)
+    else setOutcome(card.key, result.outcome)
+  }, [loadManifest, onPrepare, previews, setOutcome])
+
+  const replace = useCallback(async () => {
+    const prepared = confirm
+    if (!prepared) return
+    setConfirm(null)
+    setOutcome(prepared.key, await onCommit(prepared))
+  }, [confirm, onCommit, setOutcome])
+
+  const openPreview = (card: CatalogCard): void => {
+    setPreview(card)
+    if (!previews.has(card.manifestUrl)) enqueue([card.manifestUrl])
   }
+
+  /** Add a pasted URL to the source list (first, this dialog-open only), or fetch it again if it is listed. */
+  const openPasted = useCallback(() => {
+    const url = pasteInput.trim()
+    if (!isCatalogUrl(url)) {
+      setPasteError('Paste an https:// URL: a GitHub repository, folder, SKILL.md or marketplace.json, or a catalog document.')
+      return
+    }
+    setPasteError(null)
+    setPasteInput('')
+    setPageSize(CATALOG_PAGE_SIZE)
+    const request = ++requestRef.current
+    setSources((prev) => addBrowserSource(prev ?? [], url, request))
+    void fetchSource(url, request)
+  }, [fetchSource, pasteInput])
 
   const manageSources = () => {
     onClose()
     openSettingsAt('skills')
   }
 
-  /**
-   * How many sources the count line names. Taken from the preference rather
-   * than from `results`, so the line reads "· 3 sources" while they are still
-   * in flight instead of "· 0 sources".
-   */
   const sourceCount = sources?.length ?? 0
-
-  /** Nothing configured at all — a state a human can legitimately choose. */
   const noSources = sources !== null && sources.length === 0
+  const discovered = results.flatMap((result) => (result.ok && result.discovered ? [{ url: result.url, source: result.discovered }] : []))
+  const shown = query ? visible.length : cards.length
 
   return (
     <Dialog open={open} onClose={onClose} title="Skill catalog" wide>
-      {/*
-        Escape unwinds one step at a time: it leaves a preview first, then
-        clears a live query, and only closes the dialog when neither is showing.
-        Preventing the default on the keydown is what stops <dialog>'s own close
-        — the cancel event never fires. It reaches this handler because the
-        preview focuses its own back button on entry, so focus never leaves the
-        subtree when the grid unmounts underneath it.
-      */}
       <div
         onKeyDown={(e) => {
           if (e.key !== 'Escape') return
+          if (confirm) {
+            e.preventDefault(); e.stopPropagation()
+            setConfirm(null)
+            return
+          }
           if (preview) {
-            e.preventDefault()
-            e.stopPropagation()
+            e.preventDefault(); e.stopPropagation()
             setPreview(null)
             return
           }
           if (query) {
-            e.preventDefault()
-            e.stopPropagation()
+            e.preventDefault(); e.stopPropagation()
             setQuery('')
           }
         }}
       >
-        {/*
-          One height envelope, shared by both views.
-
-          The dialog used to jump — a tall grid unmounting, a one-line "Loading
-          SKILL.md…" rendering, then a full document arriving — because every
-          state sized itself. Fixing the region and letting each view scroll
-          inside it means switching views and finishing a fetch change what is
-          in the dialog and never how big it is.
-        */}
         <div className="flex h-[58vh] flex-col">
-          {preview ? (
+          {confirm ? (
+            <ReplaceConfirm prepared={confirm} onCancel={() => setConfirm(null)} onReplace={() => void replace()} />
+          ) : preview ? (
             <SkillPreview
-              entry={preview}
-              state={previews.get(preview.raw_url)}
-              installed={installedNames.has(preview.name)}
-              installing={busy.has(preview.name)}
-              installError={installErrors[preview.name]}
-              installWarnings={installWarnings[preview.name]}
+              card={preview}
+              state={previews.get(preview.manifestUrl)}
+              occupiedNames={occupiedNames}
+              installing={busy.has(preview.key)}
+              outcome={outcomes[preview.key]}
               onBack={() => setPreview(null)}
-              onInstall={() => void install(preview)}
-              onRetry={() => void loadPreview(preview)}
+              onInstall={() => void install(preview, true)}
+              onRetry={() => void loadManifest(preview.manifestUrl)}
             />
           ) : (
             <>
+              <form
+                className="flex items-center gap-1.5"
+                onSubmit={(e) => { e.preventDefault(); openPasted() }}
+              >
+                <input
+                  type="url"
+                  value={pasteInput}
+                  onChange={(e) => setPasteInput(e.target.value)}
+                  spellCheck={false}
+                  aria-label="Skill source URL"
+                  placeholder="Paste a GitHub repository, folder, SKILL.md or marketplace.json URL…"
+                  className="min-w-0 flex-1 px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                />
+                <button
+                  type="submit"
+                  className="shrink-0 px-2.5 py-1.5 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
+                >
+                  Add
+                </button>
+              </form>
+              {pasteError && <p className="mt-1 text-[10px] text-red-600 dark:text-red-400">{pasteError}</p>}
+
               <input
                 type="text"
                 autoFocus
                 value={query}
-                onChange={(e) => setQuery(e.target.value)}
+                onChange={(e) => { setQuery(e.target.value); setPageSize(CATALOG_PAGE_SIZE) }}
                 spellCheck={false}
                 aria-label="Search skills"
                 placeholder="Search skills…"
-                className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                className="mt-2 w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
               />
 
               <div className="mt-2 flex items-center gap-2">
                 <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                  {query ? `${visible.length} of ${merged.length}` : merged.length} skill
-                  {(query ? visible.length : merged.length) !== 1 ? 's' : ''} · {sourceCount} source
-                  {sourceCount !== 1 ? 's' : ''}
+                  {query ? `${visible.length} of ${cards.length} skill${cards.length !== 1 ? 's' : ''}` : `${shown} skill${shown !== 1 ? 's' : ''}`}
+                  {` · ${sourceCount} source${sourceCount !== 1 ? 's' : ''}`}
+                  {pending > 0 && ` (${pending} loading)`}
+                  {packageCards.length > 0 && ` · descriptions loaded ${readyCount} of ${packageCards.length}`}
+                  {failedCount > 0 && ` · ${failedCount} could not be read`}
                 </span>
+                {packageCards.length > readyCount + failedCount && (
+                  <button
+                    onClick={() => enqueue(packageCards.map((card) => card.manifestUrl))}
+                    title="Read every SKILL.md of this list now (four at a time), so search covers every name and description."
+                    className="text-[10px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                  >
+                    Load all
+                  </button>
+                )}
                 <div className="flex-1" />
                 <button
                   onClick={manageSources}
@@ -851,42 +897,64 @@ function CatalogDialog({
                 </button>
               </div>
 
-              {/* Per-source load status, one chip each: how many it contributed, or why it failed. */}
-              {results.length > 0 && (
+              {/* Per-source status: how many it contributed, or why it failed. */}
+              {sources && sources.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
-                  {results.map((result) => (
+                  {sources.map(({ url, transient, result }) => (
                     <span
-                      key={result.url}
+                      key={url}
                       title={
-                        result.ok
-                          ? `${result.url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
-                          : result.url
+                        result?.ok
+                          ? `${url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}${transient ? ' — added here for this session, not saved' : ''}`
+                          : url
                       }
-                      className={`max-w-full truncate rounded px-1.5 py-0.5 text-[10px] ${
-                        result.ok
+                      className={`inline-flex max-w-full items-center gap-1 truncate rounded px-1.5 py-0.5 text-[10px] ${
+                        !result || result.ok
                           ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-500 dark:text-neutral-400'
                           : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
                       }`}
                     >
-                      {catalogSourceLabel(result.url, result.publisher)}
-                      {' · '}
-                      {result.ok ? `${result.entries.length} loaded` : sanitizeDisplayText(result.error)}
+                      <span className="truncate">
+                        {catalogSourceLabel(url, result?.discovered?.repository ?? result?.publisher)}
+                        {' · '}
+                        {!result
+                          ? 'loading…'
+                          : result.ok
+                            ? result.discovered
+                              ? `${result.discovered.packages.length} found at ${result.discovered.sha.slice(0, 7)}`
+                              : `${result.entries.length} loaded`
+                            : sanitizeDisplayText(result.error)}
+                      </span>
+                      {transient && (
+                        <button
+                          onClick={() => setSources((prev) => (prev ? removeBrowserSource(prev, url) : prev))}
+                          aria-label={`Remove ${url}`}
+                          title="Remove this pasted source"
+                          className="shrink-0 cursor-pointer hover:text-neutral-700 dark:hover:text-neutral-200"
+                        >
+                          ×
+                        </button>
+                      )}
                     </span>
                   ))}
                 </div>
               )}
 
-              {/*
-                The scroller fills whatever the envelope left it, and every state
-                below — empty, loading, listed — lives inside it, so the dialog
-                never resizes as one replaces another.
-              */}
+              {/* What a GitHub source names but does not list, said out loud. */}
+              {discovered.some((d) => d.source.problems.length > 0) && (
+                <details className="mt-1.5 text-[10px] text-amber-700 dark:text-amber-400">
+                  <summary className="cursor-pointer">
+                    {discovered.reduce((n, d) => n + d.source.problems.length, 0)} note(s) about these sources
+                  </summary>
+                  <ul className="mt-1 list-disc pl-4 space-y-0.5">
+                    {discovered.flatMap((d) => d.source.problems.map((problem, i) => (
+                      <li key={`${d.url}#${i}`}>{sanitizeDisplayText(problem)}</li>
+                    )))}
+                  </ul>
+                </details>
+              )}
+
               <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
-                {/*
-                  Checked before `loading`: with no sources there is nothing to wait
-                  for, and the honest answer is that the list is empty by choice —
-                  not that every catalog happened to come back with nothing.
-                */}
                 {noSources ? (
                   <div className="m-auto py-6 text-center">
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
@@ -899,20 +967,18 @@ function CatalogDialog({
                       Add one in Settings
                     </button>
                   </div>
-                ) : loading ? (
+                ) : cards.length === 0 && (sources === null || pending > 0) ? (
                   <p className="m-auto py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                    Loading catalogs…
+                    Loading sources…
                   </p>
-                ) : merged.length === 0 ? (
+                ) : cards.length === 0 ? (
                   <p className="m-auto py-6 text-center text-sm text-neutral-500 dark:text-neutral-400">
-                    {failures.length === results.length && results.length > 0
-                      ? 'No source could be reached.'
-                      : 'These sources list no skills.'}
+                    {failures.length === results.length && results.length > 0 ? 'No source could be read.' : 'These sources list no skills.'}
                   </p>
                 ) : visible.length === 0 ? (
                   <div className="m-auto py-6 text-center">
                     <p className="text-sm text-neutral-500 dark:text-neutral-400">
-                      No skill matches “{sanitizeDisplayText(query)}”.
+                      No skill matches “{sanitizeDisplayText(query)}”{packageCards.length > readyCount ? ' in the descriptions loaded so far' : ''}.
                     </p>
                     <button
                       onClick={() => setQuery('')}
@@ -922,87 +988,30 @@ function CatalogDialog({
                     </button>
                   </div>
                 ) : (
-                  <div className="grid gap-2 sm:grid-cols-2">
-                    {visible.map((entry) => {
-                      const installed = installedNames.has(entry.name)
-                      const installing = busy.has(entry.name)
-                      const error = installErrors[entry.name]
-                      const warnings = installWarnings[entry.name]
-                      return (
-                        // The card opens the preview; the Install button must not.
-                        <div
-                          key={entry.name}
-                          role="button"
-                          tabIndex={0}
-                          title={`Preview ${entry.name}`}
-                          onClick={() => openPreview(entry)}
-                          onKeyDown={(e) => {
-                            if (e.key === 'Enter' || e.key === ' ') {
-                              e.preventDefault()
-                              openPreview(entry)
-                            }
-                          }}
-                          className={`flex cursor-pointer flex-col rounded-lg border p-3 bg-white dark:bg-neutral-800 hover:border-blue-300 dark:hover:border-blue-700 ${
-                            error
-                              ? 'border-red-300 dark:border-red-700'
-                              : 'border-neutral-200 dark:border-neutral-700'
-                          }`}
-                        >
-                          <div className="flex items-start justify-between gap-2">
-                            <span
-                              className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300"
-                              title={sanitizeDisplayText(entry.name)}
-                            >
-                              {sanitizeDisplayText(entry.name)}
-                            </span>
-                            {installed && (
-                              <span className="shrink-0 rounded bg-green-100 dark:bg-green-900/30 px-1.5 py-0.5 text-[9px] font-medium text-green-600 dark:text-green-400">
-                                Installed
-                              </span>
-                            )}
-                          </div>
-
-                          <p
-                            className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400 line-clamp-3"
-                            title={sanitizeDisplayText(entry.description)}
-                          >
-                            {sanitizeDisplayText(entry.description)}
-                          </p>
-
-                          {error && (
-                            <p className="mt-1.5 text-[10px] text-red-600 dark:text-red-400">
-                              Install failed: {sanitizeDisplayText(error)}
-                            </p>
-                          )}
-
-                          {warnings && warnings.length > 0 && (
-                            <p className="mt-1.5 text-[10px] text-amber-600 dark:text-amber-500">
-                              Installed without {warnings.length} file{warnings.length !== 1 ? 's' : ''}:{' '}
-                              {sanitizeDisplayText(warnings.join('; '))}
-                            </p>
-                          )}
-
-                          <div className="mt-auto flex items-center gap-2 pt-2.5">
-                            <span
-                              className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400"
-                              title={entry.sourceUrl}
-                            >
-                              {sanitizeDisplayText(entry.sourceLabel)}
-                            </span>
-                            <div className="flex-1" />
-                            <button
-                              onClick={(e) => { e.stopPropagation(); void install(entry) }}
-                              disabled={installing}
-                              title={installed ? `Overwrite skills/${entry.name}/` : undefined}
-                              className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-                            >
-                              {installing ? 'Installing…' : installed ? 'Reinstall' : 'Install'}
-                            </button>
-                          </div>
-                        </div>
-                      )
-                    })}
-                  </div>
+                  <>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      {page.map((card) => (
+                        <CatalogCardView
+                          key={card.key}
+                          card={card}
+                          state={previews.get(card.manifestUrl)}
+                          occupiedNames={occupiedNames}
+                          installing={busy.has(card.key)}
+                          outcome={outcomes[card.key]}
+                          onOpen={() => openPreview(card)}
+                          onInstall={() => void install(card, false)}
+                        />
+                      ))}
+                    </div>
+                    {visible.length > page.length && (
+                      <button
+                        onClick={() => setPageSize((n) => n + CATALOG_PAGE_SIZE)}
+                        className="mx-auto mt-3 shrink-0 text-[11px] text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300 cursor-pointer"
+                      >
+                        Show more ({visible.length - page.length} more)
+                      </button>
+                    )}
+                  </>
                 )}
               </div>
             </>
@@ -1011,14 +1020,17 @@ function CatalogDialog({
 
         <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-200 dark:border-neutral-700">
           <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-            Installing writes files under skills/&lt;name&gt;/ — no tools, files, or approvals are granted.
+            {busy.size > 0
+              ? 'Installing… Closing this dialog cancels an install that has not written yet; one already written stays.'
+              : 'Installing writes files under skills/<name>/. Nothing is run, and no tools or approvals are granted.'}
           </span>
           <div className="flex-1" />
           <button
             onClick={onClose}
+            title={busy.size > 0 ? 'Cancel the install in progress (if it has not written yet) and close' : undefined}
             className="px-4 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
           >
-            Close
+            {busy.size > 0 ? 'Cancel and close' : 'Close'}
           </button>
         </div>
       </div>
@@ -1026,53 +1038,224 @@ function CatalogDialog({
   )
 }
 
-/** One entry's SKILL.md as the preview has it: in flight, fetched, or refused. */
-type PreviewState =
-  | { status: 'loading' }
-  | { status: 'ready'; content: string }
-  | { status: 'error'; error: string }
+/** The label chip: shown for a package that does not declare a valid `adf` version. */
+function CompatChip({ compat, showNative = false }: { compat: AdfCompat; showNative?: boolean }) {
+  const label = adfCompatLabel(compat)
+  if (label.native && !showNative) return null
+  return (
+    <span
+      title={label.title}
+      className={`shrink-0 rounded px-1.5 py-0.5 text-[9px] font-medium ${
+        label.native
+          ? 'bg-neutral-100 dark:bg-neutral-700/60 text-neutral-600 dark:text-neutral-300'
+          : 'bg-amber-100 dark:bg-amber-900/30 text-amber-700 dark:text-amber-400'
+      }`}
+    >
+      {sanitizeDisplayText(label.text)}
+    </span>
+  )
+}
+
+/** One card: a catalog entry, or a discovered package that may not have loaded yet. */
+function CatalogCardView({
+  card,
+  state,
+  occupiedNames,
+  installing,
+  outcome,
+  onOpen,
+  onInstall
+}: {
+  card: CatalogCard
+  state: ManifestState | undefined
+  occupiedNames: Set<string>
+  installing: boolean
+  outcome?: { error?: string; notice?: string }
+  onOpen: () => void
+  onInstall: () => void
+}) {
+  const imported = state?.status === 'ready' ? state.import : null
+  const name = cardName(card, imported?.ok ? { name: imported.name, description: imported.description } : null)
+  const folder = card.kind === 'package' ? (card.pkg.dir.split('/').pop() || card.source.repository) : null
+  const description = card.kind === 'entry' ? card.entry.description : imported?.ok ? imported.description : null
+  const path = cardPath(card)
+  const slot = installSlot(name, occupiedNames)
+  const problem = card.kind === 'package' ? card.pkg.problem : undefined
+  const refused = imported && !imported.ok ? imported.error : undefined
+  const adjusted = imported?.ok && imported.changes.length > 0
+  return (
+    <div
+      role="button"
+      tabIndex={0}
+      title={`Preview ${name ?? folder ?? ''}`}
+      onClick={onOpen}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault()
+          onOpen()
+        }
+      }}
+      className={`flex cursor-pointer flex-col rounded-lg border p-3 bg-white dark:bg-neutral-800 hover:border-blue-300 dark:hover:border-blue-700 ${
+        outcome?.error ? 'border-red-300 dark:border-red-700' : 'border-neutral-200 dark:border-neutral-700'
+      }`}
+    >
+      {/* The full name on its own row (it wraps, never elides); badges below it. */}
+      <div className="break-all text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300">
+        {name ? sanitizeDisplayText(name) : <span className="italic text-[var(--adf-ui-text-subtle)]">{sanitizeDisplayText(folder)}</span>}
+      </div>
+      {(imported || slot.inUse) && (
+        <div className="mt-1 flex flex-wrap items-center gap-1">
+          {imported && <CompatChip compat={imported.compat} />}
+          {adjusted && (
+            <span title="Its frontmatter description is adjusted on install; the preview shows how." className="rounded bg-blue-100 dark:bg-blue-900/30 px-1.5 py-0.5 text-[9px] font-medium text-blue-700 dark:text-blue-300">
+              Adjusted on install
+            </span>
+          )}
+          {slot.badge && (
+            <span title={slot.title} className="rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] font-medium text-neutral-600 dark:text-neutral-300">
+              {slot.badge}
+            </span>
+          )}
+        </div>
+      )}
+
+      <p className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400 line-clamp-3" title={sanitizeDisplayText(description)}>
+        {description !== null
+          ? sanitizeDisplayText(description)
+          : state?.status === 'error'
+            ? <span className="italic">SKILL.md could not be read: {sanitizeDisplayText(state.error)}</span>
+            : <span className="italic">Loading SKILL.md…</span>}
+      </p>
+      {card.kind === 'package' && path && (
+        <div className="mt-1 break-all font-mono text-[10px] text-[var(--adf-ui-text-subtle)]" title={path}>{sanitizeDisplayText(path)}</div>
+      )}
+      {(problem || refused) && (
+        <p className="mt-1.5 text-[10px] text-red-600 dark:text-red-400">Can’t install: {sanitizeDisplayText(problem ?? refused)}</p>
+      )}
+      {outcome?.error && (
+        <p className="mt-1.5 text-[10px] text-red-600 dark:text-red-400">Install failed: {sanitizeDisplayText(outcome.error)}</p>
+      )}
+      {outcome?.notice && (
+        <p className="mt-1.5 text-[10px] text-green-600 dark:text-green-400">{sanitizeDisplayText(outcome.notice)}</p>
+      )}
+
+      <div className="mt-auto flex items-center gap-2 pt-2.5">
+        <span className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400" title={card.sourceUrl}>
+          {sanitizeDisplayText(card.sourceLabel)}
+        </span>
+        <div className="flex-1" />
+        {!problem && !refused && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onInstall() }}
+            disabled={installing}
+            title={adjusted ? 'Opens the preview: this package is adjusted on install.' : slot.title}
+            className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          >
+            {installing ? 'Installing…' : slot.action}
+          </button>
+        )}
+      </div>
+    </div>
+  )
+}
+
+/**
+ * Installing into a slot that already has files is an explicit replacement:
+ * the files it replaces and the files it keeps are both listed. Only the
+ * replaced files were read for their revision before this was shown; a change
+ * to any of them before Replace refuses the whole write. Kept files are not
+ * written, so they are not checked.
+ */
+function ReplaceConfirm({ prepared, onCancel, onReplace }: { prepared: PreparedInstall; onCancel: () => void; onReplace: () => void }) {
+  const cancelRef = useRef<HTMLButtonElement>(null)
+  useEffect(() => { cancelRef.current?.focus() }, [prepared])
+  const created = prepared.files.length - prepared.replaces.length
+  const list = (paths: string[]) => (
+    <ul className="mt-1 max-h-24 overflow-y-auto font-mono text-[10px] text-neutral-500 dark:text-neutral-400">
+      {paths.map((path) => <li key={path} className="break-all">{sanitizeDisplayText(path)}</li>)}
+    </ul>
+  )
+  return (
+    <div className="m-auto w-full max-w-lg rounded-lg border border-amber-300 dark:border-amber-600 bg-amber-50/50 dark:bg-amber-900/10 p-4">
+      <p className="text-sm font-medium text-neutral-700 dark:text-neutral-200">
+        {prepared.replaces.length > 0 ? 'Replace existing files in' : 'Install into'} <span className="font-mono">skills/{sanitizeDisplayText(prepared.name)}/</span>{prepared.replaces.length > 0 ? '' : ', which already has files'}?
+      </p>
+      <p className="mt-1 text-[11px] text-neutral-600 dark:text-neutral-300">
+        That folder already has files. Nothing records which package wrote them, so they may be from another
+        package with the same name, another version, or local edits.
+        {prepared.replaces.length > 0
+          ? ` This replaces ${prepared.replaces.length} file${prepared.replaces.length !== 1 ? 's' : ''}${created > 0 ? ` and writes ${created} new` : ''}. If any file it replaces changes before you confirm, nothing is written.`
+          : ` Nothing there is overwritten: this writes ${created} new file${created !== 1 ? 's' : ''} beside them.`}
+      </p>
+      {prepared.replaces.length > 0 && (
+        <>
+          <div className="mt-2 text-[10px] font-medium text-neutral-600 dark:text-neutral-300">Replaced</div>
+          {list(prepared.replaces)}
+        </>
+      )}
+      {prepared.keeps.length > 0 && (
+        <>
+          <div className="mt-2 text-[10px] font-medium text-neutral-600 dark:text-neutral-300">Kept as they are (not part of this package)</div>
+          {list(prepared.keeps)}
+        </>
+      )}
+      <div className="mt-3 flex justify-end gap-2">
+        <button
+          ref={cancelRef}
+          onClick={onCancel}
+          className="px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
+        >
+          Cancel
+        </button>
+        <button
+          onClick={onReplace}
+          className="px-3 py-1.5 text-xs font-medium bg-amber-600 text-white hover:bg-amber-700 rounded-lg cursor-pointer"
+        >
+          {prepared.replaces.length > 0 ? 'Replace files' : 'Install beside them'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+
 
 /**
  * Read a skill before installing it.
  *
- * This is the whole argument for the view: the card shows a one-line
- * description a publisher wrote about itself, while SKILL.md is what actually
- * lands in the agent's prompt. Everything here is therefore treated as hostile
- * remote text — the frontmatter through the panel's single-line sanitizer, the
- * body through the block sanitizer that keeps line breaks, and the markdown
- * through the same marked + DOMPurify path the loop renders model output with
- * (utils/markdown.ts). No other renderer, and no unsanitized HTML.
+ * The card shows a one-line description a publisher wrote about itself, while
+ * SKILL.md is what actually lands in the agent's prompt. Everything here is
+ * treated as hostile remote text — the frontmatter through the panel's
+ * single-line sanitizer, the body through the block sanitizer that keeps line
+ * breaks, and the markdown through the same marked + DOMPurify path the loop
+ * renders model output with (utils/markdown.ts).
  *
- * Resources the package ships are listed, never fetched: the point of the list
- * is to say what Install will write, and reading six more remote files to
- * answer that would cost more than it tells anyone.
+ * What Install will do is stated before it is clicked: the name it installs
+ * under, whether the package declares an ADF version, every file it writes,
+ * and — when the description has to be adjusted for the ADF index — the
+ * adjustment, with the original kept.
  */
 function SkillPreview({
-  entry,
+  card,
   state,
-  installed,
+  occupiedNames,
   installing,
-  installError,
-  installWarnings,
+  outcome,
   onBack,
   onInstall,
   onRetry
 }: {
-  entry: MergedCatalogEntry
-  state: PreviewState | undefined
-  installed: boolean
+  card: CatalogCard
+  state: ManifestState | undefined
+  occupiedNames: Set<string>
   installing: boolean
-  installError?: string
-  installWarnings?: string[]
+  outcome?: { error?: string; notice?: string }
   onBack: () => void
   onInstall: () => void
   onRetry: () => void
 }) {
-  // Focus lands on the breadcrumb, which keeps the keyboard inside the dialog's
-  // handler subtree after the grid unmounts — that is what makes Escape step
-  // back to the catalog instead of closing the dialog outright.
   const backRef = useRef<HTMLButtonElement>(null)
-  useEffect(() => { backRef.current?.focus() }, [entry.raw_url])
+  useEffect(() => { backRef.current?.focus() }, [card.key])
 
   const parsed = useMemo(
     () => (state?.status === 'ready' ? splitSkillDocument(state.content) : null),
@@ -1084,19 +1267,14 @@ function SkillPreview({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [parsed, highlightVersion]
   )
-  const files = entry.files ?? []
-
-  /**
-   * Where this package actually lives, as a link to the file itself.
-   *
-   * `raw_url` is remote text, and the schema's `.url()` accepts more protocols
-   * than a link should: an `<a href>` the renderer paints is a click away from
-   * running whatever a catalog put there. `isCatalogUrl` is the same https-only
-   * test Settings uses on a source someone types, and the same one the main-side
-   * package fetch enforces — anything else stays plain text, which is honest
-   * anyway, since a non-https URL is one Install could never fetch either.
-   */
-  const linkable = isCatalogUrl(entry.raw_url)
+  const imported = state?.status === 'ready' ? importAs(state.import, card.kind === 'entry' ? card.entry.name : undefined) : null
+  const name = cardName(card, imported?.ok ? { name: imported.name, description: imported.description } : null)
+  const title = name ?? (card.kind === 'package' ? card.pkg.dir || card.source.repository : '')
+  const files: Array<{ path: string; license?: boolean }> = card.kind === 'entry' ? card.entry.files ?? [] : card.pkg.files
+  const slot = installSlot(name, occupiedNames)
+  const problem = card.kind === 'package' ? card.pkg.problem : undefined
+  const blocked = problem ?? (imported && !imported.ok ? imported.error : undefined)
+  const linkable = isCatalogUrl(card.manifestUrl)
 
   return (
     <div className="flex h-full flex-col">
@@ -1109,99 +1287,90 @@ function SkillPreview({
           ← Catalog
         </button>
         <span className="text-[var(--adf-ui-icon-muted)]">/</span>
-        <span className="min-w-0 truncate font-mono text-neutral-600 dark:text-neutral-300">
-          {sanitizeDisplayText(entry.name)}
-        </span>
+        <span className="min-w-0 truncate font-mono text-neutral-600 dark:text-neutral-300">{sanitizeDisplayText(title)}</span>
       </div>
 
       <div className="mt-3 flex shrink-0 items-start gap-2">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-1.5">
-            <span className="min-w-0 truncate text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300">
-              {sanitizeDisplayText(entry.name)}
-            </span>
-            {installed && (
-              <span className="shrink-0 rounded bg-green-100 dark:bg-green-900/30 px-1.5 py-0.5 text-[9px] font-medium text-green-600 dark:text-green-400">
-                Installed
+            <span className="min-w-0 break-all text-xs font-medium font-mono text-neutral-700 dark:text-neutral-300">{sanitizeDisplayText(title)}</span>
+            {imported && <CompatChip compat={imported.compat} showNative />}
+            {slot.badge && (
+              <span title={slot.title} className="shrink-0 rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] font-medium text-neutral-600 dark:text-neutral-300">
+                {slot.badge}
               </span>
             )}
-            <span
-              className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400"
-              title={entry.sourceUrl}
-            >
-              {sanitizeDisplayText(entry.sourceLabel)}
+            <span className="min-w-0 truncate rounded bg-neutral-100 dark:bg-neutral-700/60 px-1.5 py-0.5 text-[9px] text-neutral-500 dark:text-neutral-400" title={card.sourceUrl}>
+              {sanitizeDisplayText(card.sourceLabel)}
             </span>
           </div>
           <p className="mt-1 text-[11px] leading-relaxed text-neutral-500 dark:text-neutral-400">
-            {sanitizeDisplayText(entry.description)}
+            {sanitizeDisplayText(card.kind === 'entry' ? card.entry.description : imported?.ok ? imported.description : cardPath(card))}
           </p>
-          {/*
-            The file this preview is showing, on the source it came from. A
-            plain anchor is how every external link in Studio works: the main
-            window's setWindowOpenHandler routes http/https/mailto to the OS
-            browser and denies everything else, so nothing navigates in here.
-            Elided from the middle — the host and the filename are the halves
-            worth reading — with the whole URL in the tooltip.
-          */}
+          {card.kind === 'package' && (
+            <div className="mt-0.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
+              {sanitizeDisplayText(cardPath(card))} at commit <span className="font-mono">{card.source.sha.slice(0, 7)}</span>
+              {card.source.ref !== card.source.sha && <> ({sanitizeDisplayText(card.source.ref)})</>}
+            </div>
+          )}
           <div className="mt-1 flex items-baseline gap-1.5 text-[10px]">
             {linkable ? (
-              <a
-                href={entry.raw_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                title={entry.raw_url}
-                className="min-w-0 truncate font-mono text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300"
-              >
-                {sanitizeDisplayText(elideMiddle(entry.raw_url, 68))}
+              <a href={card.manifestUrl} target="_blank" rel="noopener noreferrer" title={card.manifestUrl} className="min-w-0 truncate font-mono text-blue-500 hover:text-blue-600 dark:text-blue-400 dark:hover:text-blue-300">
+                {sanitizeDisplayText(elideMiddle(card.manifestUrl, 68))}
                 <span aria-hidden> ↗</span>
               </a>
             ) : (
-              <span
-                title={entry.raw_url}
-                className="min-w-0 truncate font-mono text-[var(--adf-ui-text-subtle)]"
-              >
-                {sanitizeDisplayText(elideMiddle(entry.raw_url, 68))}
+              <span title={card.manifestUrl} className="min-w-0 truncate font-mono text-[var(--adf-ui-text-subtle)]">
+                {sanitizeDisplayText(elideMiddle(card.manifestUrl, 68))}
               </span>
             )}
           </div>
         </div>
-        <button
-          onClick={onInstall}
-          disabled={installing}
-          title={installed ? `Overwrite skills/${entry.name}/` : `Write skills/${entry.name}/`}
-          className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
-        >
-          {installing ? 'Installing…' : installed ? 'Reinstall' : 'Install'}
-        </button>
+        {!blocked && (
+          <button
+            onClick={onInstall}
+            disabled={installing || state?.status !== 'ready'}
+            title={slot.title}
+            className="shrink-0 px-2.5 py-1 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+          >
+            {installing ? 'Installing…' : slot.inUse ? slot.action : imported?.ok && imported.changes.length ? 'Install adjusted' : 'Install'}
+          </button>
+        )}
       </div>
 
-      {installError && (
-        <p className="mt-2 shrink-0 text-[10px] text-red-600 dark:text-red-400">
-          Install failed: {sanitizeDisplayText(installError)}
-        </p>
+      {blocked && (
+        <p className="mt-2 shrink-0 text-[10px] text-red-600 dark:text-red-400">Can’t install: {sanitizeDisplayText(blocked)}</p>
+      )}
+      {outcome?.error && (
+        <p className="mt-2 shrink-0 text-[10px] text-red-600 dark:text-red-400">Install failed: {sanitizeDisplayText(outcome.error)}</p>
+      )}
+      {outcome?.notice && (
+        <p className="mt-2 shrink-0 text-[10px] text-green-600 dark:text-green-400">{sanitizeDisplayText(outcome.notice)} The Skills panel shows whether the index lists it.</p>
       )}
 
-      {installWarnings && installWarnings.length > 0 && (
-        <p className="mt-2 shrink-0 text-[10px] text-amber-600 dark:text-amber-500">
-          Installed without {installWarnings.length} file
-          {installWarnings.length !== 1 ? 's' : ''}: {sanitizeDisplayText(installWarnings.join('; '))}
-        </p>
+      {imported?.ok && imported.changes.length > 0 && (
+        <div className="mt-2 shrink-0 rounded-lg border border-blue-300 dark:border-blue-700 bg-blue-50/50 dark:bg-blue-900/10 px-2.5 py-2 text-[10px] text-neutral-600 dark:text-neutral-300">
+          <div className="font-medium text-blue-700 dark:text-blue-300">Adjusted on install, so the ADF skill index can read it</div>
+          <ul className="mt-1 list-disc pl-4">
+            {imported.changes.map((change) => <li key={change}>{sanitizeDisplayText(change)}</li>)}
+          </ul>
+          <div className="mt-1">Installed description: “{sanitizeDisplayText(imported.description)}”</div>
+          <div className="mt-1 text-[var(--adf-ui-text-subtle)]">
+            Only the frontmatter <span className="font-mono">description</span> changes. The full original description is added at the top of the body with a comment saying the file was adjusted on install and where it came from; every other line and file is installed as published.
+          </div>
+        </div>
       )}
 
-      {/* What Install writes beside SKILL.md, straight from the catalog entry. */}
       {files.length > 0 && (
         <div className="mt-2 shrink-0 rounded-lg border border-neutral-200 dark:border-neutral-700 px-2.5 py-2">
           <div className="text-[10px] text-[var(--adf-ui-text-subtle)]">
             Also installs {files.length} file{files.length !== 1 ? 's' : ''} under{' '}
-            <span className="font-mono">skills/{entry.name}/</span>
+            <span className="font-mono">skills/{sanitizeDisplayText(name ?? '<name>')}/</span>
+            {card.kind === 'package' && ` (${Math.ceil(card.pkg.totalBytes / 1024)} KB in all)`}. Nothing is run.
           </div>
-          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-0.5">
+          <div className="mt-1 flex max-h-20 flex-wrap gap-x-2 gap-y-0.5 overflow-y-auto">
             {files.map((file) => (
-              <span
-                key={file.path}
-                className="max-w-full truncate font-mono text-[10px] text-neutral-500 dark:text-neutral-400"
-                title={file.path}
-              >
+              <span key={file.path} className="max-w-full truncate font-mono text-[10px] text-neutral-500 dark:text-neutral-400" title={file.license ? `${file.path} — license or notice file from a parent folder` : file.path}>
                 {sanitizeDisplayText(file.path)}
               </span>
             ))}
@@ -1209,7 +1378,6 @@ function SkillPreview({
         </div>
       )}
 
-      {/* Fills the rest of the shared envelope, whichever state is showing. */}
       <div className="mt-3 flex min-h-0 flex-1 flex-col overflow-y-auto pr-1">
         {!state || state.status === 'loading' ? (
           <SkillPreviewSkeleton />
@@ -1217,10 +1385,6 @@ function SkillPreview({
           <div className="m-auto py-8 text-center">
             <p className="text-sm text-neutral-500 dark:text-neutral-400">
               Could not read this skill: {sanitizeDisplayText(state.error)}
-            </p>
-            <p className="mt-1 text-[10px] text-[var(--adf-ui-text-subtle)]">
-              A package over {Math.round(MAX_SKILL_FILE_BYTES / 1024)} KB, or one that is not text,
-              is refused before it is fetched — the same bound the indexer enforces.
             </p>
             <button
               onClick={onRetry}
@@ -1235,12 +1399,8 @@ function SkillPreview({
               <dl className="mb-3 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 rounded-lg bg-neutral-50 dark:bg-neutral-800/60 px-2.5 py-2">
                 {parsed.fields.map((field) => (
                   <Fragment key={field.key}>
-                    <dt className="font-mono text-[10px] text-[var(--adf-ui-text-subtle)]">
-                      {sanitizeDisplayText(field.key)}
-                    </dt>
-                    <dd className="min-w-0 break-words text-[11px] text-neutral-600 dark:text-neutral-300">
-                      {sanitizeDisplayText(field.value)}
-                    </dd>
+                    <dt className="font-mono text-[10px] text-[var(--adf-ui-text-subtle)]">{sanitizeDisplayText(field.key)}</dt>
+                    <dd className="min-w-0 break-words text-[11px] text-neutral-600 dark:text-neutral-300">{sanitizeDisplayText(field.value)}</dd>
                   </Fragment>
                 ))}
               </dl>

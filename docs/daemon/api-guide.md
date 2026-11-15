@@ -783,7 +783,7 @@ do it ([Skills guide](../guides/skills.md)).
 | Goal | How |
 |------|-----|
 | Installed skills | `GET /agents/:id/files`, then read `skills-registry.json` (derived by the runtime, read-only; never write it) |
-| Install | `PUT /agents/:id/files/content?path=skills/<name>/<file>` for each file, `skills/<name>/SKILL.md` **last** |
+| Install | `POST /agents/:id/files/batch` with every file (`mustNotExist: true`, or the `baseRevision` read when replacing), `skills/<name>/SKILL.md` **last**: all or nothing. Or `PUT /agents/:id/files/content?path=skills/<name>/<file>` for each file, `SKILL.md` **last** |
 | Remove | `DELETE …?path=skills/<name>/SKILL.md` **first**, then the rest |
 | Mute / unmute | Edit the `disabled` list in `skills-state.json` (`{"schema": 1, "disabled": ["name"]}`) |
 

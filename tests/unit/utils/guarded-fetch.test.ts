@@ -179,8 +179,32 @@ describe('guardedFetch', () => {
 
   it('reports a non-2xx status and an invalid URL without throwing', async () => {
     vi.stubGlobal('fetch', routes({}))
-    expect(await guardedFetch(OK, OPTS)).toEqual({ error: 'HTTP 404 Error' })
+    expect(await guardedFetch(OK, OPTS)).toEqual({ error: 'HTTP 404 Error', status: 404 })
     expect(await guardedFetch('not a url', OPTS)).toEqual({ error: 'invalid URL: not a url' })
+  })
+
+  it('sends only accept and user-agent, on every hop, with each hop guard-checked; credentials headers are refused', async () => {
+    const seen: Array<{ url: string; headers: Record<string, string> }> = []
+    vi.stubGlobal('fetch', vi.fn(async (url: string, init?: { headers?: Record<string, string> }) => {
+      seen.push({ url, headers: { ...(init?.headers ?? {}) } })
+      return url === OK ? res('', { status: 302, headers: { location: 'https://other.test/b' } }) : res('done')
+    }))
+    const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'ADF-Studio' }
+    expect(await guardedFetch(OK, { ...OPTS, headers })).toEqual({ bytes: Buffer.from('done'), contentType: '' })
+    expect(seen).toEqual([
+      { url: OK, headers: { accept: 'application/vnd.github+json', 'user-agent': 'ADF-Studio' } },
+      { url: 'https://other.test/b', headers: { accept: 'application/vnd.github+json', 'user-agent': 'ADF-Studio' } },
+    ])
+    expect(checkFetchTarget.mock.calls.map((c) => c[0])).toEqual([OK, 'https://other.test/b'])
+    await expect(guardedFetch(OK, { ...OPTS, headers: { Authorization: 'token x' } })).rejects.toThrow('guardedFetch does not send the Authorization header')
+    await expect(guardedFetch(OK, { ...OPTS, headers: { cookie: 'a=b' } })).rejects.toThrow(/does not send the cookie header/)
+    await expect(guardedFetch(OK, { ...OPTS, headers: { 'user-agent': 'x\r\nAuthorization: y' } })).rejects.toThrow(/invalid user-agent header value/)
+  })
+
+  it('a refused answer carries its status and only the response headers the caller asked for', async () => {
+    vi.stubGlobal('fetch', routes({ [OK]: res('{}', { status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1794680000', 'set-cookie': 'secret' } }) }))
+    expect(await guardedFetch(OK, { ...OPTS, keepHeaders: ['x-ratelimit-remaining', 'x-ratelimit-reset', 'x-absent'] })).toEqual({ error: 'HTTP 403 Error', status: 403, headers: { 'x-ratelimit-remaining': '0', 'x-ratelimit-reset': '1794680000' } })
+    expect(await guardedFetch(OK, OPTS)).toEqual({ error: 'HTTP 403 Error', status: 403 })
   })
 
   it('returns a network error rather than throwing it at the caller', async () => {

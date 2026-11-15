@@ -1,6 +1,7 @@
 ---
 name: gmail-setup
 description: Connect or repair Gmail mailbox access through ADF's existing MCP setup, guide the owner through Google OAuth, and review individual tool permissions. Use for Gmail setup or authorization failures; receiving email as agent messages is a separate channel workflow.
+adf: ">=0.2"
 ---
 
 # Connect Gmail through MCP

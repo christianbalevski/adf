@@ -2916,6 +2916,61 @@
         }
       }
     },
+    "/agents/{id}/files/batch": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Write several files atomically",
+        "description": "All files or none, in one transaction. Each file carries exactly one precondition: `mustNotExist` (a create) or the `baseRevision` it was read at. Every path, duplicate, size bound, read-only protection and precondition is checked before anything is written; any refusal writes nothing and fires nothing. Only the listed paths are written (no file is removed); existing protections are kept. File-change triggers and events fire after the commit; a listener that fails then does not undo it. At most 256 files and 8 MiB of content (before base64).",
+        "operationId": "writeAgentFilesBatch",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileBatchBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Every file written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileBatchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/agents/{id}/files/rename": {
       "post": {
         "tags": [
@@ -11741,7 +11796,7 @@
           "Registries"
         ],
         "summary": "Fetch a skill catalog",
-        "description": "https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s).",
+        "description": "https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s). A github.com repository page, `tree/…` folder page, or `blob/…` page of a SKILL.md or marketplace.json is resolved to one commit and listed in `discovered`, unauthenticated, through the GitHub API. Any other URL (github.com `raw/…` and `?raw=` forms included) is fetched once: a JSON catalog document is parsed as before, and a raw.githubusercontent.com SKILL.md or marketplace.json body is discovered the same way.",
         "operationId": "getSkillsCatalog",
         "parameters": [
           {
@@ -11779,7 +11834,7 @@
         "tags": [
           "Registries"
         ],
-        "summary": "Fetch a SKILL.md package",
+        "summary": "Fetch a SKILL.md, or one package resource as bytes",
         "operationId": "getSkillPackage",
         "parameters": [
           {
@@ -11789,6 +11844,18 @@
             "description": "SKILL.md URL (https)",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "binary",
+            "in": "query",
+            "required": false,
+            "description": "`1`: the exact bytes, base64",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
             }
           }
         ],
@@ -11809,7 +11876,8 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           }
-        }
+        },
+        "description": "Without `binary`: a SKILL.md as text (at most 256 KB) with `import`, how it would install (name, `adf` declaration, any description adjustment). With `binary=1`: one package resource as base64 bytes (at most 8 MiB, an install batch's whole bound). https only, through the catalog guard."
       }
     },
     "/admin/mcp/probe": {
@@ -29603,6 +29671,11 @@
           },
           "error": {
             "type": "string"
+          },
+          "discovered": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "For a GitHub URL: `repository`, `sha` (the one commit every URL names), `ref`, `scope`, `url`, `packages` (each with `id`, `dir`, `raw_url`, `totalBytes`, `files` (license files flagged `license`), optional `problem`), and `problems` (what was named but not listed, and notes)."
           }
         }
       },
@@ -29618,6 +29691,18 @@
           "content": {
             "type": "string",
             "description": "SKILL.md text"
+          },
+          "import": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "How the SKILL.md installs: `ok`, `name`, `description`, `manifest` (the bytes to install), `changes` (description adjustments; empty when installed as published), `compat` (the `adf` declaration), or `error`."
+          },
+          "contentBase64": {
+            "type": "string",
+            "description": "With `binary`: the resource bytes"
+          },
+          "size": {
+            "type": "integer"
           },
           "error": {
             "type": "string"
@@ -33069,6 +33154,67 @@
             "description": "Positional arguments in the shared IPC shape; no second browser-specific API mapping."
           }
         }
+      },
+      "FileBatchBody": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Text (UTF-8). Exactly one of content / contentBase64."
+                },
+                "contentBase64": {
+                  "type": "string",
+                  "description": "Exact bytes"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "mustNotExist": {
+                  "type": "boolean",
+                  "description": "The file must not exist yet. Exactly one of mustNotExist / baseRevision."
+                },
+                "baseRevision": {
+                  "type": "integer",
+                  "description": "The revision the file was read at"
+                }
+              }
+            }
+          }
+        }
+      },
+      "FileBatchResult": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgentSuccess"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "revisions": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "description": "The revision each written path has now"
+              }
+            }
+          }
+        ]
       }
     }
   }

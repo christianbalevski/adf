@@ -56,8 +56,8 @@ export const REGISTRY_HANDLERS: DaemonHandlerTable = {
   [IPC.SKILLS_CATALOG_GET]: async (ctx, _event, args: { url?: string } | undefined) =>
     (await ctx.ready()).request('GET', '/catalog/skills', { query: { url: args?.url }, timeoutMs: CATALOG_TIMEOUT_MS }),
 
-  [IPC.SKILLS_PACKAGE_GET]: async (ctx, _event, args: { url?: string } | undefined) =>
-    (await ctx.ready()).request('GET', '/catalog/skills/package', { query: { url: args?.url }, timeoutMs: CATALOG_TIMEOUT_MS }),
+  [IPC.SKILLS_PACKAGE_GET]: async (ctx, _event, args: { url?: string; binary?: boolean } | undefined) =>
+    (await ctx.ready()).request('GET', '/catalog/skills/package', { query: { url: args?.url, ...(args?.binary === true ? { binary: '1' } : {}) }, timeoutMs: CATALOG_TIMEOUT_MS }),
 
   // --- agent registry ----------------------------------------------------------------
 

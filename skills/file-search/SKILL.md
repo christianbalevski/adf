@@ -1,6 +1,7 @@
 ---
 name: file-search
 description: Search the agent's virtual filesystem by literal keyword, BM25 relevance, or regex and get ranked paths with line-located snippets plus an explicit coverage report. Use when you need to find which files mention something before reading them, instead of listing and reading files one by one.
+adf: ">=0.2"
 requires:
   tools: [sys_lambda, fs_list, fs_read]
 ---

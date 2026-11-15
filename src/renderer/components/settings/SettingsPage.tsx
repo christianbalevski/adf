@@ -624,11 +624,11 @@ function SkillsTab() {
   return (
     <SettingsGroup
       title="Catalog sources"
-      description="Catalogs the Skills panel browser lists."
-      hint="A catalog is discovery metadata only. Installing a skill writes skills/<name>/SKILL.md into the open agent and nothing else; a catalog grants no tools, files, or approvals."
+      description="Sources the Skills panel browser lists: catalogs and GitHub repositories."
+      hint="A source is discovery metadata only. Installing a skill writes its SKILL.md and the files it ships (scripts, references, license files) under skills/<name>/ in the open agent, in one write; nothing is run, and no tools or approvals are granted."
     >
       <SettingsRow
-        label={<>Sources<InfoHint tip="All sources are fetched each time the browser opens, in this order. A name listed by more than one catalog resolves to the first source that lists it." /></>}
+        label={<>Sources<InfoHint tip="All sources are read each time the browser opens, in this order. A name a catalog document lists more than once across sources resolves to the first source that lists it. Cards follow this order. GitHub packages are always listed by folder, so two cards can name the same skill; both install into skills/<name>/, and installing asks before replacing anything there. A GitHub source spends unauthenticated GitHub API requests on each open (60 an hour per address, shared)." /></>}
         stacked
       >
         {sources !== null && list.length === 0 ? (
@@ -675,7 +675,7 @@ function SkillsTab() {
 
       <SettingsRow
         label={<>Add<InfoHint tip="Entries that fail validation are dropped one by one. A source that cannot be reached is reported in the browser; the other sources still list." /></>}
-        description="An https URL serving a skill catalog document."
+        description="An https URL: a skill catalog document, or a public GitHub repository, folder (tree/…), SKILL.md, or Claude/Codex marketplace.json."
         error={error}
         help={full ? `Remove one first — at most ${MAX_CATALOG_SOURCES} catalog sources.` : undefined}
         separator
@@ -687,7 +687,7 @@ function SkillsTab() {
             onChange={(e) => { setDraft(e.target.value); setError(null) }}
             onKeyDown={(e) => { if (e.key === 'Enter') void add(draft) }}
             aria-label="Catalog source URL"
-            placeholder="https://example.com/skills/registry.json"
+            placeholder="https://github.com/<owner>/<repo> or https://example.com/skills/registry.json"
             spellCheck={false}
             disabled={full}
             className="!text-[12px] font-mono"

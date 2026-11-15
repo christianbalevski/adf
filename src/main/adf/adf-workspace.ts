@@ -31,7 +31,9 @@ import type {
 } from '@shared/types/adf-v02.types'
 import { LOG_LEVELS } from '@shared/types/adf-v02.types'
 import { AdfDatabase, type LoopEntryRow } from './adf-database'
-import { SkillIndexer, type SkillIndexResult, type SkillIndexRunResult } from './skill-indexer'
+import { SkillIndexer, skillsRegistryRefusal, type SkillIndexResult, type SkillIndexRunResult } from './skill-indexer'
+import { existsAlready, fileRevision, staleRevision, staleRevisionMessage } from '../runtime/resource-revisions'
+import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../shared/types/file-batch.types'
 import {
   deriveKey,
   generateSalt,
@@ -109,6 +111,62 @@ export class LoopCompactionSupersededError extends Error {
   constructor(seq: number) {
     super(`compactLoop: source seq ${seq} no longer exists — another compaction or clear landed first`)
     this.name = 'LoopCompactionSupersededError'
+  }
+}
+
+
+/** The protection a newly created file gets: the document and mind are no_delete, everything else none. */
+export function defaultProtection(path: string): FileProtectionLevel {
+  return path === 'mind.md' || path === 'README.md' || path === 'document.md' ? 'no_delete' : 'none'
+}
+
+/** One file of a `writeFilesAtomic` batch. Every file states its precondition. */
+export interface AtomicFileWrite {
+  path: string
+  content: Buffer
+  mimeType?: string
+  /** `mustNotExist`: a create. `baseRevision`: an update over exactly that revision (W3-F). */
+  expect: { mustNotExist: true; baseRevision?: undefined } | { mustNotExist?: undefined; baseRevision: number }
+}
+
+export type AtomicBatchErrorCode = 'invalid_request' | 'payload_too_large' | 'protected' | 'stale_revision'
+
+/** A refused batch: nothing was written and nothing was emitted. */
+export class AtomicBatchError extends Error {
+  constructor(message: string, readonly code: AtomicBatchErrorCode, readonly path?: string, readonly details?: Record<string, unknown>) {
+    super(message)
+    this.name = 'AtomicBatchError'
+  }
+}
+
+// eslint-disable-next-line no-control-regex -- refusing control characters in a path is the point
+const BATCH_PATH_UNSAFE = /[\u0000-\u001F\u007F\\]/
+
+/** The structural checks of a batch, before any row is read: shape, paths, duplicates, bounds. */
+export function validateAtomicBatch(files: ReadonlyArray<AtomicFileWrite>): void {
+  if (!Array.isArray(files) || files.length === 0) throw new AtomicBatchError('A batch needs at least one file.', 'invalid_request')
+  if (files.length > FILE_BATCH_MAX_FILES) throw new AtomicBatchError(`A batch carries at most ${FILE_BATCH_MAX_FILES} files (got ${files.length}).`, 'payload_too_large')
+  const seen = new Set<string>()
+  let total = 0
+  for (const file of files) {
+    const path = file?.path
+    if (typeof path !== 'string' || !path || path.length > 1024 || BATCH_PATH_UNSAFE.test(path) || path.startsWith('/')
+      || path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+      throw new AtomicBatchError(`Invalid file path ${JSON.stringify(String(path).slice(0, 200))}.`, 'invalid_request', typeof path === 'string' ? path : undefined)
+    }
+    const refusal = skillsRegistryRefusal(path, 'write')
+    if (refusal) throw new AtomicBatchError(refusal, 'invalid_request', path)
+    if (seen.has(path)) throw new AtomicBatchError(`"${path}" appears twice in the batch.`, 'invalid_request', path)
+    seen.add(path)
+    if (!Buffer.isBuffer(file.content)) throw new AtomicBatchError(`"${path}" has no content.`, 'invalid_request', path)
+    const expect = file.expect
+    const create = expect?.mustNotExist === true
+    const update = typeof expect?.baseRevision === 'number' && Number.isSafeInteger(expect.baseRevision) && expect.baseRevision >= 0
+    if (create === update) {
+      throw new AtomicBatchError(`"${path}" needs exactly one precondition: mustNotExist, or the baseRevision it was read at.`, 'invalid_request', path)
+    }
+    total += file.content.length
+    if (total > FILE_BATCH_MAX_BYTES) throw new AtomicBatchError(`A batch carries at most ${FILE_BATCH_MAX_BYTES} bytes.`, 'payload_too_large', path)
   }
 }
 
@@ -2033,8 +2091,7 @@ export class AdfWorkspace {
     // sink is actually registered to receive it as a diff base.
     const existed = this.db.fileExists(relativePath)
     const previous = this.onFileChangeCallback ? this.db.readFile(relativePath)?.content : undefined
-    const level: FileProtectionLevel = protection ??
-      (relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none')
+    const level: FileProtectionLevel = protection ?? defaultProtection(relativePath)
     const buffer = Buffer.from(content, 'utf-8')
     this.db.writeFile(
       relativePath,
@@ -2049,9 +2106,7 @@ export class AdfWorkspace {
   writeFileBuffer(relativePath: string, content: Buffer, mimeType?: string): void {
     const existed = this.db.fileExists(relativePath)
     const previous = this.onFileChangeCallback ? this.db.readFile(relativePath)?.content : undefined
-    const protection: FileProtectionLevel =
-      relativePath === 'mind.md' || relativePath === 'README.md' || relativePath === 'document.md' ? 'no_delete' : 'none'
-    this.db.writeFile(relativePath, content, mimeType, protection)
+    this.db.writeFile(relativePath, content, mimeType, defaultProtection(relativePath))
     this.emitUmbilical('file.written', { path: relativePath, bytes: content.length })
     this.emitFileChange(relativePath, existed ? 'modified' : 'created', content, previous, this.fileChangeMeta(relativePath))
   }
@@ -2073,6 +2128,65 @@ export class AdfWorkspace {
         return candidate
       }
       if (existing.content.equals(content)) return candidate
+    }
+  }
+
+  /**
+   * Write several files as ONE transaction, each guarded by its own
+   * precondition: `mustNotExist` (a create), or `baseRevision` (an update over
+   * exactly the revision the caller read). Every path, duplicate, byte bound,
+   * protection and precondition is checked before the first row changes, and
+   * the checks run inside the same IMMEDIATE transaction as the writes, so a
+   * concurrent writer on another connection cannot slip in between.
+   *
+   * Upsert only: no file outside `files` is touched or removed. An existing
+   * `read_only` file refuses the whole batch; `no_delete` and every other
+   * protection is kept as it is (an update never changes a row's protection).
+   * New rows get the same default protection `writeFileBuffer` assigns.
+   *
+   * Any refusal or a throw during the writes rolls the whole batch back and
+   * emits nothing. Only after the commit are the ordinary `file.written` /
+   * file-change notifications emitted, in `files` order; a listener that
+   * throws then is logged and does not undo the commit.
+   */
+  writeFilesAtomic(files: ReadonlyArray<AtomicFileWrite>): void {
+    validateAtomicBatch(files)
+    const notify = !!this.onFileChangeCallback
+    const applied = this.db.immediateTransaction(() => {
+      const plan: Array<{ file: AtomicFileWrite; existed: boolean; previous: Buffer | undefined }> = []
+      for (const file of files) {
+        const meta = this.db.getFileMeta(file.path)
+        if (meta?.protection === 'read_only') {
+          throw new AtomicBatchError(`"${file.path}" is read-only.`, 'protected', file.path)
+        }
+        const current = fileRevision(this, file.path)
+        if (file.expect.mustNotExist) {
+          const exists = existsAlready(file.path, current, meta?.size ?? null)
+          if (exists) throw new AtomicBatchError(staleRevisionMessage(exists), 'stale_revision', file.path, { ...exists })
+        } else {
+          const stale = current.hash === 'absent'
+            ? { resource: file.path, revision: current.revision, baseRevision: file.expect.baseRevision, writer: current.writer, size: null, hash: current.hash }
+            : staleRevision(file.path, current, file.expect.baseRevision, meta?.size ?? null)
+          if (stale) throw new AtomicBatchError(staleRevisionMessage(stale), 'stale_revision', file.path, { ...stale })
+        }
+        plan.push({ file, existed: !!meta, previous: notify && meta ? this.db.readFile(file.path)?.content : undefined })
+      }
+      for (const { file } of plan) {
+        this.db.writeFile(file.path, file.content, file.mimeType ?? this.getMimeType(file.path), defaultProtection(file.path))
+      }
+      return plan
+    })
+    // After the commit: the ordinary notifications, per file. The index hears
+    // of each path before any listener runs (emitFileChange); a listener that
+    // throws is logged, cannot undo the commit, and cannot keep the next file
+    // from being announced.
+    for (const { file, existed, previous } of applied) {
+      this.emitUmbilical('file.written', { path: file.path, bytes: file.content.length })
+      try {
+        this.emitFileChange(file.path, existed ? 'modified' : 'created', file.content, previous, this.fileChangeMeta(file.path))
+      } catch (err) {
+        console.error('[AdfWorkspace] writeFilesAtomic: a change listener failed after the commit', file.path, err)
+      }
     }
   }
 

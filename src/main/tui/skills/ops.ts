@@ -4,27 +4,34 @@
 
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { basename, dirname, join, relative, resolve, sep } from 'node:path'
+import { dirname, join, relative, resolve, sep } from 'node:path'
 import * as panelNs from '../../../shared/utils/skills-panel'
 import * as schemaNs from '../../../shared/schemas/skills-catalog.schema'
 import type { DaemonClient } from '../api/client'
 import type { FileListEntry } from '../api/types'
 import type { TuiStore } from '../state/store'
 import { cjs } from '../interop'
-import { fetchText } from './catalog'
+import { fetchBytes, fetchText } from './catalog'
+import * as planNs from '../../../shared/utils/skill-install-plan'
+import * as importNs from '../../../shared/utils/skill-import'
+import * as indexerNs from '../../adf/skill-indexer'
+import * as batchNs from '../../../shared/types/file-batch.types'
+import type { ManifestImport } from '../../../shared/utils/skill-import'
+import type { PackageWritePlan } from '../../../shared/utils/skill-install-plan'
 import {
   SKILLS_OVERLAY,
   hostLabel,
-  manifestProblem,
-  packageIdentity,
-  urlFolderName,
   type PackageSource,
   type SkillPackage,
   type SkillsOverlayProps,
 } from './model'
 
 const { SKILLS_REGISTRY_PATH, SKILLS_STATE_PATH, mergeDisabledList, parseSkillsRegistry } = cjs(panelNs)
-const { MAX_PACKAGE_FILES, MAX_SKILL_PACKAGE_BYTES, resolvePackageFilePath } = cjs(schemaNs)
+const { MAX_PACKAGE_FILES, resolvePackageFilePath } = cjs(schemaNs)
+const { preparePackageWrite } = cjs(planNs)
+const { importAs, importSkillManifest } = cjs(importNs)
+const { parseSkillFrontmatter } = cjs(indexerNs)
+const { isMissingBatchRoute, RUNTIME_PREDATES_ATOMIC_INSTALLS } = cjs(batchNs)
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 const isNotFound = (err: unknown) => (err as { status?: number | null })?.status === 404
@@ -137,84 +144,101 @@ export async function removeSkill(client: DaemonClient, agentId: string, name: s
 // --- install ------------------------------------------------------------------------
 
 export interface InstallOutcome {
-  /** Non-null: the package did not land (SKILL.md was not written). */
+  /** Non-null: nothing was written. */
   error: string | null
-  /** Resources that did not arrive; the skill itself installed. */
-  warnings: string[]
   written: number
+  /** The human declined to write into an occupied skills/<name>/: nothing was written. */
+  declined?: boolean
 }
 
+/** A plan whose slot already has files: what the human is asked before it is written. */
+export type OccupiedPlan = Extract<PackageWritePlan, { ok: true }>
+
 /**
- * Write a package: resources first, SKILL.md last (the indexer keys on the
- * manifest, so a half-arrived package is never indexed). Catalog resources are
- * fetched first, all of them, before anything is written. A resource that will
- * not fetch or write is reported and skipped; the manifest failing is the error.
+ * Write a package as ONE atomic batch (POST /agents/:id/files/batch), read
+ * and planned by the same protocol as Studio (shared/utils/skill-install-plan):
+ * every resource fetched first as exact bytes (any failure ends the install
+ * with nothing written), a path the agent already has goes over the revision
+ * just read, every other path must not exist yet, files the package does not
+ * ship are left alone. The daemon's batch decides the bounds. When
+ * skills/<name>/ already has any file, nothing is sent unless `confirm`
+ * (shown the files replaced and kept) answers yes.
+ *
+ * Only an answer from the daemon that refused the batch means nothing was
+ * written. A timeout or a lost connection after the batch was sent does not:
+ * the daemon may still commit it, and the outcome says so.
  */
-export async function installPackage(client: DaemonClient, agentId: string, pkg: SkillPackage): Promise<InstallOutcome> {
-  const problem = manifestProblem(pkg.manifest)
-  if (problem) return { error: problem, warnings: [], written: 0 }
-  const directory = `skills/${pkg.name}`
-  const warnings: string[] = []
-  const ready: Array<{ path: string; content?: string; contentBase64?: string }> = []
-  for (const resource of pkg.resources) {
-    if (resource.rawUrl) {
-      const fetched = await fetchText(resource.rawUrl).catch((err: unknown) => ({ ok: false as const, error: errorText(err) }))
-      if (!fetched.ok) { warnings.push(`${resource.path}: ${fetched.error || 'Fetch failed'}`); continue }
-      ready.push({ path: `${directory}/${resource.path}`, content: fetched.content })
-    } else {
-      ready.push({ path: `${directory}/${resource.path}`, content: resource.content, contentBase64: resource.contentBase64 })
-    }
-  }
-  let written = 0
-  for (const file of ready) {
-    try {
-      await must(client.writeFile(agentId, file.path, file.contentBase64 !== undefined ? { contentBase64: file.contentBase64 } : { content: file.content ?? '' }), 'The write')
-      written++
-    } catch (err) {
-      warnings.push(`${file.path}: could not write (${errorText(err)})`)
-    }
-  }
-  const manifestPath = `${directory}/SKILL.md`
+export async function installPackage(client: DaemonClient, agentId: string, pkg: SkillPackage, confirm: (plan: OccupiedPlan) => Promise<boolean>): Promise<InstallOutcome> {
+  const refuse = (error: string): InstallOutcome => ({ error, written: 0 })
+  const resources = pkg.resources.map((r) => {
+    if (r.rawUrl) return { path: r.path, raw_url: r.rawUrl }
+    const bytes = r.contentBase64 !== undefined ? Buffer.from(r.contentBase64, 'base64') : Buffer.from(r.content ?? '', 'utf-8')
+    return { path: r.path, contentBase64: bytes.toString('base64'), size: bytes.length }
+  })
+  let plan
   try {
-    await must(client.writeFile(agentId, manifestPath, { content: pkg.manifest }), 'The write')
+    plan = await preparePackageWrite({
+      fetchBytes: (url) => fetchBytes(url).catch((err: unknown) => ({ ok: false as const, error: errorText(err) })),
+      listFiles: async () => (await client.files(agentId)).files,
+      readRevision: async (path) => (await client.file(agentId, path)).revision,
+    }, pkg.name, pkg.manifest, resources)
   } catch (err) {
-    return { error: `Could not write ${manifestPath}: ${errorText(err)}`, warnings, written }
+    // Reads only: nothing has been sent.
+    return refuse(`Could not read the agent's files: ${errorText(err)}. Nothing was written.`)
   }
-  return { error: null, warnings, written: written + 1 }
+  if (!plan.ok) return refuse(plan.error)
+  if (plan.occupied && !(await confirm(plan))) return { error: null, written: 0, declined: true }
+  try {
+    // Up to 8 MiB as base64: the daemon-mode Studio handler's budget, not the client's default 15 s.
+    await client.withTimeout(BATCH_TIMEOUT_MS).writeFiles(agentId, plan.files)
+    return { error: null, written: plan.files.length }
+  } catch (err) {
+    if (isMissingBatchRoute(err)) return refuse(RUNTIME_PREDATES_ATOMIC_INSTALLS)
+    const status = (err as { status?: number | null })?.status
+    if (typeof status === 'number' && status >= 400 && status < 500) return refuse(`${errorText(err)} Nothing was written.`)
+    return refuse(`${errorText(err).replace(/\.?$/, '.')} The daemon may still have written the package; check skills/${pkg.name}/ before retrying.`)
+  }
 }
+
+/** How long a batch write may take before the outcome is reported as unknown. */
+export const BATCH_TIMEOUT_MS = 120_000
 
 // --- load a package for preview -------------------------------------------------------
 
 export type LoadedPackage = { ok: true; pkg: SkillPackage } | { ok: false; error: string }
+
+/**
+ * The shared import decision (shared/utils/skill-import), for every source:
+ * the name, the bytes to install (the source's, or the previewed adjustment)
+ * and what was adjusted. A catalog entry whose SKILL.md names another skill is
+ * refused, as in Studio.
+ */
+function decided(imp: ManifestImport | undefined, expectedName?: string): { ok: true; imp: Extract<ManifestImport, { ok: true }> } | { ok: false; error: string } {
+  if (!imp) return { ok: false, error: RUNTIME_PREDATES_ATOMIC_INSTALLS }
+  const named = importAs(imp, expectedName)
+  return named.ok ? { ok: true, imp: named } : { ok: false, error: named.error }
+}
 
 export async function loadPackage(source: PackageSource, cwd = process.cwd()): Promise<LoadedPackage> {
   if (source.type === 'disk') return readLocalPackage(source.path, cwd)
   const url = source.type === 'catalog' ? source.entry.raw_url : source.url
   const fetched = await fetchText(url).catch((err: unknown) => ({ ok: false as const, error: errorText(err) }))
   if (!fetched.ok) return { ok: false, error: fetched.error || 'Fetch failed' }
-  const problem = manifestProblem(fetched.content)
-  if (source.type === 'catalog') {
-    const entry = source.entry
-    return {
-      ok: true,
-      pkg: {
-        name: entry.name,
-        description: entry.description,
-        source: 'catalog',
-        origin: entry.raw_url,
-        label: entry.sourceLabel,
-        manifest: fetched.content,
-        resources: (entry.files ?? []).map(f => ({ path: f.path, rawUrl: f.raw_url })),
-        warnings: problem ? [problem] : [],
-      },
-    }
-  }
-  if (problem) return { ok: false, error: problem }
-  const identity = packageIdentity(fetched.content, urlFolderName(url))
-  if ('error' in identity) return { ok: false, error: identity.error }
+  const result = decided(fetched.import, source.type === 'catalog' ? source.entry.name : undefined)
+  if (!result.ok) return result
+  const { imp } = result
   return {
     ok: true,
-    pkg: { ...identity, source: 'url', origin: url, label: hostLabel(url), manifest: fetched.content, resources: [] },
+    pkg: {
+      name: imp.name,
+      description: imp.description,
+      source: source.type,
+      origin: url,
+      label: source.type === 'catalog' ? source.entry.sourceLabel : hostLabel(url),
+      manifest: imp.manifest,
+      resources: source.type === 'catalog' ? (source.entry.files ?? []).map(f => ({ path: f.path, rawUrl: f.raw_url })) : [],
+      warnings: imp.changes,
+    },
   }
 }
 
@@ -226,9 +250,10 @@ const expandHome = (path: string) => (path === '~' || path.startsWith('~/') || p
 
 /**
  * A SKILL.md file (manifest only) or a package folder (SKILL.md plus its
- * resources) on this machine. Same bounds as a catalog package: at most
- * MAX_PACKAGE_FILES resources, each under MAX_SKILL_PACKAGE_BYTES, paths that
- * stay inside skills/<name>/; dotfiles and node_modules are skipped.
+ * resources) on this machine, decided by the shared import decision. At most
+ * MAX_PACKAGE_FILES resources, else the package is refused (the batch decides
+ * the bytes); paths must stay inside skills/<name>/; dotfiles and
+ * node_modules are skipped.
  */
 export async function readLocalPackage(input: string, cwd = process.cwd()): Promise<LoadedPackage> {
   const target = resolve(cwd, expandHome(input.trim()))
@@ -238,29 +263,24 @@ export async function readLocalPackage(input: string, cwd = process.cwd()): Prom
   } catch {
     return { ok: false, error: `Nothing at ${target}` }
   }
-  const folder = stat.isDirectory() ? target : dirname(target)
   const manifestPath = stat.isDirectory() ? join(target, 'SKILL.md') : target
   let manifestBytes: Buffer
   try {
     const manifestStat = await fs.stat(manifestPath)
     if (!manifestStat.isFile()) return { ok: false, error: `${manifestPath} is not a file` }
-    if (manifestStat.size > MAX_SKILL_PACKAGE_BYTES) return { ok: false, error: `SKILL.md is over ${Math.round(MAX_SKILL_PACKAGE_BYTES / 1024)} KB` }
     manifestBytes = await fs.readFile(manifestPath)
   } catch {
     return { ok: false, error: stat.isDirectory() ? `No SKILL.md in ${target}` : `Cannot read ${target}` }
   }
-  if (manifestBytes.subarray(0, 8192).includes(0)) return { ok: false, error: 'SKILL.md is not text' }
-  const manifest = manifestBytes.toString('utf-8')
-  const problem = manifestProblem(manifest)
-  if (problem) return { ok: false, error: problem }
-  const identity = packageIdentity(manifest, basename(folder))
-  if ('error' in identity) return { ok: false, error: identity.error }
+  const result = decided(importSkillManifest(manifestBytes.toString('utf-8'), manifestPath, parseSkillFrontmatter))
+  if (!result.ok) return result
+  const { imp } = result
 
-  const warnings = [...identity.warnings]
+  const warnings = [...imp.changes]
   const resources: SkillPackage['resources'] = []
+  let tooMany = false
   if (stat.isDirectory()) {
     let seen = 0
-    let skippedOver = 0
     const walk = async (dir: string, depth: number): Promise<void> => {
       if (depth > MAX_WALK_DEPTH || seen > MAX_WALK_ENTRIES) return
       let entries
@@ -277,20 +297,19 @@ export async function readLocalPackage(input: string, cwd = process.cwd()): Prom
         if (!entry.isFile()) continue
         const rel = relative(target, full).split(sep).join('/')
         if (rel === 'SKILL.md') continue
-        const path = resolvePackageFilePath(identity.name, rel)
+        const path = resolvePackageFilePath(imp.name, rel)
         if (!path) { warnings.push(`${rel}: skipped (not a package path)`); continue }
-        if (resources.length >= MAX_PACKAGE_FILES) { skippedOver++; continue }
-        const size = (await fs.stat(full)).size
-        if (size > MAX_SKILL_PACKAGE_BYTES) { warnings.push(`${rel}: skipped (over ${Math.round(MAX_SKILL_PACKAGE_BYTES / 1024)} KB)`); continue }
+        if (resources.length >= MAX_PACKAGE_FILES) { tooMany = true; return }
         const bytes = await fs.readFile(full)
         resources.push(bytes.subarray(0, 8192).includes(0) ? { path, contentBase64: bytes.toString('base64') } : { path, content: bytes.toString('utf-8') })
       }
     }
     await walk(target, 0)
-    if (skippedOver) warnings.push(`${skippedOver} more file${skippedOver === 1 ? '' : 's'} skipped (a package ships at most ${MAX_PACKAGE_FILES} beside SKILL.md)`)
+    // As a GitHub package: past the bounds the package is refused, never installed in part.
+    if (tooMany) return { ok: false, error: `The package has more than ${MAX_PACKAGE_FILES} files beside SKILL.md; it cannot be installed.` }
   }
   return {
     ok: true,
-    pkg: { name: identity.name, description: identity.description, source: 'disk', origin: stat.isDirectory() ? target : manifestPath, label: 'local', manifest, resources, warnings },
+    pkg: { name: imp.name, description: imp.description, source: 'disk', origin: stat.isDirectory() ? target : manifestPath, label: 'local', manifest: imp.manifest, resources, warnings },
   }
 }
