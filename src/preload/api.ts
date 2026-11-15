@@ -425,15 +425,17 @@ export interface AdfApi {
    * Text files come back as `content`. A binary file comes back with
    * `binary: true` and empty content unless `binaryContent` is set, in which
    * case `content` is base64 — or stays empty with `tooLarge` when the file is
-   * over the inline cap. `size` is the stored byte length.
+   * over the inline cap. `size` is the stored byte length. `revisionOnly`
+   * sends no content (empty) for any file, only its metadata and `revision`
+   * (a daemon that predates it answers without `revision`).
    */
-  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) => Promise<{
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean; revisionOnly?: boolean }) => Promise<{
     content: string | null
     binary: boolean
     mimeType?: string
     size?: number
     tooLarge?: boolean
-    /** W3-F: a text file's revision, what writeInternalFile passes as `baseRevision`. */
+    /** W3-F: the file's revision, what a write passes as `baseRevision`. */
     revision?: number
   }>
   /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.content` is the file's text now. */

@@ -157,6 +157,9 @@ describe('adf label', () => {
     ['adf: [0.2]', { native: false, reason: 'invalid', detail: 'adf must be a version such as ">=0.2"' }],
     ['adf: true', { native: false, reason: 'invalid', detail: 'adf must be a version such as ">=0.2"' }],
     ['license: MIT', { native: false, reason: 'absent' }],
+    // The index's scalar rule, not YAML's: a trailing comment is part of the value; a nested adf is not top-level.
+    ['adf: ">=0.2" # pinned', { native: false, reason: 'invalid', detail: 'adf must be a version such as ">=0.2"' }],
+    ['meta:\n  adf: ">=0.2"', { native: false, reason: 'absent' }],
   ])('%s', (line, expected) => {
     expect(readAdfCompat(doc(line))).toEqual(expected)
   })
@@ -171,6 +174,7 @@ describe('adf label', () => {
     expect(not.title).toMatch(/declares no adf version/)
     expect(not.title).toMatch(/does not declare ADF compatibility/)
     expect(not.title).not.toMatch(/written for another/)
+    expect(adfCompatLabel({ native: false, reason: 'unreadable', detail: 'duplicate adf' }).title).toMatch(/could not be read \(duplicate adf\)\./)
   })
 
   it('every first-party skill declares a valid adf version (including the five markers added here)', () => {

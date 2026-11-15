@@ -69,7 +69,10 @@ it('opens, reads and edits an agent through the shared Studio handlers without E
     expect(await invoke(IPC.DOC_SET_DOCUMENT, [{ content: '# Edited in browser' }])).toMatchObject({ success: true })
     expect(await invoke(IPC.DOC_GET_DOCUMENT)).toMatchObject({ content: '# Edited in browser' })
     expect(await invoke(IPC.DOC_UPLOAD_FILE, [{ path: 'web.txt', data: [...Buffer.from('browser upload')], mimeType: 'text/plain' }])).toMatchObject({ success: true })
-    expect(await invoke(IPC.DOC_READ_INTERNAL_FILE, [{ path: 'web.txt' }])).toMatchObject({ content: 'browser upload' })
+    const read = await invoke(IPC.DOC_READ_INTERNAL_FILE, [{ path: 'web.txt' }])
+    expect(read).toMatchObject({ content: 'browser upload', revision: expect.any(Number) })
+    // revisionOnly: the same revision, no content.
+    expect(await invoke(IPC.DOC_READ_INTERNAL_FILE, [{ path: 'web.txt', revisionOnly: true }])).toMatchObject({ content: '', binary: false, size: 14, revision: read.revision })
     const media = await server.inject({ url: `/web/file?clientId=browser-runtime-tab-1&path=web.txt&storageScope=${storageScope}&filePath=${encodeURIComponent(filePath)}`, headers: { ...headers, cookie } })
     expect(media.statusCode, media.body).toBe(200)
     expect(media.body).toBe('browser upload')

@@ -106,7 +106,7 @@ import { AskAnswerError } from '../../shared/utils/ask-form'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { withSource } from '../runtime/execution-context'
-import { AGENT_WRITER, configRevision, documentRevision, fileRevision, runAsWriter } from '../runtime/resource-revisions'
+import { AGENT_WRITER, configRevision, documentRevision, fileRevision, fileRevisionKey, observeRevision, runAsWriter } from '../runtime/resource-revisions'
 import { atomicBatchFailure, commitFileBatch } from '../runtime/file-batch'
 import { isValidAgentFileName } from '../../shared/utils/agent-file-name'
 import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-conflicts'
@@ -3562,7 +3562,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { success: currentWorkspace.setMetaProtection(key, protection) }
   })
 
-  ipcMain.handle(IPC.DOC_READ_INTERNAL_FILE, async (_event, { path: filePath, binaryContent }: { path: string; binaryContent?: boolean }) => {
+  ipcMain.handle(IPC.DOC_READ_INTERNAL_FILE, async (_event, { path: filePath, binaryContent, revisionOnly }: { path: string; binaryContent?: boolean; revisionOnly?: boolean }) => {
     if (!currentWorkspace) return { content: null, binary: false }
     const entry = currentWorkspace.getDatabase().readFile(filePath)
     if (!entry) return { content: null, binary: false }
@@ -3571,6 +3571,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     const textExts = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
     const isText = textExts.has(ext)
+    // No bytes cross IPC: the revision of the bytes just read (fileRevision without a second read).
+    if (revisionOnly) return { content: '', binary: !isText, ...info, revision: observeRevision(currentWorkspace, fileRevisionKey(filePath), buf).revision }
     if (isText) {
       // W3-F: the revision an editor saves over (writeInternalFile's baseRevision).
       return { content: buf.toString('utf-8'), binary: false, ...info, revision: fileRevision(currentWorkspace, filePath).revision }

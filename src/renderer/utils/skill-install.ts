@@ -84,6 +84,18 @@ function stillHere(view: AgentView, active?: () => boolean): boolean {
 }
 
 /**
+ * The revision a write's baseRevision is checked against, with no content
+ * sent (`revisionOnly`). A daemon that predates it answers without one: then
+ * the binary read, which carries it (a text answer always did).
+ */
+async function readRevision(api: AdfApi, path: string): Promise<number | undefined> {
+  const meta = await api.readInternalFile(path, { revisionOnly: true })
+  if (typeof meta?.revision === 'number') return meta.revision
+  if (!meta || meta.content === null) return undefined
+  return (await api.readInternalFile(path, { binaryContent: true }))?.revision
+}
+
+/**
  * Fetch, read and plan (skill-install-plan.ts); then commit at once unless
  * `skills/<name>/` already has files, in which case the prepared batch comes
  * back as `confirm`. `refresh` is the panel's reload, for after a commit.
@@ -100,7 +112,7 @@ export async function prepareSkillInstall(request: InstallRequest, refresh: () =
     plan = await preparePackageWrite({
       fetchBytes: (url) => api.getSkillPackageBytes(url),
       listFiles: async () => (await api.getInternalFiles()).files,
-      readRevision: async (path) => (await api.readInternalFile(path, { binaryContent: true }))?.revision,
+      readRevision: (path) => readRevision(api, path),
       checkpoint: () => (stillHere(view, active) ? null : AGENT_CHANGED),
     }, imported.name, imported.manifest, request.files)
   } catch (err) {

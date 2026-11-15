@@ -332,8 +332,8 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.DOC_SET_FILE_PROTECTION, { path, protection }),
   setFileAuthorized: (path: string, authorized: boolean) =>
     ipcRenderer.invoke(IPC.DOC_SET_FILE_AUTHORIZED, { path, authorized }),
-  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) =>
-    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true }),
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean; revisionOnly?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true, ...(opts?.revisionOnly ? { revisionOnly: true } : {}) }),
   writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) =>
     ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, opts?.baseRevision !== undefined ? { path, content, baseRevision: opts.baseRevision } : { path, content }),
   writeInternalFiles: (expectFilePath: string, files: InternalFileBatchInput[]) =>

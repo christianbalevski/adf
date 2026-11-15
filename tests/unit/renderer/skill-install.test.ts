@@ -45,6 +45,10 @@ interface Backend {
   /** Called inside the batch handler before it commits (simulates a switch racing the IPC). */
   beforeBatch?: () => void
   writes: number
+  /** A daemon that predates `revisionOnly`: its answer carries no revision. */
+  noRevisionOnly?: boolean
+  /** Every DOC_READ_INTERNAL_FILE: the path and whether content was asked for. */
+  reads?: Array<{ path: string; content: boolean }>
 }
 
 const remote: Record<string, { ok: true; contentBase64: string; size: number } | { ok: false; error: string }> = {}
@@ -60,8 +64,12 @@ function backendApi(runtimeId: string, backend: Backend): AdfApi {
         case IPC.DOC_GET_FILES: return { files: ws ? ws.listFiles() : [] }
         case IPC.DOC_READ_INTERNAL_FILE: {
           const buf = ws?.readFileBuffer(String(arg.path))
+          backend.reads?.push({ path: String(arg.path), content: arg.revisionOnly !== true })
           if (!ws || !buf) return { content: null, binary: false }
-          return { content: buf.toString('utf8'), binary: !String(arg.path).endsWith('.md') && !String(arg.path).endsWith('.json'), revision: fileRevision(ws, String(arg.path)).revision }
+          const binary = !String(arg.path).endsWith('.md') && !String(arg.path).endsWith('.json')
+          const revision = fileRevision(ws, String(arg.path)).revision
+          if (arg.revisionOnly === true) return { content: '', binary, ...(backend.noRevisionOnly ? {} : { revision }) }
+          return { content: buf.toString('utf8'), binary, revision }
         }
         case IPC.SKILLS_PACKAGE_GET: return remote[String(arg.url)] ?? { ok: false, error: 'HTTP 404' }
         case IPC.DOC_WRITE_INTERNAL_FILES: {
@@ -208,6 +216,25 @@ describe('reinstall: explicit, CAS-guarded, extra files kept', () => {
     expect(committed.error).toMatch(/changed .*Nothing was written; install again/)
     expect(A.ws.readFileBuffer('skills/alpha/SKILL.md')!.equals(before)).toBe(true)
     expect(A.ws.readFile('skills/alpha/ref.md')).toBe('edited by the agent while the dialog was open')
+  })
+
+  it('revisions are read without content; a daemon that predates that falls back to the content read', async () => {
+    await installed()
+    A.ws.writeFile('skills/alpha/assets/logo.png', 'old logo')
+    await settle()
+    const files = [{ path: 'ref.md', raw_url: 'https://raw.test/ref.md' }, { path: 'assets/logo.png', raw_url: 'https://raw.test/logo.png' }]
+    local.reads = []
+    const outcome = await run(prepareSkillInstall(request(MANIFEST, files), refresh))
+    expect(local.reads.filter((r) => r.content)).toEqual([])
+    expect(local.reads.map((r) => r.path).sort()).toEqual(['skills/alpha/SKILL.md', 'skills/alpha/assets/logo.png', 'skills/alpha/ref.md'])
+    expect(await run(commitSkillInstall(outcome.confirm!, refresh))).toEqual({ error: null, notice: 'Written to skills/alpha/ in a.adf.' })
+
+    local.noRevisionOnly = true
+    local.reads = []
+    const again = await run(prepareSkillInstall(request(MANIFEST.replace('# Alpha', '# v2'), files), refresh))
+    expect(local.reads.filter((r) => r.content).map((r) => r.path).sort()).toEqual(['skills/alpha/SKILL.md', 'skills/alpha/assets/logo.png', 'skills/alpha/ref.md'])
+    expect(await run(commitSkillInstall(again.confirm!, refresh))).toEqual({ error: null, notice: 'Written to skills/alpha/ in a.adf.' })
+    expect(A.ws.readFile('skills/alpha/SKILL.md')).toContain('# v2')
   })
 
   it('a read-only file refuses before anything is sent', async () => {

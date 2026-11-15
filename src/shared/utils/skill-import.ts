@@ -61,31 +61,22 @@ export function readSkillFrontmatter(text: string): { ok: true; data: Record<str
   return { ok: true, data: data as Record<string, unknown>, block: match[1] }
 }
 
-/** The `adf` declaration of a parsed frontmatter. */
-export function adfCompatOf(data: Record<string, unknown>): AdfCompat {
-  if (!Object.prototype.hasOwnProperty.call(data, 'adf')) return { native: false, reason: 'absent' }
-  const value = data.adf
-  const text = typeof value === 'string' ? value.trim() : typeof value === 'number' && Number.isFinite(value) ? String(value) : null
-  if (text === null || !ADF_RANGE.test(text)) {
-    return { native: false, reason: 'invalid', detail: `adf must be a version such as ">=0.2"` }
-  }
-  return { native: true, range: text }
-}
-
 /**
  * The label of a SKILL.md's text: native only for a valid explicit `adf`
- * declaration. Frontmatter that is not strict YAML (`description: Use when: …`)
- * may still be what the index reads; then `adf` is read the way the index reads
- * its fields: one top-level `adf:` line, the index's scalar rule. Two are not native.
+ * declaration, read the way the index reads its fields (one top-level `adf:`
+ * line, the index's scalar rule) whether or not the frontmatter is strict
+ * YAML. Two `adf:` lines are not native.
  */
 export function readAdfCompat(text: string | null | undefined): AdfCompat {
   if (!text) return { native: false, reason: 'unreadable' }
-  const parsed = readSkillFrontmatter(text)
-  if (parsed.ok) return adfCompatOf(parsed.data)
   const block = FRONTMATTER.exec(text)?.[1]
-  const lines = block === undefined ? [] : block.split(/\r?\n/).flatMap((line) => /^adf:(.*)$/.exec(line)?.[1] ?? [])
-  if (block === undefined || lines.length > 1) return { native: false, reason: 'unreadable', detail: lines.length > 1 ? 'duplicate adf' : parsed.error }
-  return lines.length ? adfCompatOf({ adf: indexScalar(lines[0]) }) : { native: false, reason: 'absent' }
+  if (block === undefined) return { native: false, reason: 'unreadable', detail: 'missing YAML frontmatter' }
+  const lines = block.split(/\r?\n/).flatMap((line) => /^adf:(.*)$/.exec(line)?.[1] ?? [])
+  if (lines.length > 1) return { native: false, reason: 'unreadable', detail: 'duplicate adf' }
+  if (lines.length === 0) return { native: false, reason: 'absent' }
+  const value = indexScalar(lines[0])?.trim()
+  if (!value || !ADF_RANGE.test(value)) return { native: false, reason: 'invalid', detail: `adf must be a version such as ">=0.2"` }
+  return { native: true, range: value }
 }
 
 /** What a label says, and what its tooltip explains. */
@@ -101,7 +92,7 @@ export function adfCompatLabel(compat: AdfCompat): { native: boolean; text: stri
     ? 'Its SKILL.md declares no adf version.'
     : compat.reason === 'invalid'
       ? `Its adf declaration is not a version (${compat.detail ?? 'unreadable'}).`
-      : 'Its SKILL.md frontmatter could not be read.'
+      : `Its SKILL.md frontmatter could not be read${compat.detail ? ` (${compat.detail})` : ''}.`
   return {
     native: false,
     text: 'Not ADF-native',
@@ -161,7 +152,7 @@ export function importAs(imp: ManifestImport, expectedName?: string): ManifestIm
  * in the notice an adjusted file carries.
  */
 export function importSkillManifest(text: string, source: string, indexParse: SkillIndexParser): ManifestImport {
-  // The label reads the `adf` declaration on its own; unreadable is not native.
+  // The label reads the `adf` declaration the index's way; unreadable is not native.
   const compat = readAdfCompat(text)
   // The index's bounds on the file itself, for every source (catalog, GitHub, URL, local).
   if (text.slice(0, 8192).includes('\u0000')) return { ok: false, error: 'SKILL.md is not text', compat }

@@ -659,10 +659,16 @@ describe('daemon file routes: raw internal files', () => {
     const meta = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/meta?path=${q('data/blob.bin')}` })).json()
     expect(meta).toMatchObject({ agentId: ref.id, path: 'data/blob.bin', size: 20 * MIB, text: false })
     expect(meta).not.toHaveProperty('content')
+    expect(meta).not.toHaveProperty('revision')
+    // revision=1: the revision a write is checked against, no bytes; the raw read's X-ADF-Revision.
+    const withRevision = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/meta?path=${q('data/blob.bin')}&revision=1` })).json()
+    expect(withRevision).toMatchObject({ path: 'data/blob.bin', size: 20 * MIB, revision: put.json().revision })
+    expect(withRevision).not.toHaveProperty('content')
 
     const get = await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/raw?path=${q('data/blob.bin')}` })
     expect(get.statusCode).toBe(200)
     expect(get.rawPayload.equals(payload)).toBe(true)
+    expect(Number(get.headers['x-adf-revision'])).toBe(withRevision.revision)
 
     const capped = await server.inject({ method: 'GET', url: `/agents/${ref.id}/files/raw?path=${q('data/blob.bin')}&maxBytes=1024` })
     expect(capped.statusCode).toBe(413)

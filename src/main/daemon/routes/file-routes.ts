@@ -265,14 +265,22 @@ export function registerFileRoutes(server: FastifyInstance, ctx: DaemonRouteCont
 
   // Metadata only: Studio decides text / image / too large before fetching
   // any bytes (DOC_READ_INTERNAL_FILE never ships a binary it would discard).
-  server.get<{ Params: { id: string }; Querystring: { path?: string } }>('/agents/:id/files/meta', async (request, reply) => {
+  // `revision=1` adds the W3-F revision (hashing the bytes here, sending none):
+  // what a write's baseRevision is checked against, as the raw read's X-ADF-Revision.
+  server.get<{ Params: { id: string }; Querystring: { path?: string; revision?: string } }>('/agents/:id/files/meta', async (request, reply) => {
     const path = request.query.path
     if (!validInternalPath(path)) return badRequest(reply, 'path is required')
     const found = fileMeta(request.params.id, path)
     if (!found) return notFound(reply, `Unknown agent "${request.params.id}"`)
     if (!found.meta) return notFound(reply, `Unknown file "${path}"`)
+    let revision: number | undefined
+    if (request.query.revision === '1' && found.agent.workspace) {
+      const bytes = found.agent.workspace.readFileBuffer(path)
+      if (!bytes) return notFound(reply, `Unknown file "${path}"`)
+      revision = observeRevision(found.agent.workspace, fileRevisionKey(path), bytes).revision
+    }
     const ext = path.split('.').pop()?.toLowerCase() ?? ''
-    return { agentId: found.agent.ref.id, ...found.meta, text: TEXT_EXTENSIONS.has(ext) }
+    return { agentId: found.agent.ref.id, ...found.meta, text: TEXT_EXTENSIONS.has(ext), ...(revision !== undefined ? { revision } : {}) }
   })
 
   server.get<{ Params: { id: string }; Querystring: { path?: string; maxBytes?: string } }>('/agents/:id/files/raw', async (request, reply) => {
