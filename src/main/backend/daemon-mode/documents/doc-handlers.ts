@@ -8,7 +8,7 @@ import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context
 import { errorString, isAgentGone, onOpenFile } from './open-file'
 import { baseRevisionArg, conflictAnswer } from '../../edit-conflicts'
 import type { ResourceWriter } from '../../../../shared/types/resource-revision.types'
-import { isMissingBatchRoute, RUNTIME_OUTDATED_CODE, RUNTIME_PREDATES_ATOMIC_INSTALLS } from '../../../../shared/types/file-batch.types'
+import { isMissingBatchRoute, RUNTIME_OUTDATED_CODE, RUNTIME_PREDATES_ATOMIC_INSTALLS } from '../../../../shared/utils/file-batch'
 
 /**
  * Daemon-mode DOC_* handlers: the open file's document, config, chat pages,

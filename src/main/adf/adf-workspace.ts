@@ -33,7 +33,8 @@ import { LOG_LEVELS } from '@shared/types/adf-v02.types'
 import { AdfDatabase, type LoopEntryRow } from './adf-database'
 import { SkillIndexer, skillsRegistryRefusal, type SkillIndexResult, type SkillIndexRunResult } from './skill-indexer'
 import { existsAlready, fileRevision, staleRevision, staleRevisionMessage } from '../runtime/resource-revisions'
-import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../shared/types/file-batch.types'
+import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../shared/utils/file-batch'
+import { vfsPathProblem } from '../../shared/utils/vfs-path'
 import {
   deriveKey,
   generateSalt,
@@ -139,9 +140,6 @@ export class AtomicBatchError extends Error {
   }
 }
 
-// eslint-disable-next-line no-control-regex -- refusing control characters in a path is the point
-const BATCH_PATH_UNSAFE = /[\u0000-\u001F\u007F\\]/
-
 /** The structural checks of a batch, before any row is read: shape, paths, duplicates, bounds. */
 export function validateAtomicBatch(files: ReadonlyArray<AtomicFileWrite>): void {
   if (!Array.isArray(files) || files.length === 0) throw new AtomicBatchError('A batch needs at least one file.', 'invalid_request')
@@ -150,8 +148,7 @@ export function validateAtomicBatch(files: ReadonlyArray<AtomicFileWrite>): void
   let total = 0
   for (const file of files) {
     const path = file?.path
-    if (typeof path !== 'string' || !path || path.length > 1024 || BATCH_PATH_UNSAFE.test(path) || path.startsWith('/')
-      || path.split('/').some((segment) => segment === '' || segment === '.' || segment === '..')) {
+    if (typeof path !== 'string' || vfsPathProblem(path) !== null) {
       throw new AtomicBatchError(`Invalid file path ${JSON.stringify(String(path).slice(0, 200))}.`, 'invalid_request', typeof path === 'string' ? path : undefined)
     }
     const refusal = skillsRegistryRefusal(path, 'write')

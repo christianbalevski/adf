@@ -14,7 +14,7 @@ import {
   type DiscoveredSkillSource,
 } from '../../../src/shared/schemas/skills-catalog.schema'
 import { ADF_SKILLS_REGISTRY_URL } from '../../../src/shared/constants/adf-defaults'
-import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../../src/shared/types/file-batch.types'
+import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../../src/shared/utils/file-batch'
 
 const FIX = join(__dirname, '../../fixtures/skills-sources')
 const read = (name: string) => readFileSync(join(FIX, name))

@@ -21,7 +21,8 @@
  */
 
 import type { AdfApi } from '../../preload/api'
-import { RUNTIME_OUTDATED_CODE, RUNTIME_PREDATES_ATOMIC_INSTALLS, type InternalFileBatchInput } from '../../shared/types/file-batch.types'
+import type { InternalFileBatchInput } from '../../shared/types/file-batch.types'
+import { RUNTIME_OUTDATED_CODE, RUNTIME_PREDATES_ATOMIC_INSTALLS } from '../../shared/utils/file-batch'
 import { importAs, type ManifestImport } from '../../shared/utils/skill-import'
 import { preparePackageWrite, type PackageWritePlan } from '../../shared/utils/skill-install-plan'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'

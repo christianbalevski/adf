@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { planPackageWrite, preparePackageWrite, slotOf, type PackageIo } from '../../../src/shared/utils/skill-install-plan'
-import { FILE_BATCH_MAX_BYTES } from '../../../src/shared/types/file-batch.types'
+import { FILE_BATCH_MAX_BYTES } from '../../../src/shared/utils/file-batch'
 
 /**
  * The one read protocol and plan every host installs through (Studio and the

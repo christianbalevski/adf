@@ -9,7 +9,8 @@ import {
   type AtomicFileWrite,
   type AdfWorkspace,
 } from '../adf/adf-workspace'
-import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES, type InternalFileBatchInput } from '../../shared/types/file-batch.types'
+import type { InternalFileBatchInput } from '../../shared/types/file-batch.types'
+import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../shared/utils/file-batch'
 import { fileRevision, type ResourceWriter } from './resource-revisions'
 
 

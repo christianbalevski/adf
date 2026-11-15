@@ -26,7 +26,7 @@
  */
 
 import { guardedFetch } from '../utils/guarded-fetch'
-import { FILE_BATCH_MAX_BYTES } from '../../shared/types/file-batch.types'
+import { FILE_BATCH_MAX_BYTES } from '../../shared/utils/file-batch'
 import {
   MAX_CATALOG_BYTES,
   MAX_SKILL_FILE_BYTES,

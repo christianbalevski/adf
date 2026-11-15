@@ -22,7 +22,7 @@
  */
 
 import { guardedFetch, type GuardedFetchFailure } from '../utils/guarded-fetch'
-import { batchBoundsProblem } from '../../shared/types/file-batch.types'
+import { batchBoundsProblem } from '../../shared/utils/file-batch'
 import {
   MAX_DISCOVERED_PACKAGES,
   MAX_GITHUB_TREE_BYTES,

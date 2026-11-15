@@ -20,7 +20,8 @@
  */
 
 import type { FileProtectionLevel } from '../types/adf-v02.types'
-import { batchBoundsProblem, type InternalFileBatchInput } from '../types/file-batch.types'
+import type { InternalFileBatchInput } from '../types/file-batch.types'
+import { batchBoundsProblem } from './file-batch'
 
 /** The slot a file occupies: `skills/<name>/…` is in slot `name`. */
 export const slotOf = (path: string): string | null => /^skills\/([^/]+)\//.exec(path)?.[1] ?? null

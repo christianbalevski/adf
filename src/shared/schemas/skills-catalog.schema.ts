@@ -1,5 +1,5 @@
 import { z } from 'zod'
-import { FILE_BATCH_MAX_FILES } from '../types/file-batch.types'
+import { FILE_BATCH_MAX_FILES } from '../utils/file-batch'
 
 /**
  * Skill catalog documents — the install side of file-backed skills.

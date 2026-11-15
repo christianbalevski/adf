@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'fs'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { AdfWorkspace, AtomicBatchError, type AtomicFileWrite } from '../../../src/main/adf/adf-workspace'
-import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../../src/shared/types/file-batch.types'
+import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../../src/shared/utils/file-batch'
 import { fileRevision } from '../../../src/main/runtime/resource-revisions'
 import { readAdfCompat } from '../../../src/shared/utils/skill-import'
 

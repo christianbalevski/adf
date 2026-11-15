@@ -15,7 +15,7 @@ import { fetchBytes, fetchText } from './catalog'
 import * as planNs from '../../../shared/utils/skill-install-plan'
 import * as importNs from '../../../shared/utils/skill-import'
 import * as indexerNs from '../../adf/skill-indexer'
-import * as batchNs from '../../../shared/types/file-batch.types'
+import * as batchNs from '../../../shared/utils/file-batch'
 import type { ManifestImport } from '../../../shared/utils/skill-import'
 import type { PackageWritePlan } from '../../../shared/utils/skill-install-plan'
 import {
