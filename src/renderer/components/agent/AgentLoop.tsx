@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, liveHeadOf, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
+import { TryThisChip } from './try-this'
 import { useDocumentStore } from '../../stores/document.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
@@ -2532,6 +2533,7 @@ function LoopStream({ loop }: { loop: string }) {
                 }}
               />
             )}
+            <TryThisChip isMainLoop={isMainLoop} draft={input} disabled={askPending} config={config} onPick={(line) => { setInput(line); textareaRef.current?.focus() }} />
             {/* Brand §10 input: paper, --rule-strong hairline, radius 3. The
                 textarea's own outline is suppressed (globals.css), so the box
                 draws the one global focus outline (2px --focus, 2px offset). */}
