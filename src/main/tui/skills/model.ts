@@ -55,12 +55,11 @@ export function parseAddTarget(raw: string | undefined): AddTarget {
   if (!value) return { kind: 'catalog', query: '' }
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(value)) {
     if (!isCatalogUrl(value)) return { kind: 'invalid', error: 'Only https:// URLs can be fetched.' }
-    let url: URL | null = null
-    try { url = new URL(value) } catch { /* isCatalogUrl already parsed it */ }
-    const pathname = url?.pathname ?? ''
+    let pathname = ''
+    try { pathname = new URL(value).pathname } catch { /* isCatalogUrl already parsed it */ }
     // A raw SKILL.md installs as one file, as before; every other GitHub source is Studio's.
-    const rawManifest = url?.hostname === 'raw.githubusercontent.com' && /\/SKILL\.md$/.test(pathname)
-    if (!rawManifest && classifyGithubSource(value)) return { kind: 'invalid', error: 'GitHub packages are browsed and installed in Studio.' }
+    const github = classifyGithubSource(value)
+    if (github && !(github.kind === 'raw' && github.skillFile)) return { kind: 'invalid', error: 'GitHub packages are browsed and installed in Studio.' }
     return /\.md$/i.test(pathname) ? { kind: 'package-url', url: value } : { kind: 'catalog-url', url: value }
   }
   if (looksLikePath(value)) return { kind: 'local', path: value }
@@ -161,7 +160,7 @@ export const safe = (value: string | null | undefined): string => sanitizeDispla
 /** One resource a package ships beside SKILL.md (package-relative path). */
 export interface PackageResource {
   path: string
-  content?: string
+  /** A local resource's exact bytes. */
   contentBase64?: string
   /** Catalog resources are fetched at install time, like Studio. */
   rawUrl?: string

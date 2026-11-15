@@ -27,11 +27,11 @@ import {
 } from './model'
 
 const { SKILLS_REGISTRY_PATH, SKILLS_STATE_PATH, mergeDisabledList, parseSkillsRegistry } = cjs(panelNs)
-const { MAX_PACKAGE_FILES, resolvePackageFilePath } = cjs(schemaNs)
+const { MAX_PACKAGE_FILES, MAX_SKILL_FILE_BYTES, resolvePackageFilePath } = cjs(schemaNs)
 const { preparePackageWrite } = cjs(planNs)
 const { importAs, importSkillManifest } = cjs(importNs)
 const { parseSkillFrontmatter } = cjs(indexerNs)
-const { isMissingBatchRoute, RUNTIME_PREDATES_ATOMIC_INSTALLS } = cjs(batchNs)
+const { batchBoundsProblem, isMissingBatchRoute, RUNTIME_PREDATES_ATOMIC_INSTALLS } = cjs(batchNs)
 
 const errorText = (err: unknown) => (err instanceof Error ? err.message : String(err))
 const isNotFound = (err: unknown) => (err as { status?: number | null })?.status === 404
@@ -172,8 +172,7 @@ export async function installPackage(client: DaemonClient, agentId: string, pkg:
   const refuse = (error: string): InstallOutcome => ({ error, written: 0 })
   const resources = pkg.resources.map((r) => {
     if (r.rawUrl) return { path: r.path, raw_url: r.rawUrl }
-    const bytes = r.contentBase64 !== undefined ? Buffer.from(r.contentBase64, 'base64') : Buffer.from(r.content ?? '', 'utf-8')
-    return { path: r.path, contentBase64: bytes.toString('base64'), size: bytes.length }
+    return { path: r.path, contentBase64: r.contentBase64 ?? '', size: Buffer.from(r.contentBase64 ?? '', 'base64').length }
   })
   let plan
   try {
@@ -250,10 +249,10 @@ const expandHome = (path: string) => (path === '~' || path.startsWith('~/') || p
 
 /**
  * A SKILL.md file (manifest only) or a package folder (SKILL.md plus its
- * resources) on this machine, decided by the shared import decision. At most
- * MAX_PACKAGE_FILES resources, else the package is refused (the batch decides
- * the bytes); paths must stay inside skills/<name>/; dotfiles and
- * node_modules are skipped.
+ * resources, as exact bytes) on this machine, decided by the shared import
+ * decision. Past the batch's bounds (files or bytes, SKILL.md included) the
+ * package is refused before the file that crosses them is read; paths must
+ * stay inside skills/<name>/; dotfiles and node_modules are skipped.
  */
 export async function readLocalPackage(input: string, cwd = process.cwd()): Promise<LoadedPackage> {
   const target = resolve(cwd, expandHome(input.trim()))
@@ -268,6 +267,8 @@ export async function readLocalPackage(input: string, cwd = process.cwd()): Prom
   try {
     const manifestStat = await fs.stat(manifestPath)
     if (!manifestStat.isFile()) return { ok: false, error: `${manifestPath} is not a file` }
+    // The import decision's own bound, before the file is read.
+    if (manifestStat.size > MAX_SKILL_FILE_BYTES) return { ok: false, error: `SKILL.md is over ${MAX_SKILL_FILE_BYTES / 1024} KB, the ADF index reads at most that` }
     manifestBytes = await fs.readFile(manifestPath)
   } catch {
     return { ok: false, error: stat.isDirectory() ? `No SKILL.md in ${target}` : `Cannot read ${target}` }
@@ -278,11 +279,12 @@ export async function readLocalPackage(input: string, cwd = process.cwd()): Prom
 
   const warnings = [...imp.changes]
   const resources: SkillPackage['resources'] = []
-  let tooMany = false
+  let refused: string | null = null
   if (stat.isDirectory()) {
+    let total = manifestBytes.length
     let seen = 0
     const walk = async (dir: string, depth: number): Promise<void> => {
-      if (depth > MAX_WALK_DEPTH || seen > MAX_WALK_ENTRIES) return
+      if (refused || depth > MAX_WALK_DEPTH || seen > MAX_WALK_ENTRIES) return
       let entries
       try { entries = await fs.readdir(dir, { withFileTypes: true }) } catch { return }
       entries.sort((a, b) => a.name.localeCompare(b.name))
@@ -292,6 +294,7 @@ export async function readLocalPackage(input: string, cwd = process.cwd()): Prom
         const full = join(dir, entry.name)
         if (entry.isDirectory()) {
           if (!SKIP_DIRS.has(entry.name)) await walk(full, depth + 1)
+          if (refused) return
           continue
         }
         if (!entry.isFile()) continue
@@ -299,14 +302,18 @@ export async function readLocalPackage(input: string, cwd = process.cwd()): Prom
         if (rel === 'SKILL.md') continue
         const path = resolvePackageFilePath(imp.name, rel)
         if (!path) { warnings.push(`${rel}: skipped (not a package path)`); continue }
-        if (resources.length >= MAX_PACKAGE_FILES) { tooMany = true; return }
+        // As a GitHub package: past the bounds the package is refused, never installed in part.
+        if (resources.length >= MAX_PACKAGE_FILES) { refused = `The package has more than ${MAX_PACKAGE_FILES} files beside SKILL.md; it cannot be installed.`; return }
+        // Checked before the read: a file past the batch's bytes is never read into memory.
+        const over = batchBoundsProblem(resources.length + 2, total + (await fs.stat(full)).size)
+        if (over) { refused = `The package is past what one install writes: ${over}. It cannot be installed.`; return }
         const bytes = await fs.readFile(full)
-        resources.push(bytes.subarray(0, 8192).includes(0) ? { path, contentBase64: bytes.toString('base64') } : { path, content: bytes.toString('utf-8') })
+        total += bytes.length
+        resources.push({ path, contentBase64: bytes.toString('base64') })
       }
     }
     await walk(target, 0)
-    // As a GitHub package: past the bounds the package is refused, never installed in part.
-    if (tooMany) return { ok: false, error: `The package has more than ${MAX_PACKAGE_FILES} files beside SKILL.md; it cannot be installed.` }
+    if (refused) return { ok: false, error: refused }
   }
   return {
     ok: true,

@@ -1,7 +1,7 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, promises as fsPromises, rmSync, truncateSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest'
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 import { ADF_SKILLS_REGISTRY_URL } from '../../src/shared/constants/adf-defaults'
 import { buildInstalled, initialStep, parseAddTarget, settleOverrides, tokenLabel } from '../../src/main/tui/skills/model'
 import { installPackage, loadPackage, readLocalPackage, removeSkill, setSkillMuted } from '../../src/main/tui/skills/ops'
@@ -13,6 +13,8 @@ import type { FileListEntry } from '../../src/main/tui/api/types'
 
 const skillMd = (name: string, description = `${name} does things`, body = '# Use it\n\nSteps.') =>
   `---\nname: ${name}\ndescription: ${description}\n---\n${body}\n`
+
+const b64 = (text: string) => Buffer.from(text).toString('base64')
 
 const entry = (path: string, size: number): FileListEntry => ({ path, size, protection: 'none', authorized: false, created_at: '', updated_at: '' })
 
@@ -133,7 +135,7 @@ describe('skills ops', () => {
       const outcome = await install(client, 'a', {
         name: 'pdf', description: 'd', source: 'catalog', origin: 'https://h.test/pdf/SKILL.md', label: 'h', warnings: [],
         manifest: skillMd('pdf'),
-        resources: [{ path: 'scripts/run.js', rawUrl: 'https://h.test/run.js' }, { path: 'ref.md', content: '# ref' }],
+        resources: [{ path: 'scripts/run.js', rawUrl: 'https://h.test/run.js' }, { path: 'ref.md', contentBase64: b64('# ref') }],
       })
       expect(outcome).toEqual({ error: null, written: 3 })
       expect(writes).toEqual(['skills/pdf/scripts/run.js', 'skills/pdf/ref.md', 'skills/pdf/SKILL.md'])
@@ -164,7 +166,7 @@ describe('skills ops', () => {
 
   it('reinstall goes over the revisions it read; a file changed meanwhile refuses the whole batch', async () => {
     const { client, writes, files } = fakeClient({ 'skills/pdf/SKILL.md': skillMd('pdf', 'old'), 'skills/pdf/ref.md': 'old ref' })
-    const pkg = { name: 'pdf', description: 'd', source: 'disk' as const, origin: '/x', label: 'local', warnings: [], manifest: skillMd('pdf', 'new'), resources: [{ path: 'ref.md', content: 'new ref' }] }
+    const pkg = { name: 'pdf', description: 'd', source: 'disk' as const, origin: '/x', label: 'local', warnings: [], manifest: skillMd('pdf', 'new'), resources: [{ path: 'ref.md', contentBase64: b64('new ref') }] }
     expect((await install(client, 'a', pkg)).error).toBeNull()
     expect(files.get('skills/pdf/ref.md')).toBe('new ref')
     // Someone edits ref.md between the read and the write: nothing is written.
@@ -185,7 +187,7 @@ describe('skills ops', () => {
   // BI-F1: an occupied skills/<name>/ was overwritten with no question asked.
   it('an occupied slot asks first, listing the files replaced and kept; declining writes nothing', async () => {
     const { client, writes, files } = fakeClient({ 'skills/pdf/SKILL.md': skillMd('pdf', 'theirs'), 'skills/pdf/notes.md': 'mine' })
-    const pkg = { name: 'pdf', description: 'd', source: 'disk' as const, origin: '/x', label: 'local', warnings: [], manifest: skillMd('pdf', 'new'), resources: [{ path: 'ref.md', content: 'r' }] }
+    const pkg = { name: 'pdf', description: 'd', source: 'disk' as const, origin: '/x', label: 'local', warnings: [], manifest: skillMd('pdf', 'new'), resources: [{ path: 'ref.md', contentBase64: b64('r') }] }
     const asked: Array<{ replaces: string[]; keeps: string[] }> = []
     const outcome = await install(client, 'a', pkg, async (plan) => { asked.push({ replaces: plan.replaces, keeps: plan.keeps }); return false })
     expect(asked).toEqual([{ replaces: ['skills/pdf/SKILL.md'], keeps: ['skills/pdf/notes.md'] }])
@@ -208,7 +210,7 @@ describe('skills ops', () => {
       for (const one of batch) files.set(one.path, one.content ?? '')
       throw new Error('The request timed out after 15000ms.')
     }
-    const outcome = await install(client, 'a', { name: 'demo', description: 'd', source: 'disk', origin: '/x', label: 'local', warnings: [], manifest: skillMd('demo'), resources: [{ path: 'a.txt', content: 'a' }] })
+    const outcome = await install(client, 'a', { name: 'demo', description: 'd', source: 'disk', origin: '/x', label: 'local', warnings: [], manifest: skillMd('demo'), resources: [{ path: 'a.txt', contentBase64: b64('a') }] })
     expect(outcome.error).toBe('The request timed out after 15000ms. The daemon may still have written the package; check skills/demo/ before retrying.')
     expect(outcome.error).not.toMatch(/Nothing was written/)
     expect([...files.keys()].sort()).toEqual(['skills/demo/SKILL.md', 'skills/demo/a.txt'])
@@ -226,7 +228,7 @@ describe('skills ops', () => {
     const { client, writes, files } = fakeClient({ 'skills/demo/a.txt': 'locked' })
     ;(client as unknown as { files: unknown }).files = async () => ({ agentId: 'a', files: [{ ...entry('skills/demo/a.txt', 6), protection: 'read_only' }] })
     const pkg = { name: 'demo', description: 'd', source: 'disk' as const, origin: '/x', label: 'local', warnings: [], manifest: skillMd('demo') }
-    expect((await install(client, 'a', { ...pkg, resources: [{ path: 'a.txt', content: 'new' }] })).error).toBe('skills/demo/a.txt is read-only. Nothing was written.')
+    expect((await install(client, 'a', { ...pkg, resources: [{ path: 'a.txt', contentBase64: b64('new') }] })).error).toBe('skills/demo/a.txt is read-only. Nothing was written.')
     expect(writes).toEqual([])
     ;(client as unknown as { files: unknown }).files = async () => ({ agentId: 'a', files: [] })
     files.clear()
@@ -343,6 +345,15 @@ describe('the terminal app uses the shared import decision', () => {
       writeFileSync(join(dir, 'big', 'blob.bin'), Buffer.alloc(1024 * 1024 + 1))
       mkdirSync(join(dir, 'huge'))
       writeFileSync(join(dir, 'huge', 'SKILL.md'), skillMd('huge', 'd', 'x'.repeat(300 * 1024)))
+      mkdirSync(join(dir, 'heavy'))
+      writeFileSync(join(dir, 'heavy', 'SKILL.md'), skillMd('heavy'))
+      writeFileSync(join(dir, 'heavy', 'a.bin'), '')
+      truncateSync(join(dir, 'heavy', 'a.bin'), 4 * 1024 * 1024)
+      writeFileSync(join(dir, 'heavy', 'b.bin'), '')
+      truncateSync(join(dir, 'heavy', 'b.bin'), 4 * 1024 * 1024)
+      mkdirSync(join(dir, 'latin'))
+      writeFileSync(join(dir, 'latin', 'SKILL.md'), skillMd('latin'))
+      writeFileSync(join(dir, 'latin', 'notes.txt'), Buffer.from([0xe9, 0x41]))
     })
     afterAll(() => rmSync(dir, { recursive: true, force: true }))
 
@@ -367,6 +378,41 @@ describe('the terminal app uses the shared import decision', () => {
     // N-F5: the SKILL.md size check is the import decision's, for every source.
     it('a SKILL.md past the index bound is refused by the import decision', async () => {
       expect(await readLocalPackage('huge', dir)).toEqual({ ok: false, error: 'SKILL.md is over 256 KB, the ADF index reads at most that' })
+    })
+
+    // Before: SKILL.md and every resource were read whole, whatever their size, before any bound applied.
+    it('a SKILL.md past the index bound is refused by its size, without being read', async () => {
+      const reads = vi.spyOn(fsPromises, 'readFile')
+      try {
+        expect(await readLocalPackage('huge', dir)).toEqual({ ok: false, error: 'SKILL.md is over 256 KB, the ADF index reads at most that' })
+        expect(reads).not.toHaveBeenCalled()
+      } finally {
+        reads.mockRestore()
+      }
+    })
+
+    it('a folder past the batch 8 MiB total is refused before the file that crosses it is read', async () => {
+      const reads = vi.spyOn(fsPromises, 'readFile')
+      try {
+        const result = await readLocalPackage('heavy', dir)
+        expect(result.ok).toBe(false)
+        expect(!result.ok && result.error).toMatch(/^The package is past what one install writes: \d+ bytes in all \(at most 8388608\)\. It cannot be installed\.$/)
+        expect(reads.mock.calls.map(([path]) => String(path).split(/[\\/]/).pop())).toEqual(['SKILL.md', 'a.bin'])
+      } finally {
+        reads.mockRestore()
+      }
+    })
+
+    // Before: a resource without an early NUL was read as UTF-8 text, so Latin-1 bytes became U+FFFD.
+    it('a non-UTF-8 resource reaches the planned batch byte-exactly', async () => {
+      const result = await readLocalPackage('latin', dir)
+      if (!result.ok) throw new Error(result.error)
+      let sent: Array<{ path: string; contentBase64?: string }> = []
+      const { client } = fakeClient()
+      ;(client as unknown as { writeFiles: unknown }).writeFiles = async (_id: string, batch: typeof sent) => { sent = batch; return { success: true, revisions: {} } }
+      expect((await install(client, 'a', result.pkg)).error).toBeNull()
+      const notes = sent.find((f) => f.path === 'skills/latin/notes.txt')
+      expect(Buffer.from(notes?.contentBase64 ?? '', 'base64').equals(Buffer.from([0xe9, 0x41]))).toBe(true)
     })
   })
 

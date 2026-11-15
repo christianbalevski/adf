@@ -82,6 +82,10 @@ export function parseGithubUrl(url: string): GithubTarget | null {
   } catch {
     return null
   }
+  return targetOf(parsed)
+}
+
+function targetOf(parsed: URL): GithubTarget | null {
   if (parsed.protocol !== 'https:' || parsed.username || parsed.password || (parsed.port && parsed.port !== '443')) return null
   const host = parsed.hostname.toLowerCase()
   if (host !== 'github.com' && host !== 'www.github.com' && host !== 'raw.githubusercontent.com') return null
@@ -107,6 +111,12 @@ export function isMarketplacePath(path: string): boolean {
 }
 
 /**
+ * A URL classifyGithubSource discovers: what it names (`kind`), whether that
+ * is one SKILL.md (`skillFile`), and its target or why it cannot be read.
+ */
+export type GithubSource = { kind: GithubTarget['kind']; skillFile: boolean } & ({ target: GithubTarget } | { error: string })
+
+/**
  * How a source URL is read, by its path alone. Discovered from their URL: a
  * github.com repository (`/<o>/<r>`), a folder (`/tree/…`), a `blob/…` page
  * of a SKILL.md or marketplace.json, and a raw.githubusercontent.com SKILL.md
@@ -116,7 +126,7 @@ export function isMarketplacePath(path: string): boolean {
  * and every other host. Deciding this costs no request, and a URL that is not
  * one of these spends no API quota.
  */
-export function classifyGithubSource(url: string): { target: GithubTarget } | { error: string } | null {
+export function classifyGithubSource(url: string): GithubSource | null {
   let parsed: URL
   try {
     parsed = new URL(url)
@@ -132,11 +142,13 @@ export function classifyGithubSource(url: string): { target: GithubTarget } | { 
       || (parts.length > 3 && parts[2] === 'tree')
       || (parts.length > 3 && parts[2] === 'blob' && file))
   if (!discovered) return null
+  const kind: GithubTarget['kind'] = host === 'raw.githubusercontent.com' ? 'raw' : parts.length === 2 ? 'repo' : parts[2] === 'tree' ? 'tree' : 'blob'
+  const skillFile = /\/SKILL\.md$/.test(parsed.pathname)
   try {
-    const target = parseGithubUrl(url)
-    return target ? { target } : null
+    const target = targetOf(parsed)
+    return target ? { kind, skillFile, target } : null
   } catch (err) {
-    return { error: err instanceof Error ? err.message : String(err) }
+    return { kind, skillFile, error: err instanceof Error ? err.message : String(err) }
   }
 }
 
