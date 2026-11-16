@@ -241,6 +241,11 @@ export function providerTypeHint(type: ProviderType): string {
   }
 }
 
-export function isSubscriptionType(type: ProviderType): boolean {
-  return type === 'chatgpt-subscription' || type === 'grok-subscription' || type === 'claude-subscription'
+/** A provider type that signs in to a consumer plan instead of taking an API key. */
+export type SubscriptionType = Extract<ProviderType, `${string}-subscription`>
+
+export const SUBSCRIPTION_TYPES: readonly SubscriptionType[] = ['claude-subscription', 'chatgpt-subscription', 'grok-subscription']
+
+export function isSubscriptionType(type: string | null | undefined): type is SubscriptionType {
+  return (SUBSCRIPTION_TYPES as readonly (string | null | undefined)[]).includes(type)
 }

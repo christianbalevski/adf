@@ -7,15 +7,15 @@ import { formatUsd } from '../../utils/format-usd'
  * per surface). Slot order is the CVD-safety mechanism — never reorder or
  * cycle. Slot 8 is reserved for the "Other" fold.
  */
-export const SERIES_COLORS: { fill: string; bg: string }[] = [
-  { fill: 'fill-[#2a78d6] dark:fill-[#3987e5]', bg: 'bg-[#2a78d6] dark:bg-[#3987e5]' },
-  { fill: 'fill-[#eb6834] dark:fill-[#d95926]', bg: 'bg-[#eb6834] dark:bg-[#d95926]' },
-  { fill: 'fill-[#1baf7a] dark:fill-[#199e70]', bg: 'bg-[#1baf7a] dark:bg-[#199e70]' },
-  { fill: 'fill-[#eda100] dark:fill-[#c98500]', bg: 'bg-[#eda100] dark:bg-[#c98500]' },
-  { fill: 'fill-[#e87ba4] dark:fill-[#d55181]', bg: 'bg-[#e87ba4] dark:bg-[#d55181]' },
-  { fill: 'fill-[#008300] dark:fill-[#008300]', bg: 'bg-[#008300] dark:bg-[#008300]' },
-  { fill: 'fill-[#4a3aa7] dark:fill-[#9085e9]', bg: 'bg-[#4a3aa7] dark:bg-[#9085e9]' },
-  { fill: 'fill-[#8b8b93] dark:fill-[#83838c]', bg: 'bg-[#8b8b93] dark:bg-[#83838c]' },
+export const SERIES_COLORS: { fill: string; bg: string; stroke: string }[] = [
+  { fill: 'fill-[#2a78d6] dark:fill-[#3987e5]', bg: 'bg-[#2a78d6] dark:bg-[#3987e5]', stroke: 'stroke-[#2a78d6] dark:stroke-[#3987e5]' },
+  { fill: 'fill-[#eb6834] dark:fill-[#d95926]', bg: 'bg-[#eb6834] dark:bg-[#d95926]', stroke: 'stroke-[#eb6834] dark:stroke-[#d95926]' },
+  { fill: 'fill-[#1baf7a] dark:fill-[#199e70]', bg: 'bg-[#1baf7a] dark:bg-[#199e70]', stroke: 'stroke-[#1baf7a] dark:stroke-[#199e70]' },
+  { fill: 'fill-[#eda100] dark:fill-[#c98500]', bg: 'bg-[#eda100] dark:bg-[#c98500]', stroke: 'stroke-[#eda100] dark:stroke-[#c98500]' },
+  { fill: 'fill-[#e87ba4] dark:fill-[#d55181]', bg: 'bg-[#e87ba4] dark:bg-[#d55181]', stroke: 'stroke-[#e87ba4] dark:stroke-[#d55181]' },
+  { fill: 'fill-[#008300] dark:fill-[#008300]', bg: 'bg-[#008300] dark:bg-[#008300]', stroke: 'stroke-[#008300] dark:stroke-[#008300]' },
+  { fill: 'fill-[#4a3aa7] dark:fill-[#9085e9]', bg: 'bg-[#4a3aa7] dark:bg-[#9085e9]', stroke: 'stroke-[#4a3aa7] dark:stroke-[#9085e9]' },
+  { fill: 'fill-[#8b8b93] dark:fill-[#83838c]', bg: 'bg-[#8b8b93] dark:bg-[#83838c]', stroke: 'stroke-[#8b8b93] dark:stroke-[#83838c]' },
 ]
 /** Named series beyond this count fold into "Other" (slot 8). */
 export const MAX_NAMED_SERIES = SERIES_COLORS.length - 1

@@ -7,6 +7,7 @@ import { formatTokenCount } from '../../utils/token-estimate'
 import { formatUsd } from '../../utils/format-usd'
 import { localDateKey } from '../../../shared/utils/date-key'
 import { useSettingsApi } from './settings-runtime'
+import { SubscriptionUsageSection } from './SubscriptionUsageSection'
 
 type TokenUsageEntry = TokenUsageData[string][string][string]
 
@@ -219,6 +220,7 @@ export function TokenUsageSection() {
   return (
     <div>
       {confirmDialog}
+      <SubscriptionUsageSection tokenUsage={tokenUsage} days={days} windowDays={windowDays} />
       <div className="mb-1 flex items-center justify-between gap-2">
         <label className="block text-sm font-medium text-neutral-700 dark:text-neutral-300">
           Token Usage

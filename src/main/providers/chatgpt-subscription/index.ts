@@ -1,6 +1,8 @@
 import { IMAGE_ONLY_MEDIA } from '../media-capabilities'
 import { createOpenAI } from '@ai-sdk/openai'
 import { repairStringsDeep } from '../../../shared/utils/well-formed'
+import { recordSubscriptionUsage } from '../subscription-usage'
+import { fromCodexHeaders } from '../subscription-usage/adapters'
 
 // ChatGPT subscription users hit this backend, NOT api.openai.com
 const BASE_URL = 'https://chatgpt.com/backend-api/codex'
@@ -299,6 +301,8 @@ export function createChatGPTSubscriptionProvider(authManager: {
     const entry = requestId !== null ? requestsById.get(requestId) : undefined
     if (entry) entry.meta = responseMeta
     else lastResponseMeta = responseMeta
+    // Quota left on the plan (Settings > Usage). Never throws.
+    recordSubscriptionUsage('chatgpt-subscription', () => fromCodexHeaders(responseMeta, Date.now()))
 
     if (!response.ok) {
       // Detect usage_limit_reached and fail fast — return 403 so the AI SDK

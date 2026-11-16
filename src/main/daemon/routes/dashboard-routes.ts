@@ -7,11 +7,15 @@
 //   POST   /runtime/providers/:id/test     PROVIDER_TEST  { force? }
 //   GET    /runtime/tools/descriptions     TOOLS_DESCRIPTIONS
 //   DELETE /runtime/usage                  TOKEN_USAGE_CLEAR
+//   GET    /runtime/subscription-usage     SUBSCRIPTION_USAGE_GET
+//   POST   /runtime/subscription-usage/refresh  SUBSCRIPTION_USAGE_REFRESH  { auto? }
+//   GET    /runtime/subscription-usage/history  SUBSCRIPTION_USAGE_HISTORY  ?since
 //
 // Bodies are Studio's (services/dashboard-stats.ts, provider-checks.ts,
 // tool-descriptions.ts). Provider checks make one request per provider with
 // a 5 s timeout; automatic ones honour the owner's providerChecksEnabled
-// opt-out, an explicit Test (force) always probes.
+// opt-out, an explicit Test (force) always probes. The same opt-out covers an
+// automatic subscription-usage refresh ({ auto: true }).
 
 import { readdir, stat } from 'fs/promises'
 import type { Dirent } from 'fs'
@@ -23,6 +27,7 @@ import { buildAgentStats, buildQuickStats, runDashboardProviderTests, testProvid
 import { ProviderChecks } from '../../services/provider-checks'
 import type { SandboxPackagesService } from '../../services/sandbox-packages.service'
 import { getTokenUsageService } from '../../services/token-usage.service'
+import { getSubscriptionUsageService } from '../../providers/subscription-usage'
 import { buildToolDescriptions } from '../../services/tool-descriptions'
 import { registerBuiltInTools } from '../../tools/built-in/register-built-in-tools'
 import { ToolRegistry } from '../../tools/tool-registry'
@@ -121,5 +126,21 @@ export function registerDashboardRoutes(server: FastifyInstance, ctx: DaemonRout
     getTokenUsageService().clearAll()
     console.log('[ADF Daemon] Token usage cleared on request')
     return { success: true }
+  })
+
+  // Quota left on this runtime's signed-in subscriptions (app-level, never agent-visible).
+  server.get('/runtime/subscription-usage', async () => getSubscriptionUsageService().getState())
+  server.post<{ Body: { auto?: unknown } | null }>('/runtime/subscription-usage/refresh', async (request, reply) => {
+    const auto = flagParam(request.body?.auto)
+    if (auto === null) return badRequest(reply, 'auto must be a boolean')
+    return auto && settings?.get('providerChecksEnabled') === false
+      ? getSubscriptionUsageService().refresh({ probe: false })
+      : getSubscriptionUsageService().refresh()
+  })
+  server.get<{ Querystring: { since?: string } }>('/runtime/subscription-usage/history', async (request, reply) => {
+    const raw = request.query.since
+    const since = raw === undefined ? undefined : Number(raw)
+    if (since !== undefined && !Number.isFinite(since)) return badRequest(reply, 'since must be epoch milliseconds')
+    return { samples: getSubscriptionUsageService().getHistory({ since }) }
   })
 }
