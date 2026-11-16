@@ -52,7 +52,7 @@ export const RUNTIME_NAV_ITEMS: SettingsNavItem[] = [
   { id: 'identity', label: 'Identity', description: 'Owner and runtime identity', keywords: 'did mnemonic alias delegation seed phrase owner', docs: DOCS.settingsIdentity },
   { id: 'networking', label: 'Networking', description: 'Agent messaging', keywords: 'mesh network sharing lan tailscale mdns peers runtimes servers server mesh server port firewall https allowed networks', docs: DOCS.settingsNetworking },
   { id: 'compute', label: 'Compute', description: 'Containers and host access', keywords: 'podman machine resources isolation', docs: DOCS.settingsCompute },
-  { id: 'usage', label: 'Usage', description: 'Token totals by day, provider and model.', keywords: 'tokens usage cost burn', docs: DOCS.settingsUsage },
+  { id: 'usage', label: 'Usage', description: 'Subscription limits; token totals by day, provider and model.', keywords: 'tokens usage cost burn subscription limits quota plan', docs: DOCS.settingsUsage },
 ]
 
 /**

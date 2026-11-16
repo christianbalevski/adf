@@ -77,6 +77,7 @@ export const PUSH_TOPICS: Readonly<Record<PushTopic, PushTopicRoute>> = {
   autostart_overflow: { channel: null, none: 'logged by the daemon; embedded Studio pushes nothing for it' },
   // remote-access.md §8: Studio main re-reads GET /remote-access, pushes REMOTE_ACCESS_CHANGED, asks "Allow <label>?" on claim_pending.
   remote_access: { channel: null, action: 'remote_access' },
+  subscription_usage: { channel: IPC.SUBSCRIPTION_USAGE_CHANGED, allWindows: true },
 }
 
 /** The channels fed by executor and host frames rather than a push topic. */

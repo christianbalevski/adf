@@ -1,7 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useMeshGraphStore } from '../../stores/mesh-graph.store'
 import { pathBasename } from './fleet-layout'
 import type { MeshDebugInfo, MessageBusLogEntry } from '../../../shared/types/ipc.types'
+import { useNow } from '../../hooks/useNow'
 
 interface MeshLogDrawerProps {
   debugInfo: MeshDebugInfo | null
@@ -434,16 +435,6 @@ function StateDot({ state }: { state: string }) {
 }
 
 // --- Helpers ---
-
-/** Re-render on an interval so relative timestamps stay fresh-ish */
-function useNow(intervalMs: number): number {
-  const [now, setNow] = useState(() => Date.now())
-  useEffect(() => {
-    const id = setInterval(() => setNow(Date.now()), intervalMs)
-    return () => clearInterval(id)
-  }, [intervalMs])
-  return now
-}
 
 function relTime(ts: number, now: number): string {
   const s = Math.max(0, Math.floor((now - ts) / 1000))

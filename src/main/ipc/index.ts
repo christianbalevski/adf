@@ -186,6 +186,7 @@ import { ChannelAdapterManager, createUnavailableAdapter } from '../services/cha
 import type { AdapterAgentStatus } from '../../shared/types/channel-adapter.types'
 import { WsConnectionManager } from '../services/ws-connection-manager'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { getSubscriptionUsageService, flushSubscriptionUsage } from '../providers/subscription-usage'
 import { getFleetBurnService } from '../services/fleet-burn.service'
 import { listAdapterCredentialFiles, listMcpCredentialFiles, listProviderCredentialFiles, type CredentialFileSources } from '../services/credential-list-files'
 import { getTokenCounterService } from '../services/token-counter.service'
@@ -6650,6 +6651,23 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { success: true, path: result.filePath }
   })
 
+  // --- Subscription usage (quota left on signed-in subscriptions) ---
+
+  ipcMain.handle(IPC.SUBSCRIPTION_USAGE_GET, async () => getSubscriptionUsageService().getState())
+  // `auto` (Settings opened, popover opened) honours the providerChecksEnabled opt-out; the Refresh button always probes.
+  ipcMain.handle(IPC.SUBSCRIPTION_USAGE_REFRESH, async (_event, opts?: { auto?: boolean }) =>
+    opts?.auto && settings?.get('providerChecksEnabled') === false
+      ? getSubscriptionUsageService().refresh({ probe: false })
+      : getSubscriptionUsageService().refresh())
+  ipcMain.handle(IPC.SUBSCRIPTION_USAGE_HISTORY, async (_event, req?: { since?: number }) =>
+    getSubscriptionUsageService().getHistory(req ?? {}))
+  getSubscriptionUsageService().onChange((state) => {
+    for (const win of BrowserWindow.getAllWindows()) {
+      if (win.isDestroyed()) continue
+      try { win.webContents.send(IPC.SUBSCRIPTION_USAGE_CHANGED, state) } catch { /* window going away */ }
+    }
+  })
+
   // --- Home dashboard (split into 4 slices so each tile loads as its
   // data resolves rather than waiting on the slowest one). ---
 
@@ -8446,6 +8464,8 @@ export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void>
   podmanService.beginShutdown()
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }
+  try { flushSubscriptionUsage() }
+  catch (e) { console.error('[Cleanup] subscription usage flush error:', e) }
   // Flush buffered loop entries (foreground + background) BEFORE the WAL
   // checkpoint so a session end mid-turn doesn't drop the in-memory buffer.
   // Plain synchronous better-sqlite3 writes (sub-ms) — a full executor
@@ -8489,6 +8509,8 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   // Flush debounced token usage data before anything can go wrong.
   try { getTokenUsageService().flush() }
   catch (e) { console.error('[Cleanup] token usage flush error:', e) }
+  try { flushSubscriptionUsage() }
+  catch (e) { console.error('[Cleanup] subscription usage flush error:', e) }
   // Checkpoint the foreground workspace WAL now, while the DB is guaranteed
   // open — even if the phase-2 budget expires, the data is already durable.
   try { currentWorkspace?.checkpoint() }

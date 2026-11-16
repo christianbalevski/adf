@@ -22,6 +22,7 @@ import { UvManager } from '../services/uv-manager'
 import { UvxPackageResolver } from '../services/uvx-package-resolver'
 import { killAllHostExecs } from '../services/host-exec.service'
 import { getTokenUsageService } from '../services/token-usage.service'
+import { getSubscriptionUsageService, flushSubscriptionUsage } from '../providers/subscription-usage'
 import { DaemonHost } from './daemon-host'
 import { RemoteAccessService } from './remote-access/service'
 import { remoteAccessTestProbes } from './remote-access/test-probes'
@@ -427,6 +428,8 @@ const remoteAccess = new RemoteAccessService({
   ...remoteAccessTestProbes(),
 })
 // The feed changed: this machine's own clients re-read GET /network/peers (one event stream, peers_changed).
+// Subscription quota figures go to every client session as `subscription_usage`, Studio's SUBSCRIPTION_USAGE_CHANGED.
+getSubscriptionUsageService().onChange((state) => client.sessions.publishPush('subscription_usage', state))
 runtimeDiscovery.onPeersChanged(() => client.sessions.publishPush('remote_access', { type: 'peers_changed' }))
 agentFactory.startTemplatesWatcher()
 // Snapshot folders a previous run left in the temp dir (killed mid-download): they can hold a full .adf.
@@ -509,6 +512,7 @@ const daemon = new DaemonHost({
   // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).
   onShutdownStart: [
     () => getTokenUsageService().flush(),
+    () => flushSubscriptionUsage(),
   ],
   // Runs inside DaemonHost.stop() after agents and compute are down — keeps
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is

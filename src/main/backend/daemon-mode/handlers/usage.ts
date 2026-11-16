@@ -3,6 +3,7 @@ import { writeFile } from 'node:fs/promises'
 import { IPC } from '../../../../shared/constants/ipc-channels'
 import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import type { ContextBreakdown } from '../../../../shared/types/ipc.types'
+import type { SubscriptionUsageHistoryRequest, SubscriptionUsageSample, SubscriptionUsageState } from '../../../../shared/types/subscription-usage.types'
 import { DaemonError } from '../../../../shared/daemon-client'
 import { enc, isNotFound, type DaemonHandlerTable, type DaemonModeContext } from '../context'
 import { samePath } from '../session'
@@ -58,6 +59,26 @@ export const USAGE_HANDLERS: DaemonHandlerTable = {
     if (result.canceled || !result.filePath) return { success: false }
     await writeFile(result.filePath, json, 'utf8')
     return { success: true, path: result.filePath }
+  },
+
+  // --- subscription usage: the runtime's own signed-in subscriptions -------------------
+  [IPC.SUBSCRIPTION_USAGE_GET]: async (ctx) => {
+    const client = await ctx.ready()
+    return client.request<SubscriptionUsageState>('GET', '/runtime/subscription-usage')
+  },
+
+  [IPC.SUBSCRIPTION_USAGE_REFRESH]: async (ctx, _event, opts?: { auto?: boolean }) => {
+    const client = await ctx.ready()
+    // The probe has its own 8 s timeout; leave room for it.
+    return client.request<SubscriptionUsageState>('POST', '/runtime/subscription-usage/refresh', { body: opts?.auto ? { auto: true } : {}, timeoutMs: 30_000 })
+  },
+
+  [IPC.SUBSCRIPTION_USAGE_HISTORY]: async (ctx, _event, req?: SubscriptionUsageHistoryRequest) => {
+    const client = await ctx.ready()
+    const since = req?.since
+    return (await client.request<{ samples: SubscriptionUsageSample[] }>('GET', '/runtime/subscription-usage/history', {
+      query: { since: since !== undefined ? String(since) : undefined },
+    })).samples
   },
 
   [IPC.TOKEN_COUNT]: async (ctx, _event, args: { text: string; provider?: string; model?: string }) => {

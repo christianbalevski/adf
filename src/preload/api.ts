@@ -6,6 +6,7 @@ import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, Spellche
   AgentTemplateContents,
   ShippedTemplateId
 } from '../shared/types/ipc.types'
+import type { SubscriptionUsageHistoryRequest, SubscriptionUsageSample, SubscriptionUsageState } from '../shared/types/subscription-usage.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress, AdapterStatus } from '../shared/types/channel-adapter.types'
 import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from '../shared/types/adf.types'
@@ -349,6 +350,17 @@ export interface AdfApi {
   clearTokenUsage: () => Promise<{ success: boolean }>
   /** Save the raw token-usage JSON to a user-picked file via the OS save dialog. */
   saveTokenUsageExport: (json: string) => Promise<{ success: boolean; path?: string }>
+
+  // Subscription usage: quota left on signed-in subscriptions (Claude, ChatGPT, Grok)
+  getSubscriptionUsage: () => Promise<SubscriptionUsageState>
+  /**
+   * Re-reads sign-ins and runs the probes that exist (Codex only), subject to throttle/backoff; resolves with the
+   * current state either way. `auto`: not a click, so the runtime's providerChecksEnabled opt-out applies.
+   */
+  refreshSubscriptionUsage: (opts?: { auto?: boolean }) => Promise<SubscriptionUsageState>
+  getSubscriptionUsageHistory: (req?: SubscriptionUsageHistoryRequest) => Promise<SubscriptionUsageSample[]>
+  /** Full state after every snapshot change. */
+  onSubscriptionUsageChanged: (callback: (state: SubscriptionUsageState) => void) => () => void
   countTokens: (text: string, provider?: string, model?: string) => Promise<{ count: number }>
   countTokensBatch: (texts: string[], provider?: string, model?: string) => Promise<{ counts: number[] }>
   /** Per-request context token breakdown for one loop's running executor (foreground or background). `loop` defaults to `main`; null when that loop isn't running. */

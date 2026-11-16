@@ -18,6 +18,7 @@ import { RemoteMark } from '../common/RemoteMark'
 import { LOCAL_LABEL } from '../../../shared/runtime-name'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
+import { SubscriptionPill } from './SubscriptionPill'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
 import { CONNECTION_STATE_LABELS, type ConnectionCurrent, type RuntimeView } from '../../../shared/types/connection.types'
 import { runtimeIndicator, useCurrentConnection } from '../../stores/connection.store'
@@ -174,6 +175,8 @@ export function StatusBar() {
   const tokenUsage = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenUsage)
   const tokenEstimate = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenEstimate)
   const filePath = useDocumentStore((s) => s.filePath)
+  // The open agent's runtime: its subscriptions are the ones its calls draw on.
+  const openRuntimeId = useDocumentStore((s) => (isAgentWindow ? windowRuntime : s.runtimeId || LOCAL_RUNTIME))
   const [breakdownOpen, setBreakdownOpen] = useState(false)
   // Kill's result line, shown beside it for a few seconds.
   const [killResult, setKillResult] = useState<string | null>(null)
@@ -280,6 +283,8 @@ export function StatusBar() {
         loop={viewedLoop}
         onOpenBreakdown={() => setBreakdownOpen(true)}
       />
+      {/* The subscription the model draws on, when it is one: its tightest quota window. */}
+      {!compact && <SubscriptionPill providerId={viewedModel?.provider} runtimeId={openRuntimeId} api={isAgentWindow ? window.adfApi : apiFor(openRuntimeId)} />}
       <ContextBreakdownModal
         open={breakdownOpen}
         onClose={() => setBreakdownOpen(false)}

@@ -55,6 +55,7 @@ import type { BrowserSessionEvent, ContainerPhaseEvent } from '../../shared/type
 import type { AgentExecutionEvent, MeshEvent, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { RemoteAccessEvent } from '../../shared/types/remote-access.types'
+import type { SubscriptionUsageState } from '../../shared/types/subscription-usage.types'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
 import { configRevision, type ResourceWriter, type RevisionedWorkspace } from '../runtime/resource-revisions'
@@ -284,6 +285,8 @@ export interface ClientPushPayloads {
   browser_session: BrowserSessionEvent
   /** Remote access changed (remote-access.md §8): re-read GET /remote-access. No token, no code. */
   remote_access: RemoteAccessEvent
+  /** SUBSCRIPTION_USAGE_CHANGED: the full state after every change (coalesced). */
+  subscription_usage: SubscriptionUsageState
 }
 
 export type ClientPushTopic = keyof ClientPushPayloads
@@ -299,7 +302,7 @@ export const CLIENT_PUSH_TOPICS: readonly ClientPushTopic[] = [
   'config_changed', 'inbox', 'workspace_data', 'approvals', 'mesh', 'inter_agent_message', 'templates',
   'tracked_dirs', 'file_renamed', 'agent_path_changed', 'autostart', 'autostart_overflow', 'adf_file_created', 'mcp_install', 'adapter_install',
   'sandbox_install', 'mcp_status', 'adapter_status', 'compute_phase', 'browser_session', 'daemon_orphan_hold',
-  'remote_access',
+  'remote_access', 'subscription_usage',
 ]
 
 export type ClientPushFrame = {

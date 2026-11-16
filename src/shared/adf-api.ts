@@ -2,6 +2,7 @@ import { IPC } from './constants/ipc-channels'
 import type { RuntimeIpc } from './runtime-ipc'
 import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnapshot, QueueHandoverEntry } from './types/ipc.types'
 import type { AgentConfig } from './types/adf-v02.types'
+import type { SubscriptionUsageHistoryRequest, SubscriptionUsageState } from './types/subscription-usage.types'
 import type { ResourceWriter } from './types/resource-revision.types'
 import type { AdfApi } from '../preload/api'
 import type { AskAnswer } from './utils/ask-form'
@@ -279,6 +280,16 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
   getTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_GET),
   clearTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_CLEAR),
   saveTokenUsageExport: (json: string) => ipcRenderer.invoke(IPC.TOKEN_USAGE_EXPORT, json),
+
+  // Subscription usage
+  getSubscriptionUsage: () => ipcRenderer.invoke(IPC.SUBSCRIPTION_USAGE_GET),
+  refreshSubscriptionUsage: (opts?: { auto?: boolean }) => ipcRenderer.invoke(IPC.SUBSCRIPTION_USAGE_REFRESH, opts ?? {}),
+  getSubscriptionUsageHistory: (req?: SubscriptionUsageHistoryRequest) => ipcRenderer.invoke(IPC.SUBSCRIPTION_USAGE_HISTORY, req ?? {}),
+  onSubscriptionUsageChanged: (callback: (state: SubscriptionUsageState) => void) => {
+    const handler = (_event: unknown, state: SubscriptionUsageState) => callback(state)
+    ipcRenderer.on(IPC.SUBSCRIPTION_USAGE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.SUBSCRIPTION_USAGE_CHANGED, handler)
+  },
   countTokens: (text: string, provider?: string, model?: string) =>
     ipcRenderer.invoke(IPC.TOKEN_COUNT, { text, provider, model }),
   countTokensBatch: (texts: string[], provider?: string, model?: string) =>
