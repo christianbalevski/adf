@@ -48,12 +48,16 @@
  * and folding Contents saves ~142; the age moved from the facts line to a
  * footer with the file size (mt-auto: free when the panel has room, +28
  * when it scrolls).
+ * Tasks (OverviewTasks, above Upcoming) shows only while an async task runs
+ * or just finished: 25 + up to 3 blocks of 18 + 16 (+ 7 timeout bar) + 4,
+ * plus a 16 px summary line; it never folds, so it pushes the folds above.
  * Keep new rows inside this budget: cap lists with a row limit + "+N".
  */
 
 import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { OverviewActivity, readActivity } from './OverviewActivity'
 import { OverviewOrbital } from './OverviewOrbital'
+import { OverviewTasks } from './OverviewTasks'
 import { CHIP, SurfaceChips, useAgentSurfaces } from './OverviewSurfaces'
 import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { useAgentStore } from '../../../stores/agent.store'
@@ -397,6 +401,7 @@ export function AgentOverview() {
           {vitals && vitals.metrics?.length > 0 && <MetricList metrics={vitals.metrics} expanded={metricsExpanded} onExpand={setMetricsExpanded} />}
         </section>
 
+        <OverviewTasks />
         <OverviewActivity activity={activity} now={now} chartFolded={chartFolded} contentsFolded={folded.contents} />
       </div>
 

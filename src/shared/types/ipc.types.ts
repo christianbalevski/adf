@@ -1273,3 +1273,12 @@ export type SpellcheckDownloadResult =
   | { outcome: 'downloaded'; languages: string[] }
   | { outcome: 'failed'; message: string }
   | { outcome: 'unsupported' }
+
+/**
+ * Coarse-grained "this data changed" signal, emitted after inbox/outbox rows,
+ * SQL tables, workspace files (create, write, delete, rename) or task rows
+ * mutate. Owned by the workspace (like WorkspaceFileChange) so every write
+ * path — tools, lambdas, mesh delivery, adapters, Studio IPC — funnels through
+ * one reliable notification point. Consumers refetch; no payload is carried.
+ */
+export type WorkspaceDataScope = 'inbox' | 'outbox' | 'tables' | 'files' | 'tasks'

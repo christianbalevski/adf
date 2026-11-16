@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
-import type { Tool } from '../tool.interface'
+import type { Tool, ToolCallContext } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
@@ -77,10 +77,20 @@ export class SysCodeTool implements Tool {
     return this.schema.inputSchema
   }
 
-  async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
+  async execute(input: unknown, workspace: AdfWorkspace, context?: ToolCallContext): Promise<ToolResult> {
     const { code, timeout, clear_state } = input as z.infer<ReturnType<typeof buildInputSchema>>
+    // Run as a task, the code gets a sandbox of its own so cancelling the task
+    // can terminate it without wiping the agent's persistent sandbox. It
+    // therefore neither sees nor clears that sandbox's state.
+    const taskId = context?.taskId
+    if (taskId && clear_state === false) {
+      return {
+        content: 'sys_code with clear_state: false cannot run as a task (_async): a task runs in a sandbox of its own and cannot see or keep saved state. Drop _async to use saved state.',
+        isError: true,
+      }
+    }
 
-    if (clear_state) {
+    if (clear_state && !taskId) {
       this.service.destroy(this.agentId)
     }
 
@@ -117,14 +127,10 @@ export class SysCodeTool implements Tool {
       // context, which is `true` whenever sys_code runs inside an authorized
       // lambda; feeding that to the sandbox's auth-level tracking marked the
       // agent's main sandbox as mixed-level forever.
-      result = await this.service.execute(
-        this.agentId,
-        code,
-        timeout ?? this.maxTimeout,
-        onAdfCall,
-        toolConfig,
-        { handlerAuthorized: false, agent: this.agentId }
-      )
+      const options = { handlerAuthorized: false, agent: this.agentId }
+      result = taskId
+        ? await this.service.executeIsolated(`${this.agentId}:task:${taskId}`, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig, { ...options, signal: context.signal })
+        : await this.service.execute(this.agentId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig, options)
     } catch (err) {
       emitUmbilicalEvent({
         event_type: 'lambda.failed',

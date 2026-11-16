@@ -32,7 +32,7 @@ function makeHandler(vfs: Record<string, string>) {
     readFile: (p: string) => vfs[p] ?? null,
     isFileAuthorized: () => false,
   }
-  const codeSandbox: any = { execute: vi.fn(async () => ({ result: 'ok' })), destroy: vi.fn() }
+  const codeSandbox: any = { execute: vi.fn(async () => ({ result: 'ok' })), executeIsolated: vi.fn(async () => ({ result: 'ok' })), destroy: vi.fn() }
   const adfCallHandler: any = {
     getToolRegistry: () => fakeRegistry,
     setAuthorizationContext: () => {},
@@ -57,6 +57,7 @@ describe('system-scope .sh lambda routing', () => {
     await handler.execute(makeDispatch('jobs/task.sh'))
     expect(toolCalls).toContain('fs_read')
     expect(codeSandbox.execute).not.toHaveBeenCalled()
+    expect(codeSandbox.executeIsolated).not.toHaveBeenCalled()
     expect(logs.some(l => l.level === 'info' && l.message.includes('completed'))).toBe(true)
   })
 
@@ -77,6 +78,6 @@ describe('system-scope .sh lambda routing', () => {
       'jobs/task.ts': 'async function main(event) { return 1 }',
     })
     await handler.execute(makeDispatch('jobs/task.ts'))
-    expect(codeSandbox.execute).toHaveBeenCalled()
+    expect(codeSandbox.executeIsolated).toHaveBeenCalled() // cold: a sandbox of its own
   })
 })

@@ -1,8 +1,9 @@
 import { nanoid } from 'nanoid'
+import { runTask, type TaskCompletedFn } from './task-run'
 import type { ToolRegistry } from '../tools/tool-registry'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import { isReservedMcpRuntimePurpose, mcpRuntimeIdentityAccess, isCodeForbiddenIdentityWrite } from '../adf/adf-workspace'
-import type { AgentConfig, ModelConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, ModelConfig, CodeExecutionConfig, MetaProtectionLevel, FileProtectionLevel, AlfAttestation, TaskEntry } from '../../shared/types/adf-v02.types'
 import { CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, FILE_PROTECTION_LEVELS } from '../../shared/types/adf-v02.types'
 import { readAdfAttestations, addPeerAttestation, issuePeerAttestation } from '../services/attestation.service'
 import type { LLMProvider } from '../providers/provider.interface'
@@ -96,8 +97,9 @@ export class AdfCallHandler {
   /** Call stack for circular sys_lambda detection */
   private callStack: string[] = []
 
-  /** Task lifecycle callback (set by IPC layer) */
-  onTaskCompleted?: (taskId: string, tool: string, status: string, result?: string, error?: string, sideEffects?: { endTurn?: boolean }) => void
+  /** Task lifecycle callbacks (set by assembleAgent for main; unset on side loops) */
+  onTaskCreated?: (task: TaskEntry) => void
+  onTaskCompleted?: TaskCompletedFn
 
   /**
    * Fires when a synchronous lambda tool call returns endTurn (e.g. sys_set_state).
@@ -366,6 +368,8 @@ export class AdfCallHandler {
         const { _async: _, ...cleanArgs } = argsObj
         const taskId = `task_${nanoid(12)}`
         this.workspace.insertTask(taskId, method, JSON.stringify(cleanArgs), 'lambda')
+        const created = this.workspace.getTask(taskId)
+        if (created) this.onTaskCreated?.(created)
         // Capture authorization at schedule time — subsequent sandbox executions may flip it.
         const capturedAuthorized = authorized
         this.executeAsyncToolFromLambda(taskId, method, cleanArgs, capturedAuthorized).catch(err => {
@@ -847,7 +851,6 @@ export class AdfCallHandler {
         }
 
         // Deferred tasks (async/on_tool_call): execute the tool here
-        this.workspace.updateTaskStatus(input.task_id, 'running')
         // A __protection marker in the stored args means this task was parked
         // by a protection denial — the approval carries a one-time bypass.
         const storedArgs = JSON.parse(task.args)
@@ -857,23 +860,14 @@ export class AdfCallHandler {
           const { __protection: _pp, ...rest } = toolArgs as Record<string, unknown>
           toolArgs = { ...rest, _protection_override: true }
         }
-        try {
-          const result = await this.toolRegistry.executeTool(task.tool, toolArgs, this.workspace)
-          const sideEffects = result.endTurn ? { endTurn: true } : undefined
-          if (result.isError) {
-            this.workspace.updateTaskStatus(input.task_id, 'failed', undefined, result.content)
-            this.onTaskCompleted?.(input.task_id, task.tool, 'failed', undefined, result.content, sideEffects)
-            return { result: JSON.stringify({ task_id: input.task_id, status: 'failed', error: result.content }) }
-          }
-          this.workspace.updateTaskStatus(input.task_id, 'completed', result.content)
-          this.onTaskCompleted?.(input.task_id, task.tool, 'completed', result.content, undefined, sideEffects)
-          return { result: JSON.stringify({ task_id: input.task_id, status: 'completed', result: result.content }) }
-        } catch (err) {
-          const errorMsg = err instanceof Error ? err.message : String(err)
-          this.workspace.updateTaskStatus(input.task_id, 'failed', undefined, errorMsg)
-          this.onTaskCompleted?.(input.task_id, task.tool, 'failed', undefined, errorMsg)
-          return { result: JSON.stringify({ task_id: input.task_id, status: 'failed', error: errorMsg }) }
-        }
+        await runTask(this.workspace, input.task_id, task.tool, (...a) => this.onTaskCompleted?.(...a),
+          (signal) => this.toolRegistry.executeTool(task.tool, toolArgs, this.workspace, { signal, taskId: input.task_id }))
+        const done = this.workspace.getTask(input.task_id)
+        const status = done?.status ?? 'cancelled'
+        return { result: JSON.stringify({
+          task_id: input.task_id, status,
+          ...(status === 'completed' ? { result: done?.result } : status === 'failed' ? { error: done?.error } : {}),
+        }) }
       }
       case 'deny': {
         const reason = input.reason ?? 'Denied'
@@ -1315,15 +1309,15 @@ export class AdfCallHandler {
   }
 
   /**
-   * Execute a tool asynchronously from a lambda context (fire-and-forget).
+   * Execute a tool asynchronously from a lambda context (fire-and-forget) as
+   * task `taskId`, through runTask.
    */
   private async executeAsyncToolFromLambda(taskId: string, method: string, args: unknown, authorized: boolean): Promise<void> {
-    try {
-      this.workspace.updateTaskStatus(taskId, 'running')
+    await runTask(this.workspace, taskId, method, (...a) => this.onTaskCompleted?.(...a), async (signal) => {
       const toolArgs = authorized && args && typeof args === 'object'
         ? { ...(args as Record<string, unknown>), _authorized: true }
         : args
-      const result = await this.toolRegistry.executeTool(method, toolArgs, this.workspace)
+      const result = await this.toolRegistry.executeTool(method, toolArgs, this.workspace, { signal, taskId })
 
       // Protection denial from unauthorized code → park the task as a pending
       // override approval instead of failing. The __protection marker in the
@@ -1336,22 +1330,10 @@ export class AdfCallHandler {
         this.workspace.setTaskApprovalMeta(taskId, JSON.stringify({ reason: 'protection', protection: result.protection }))
         this.workspace.setTaskRequiresAuthorization(taskId, true)
         this.workspace.updateTaskStatus(taskId, 'pending_approval')
-        return
+        return null
       }
-
-      const sideEffects = result.endTurn ? { endTurn: true } : undefined
-      if (result.isError) {
-        this.workspace.updateTaskStatus(taskId, 'failed', undefined, result.content)
-        this.onTaskCompleted?.(taskId, method, 'failed', undefined, result.content, sideEffects)
-      } else {
-        this.workspace.updateTaskStatus(taskId, 'completed', result.content)
-        this.onTaskCompleted?.(taskId, method, 'completed', result.content, undefined, sideEffects)
-      }
-    } catch (err) {
-      const errorMsg = err instanceof Error ? err.message : String(err)
-      this.workspace.updateTaskStatus(taskId, 'failed', undefined, errorMsg)
-      this.onTaskCompleted?.(taskId, method, 'failed', undefined, errorMsg)
-    }
+      return result
+    })
   }
 
   /** Get the list of enabled tool names for proxy fast-fail */

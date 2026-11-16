@@ -123,7 +123,7 @@ function makeLambdaHandler(limits: Record<string, unknown> = {}) {
     getAgentConfig: () => ({ limits } as unknown as AgentConfig),
     insertLog: () => {},
   }
-  const sandbox = { execute, destroy: vi.fn() }
+  const sandbox = { execute, executeIsolated: execute, destroy: vi.fn() }
   const callHandler = {
     setAuthorizationContext: () => {},
     getAuthorizationContext: () => false,

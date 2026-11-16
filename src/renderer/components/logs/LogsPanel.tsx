@@ -27,7 +27,7 @@ export const PANEL_SELECT_CLASS =
   'bg-white dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-700 rounded px-1.5 py-0.5 text-[11px] outline-none'
 export const PANEL_BUTTON_CLASS =
   'hover:bg-neutral-100 dark:hover:bg-neutral-800 text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-300 px-1.5 py-0.5 rounded text-[11px]'
-export const PANEL_LIVE_ON_CLASS =
+const PANEL_LIVE_ON_CLASS =
   'bg-green-50 dark:bg-green-900/40 text-green-700 dark:text-green-400 border border-green-200 dark:border-green-800'
 
 export function formatTime(ts: number): string {

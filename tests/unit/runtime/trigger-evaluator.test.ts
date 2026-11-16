@@ -519,6 +519,34 @@ describe('TriggerEvaluator', () => {
       })
     })
 
+    describe('on_task_create self-recursion', () => {
+      it("never sends a lambda the task it created itself; other targets still get it", () => {
+        const config = makeConfig({
+          on_task_create: makeTriggerConfig([
+            makeTarget('system', { lambda: 'lib/approve.ts:onCreate' }),
+            makeTarget('system', { lambda: 'lib/audit.ts:onCreate' }),
+          ])
+        })
+        const evaluator = new TriggerEvaluator(config)
+        evaluator.setDisplayState('active')
+        const events = collectEvents(evaluator)
+        const task = { id: 'task_1', tool: 'fs_read', args: '{}', status: 'running', created_at: Date.now() } as const
+
+        withSource('lambda:lib/approve.ts:onCreate', 'test-agent', () => {
+          evaluator.onTaskCreate({ ...task, origin: 'lambda' })
+        })
+        expect(events.map(e => (e as AdfEventDispatch).lambda)).toEqual(['lib/audit.ts:onCreate'])
+        expect((events[0] as AdfEventDispatch).event.source).toBe('lambda:lib/approve.ts:onCreate')
+
+        // An agent's task reaches both, whatever source is ambient.
+        events.length = 0
+        withSource('lambda:lib/approve.ts:onCreate', 'test-agent', () => {
+          evaluator.onTaskCreate({ ...task, id: 'task_2', origin: 'agent' })
+        })
+        expect(events).toHaveLength(2)
+      })
+    })
+
     describe('on_tool_call filters', () => {
       it('matches exact tool names', () => {
         const config = makeConfig({

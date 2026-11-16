@@ -373,10 +373,9 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     return () => { ipcRenderer.removeListener(IPC.INBOX_UPDATED, handler) }
   },
 
-  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files mutated
-  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) => void) => {
-    const handler = (_event: unknown, data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) =>
-      callback(data)
+  // Workspace data-change push (main -> renderer): see WorkspaceDataScope
+  onWorkspaceDataChanged: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onWorkspaceDataChanged']>) => callback(data)
     ipcRenderer.on(IPC.WORKSPACE_DATA_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.WORKSPACE_DATA_CHANGED, handler)
   },

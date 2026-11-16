@@ -72,7 +72,7 @@ export function OverviewActivity({ activity, now, chartFolded, contentsFolded }:
   )
 }
 
-function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children?: React.ReactNode }) {
+export function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children?: React.ReactNode }) {
   return (
     <section className="border-t border-[var(--rule)] pt-1.5 space-y-1">
       <div className="flex items-baseline justify-between gap-2 leading-[18px]">

@@ -1,5 +1,5 @@
 import type { AgentExecutionEvent } from '../../shared/types/ipc.types'
-import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, TaskEntry } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import {
   createDispatch,
@@ -23,6 +23,7 @@ import { PreLlmHookRunner } from './pre-llm-hook'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { AGENT_PROFILES, profileHasAsyncTeardown } from './agent-capability-profiles'
 import { AgentExecutor } from './agent-executor'
+import type { TaskCompletedFn } from './task-run'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
 import { RuntimeGate } from './runtime-gate'
@@ -698,21 +699,21 @@ export function assembleAgent<P extends AgentProfileName>(
   executor.onToolCallIntercepted = (tool, args, taskId, origin, systemScopeHandled = false) => {
     triggerEvaluator.onToolCall(tool, args, taskId, origin, systemScopeHandled)
   }
-  executor.onTaskCreated = (task) => triggerEvaluator.onTaskCreate(task)
-  executor.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
+  const onTaskCreated = (task: TaskEntry): void => triggerEvaluator.onTaskCreate(task)
+  const onTaskCompleted: TaskCompletedFn = (taskId, tool, status, result, error, sideEffects) => {
     triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
     applyStateTransitionSideEffect(executor, tool, status, result, sideEffects)
   }
+  executor.onTaskCreated = onTaskCreated
+  executor.onTaskCompleted = onTaskCompleted
   executor.onLlmCall = (data) => triggerEvaluator.onLlmCall(data)
 
   if (adfCallHandler) {
     adfCallHandler.onEvent = (event) => {
       for (const bindings of hostBindings()) bindings.onAdfEvent?.(event)
     }
-    adfCallHandler.onTaskCompleted = (taskId, tool, status, result, error, sideEffects) => {
-      triggerEvaluator.onTaskComplete(taskId, tool, status, result, error)
-      applyStateTransitionSideEffect(executor, tool, status, result, sideEffects)
-    }
+    adfCallHandler.onTaskCreated = onTaskCreated
+    adfCallHandler.onTaskCompleted = onTaskCompleted
     adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
       applyStateTransitionSideEffect(executor, tool, 'completed', resultContent, { endTurn: true })
     }
@@ -931,6 +932,7 @@ export function assembleAgent<P extends AgentProfileName>(
     executor.onLlmCall = undefined
     if (adfCallHandler) {
       adfCallHandler.onEvent = undefined
+      adfCallHandler.onTaskCreated = undefined
       adfCallHandler.onTaskCompleted = undefined
       adfCallHandler.onLambdaToolEndTurn = undefined
       adfCallHandler.onHilApproved = undefined
@@ -990,6 +992,11 @@ export function assembleAgent<P extends AgentProfileName>(
       // behind a stopped body (§6.3, suspend/off cascade).
       try { loopPool.dispose() } catch { /* continue teardown */ }
       try { executor.abort() } catch { /* continue teardown */ }
+      // In the immediate stop modes this runs before any await, so a newer
+      // assembly on this workspace cannot exist yet and every run in flight is
+      // this agent's. Graceful stops reach it only on paths that cannot
+      // re-assemble meanwhile (app quit, daemon unload).
+      try { workspace.abortTaskRuns() } catch { /* workspace may already be closed */ }
       try { triggerEvaluator.dispose() } catch { /* continue teardown */ }
       await killHostShells()
       await stopResources()
@@ -1136,6 +1143,7 @@ export function assembleAgent<P extends AgentProfileName>(
       try { triggerEvaluator.stopTimerPolling() } catch { /* continue teardown */ }
       try { loopPool.dispose() } catch { /* continue teardown */ }
       try { executor.abort() } catch { /* continue teardown */ }
+      try { workspace.abortTaskRuns() } catch { /* workspace may already be closed */ }
       try { triggerEvaluator.dispose() } catch { /* continue teardown */ }
       if (config.id) void killHostExecsFor(config.id).catch(() => {})
       if (!resourcesStopped) {
