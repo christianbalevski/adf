@@ -55,11 +55,10 @@ export async function runOwnerCommand(host: OwnerCommandHost, req: OwnerCommandR
     const invocation: AgentCommandInvocation = { command: req.name, args, argv: splitArgv(args), invoker: 'owner', loop, authorized, id }
     const missing = `Function "${fn}" not found in "${file}". Declare it at the top level, or fix commands[].lambda for /${req.name}.`
     const wrapped = `${transformExports(transformImports(source))}\nif (typeof ${fn} === 'function') { return await ${fn}(${JSON.stringify(invocation)}); }\nthrow new Error(${JSON.stringify(missing)});`
-    const sandboxId = `${config.id}:cmd:${file}:${id}:${nanoid(10)}`
     const payload = { lambda_path: file, function_name: fn, kind: 'owner_command', command: req.name, loop, authorized }
     emitUmbilicalEvent({ event_type: 'lambda.started', agentId: config.id, source: `lambda:${file}:${fn}`, payload })
     try {
-      const run = () => sandbox.execute(sandboxId, wrapped, config.limits.execution_timeout_ms,
+      const run = () => sandbox.executeIsolated(`${config.id}:cmd:${file}:${id}`, wrapped, config.limits.execution_timeout_ms,
         (method, callArgs) => withAuthorization(authorized, () => handler.handleCall(method, callArgs)),
         { enabledTools: handler.getEnabledToolNames(), hilTools: handler.getHilToolNames(), isAuthorized: authorized },
         { handlerAuthorized: authorized, agent: config.id, ephemeral: true })
@@ -71,7 +70,7 @@ export async function runOwnerCommand(host: OwnerCommandHost, req: OwnerCommandR
     } catch (error) {
       emitUmbilicalEvent({ event_type: 'lambda.failed', agentId: config.id, source: `lambda:${file}:${fn}`, payload: { ...payload, duration_ms: performance.now() - started, error: error instanceof Error ? error.message : String(error) } })
       throw error
-    } finally { sandbox.destroy(sandboxId) }
+    }
   } catch (error) {
     body = error instanceof Error ? error.message : String(error)
   }

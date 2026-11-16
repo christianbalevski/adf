@@ -11,6 +11,8 @@ import type { ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { ContentBlock } from '../../../shared/types/provider.types'
 import { logger } from '../../utils/logger'
 import { requireClaudeCode, claudeCodeEnv } from './claude-code'
+import { recordSubscriptionUsage } from '../subscription-usage'
+import { fromClaudeRateLimit } from '../subscription-usage/adapters'
 import {
   MCP_SERVER_NAME, claudeToolAlias, fromClaudeToolName, toClaudeToolName, toolAliasMap,
   type ApiBlock, type TranscriptEntry,
@@ -612,6 +614,8 @@ export class ClaudeCodeSession {
         return
       case 'rate_limit_event':
         this.rateLimit = msg.rate_limit_info
+        // Each event reports one window; the service merges them by type. Never throws.
+        recordSubscriptionUsage('claude-subscription', () => fromClaudeRateLimit(msg.rate_limit_info, Date.now()))
         return
       case 'result': {
         const errorText = msg.subtype === 'success' ? (msg.is_error ? msg.result : null) : msg.errors.join('; ')

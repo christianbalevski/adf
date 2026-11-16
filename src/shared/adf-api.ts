@@ -2,6 +2,7 @@ import { IPC } from './constants/ipc-channels'
 import type { RuntimeIpc } from './runtime-ipc'
 import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnapshot, QueueHandoverEntry } from './types/ipc.types'
 import type { AgentConfig } from './types/adf-v02.types'
+import type { SubscriptionUsageHistoryRequest, SubscriptionUsageState } from './types/subscription-usage.types'
 import type { ResourceWriter } from './types/resource-revision.types'
 import type { InternalFileBatchInput } from './types/file-batch.types'
 import type { AdfApi } from '../preload/api'
@@ -280,6 +281,16 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
   getTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_GET),
   clearTokenUsage: () => ipcRenderer.invoke(IPC.TOKEN_USAGE_CLEAR),
   saveTokenUsageExport: (json: string) => ipcRenderer.invoke(IPC.TOKEN_USAGE_EXPORT, json),
+
+  // Subscription usage
+  getSubscriptionUsage: () => ipcRenderer.invoke(IPC.SUBSCRIPTION_USAGE_GET),
+  refreshSubscriptionUsage: (opts?: { auto?: boolean }) => ipcRenderer.invoke(IPC.SUBSCRIPTION_USAGE_REFRESH, opts ?? {}),
+  getSubscriptionUsageHistory: (req?: SubscriptionUsageHistoryRequest) => ipcRenderer.invoke(IPC.SUBSCRIPTION_USAGE_HISTORY, req ?? {}),
+  onSubscriptionUsageChanged: (callback: (state: SubscriptionUsageState) => void) => {
+    const handler = (_event: unknown, state: SubscriptionUsageState) => callback(state)
+    ipcRenderer.on(IPC.SUBSCRIPTION_USAGE_CHANGED, handler)
+    return () => ipcRenderer.removeListener(IPC.SUBSCRIPTION_USAGE_CHANGED, handler)
+  },
   countTokens: (text: string, provider?: string, model?: string) =>
     ipcRenderer.invoke(IPC.TOKEN_COUNT, { text, provider, model }),
   countTokensBatch: (texts: string[], provider?: string, model?: string) =>
@@ -376,10 +387,9 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     return () => { ipcRenderer.removeListener(IPC.INBOX_UPDATED, handler) }
   },
 
-  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files mutated
-  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) => void) => {
-    const handler = (_event: unknown, data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) =>
-      callback(data)
+  // Workspace data-change push (main -> renderer): see WorkspaceDataScope
+  onWorkspaceDataChanged: (callback) => {
+    const handler = (_event: unknown, data: SubscriptionPayload<AdfApi['onWorkspaceDataChanged']>) => callback(data)
     ipcRenderer.on(IPC.WORKSPACE_DATA_CHANGED, handler)
     return () => ipcRenderer.removeListener(IPC.WORKSPACE_DATA_CHANGED, handler)
   },

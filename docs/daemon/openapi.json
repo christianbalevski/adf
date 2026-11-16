@@ -18285,6 +18285,124 @@
           }
         ]
       }
+    },
+    "/runtime/subscription-usage": {
+      "get": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Quota left on signed-in subscriptions",
+        "description": "One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.",
+        "operationId": "getSubscriptionUsage",
+        "responses": {
+          "200": {
+            "description": "Current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsageState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/subscription-usage/refresh": {
+      "post": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Probe subscription usage now",
+        "description": "Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.",
+        "operationId": "refreshSubscriptionUsage",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auto": {
+                    "type": "boolean",
+                    "description": "Not a user click: honour the providerChecksEnabled opt-out. Default false."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsageState"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/subscription-usage/history": {
+      "get": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Subscription usage history",
+        "description": "Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.",
+        "operationId": "getSubscriptionUsageHistory",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Only samples at or after this epoch ms.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Samples, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsageHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
     }
   },
   "components": {
@@ -31396,7 +31514,7 @@
       },
       "ClientFrame": {
         "type": "object",
-        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
+        "description": "One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session, subscription_usage (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes \"[Circular]\". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).",
         "required": [
           "cursor",
           "kind"
@@ -33231,6 +33349,148 @@
             }
           }
         ]
+      },
+      "SubscriptionProviderId": {
+        "type": "string",
+        "enum": [
+          "claude-subscription",
+          "chatgpt-subscription",
+          "grok-subscription"
+        ]
+      },
+      "SubscriptionUsageWindow": {
+        "type": "object",
+        "required": [
+          "key",
+          "label",
+          "observedAt"
+        ],
+        "properties": {
+          "key": {
+            "type": "string",
+            "description": "Stable within a provider: five_hour, seven_day, seven_day_opus, … (Claude); primary, secondary (ChatGPT); requests, tokens (Grok)."
+          },
+          "label": {
+            "type": "string"
+          },
+          "usedPercent": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 100
+          },
+          "resetsAt": {
+            "type": "number",
+            "description": "Epoch ms."
+          },
+          "limited": {
+            "type": "boolean",
+            "description": "The provider is refusing requests on this window."
+          },
+          "observedAt": {
+            "type": "number",
+            "description": "Epoch ms."
+          }
+        }
+      },
+      "SubscriptionUsageSnapshot": {
+        "type": "object",
+        "required": [
+          "provider",
+          "status",
+          "windows"
+        ],
+        "properties": {
+          "provider": {
+            "$ref": "#/components/schemas/SubscriptionProviderId"
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "ok",
+              "stale",
+              "unavailable",
+              "error",
+              "signed_out"
+            ]
+          },
+          "plan": {
+            "type": "string"
+          },
+          "windows": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionUsageWindow"
+            }
+          },
+          "credits": {
+            "type": "object",
+            "properties": {
+              "balance": {
+                "type": "number"
+              },
+              "hasCredits": {
+                "type": "boolean"
+              }
+            }
+          },
+          "observedAt": {
+            "type": "number"
+          },
+          "error": {
+            "type": "string"
+          },
+          "errorAt": {
+            "type": "number"
+          }
+        }
+      },
+      "SubscriptionUsageState": {
+        "type": "object",
+        "required": [
+          "snapshots"
+        ],
+        "properties": {
+          "snapshots": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SubscriptionUsageSnapshot"
+            }
+          }
+        }
+      },
+      "SubscriptionUsageHistoryResponse": {
+        "type": "object",
+        "required": [
+          "samples"
+        ],
+        "properties": {
+          "samples": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "t",
+                "provider",
+                "window",
+                "usedPercent"
+              ],
+              "properties": {
+                "t": {
+                  "type": "number"
+                },
+                "provider": {
+                  "$ref": "#/components/schemas/SubscriptionProviderId"
+                },
+                "window": {
+                  "type": "string"
+                },
+                "usedPercent": {
+                  "type": "number"
+                }
+              }
+            }
+          }
+        }
       }
     }
   }

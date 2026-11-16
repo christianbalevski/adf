@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import type { ZodTypeAny } from 'zod'
-import type { Tool } from './tool.interface'
+import type { Tool, ToolCallContext } from './tool.interface'
 import type { ToolResult } from '../../shared/types/tool.types'
 import type { ToolDeclaration } from '../../shared/types/adf-v02.types'
 import type { AdfWorkspace } from '../adf/adf-workspace'
@@ -14,15 +14,18 @@ const INTERNAL_INPUT_FLAGS = ['_authorized', '_protection_override', '_full', '_
 const MAX_EVENT_RESULT_BYTES = 16_384
 
 /**
- * The interrupt signal of the turn a tool call runs in. A call made from
- * inside another call (adf_shell's `adf compute_exec`, sys_code's adf.*)
- * inherits it, so an interrupt reaches the shell those start too.
+ * The context of the tool call running now: the interrupt signal of its turn
+ * (or of its task) and, for a task run, the task id. A call made from inside
+ * another call inherits it through async context: adf_shell's
+ * `adf compute_exec` directly, sandbox adf.* calls because CodeSandboxService
+ * binds each execution's handler to its caller's context. So an interrupt or
+ * cancel reaches the shell and the nested calls those start too.
  */
-const callSignal = new AsyncLocalStorage<AbortSignal>()
+const callContext = new AsyncLocalStorage<ToolCallContext>()
 
 /** The interrupt signal of the tool call running now, if any. */
 export function currentToolSignal(): AbortSignal | undefined {
-  return callSignal.getStore()
+  return callContext.getStore()?.signal
 }
 
 /** Optional call metadata. `toolUseId` is the LLM `tool_use.id`; code-driven calls omit it. */
@@ -41,8 +44,13 @@ export interface ToolExecutionContext {
    * still sees exactly one started + one terminal event per tool_use id.
    */
   suppressStarted?: boolean
-  /** Aborted when the owner interrupts the turn. Unset: the enclosing call's signal, if any. */
+  /**
+   * Aborted when the owner interrupts the turn, or cancels the task. Unset: the
+   * enclosing call's signal and task id, if any.
+   */
   signal?: AbortSignal
+  /** The `adf_tasks` row this call runs as (an `_async` call). Set together with `signal`. */
+  taskId?: string
 }
 
 /** Drop runtime-injected flags so tool.* payloads only carry what the caller asked for. */
@@ -178,10 +186,12 @@ export class ToolRegistry {
     }
 
     let result: ToolResult
-    const signal = context?.signal ?? callSignal.getStore()
+    const call: ToolCallContext | undefined = context?.signal
+      ? { signal: context.signal, ...(context.taskId ? { taskId: context.taskId } : {}) }
+      : callContext.getStore()
     try {
-      result = signal
-        ? await callSignal.run(signal, () => this.executeToolInner(name, input, workspace, signal))
+      result = call
+        ? await callContext.run(call, () => this.executeToolInner(name, input, workspace, call))
         : await this.executeToolInner(name, input, workspace)
     } catch (error) {
       // Thrown here means the failure escaped the per-tool catch (e.g. an abort
@@ -238,7 +248,7 @@ export class ToolRegistry {
     name: string,
     input: unknown,
     workspace: AdfWorkspace,
-    signal?: AbortSignal
+    call?: ToolCallContext
   ): Promise<ToolResult> {
     const tool = this.tools.get(name)
     if (!tool) {
@@ -287,7 +297,7 @@ export class ToolRegistry {
     }
 
     try {
-      return await (signal ? tool.execute(toolInput, workspace, { signal }) : tool.execute(toolInput, workspace))
+      return await (call ? tool.execute(toolInput, workspace, call) : tool.execute(toolInput, workspace))
     } catch (error) {
       return {
         content: `Tool "${name}" execution failed: ${String(error)}`,

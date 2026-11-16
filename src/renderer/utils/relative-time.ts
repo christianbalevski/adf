@@ -19,6 +19,21 @@ export function relativeTime(timestamp: number, now: number): string {
   return d.toLocaleDateString(undefined, sameYear ? { month: 'short', day: 'numeric' } : { year: 'numeric', month: 'short', day: 'numeric' })
 }
 
+/**
+ * Time until a future moment in its two largest units: `2h 14m`, `3d 4h`,
+ * `12m`, `under 1m`. Null when absent or already past.
+ */
+export function timeUntil(timestamp: number | undefined, now: number): string | null {
+  if (timestamp == null || !Number.isFinite(timestamp)) return null
+  const left = timestamp - now
+  if (left <= 0) return null
+  if (left < MINUTE) return 'under 1m'
+  if (left < HOUR) return `${Math.floor(left / MINUTE)}m`
+  const [big, unit, small, smallUnit] = left < DAY ? [HOUR, 'h', MINUTE, 'm'] as const : [DAY, 'd', HOUR, 'h'] as const
+  const rest = Math.floor((left % big) / small)
+  return `${Math.floor(left / big)}${unit}${rest > 0 ? ` ${rest}${smallUnit}` : ''}`
+}
+
 /** "Updated 12s ago" granularity, for panel freshness stamps. */
 export function ageInSeconds(timestamp: number, now: number): string {
   const diff = Math.max(0, now - timestamp)

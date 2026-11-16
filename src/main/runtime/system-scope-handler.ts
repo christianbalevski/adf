@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto'
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import type { CodeSandboxService } from './code-sandbox'
 import type { AdfCallHandler } from './adf-call-handler'
@@ -140,10 +139,9 @@ if (typeof ${fnName} === 'function') {
     // per-file keeps contexts single-level while two functions in the same file
     // still share module state — the same granularity sys_lambda uses
     // (`${agentId}:fn:${filePath}`), so the two paths agree. Warm reuses that
-    // id (and the state the agent parked in it); cold gets a per-invocation id
-    // so its destroy touches nothing but its own worker.
+    // id (and the state the agent parked in it); cold runs isolated, in a
+    // worker of its own that is torn down afterwards.
     const lambdaId = `${this.agentId}:lambda:${filePath}`
-    const sandboxId = warm ? lambdaId : `${lambdaId}:${randomUUID()}`
     const startTime = performance.now()
 
     try {
@@ -160,18 +158,13 @@ if (typeof ${fnName} === 'function') {
         source: `lambda:${filePath}:${fnName}`,
         payload: { lambda_path: filePath, function_name: fnName, kind: 'system_scope', trigger: triggerName }
       })
-      const result = await withSource(`lambda:${filePath}:${fnName}`, this.agentId, () =>
-        this.codeSandboxService.execute(
-          sandboxId,
-          wrappedCode,
-          timeout,
-          onAdfCall,
-          toolConfig,
-          // handlerAuthorized is the file's authorization, which is what
-          // onAdfCall is bound to — toolConfig.isAuthorized comes from the
-          // ambient call context and can read `true` for an unauthorized file.
-          { handlerAuthorized: isAuthorized, agent: this.agentId, ephemeral: !warm }
-        )
+      // handlerAuthorized is the file's authorization, which is what
+      // onAdfCall is bound to — toolConfig.isAuthorized comes from the
+      // ambient call context and can read `true` for an unauthorized file.
+      const opts = { handlerAuthorized: isAuthorized, agent: this.agentId }
+      const result = await withSource(`lambda:${filePath}:${fnName}`, this.agentId, () => warm
+        ? this.codeSandboxService.execute(lambdaId, wrappedCode, timeout, onAdfCall, toolConfig, opts)
+        : this.codeSandboxService.executeIsolated(lambdaId, wrappedCode, timeout, onAdfCall, toolConfig, { ...opts, ephemeral: true })
       )
 
       const durationMs = +(performance.now() - startTime).toFixed(2)
@@ -222,10 +215,6 @@ if (typeof ${fnName} === 'function') {
         duration_ms: durationMs,
         detail: stack ?? errorMsg
       })
-    } finally {
-      if (!warm) {
-        this.codeSandboxService.destroy(sandboxId)
-      }
     }
   }
 

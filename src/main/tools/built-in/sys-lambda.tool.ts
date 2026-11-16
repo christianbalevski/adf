@@ -1,6 +1,6 @@
 import { z } from 'zod'
 import { zodToJsonSchema } from 'zod-to-json-schema'
-import type { Tool } from '../tool.interface'
+import type { Tool, ToolCallContext } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
@@ -73,7 +73,7 @@ export class SysLambdaTool implements Tool {
     return this.schema.inputSchema
   }
 
-  async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
+  async execute(input: unknown, workspace: AdfWorkspace, context?: ToolCallContext): Promise<ToolResult> {
     const { source, args, timeout } = input as z.infer<ReturnType<typeof buildInputSchema>>
 
     // Parse source: "path/file.ts:functionName" or just "path/file.ts"
@@ -153,17 +153,15 @@ if (typeof ${functionName} === 'function') {
       source: `lambda:${filePath}:${functionName}`,
       payload: { lambda_path: filePath, function_name: functionName, kind: 'sys_lambda' }
     })
-    const result = await withSource(`lambda:${filePath}:${functionName}`, this.agentId, () =>
-      this.codeSandboxService.execute(
-        `${this.agentId}:fn:${filePath}`,
-        wrappedCode,
-        timeout ?? this.maxTimeout,
-        onAdfCall,
-        toolConfig,
-        // onAdfCall is bound to the file's authorization; toolConfig's copy
-        // comes from the ambient context and can disagree.
-        { handlerAuthorized: fileAuthorized, agent: this.agentId }
-      )
+    // onAdfCall is bound to the file's authorization; toolConfig's copy
+    // comes from the ambient context and can disagree.
+    const options = { handlerAuthorized: fileAuthorized, agent: this.agentId }
+    // Run as a task, the lambda gets a sandbox of its own so cancelling the
+    // task can terminate it without killing the warm per-file worker.
+    const taskId = context?.taskId
+    const result = await withSource(`lambda:${filePath}:${functionName}`, this.agentId, () => taskId
+      ? this.codeSandboxService.executeIsolated(`${this.agentId}:task:${taskId}`, wrappedCode, timeout ?? this.maxTimeout, onAdfCall, toolConfig, { ...options, signal: context.signal })
+      : this.codeSandboxService.execute(`${this.agentId}:fn:${filePath}`, wrappedCode, timeout ?? this.maxTimeout, onAdfCall, toolConfig, options)
     )
     const durationMs = +(performance.now() - t0).toFixed(2)
     emitUmbilicalEvent({

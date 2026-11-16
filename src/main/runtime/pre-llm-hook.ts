@@ -1,4 +1,3 @@
-import { randomUUID } from 'crypto'
 import type { AgentConfig, PreLlmHookConfig } from '../../shared/types/adf-v02.types'
 import type { LLMMessage, ReasoningConfig } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
@@ -430,27 +429,21 @@ throw new Error('Function "${functionName}" not found in "${filePath}".');
     // Each request gets a fresh worker. This prevents hook module/global state
     // from leaking across tool rounds and isolates abort collateral from all
     // ordinary sandbox callers.
-    const sandboxId = `${this.agentId}:pre_llm_hook:${randomUUID()}`
     const result = await (async () => {
       try {
         return await withSource(`lambda:${filePath}:${functionName}`, this.agentId, () =>
-          this.codeSandboxService.execute(
-            sandboxId,
+          this.codeSandboxService.executeIsolated(
+            `${this.agentId}:pre_llm_hook`,
             code,
             timeout,
             onAdfCall,
             toolConfig,
-            { handlerAuthorized: fileAuthorized, agent: this.agentId, signal, ephemeral: true, terminateOnAbort: true },
+            { handlerAuthorized: fileAuthorized, agent: this.agentId, signal, ephemeral: true },
           )
         )
       } catch (error) {
         if (error instanceof PreLlmHookError) throw error
         throw new PreLlmHookError(`execution could not start (${error instanceof Error ? error.message : String(error)})`)
-      } finally {
-        // Hook workers are cold and request-scoped. Reap on both success and
-        // failure; abort already terminates immediately, while this handles
-        // ordinary completion before the cold-worker TTL can accumulate.
-        this.codeSandboxService.destroy(sandboxId)
       }
     })()
     const durationMs = +(performance.now() - started).toFixed(2)

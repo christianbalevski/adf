@@ -1,11 +1,9 @@
-import { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { useDocumentStore } from '../../stores/document.store'
-import { usePollWhenVisible } from '../../hooks/usePollWhenVisible'
-import { formatTime, PANEL_BUTTON_CLASS, PANEL_LIVE_ON_CLASS, PANEL_SELECT_CLASS } from '../logs/LogsPanel'
-import { FreshnessStamp } from '../common/FreshnessStamp'
+import { useTasks } from '../../hooks/useTasks'
+import { formatTime, PANEL_SELECT_CLASS } from '../logs/LogsPanel'
 import type { TaskEntry, TaskStatus } from '../../../shared/types/adf-v02.types'
 import { TASK_STATUSES } from '../../../shared/types/adf-v02.types'
-import { openApi } from '../../utils/runtime-api'
 
 const STATUS_COLORS: Record<TaskStatus, string> = {
   pending: 'text-amber-600 dark:text-yellow-400',
@@ -17,48 +15,23 @@ const STATUS_COLORS: Record<TaskStatus, string> = {
   cancelled: 'text-neutral-500'
 }
 
-export function useTasksCount(): number {
-  const [count, setCount] = useState(0)
-  const filePath = useDocumentStore((s) => s.filePath)
-
-  useEffect(() => {
-    if (!filePath) { setCount(0); return }
-    openApi()?.getTasks(1).then(({ tasks }) => setCount(tasks.length > 0 ? -1 : 0))
-    // We just need to know if there are tasks; actual count comes from the full fetch
-  }, [filePath])
-
-  return count
-}
-
 export function TasksPanel() {
   const filePath = useDocumentStore((s) => s.filePath)
 
-  const [tasks, setTasks] = useState<TaskEntry[]>([])
+  // Newest first from the API; reversed for chronological (newest at bottom).
+  const newest = useTasks()
+  const tasks = useMemo(() => [...newest].reverse(), [newest])
   const [statusFilter, setStatusFilter] = useState<TaskStatus | 'all'>('all')
   const [expandedId, setExpandedId] = useState<string | null>(null)
-  const [autoRefresh, setAutoRefresh] = useState(false)
   const [userScrolledUp, setUserScrolledUp] = useState(false)
-  const [fetchedAt, setFetchedAt] = useState<number | null>(null)
 
   const scrollRef = useRef<HTMLDivElement>(null)
 
-  const fetchTasks = useCallback(() => {
-    openApi()?.getTasks(200).then(({ tasks: fetched }) => {
-      // API returns newest-first; reverse for chronological (newest at bottom)
-      setTasks([...fetched].reverse())
-      setFetchedAt(Date.now())
-    })
-  }, [])
-
-  // Load tasks when file changes
+  // Reset view state when the file changes
   useEffect(() => {
-    setTasks([])
     setExpandedId(null)
     setUserScrolledUp(false)
-    setFetchedAt(null)
-    if (!filePath) return
-    fetchTasks()
-  }, [filePath, fetchTasks])
+  }, [filePath])
 
   // Auto-scroll to bottom when new tasks arrive (unless user scrolled up)
   useEffect(() => {
@@ -66,10 +39,6 @@ export function TasksPanel() {
       scrollRef.current.scrollTop = scrollRef.current.scrollHeight
     }
   }, [tasks, userScrolledUp])
-
-  // Auto-refresh interval — gated on visibility so a backgrounded window (or
-  // a drawer sitting behind the Logs tab) stops polling.
-  usePollWhenVisible(fetchTasks, 2000, { enabled: autoRefresh, ref: scrollRef })
 
   const handleScroll = useCallback(() => {
     if (!scrollRef.current) return
@@ -97,24 +66,6 @@ export function TasksPanel() {
             <option key={s} value={s}>{s.replace('_', ' ')}</option>
           ))}
         </select>
-
-        {/* Auto-refresh toggle */}
-        <button
-          onClick={() => setAutoRefresh(!autoRefresh)}
-          className={`flex items-center gap-1 px-1.5 py-0.5 rounded text-[11px] ${
-            autoRefresh ? PANEL_LIVE_ON_CLASS : PANEL_BUTTON_CLASS
-          }`}
-          title={autoRefresh ? 'Live: refreshes every 2s while the panel is open. Click to pause.' : 'Paused. Click to refresh every 2s.'}
-          aria-pressed={autoRefresh}
-        >
-          {autoRefresh && (
-            <span className="w-1.5 h-1.5 rounded-full bg-green-500 dark:bg-green-400 animate-pulse" />
-          )}
-          Live
-        </button>
-
-        {/* Paused: how old the view is, and a way to catch up */}
-        {!autoRefresh && <FreshnessStamp at={fetchedAt} onRefresh={fetchTasks} />}
 
         <div className="flex-1" />
 

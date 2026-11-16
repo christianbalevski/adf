@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 347 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 350 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -43,7 +43,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Timers](#tag-timers) (4)
 - [Templates](#tag-templates) (14)
 - [Tracked folders](#tag-tracked-folders) (6)
-- [Runtime](#tag-runtime) (14)
+- [Runtime](#tag-runtime) (17)
 - [Network](#tag-network) (15)
 - [Compute](#tag-compute) (16)
 - [Admin](#tag-admin) (16)
@@ -10896,6 +10896,9 @@ Runtime diagnostics, token usage and token counting, daemon-wide and per agent.
 | GET | [`/agents/{id}/ws`](#op-getagentws) | One agent's WebSocket connections (same as …/runtime/ws) |
 | POST | [`/runtime/emergency-stop`](#op-emergencystop) | Emergency stop |
 | GET | [`/runtime/tools/descriptions`](#op-gettooldescriptions) | Tool schema catalog |
+| GET | [`/runtime/subscription-usage`](#op-getsubscriptionusage) | Quota left on signed-in subscriptions |
+| POST | [`/runtime/subscription-usage/refresh`](#op-refreshsubscriptionusage) | Probe subscription usage now |
+| GET | [`/runtime/subscription-usage/history`](#op-getsubscriptionusagehistory) | Subscription usage history |
 
 <a id="op-getruntime"></a>
 
@@ -11824,6 +11827,157 @@ Example 200 (`application/json`):
 
 ```json
 {}
+```
+
+<a id="op-getsubscriptionusage"></a>
+
+### GET `/runtime/subscription-usage`
+
+**Quota left on signed-in subscriptions**
+
+One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.
+
+Operation `getSubscriptionUsage` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SubscriptionUsageState](#schema-subscriptionusagestate) | Current state |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "snapshots": [
+    {
+      "provider": "claude-subscription",
+      "status": "ok",
+      "plan": "string",
+      "windows": [
+        {
+          "key": "string",
+          "label": "string",
+          "usedPercent": 0,
+          "resetsAt": 0,
+          "limited": true,
+          "observedAt": 0
+        }
+      ],
+      "credits": {
+        "balance": 0,
+        "hasCredits": true
+      },
+      "observedAt": 0,
+      "error": "string",
+      "errorAt": 0
+    }
+  ]
+}
+```
+
+<a id="op-refreshsubscriptionusage"></a>
+
+### POST `/runtime/subscription-usage/refresh`
+
+**Probe subscription usage now**
+
+Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.
+
+Operation `refreshSubscriptionUsage` · bearer token
+
+**Request body** (optional): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `auto` | boolean |  | Not a user click: honour the providerChecksEnabled opt-out. Default false. |
+
+```json
+{
+  "auto": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SubscriptionUsageState](#schema-subscriptionusagestate) | Current state |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "snapshots": [
+    {
+      "provider": "claude-subscription",
+      "status": "ok",
+      "plan": "string",
+      "windows": [
+        {
+          "key": "string",
+          "label": "string",
+          "usedPercent": 0,
+          "resetsAt": 0,
+          "limited": true,
+          "observedAt": 0
+        }
+      ],
+      "credits": {
+        "balance": 0,
+        "hasCredits": true
+      },
+      "observedAt": 0,
+      "error": "string",
+      "errorAt": 0
+    }
+  ]
+}
+```
+
+<a id="op-getsubscriptionusagehistory"></a>
+
+### GET `/runtime/subscription-usage/history`
+
+**Subscription usage history**
+
+Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.
+
+Operation `getSubscriptionUsageHistory` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `since` | query | number |  | Only samples at or after this epoch ms. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SubscriptionUsageHistoryResponse](#schema-subscriptionusagehistoryresponse) | Samples, oldest first |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "samples": [
+    {
+      "t": 0,
+      "provider": "claude-subscription",
+      "window": "string",
+      "usedPercent": 0
+    }
+  ]
+}
 ```
 
 <a id="tag-network"></a>
@@ -23439,7 +23593,7 @@ Data of the `stream.gap` control frame on a client session stream: frames were l
 
 ### ClientFrame
 
-One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes "[Circular]". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).
+One client-session frame. `executor`: `{agentId, filePath, loop?, event, stripped?, turnId?, absorbedTurnIds?}` with `event` a raw executor event `{type, payload, timestamp, loop?}`. `turn`: `{agentId, filePath, loop?, outcome: discarded, turnIds, unansweredTurnIds}`, to every session. `host`: `{agentId, filePath, type, payload, timestamp}`. `umbilical` (sessions opened with `umbilical: true`): `{agentId, event}` with `event` the envelope GET /events carries; never `turn.delta`. `push`: `{topic, agentId, filePath, payload}`; topics: daemon_orphan_hold, config_changed, inbox, workspace_data, approvals, mesh, inter_agent_message, templates, tracked_dirs, file_renamed, agent_path_changed, autostart, autostart_overflow, adf_file_created, mcp_install, adapter_install, sandbox_install, mcp_status, adapter_status, compute_phase, browser_session, subscription_usage (payloads: src/main/daemon/client-sessions.ts ClientPushPayloads). JSON rules: a key whose value is undefined is omitted (treat missing as undefined), BigInt becomes its decimal string, a reference cycle becomes "[Circular]". A session not focused on an agent gets that agent's executor frames of the background whitelist (state_changed, ask_request, tool_approval_request, response_metadata, error, turn_complete, adf_file_created) in full, `tool_call_start` with its input fields cut to 2048 characters, `tool_call_result` stripped, every other type as a stub; `inbox` and `inter_agent_message` pushes arrive as stubs (counts; no content).
 
 | Field | Type | Required | Description |
 |---|---|---|---|
@@ -24003,3 +24157,59 @@ Type: object \| object \| object
 | `agentId` | string | yes | Agent id |
 | `success` | boolean | yes |  |
 | `revisions` | map<string, integer> |  | The revision each written path has now |
+
+<a id="schema-subscriptionproviderid"></a>
+
+### SubscriptionProviderId
+
+Type: `"claude-subscription"` \| `"chatgpt-subscription"` \| `"grok-subscription"`
+
+<a id="schema-subscriptionusagewindow"></a>
+
+### SubscriptionUsageWindow
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `key` | string | yes | Stable within a provider: five_hour, seven_day, seven_day_opus, … (Claude); primary, secondary (ChatGPT); requests, tokens (Grok). |
+| `label` | string | yes |  |
+| `usedPercent` | number |  |  |
+| `resetsAt` | number |  | Epoch ms. |
+| `limited` | boolean |  | The provider is refusing requests on this window. |
+| `observedAt` | number | yes | Epoch ms. |
+
+<a id="schema-subscriptionusagesnapshot"></a>
+
+### SubscriptionUsageSnapshot
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `provider` | [SubscriptionProviderId](#schema-subscriptionproviderid) | yes |  |
+| `status` | `"ok"` \| `"stale"` \| `"unavailable"` \| `"error"` \| `"signed_out"` | yes |  |
+| `plan` | string |  |  |
+| `windows` | [SubscriptionUsageWindow](#schema-subscriptionusagewindow)[] | yes |  |
+| `credits` | object |  |  |
+| `credits.balance` | number |  |  |
+| `credits.hasCredits` | boolean |  |  |
+| `observedAt` | number |  |  |
+| `error` | string |  |  |
+| `errorAt` | number |  |  |
+
+<a id="schema-subscriptionusagestate"></a>
+
+### SubscriptionUsageState
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `snapshots` | [SubscriptionUsageSnapshot](#schema-subscriptionusagesnapshot)[] | yes |  |
+
+<a id="schema-subscriptionusagehistoryresponse"></a>
+
+### SubscriptionUsageHistoryResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `samples` | object[] | yes |  |
+| `samples[].t` | number | yes |  |
+| `samples[].provider` | [SubscriptionProviderId](#schema-subscriptionproviderid) | yes |  |
+| `samples[].window` | string | yes |  |
+| `samples[].usedPercent` | number | yes |  |

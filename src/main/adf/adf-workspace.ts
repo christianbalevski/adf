@@ -10,6 +10,7 @@ import { assertSafeBrotliRuntime } from '../utils/brotli-runtime-guard'
 import { promisify } from 'util'
 import { createPrivateKey, createPublicKey } from 'crypto'
 import type { ContentBlock } from '@shared/types/provider.types'
+import type { WorkspaceDataScope } from '@shared/types/ipc.types'
 import type {
   AgentConfig,
   AlfAgentCard,
@@ -218,14 +219,7 @@ export interface WorkspaceFileChange {
   } | null
 }
 
-/**
- * Coarse-grained "this data changed" signal, emitted after inbox/outbox rows,
- * SQL tables or workspace files (create, write, delete, rename) mutate. Owned by the workspace (like WorkspaceFileChange) so
- * every write path — tools, lambdas, mesh delivery, adapters, Studio IPC —
- * funnels through one reliable notification point. Consumers refetch; no
- * payload is carried.
- */
-export type WorkspaceDataScope = 'inbox' | 'outbox' | 'tables' | 'files'
+export type { WorkspaceDataScope }
 
 export interface EnvelopeRecipients {
   ownerDid: string
@@ -319,6 +313,8 @@ export class AdfWorkspace {
   private envelopeDeks = new Map<EnvelopeName, Buffer>()
   private onFileChangeCallback: ((change: WorkspaceFileChange) => void) | null = null
   private onDataChangeCallback: ((scope: WorkspaceDataScope) => void) | null = null
+  /** Abort handles of the task runs in flight, by task id — see startTaskRun. Memory only. */
+  private readonly taskRuns = new Map<string, AbortController>()
   /** Reindexes skills/*\/SKILL.md → skills-registry.json off the write choke point. */
   private skillIndexer: SkillIndexer
   private onSkillRegistryChangedCallback: ((json: string, result: SkillIndexResult) => void) | null = null
@@ -2520,18 +2516,76 @@ export class AdfWorkspace {
 
   insertTask(id: string, tool: string, args: string, origin?: string, requiresAuthorization?: boolean, executorManaged?: boolean, approvalMeta?: string): void {
     this.db.insertTask(id, tool, args, origin, requiresAuthorization, executorManaged, approvalMeta, this.boundLoop)
+    this.emitDataChange('tasks')
   }
 
   getTask(id: string): TaskEntry | null {
     return this.db.getTask(id)
   }
 
-  updateTaskStatus(id: string, status: TaskStatus, result?: string, error?: string): void {
-    this.db.updateTaskStatus(id, status, result, error)
+  /** False when nothing changed: the task does not exist or was cancelled (cancelled is final). */
+  updateTaskStatus(id: string, status: TaskStatus, result?: string, error?: string): boolean {
+    const changed = this.db.updateTaskStatus(id, status, result, error)
+    if (changed) this.emitDataChange('tasks')
+    return changed
+  }
+
+  /**
+   * Mark a task running and return the signal that cancelTask aborts. Null when
+   * the task cannot run (missing or cancelled). Pair with endTaskRun.
+   */
+  startTaskRun(id: string): AbortSignal | null {
+    if (!this.updateTaskStatus(id, 'running')) return null
+    const controller = new AbortController()
+    this.getRoot().taskRuns.set(id, controller)
+    return controller.signal
+  }
+
+  /**
+   * Forget the run that startTaskRun returned `signal` for. A newer run of the
+   * same task is kept. False when the run was no longer tracked (abortTaskRuns
+   * dropped it).
+   */
+  endTaskRun(id: string, signal: AbortSignal): boolean {
+    const runs = this.getRoot().taskRuns
+    if (runs.get(id)?.signal !== signal) return false
+    runs.delete(id)
+    return true
+  }
+
+  /**
+   * Stop every task run in flight: the agent is stopping. Each row becomes
+   * `cancelled` (final, so the run's late write is refused); runTask reports
+   * nothing for them, since nothing is left to wake.
+   */
+  abortTaskRuns(): void {
+    const runs = this.getRoot().taskRuns
+    const inFlight = [...runs]
+    runs.clear()
+    for (const [id, run] of inFlight) {
+      this.updateTaskStatus(id, 'cancelled', undefined, 'Agent stopped before the task finished')
+      run.abort()
+    }
+  }
+
+  /**
+   * Cancel a pending task, or a running one this workspace can stop: the row
+   * becomes `cancelled` (final) and its run is aborted. False when there was
+   * nothing it can cancel: unknown id, finished, awaiting approval, or running
+   * with no tracked run (an approved call running inside a turn).
+   */
+  cancelTask(id: string): boolean {
+    const status = this.getTask(id)?.status
+    const run = this.getRoot().taskRuns.get(id)
+    if (status !== 'pending' && !(status === 'running' && run)) return false
+    this.updateTaskStatus(id, 'cancelled')
+    run?.abort()
+    return true
   }
 
   setTaskRequiresAuthorization(id: string, value: true): void {
     this.db.setTaskRequiresAuthorization(id, value)
+    this.emitDataChange('tasks')
   }
 
   setTaskExecutorManaged(id: string, value: true): void {
@@ -2544,6 +2598,7 @@ export class AdfWorkspace {
 
   updateTaskArgs(id: string, args: string): void {
     this.db.updateTaskArgs(id, args)
+    this.emitDataChange('tasks')
   }
 
   getTasksByStatus(status: TaskStatus): TaskEntry[] {
@@ -2723,6 +2778,7 @@ export class AdfWorkspace {
     // skill indexer; it must never close the file (or dispose the indexer) out
     // from under the agent or the other loops. The root owns the lifecycle.
     if (this.loopHost) return
+    this.abortTaskRuns()
     this.skillIndexer.dispose()
     if (this.autoCheckpointStartTimer) {
       clearTimeout(this.autoCheckpointStartTimer)

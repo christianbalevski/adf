@@ -136,9 +136,17 @@ function mergeUsage(target: TokenUsageData, delta: TokenUsageData): TokenUsageDa
  * what the Usage chart and the home tile display. Rows written by versions
  * before this were keyed by the UTC date; they carry no time-of-day, so
  * nothing can re-bucket them — they stay where they are.
+ *
+ * Backup: at most once per BACKUP_INTERVAL_MS a flush first copies the
+ * ledger it just read (the last good one) to `token-usage.json.bak`. When the main file is unreadable (quarantined), the
+ * ledger resumes from the backup instead of starting empty, so a damaged file
+ * costs at most one interval of history, not all of it.
  */
 export class TokenUsageService {
   private filePath: string
+  private backupPath: string
+  /** When this process last wrote the backup (0 = not yet). */
+  private lastBackupAt = 0
   private data: TokenUsageData = {}
   /** Recorded since the last successful flush; folded onto disk on save. */
   private pending: TokenUsageData = {}
@@ -152,10 +160,12 @@ export class TokenUsageService {
    *  writing leaves the in-memory view to the synchronous one. */
   private saveGeneration = 0
   private static readonly SAVE_DEBOUNCE_MS = 5000
+  private static readonly BACKUP_INTERVAL_MS = 60 * 60 * 1000
 
   constructor() {
     const userDataPath = getUserDataPath()
     this.filePath = join(userDataPath, 'token-usage.json')
+    this.backupPath = `${this.filePath}.bak`
     this.data = this.readDisk() ?? {}
   }
 
@@ -167,14 +177,46 @@ export class TokenUsageService {
    */
   private readDisk(): TokenUsageData | null {
     const result = readJsonOrQuarantine<unknown>(this.filePath)
-    if (result.quarantinedTo) {
-      console.error(`[TokenUsage] token-usage.json was unreadable; moved aside to ${result.quarantinedTo}`)
-    }
     if (result.corruptUnpreserved) {
       console.error('[TokenUsage] token-usage.json is corrupt and could not be moved aside; leaving it untouched')
       return null
     }
+    if (result.quarantinedTo) {
+      console.error(`[TokenUsage] token-usage.json was unreadable; moved aside to ${result.quarantinedTo}`)
+      const backup = readJsonOrQuarantine<unknown>(this.backupPath)
+      if (backup.data !== null) {
+        // Put the backup back in place so every later read — this process's
+        // flushes and the other process's — merges onto it, not onto nothing.
+        const restored = sanitizeUsageData(backup.data)
+        try {
+          writeJsonAtomic(this.filePath, restored)
+          console.error('[TokenUsage] Restored token-usage.json from token-usage.json.bak')
+        } catch (err) {
+          console.error('[TokenUsage] Failed to restore token-usage.json from token-usage.json.bak:', err)
+        }
+        return restored
+      }
+    }
     return sanitizeUsageData(result.data)
+  }
+
+  /**
+   * The backup to write before this save, or null when none is due. The
+   * backup is the last good ledger read from disk (before this save's delta),
+   * so restoring it can never count a delta twice. A clear always empties an
+   * existing backup, so a later damaged main file cannot resurrect cleared
+   * history; an empty ledger is never backed up (nothing to lose).
+   */
+  private backupDue(base: TokenUsageData, clearing: boolean): TokenUsageData | null {
+    if (clearing) return existsSync(this.backupPath) ? {} : null
+    if (Object.keys(base).length === 0) return null
+    if (Date.now() - this.lastBackupAt < TokenUsageService.BACKUP_INTERVAL_MS) return null
+    return structuredClone(base)
+  }
+
+  /** Best effort: a failed backup never fails the save. */
+  private backupFailed(err: unknown): void {
+    console.error('[TokenUsage] Failed to write token-usage.json.bak:', err)
   }
 
   /**
@@ -205,7 +247,7 @@ export class TokenUsageService {
    * Returns null when the delta must not be written (corrupt file that could
    * not be preserved, or the read itself failed) — `pending` is then untouched.
    */
-  private prepareSave(): { merged: TokenUsageData; delta: TokenUsageData; clearing: boolean } | null {
+  private prepareSave(): { merged: TokenUsageData; delta: TokenUsageData; clearing: boolean; backup: TokenUsageData | null } | null {
     try {
       const dir = dirname(this.filePath)
       if (!existsSync(dir)) {
@@ -223,7 +265,8 @@ export class TokenUsageService {
       const clearing = this.pendingClear
       this.pending = {}
       this.pendingClear = false
-      return { merged: mergeUsage(base, delta), delta, clearing }
+      const backup = this.backupDue(base, clearing)
+      return { merged: mergeUsage(base, delta), delta, clearing, backup }
     } catch (err) {
       console.error('[TokenUsage] Failed to save token usage data:', err)
       return null
@@ -254,6 +297,14 @@ export class TokenUsageService {
     this.saveGeneration++
     const prepared = this.prepareSave()
     if (!prepared) return false
+    if (prepared.backup) {
+      try {
+        writeJsonAtomic(this.backupPath, prepared.backup)
+        this.lastBackupAt = Date.now()
+      } catch (err) {
+        this.backupFailed(err)
+      }
+    }
     try {
       writeJsonAtomic(this.filePath, prepared.merged)
     } catch (err) {
@@ -285,6 +336,14 @@ export class TokenUsageService {
     const generation = this.saveGeneration
     const prepared = this.prepareSave()
     if (!prepared) return false
+    if (prepared.backup) {
+      try {
+        await writeJsonAtomicAsync(this.backupPath, prepared.backup)
+        this.lastBackupAt = Date.now()
+      } catch (err) {
+        this.backupFailed(err)
+      }
+    }
     try {
       await writeJsonAtomicAsync(this.filePath, prepared.merged)
     } catch (err) {

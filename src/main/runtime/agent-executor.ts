@@ -56,6 +56,7 @@ import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSiz
 import { McpTool } from '../tools/mcp-tool'
 import { AskInputSchema } from '../tools/built-in/ask.tool'
 import { LOOP_RESET_TOOLS, loopResetRefusal, offersAsync } from '../tools/built-in/loop-reset-tools'
+import { runTask, type TaskCompletedFn } from './task-run'
 import { formatAskAnswers, normalizeAskAnswers, summarizeAsk, type AskAnswer, type AskQuestion } from '../../shared/utils/ask-form'
 import {
   callLlmWithMetadata,
@@ -730,7 +731,7 @@ export class AgentExecutor extends EventEmitter {
   // Task lifecycle callbacks (set by IPC layer after construction)
   onToolCallIntercepted?: (tool: string, args: string, taskId: string, origin: string, systemScopeHandled?: boolean) => void
   onTaskCreated?: (task: import('../../shared/types/adf-v02.types').TaskEntry) => void
-  onTaskCompleted?: (taskId: string, tool: string, status: string, result?: string, error?: string, sideEffects?: { endTurn?: boolean }) => void
+  onTaskCompleted?: TaskCompletedFn
   onLlmCall?: (data: LlmCallEventData) => void
 
   /** Fires at a real turn boundary — no turn running and none already claimed
@@ -4693,8 +4694,8 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Execute a tool asynchronously (fire-and-forget).
-   * Creates a task, runs the tool in background, updates task status on completion.
+   * Execute a tool asynchronously (fire-and-forget) as task `taskId`: runs the
+   * tool in the background through runTask, which settles the task.
    */
   private executeAsyncTool(
     taskId: string,
@@ -4704,102 +4705,86 @@ export class AgentExecutor extends EventEmitter {
     options?: { suppressStarted?: boolean }
   ): void {
     const workspace = this.session.getWorkspace()
-    const doExecute = async () => {
-      try {
-        workspace.updateTaskStatus(taskId, 'running')
-        const preWriteContent = this.snapshotBeforeWrite(toolName, input)
-        // Thread explicit provenance: this runs OUTSIDE any withSource scope
-        // (resumed from an approval callback), so the registry stamps agentId +
-        // the tool_use id from here. suppressStarted avoids a second tool.started
-        // when the enqueue site already emitted one (async-restricted path).
-        const rawResult = await this.toolRegistry.executeTool(toolName, input, workspace, {
-          agentId: this.config.id,
-          ...(toolUseId ? { toolUseId } : {}),
-          ...(options?.suppressStarted ? { suppressStarted: true } : {}),
-        })
+    runTask(workspace, taskId, toolName, (...a) => this.onTaskCompleted?.(...a), async (signal) => {
+      const preWriteContent = this.snapshotBeforeWrite(toolName, input)
+      // Thread explicit provenance: this runs OUTSIDE any withSource scope
+      // (resumed from an approval callback), so the registry stamps agentId +
+      // the tool_use id from here. suppressStarted avoids a second tool.started
+      // when the enqueue site already emitted one (async-restricted path).
+      const rawResult = await this.toolRegistry.executeTool(toolName, input, workspace, {
+        agentId: this.config.id,
+        ...(toolUseId ? { toolUseId } : {}),
+        ...(options?.suppressStarted ? { suppressStarted: true } : {}),
+        signal,
+        taskId,
+      })
 
-        // Protection denial → convert the task to a pending override approval
-        // instead of failing. Non-blocking: the loop already returned the task
-        // reference; approval re-runs the call with a one-time bypass.
-        if (rawResult.isError && rawResult.protection) {
-          const p = rawResult.protection
-          // A4 (security F2): a side loop has no HIL approval channel, so parking
-          // a pending_approval task here would leave an override request no one
-          // can see or answer — and would make protection denials in inner loops
-          // a working override channel via the hub. Fail closed (auto-deny),
-          // mirroring the sync path and adf-call-handler.ts:401.
-          if (this.isSideLoop()) {
-            const msg = `"${toolName}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`
-            workspace.updateTaskStatus(taskId, 'denied', undefined, msg)
-            this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, msg)
-            return
-          }
-          const meta = this.buildApprovalMeta(toolName, rawResult.protection)
-          // The row now asks for a protection override, not the original
-          // restricted-tool approval: rewrite its durable metadata (and require
-          // authorized resolvers) BEFORE it becomes pending again, so readers
-          // of the row (on_task_create/remote-approval lambdas, the tasks
-          // panel) never see a protection override labelled 'restricted'.
-          workspace.setTaskApprovalMeta(taskId, JSON.stringify({ reason: meta.reason, protection: meta.protection }))
-          workspace.setTaskRequiresAuthorization(taskId, true)
-          workspace.updateTaskStatus(taskId, 'pending_approval')
-          workspace.setTaskExecutorManaged(taskId, true)
-          this.besideTurnHilTasks.add(taskId)
-          this.trackPendingHilTask(taskId, {
-            resolve: (r) => {
-              this.endTaskApproval(taskId)
-              if (r.approved) {
-                const finalInput = {
-                  ...((r.modifiedArgs ?? input) as Record<string, unknown>),
-                  _protection_override: true
-                }
-                // Re-run with a one-time bypass. Keep the tool_use id so the
-                // authoritative tool.completed still correlates; the re-run
-                // emits its own tool.started (the denied attempt already paired).
-                this.executeAsyncTool(taskId, toolName, finalInput, toolUseId)
-              } else {
-                const fb = r.feedback?.trim() || 'Rejected'
-                workspace.updateTaskStatus(taskId, 'denied', undefined, fb)
-                this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, fb)
+      // Protection denial → convert the task to a pending override approval
+      // instead of failing. Non-blocking: the loop already returned the task
+      // reference; approval re-runs the call with a one-time bypass.
+      if (rawResult.isError && rawResult.protection) {
+        const p = rawResult.protection
+        // A4 (security F2): a side loop has no HIL approval channel, so parking
+        // a pending_approval task here would leave an override request no one
+        // can see or answer — and would make protection denials in inner loops
+        // a working override channel via the hub. Fail closed (auto-deny),
+        // mirroring the sync path and adf-call-handler.ts:401.
+        if (this.isSideLoop()) {
+          const msg = `"${toolName}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`
+          if (workspace.updateTaskStatus(taskId, 'denied', undefined, msg)) this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, msg)
+          return null
+        }
+        const meta = this.buildApprovalMeta(toolName, rawResult.protection)
+        // The row now asks for a protection override, not the original
+        // restricted-tool approval: rewrite its durable metadata (and require
+        // authorized resolvers) BEFORE it becomes pending again, so readers
+        // of the row (on_task_create/remote-approval lambdas, the tasks
+        // panel) never see a protection override labelled 'restricted'.
+        workspace.setTaskApprovalMeta(taskId, JSON.stringify({ reason: meta.reason, protection: meta.protection }))
+        workspace.setTaskRequiresAuthorization(taskId, true)
+        workspace.updateTaskStatus(taskId, 'pending_approval')
+        workspace.setTaskExecutorManaged(taskId, true)
+        this.besideTurnHilTasks.add(taskId)
+        this.trackPendingHilTask(taskId, {
+          resolve: (r) => {
+            this.endTaskApproval(taskId)
+            if (r.approved) {
+              const finalInput = {
+                ...((r.modifiedArgs ?? input) as Record<string, unknown>),
+                _protection_override: true
               }
-            },
-            name: toolName,
-            input,
-            meta,
-            reportsCompletion: true,
-          })
-          this.emitEvent({
-            type: 'tool_approval_request',
-            payload: { requestId: taskId, taskId, name: toolName, input, ...meta },
-            timestamp: Date.now()
-          })
-          this.emitRuntimeEvent('hil.requested', {
-            request_id: taskId, task_id: taskId, tool: toolName,
-            reason: meta.reason, input: stripInternalToolFlags(input),
-            ...alwaysApproveEventFields(meta),
-          })
-          return
-        }
-
-        const { result } = this.shapeToolResult(toolName, rawResult)
-        this.emitToolResultEffects(toolName, input, result, preWriteContent)
-        if (result.isError) {
-          workspace.updateTaskStatus(taskId, 'failed', undefined, result.content)
-          this.onTaskCompleted?.(taskId, toolName, 'failed', undefined, result.content)
-        } else {
-          workspace.updateTaskStatus(taskId, 'completed', result.content)
-          // Same side-effect contract as AdfCallHandler's async path: a
-          // turn-control tool (sys_set_state) run as a task still applies.
-          this.onTaskCompleted?.(taskId, toolName, 'completed', result.content, undefined, result.endTurn ? { endTurn: true } : undefined)
-        }
-      } catch (err) {
-        const errorMsg = err instanceof Error ? err.message : String(err)
-        workspace.updateTaskStatus(taskId, 'failed', undefined, errorMsg)
-        this.onTaskCompleted?.(taskId, toolName, 'failed', undefined, errorMsg)
+              // Re-run with a one-time bypass. Keep the tool_use id so the
+              // authoritative tool.completed still correlates; the re-run
+              // emits its own tool.started (the denied attempt already paired).
+              this.executeAsyncTool(taskId, toolName, finalInput, toolUseId)
+            } else {
+              const fb = r.feedback?.trim() || 'Rejected'
+              workspace.updateTaskStatus(taskId, 'denied', undefined, fb)
+              this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, fb)
+            }
+          },
+          name: toolName,
+          input,
+          meta,
+          reportsCompletion: true,
+        })
+        this.emitEvent({
+          type: 'tool_approval_request',
+          payload: { requestId: taskId, taskId, name: toolName, input, ...meta },
+          timestamp: Date.now()
+        })
+        this.emitRuntimeEvent('hil.requested', {
+          request_id: taskId, task_id: taskId, tool: toolName,
+          reason: meta.reason, input: stripInternalToolFlags(input),
+          ...alwaysApproveEventFields(meta),
+        })
+        return null
       }
-    }
-    // Fire and forget — don't await
-    doExecute().catch(err => {
+
+      const { result } = this.shapeToolResult(toolName, rawResult)
+      this.emitToolResultEffects(toolName, input, result, preWriteContent)
+      return result
+    }).catch(err => {
       console.error(`[AgentExecutor] Async tool ${toolName} (task ${taskId}) unhandled error:`, err)
     })
   }

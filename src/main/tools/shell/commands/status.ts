@@ -54,20 +54,22 @@ const psHandler: CommandHandler = {
 const killHandler: CommandHandler = {
   name: 'kill',
   summary: 'Cancel a task',
-  helpText: 'kill <task_id>       Cancel a pending/running task',
+  helpText: 'kill <task_id>       Cancel a pending/running task and stop its run',
   category: 'process',
-  resolvedTools: ['db_execute'],
+  // Your own tasks: cancelling one needs no tool beyond the shell.
+  resolvedTools: [],
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
     if (ctx.args.length === 0) return err('kill: missing task ID')
     const taskId = ctx.args[0]
-
-    const result = await ctx.toolRegistry.executeTool('db_execute', {
-      sql: `UPDATE adf_tasks SET status = 'cancelled' WHERE id = ? AND status IN ('pending', 'running')`,
-      params: [taskId]
-    }, ctx.workspace)
-    if (result.isError) return err(`kill: ${result.content}`)
-    return ok(`Task ${taskId} cancelled.`)
+    if (ctx.workspace.cancelTask(taskId)) return ok(`Task ${taskId} cancelled.`)
+    const status = ctx.workspace.getTask(taskId)?.status
+    if (!status) return err(`kill: no task ${taskId} (list tasks with ps)`)
+    if (status === 'running') return err(`kill: task ${taskId} runs inside a turn; interrupt the turn to stop it`)
+    if (status === 'pending_approval') {
+      return err(`kill: task ${taskId} is awaiting approval; withdraw it from code with adf.task_resolve({ task_id: '${taskId}', action: 'deny' })`)
+    }
+    return err(`kill: task ${taskId} is ${status}; only pending or running tasks can be cancelled`)
   }
 }
 

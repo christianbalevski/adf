@@ -15,8 +15,10 @@ export type ToolCategory =
 
 /** Per-call context the registry hands a tool. */
 export interface ToolCallContext {
-  /** Aborted when the owner interrupts the turn that made the call. A long-running tool stops on it. */
+  /** Aborted when the owner interrupts the turn that made the call, or cancels its task. A long-running tool stops on it. */
   signal?: AbortSignal
+  /** Set when the call runs as an `adf_tasks` row (`_async`); inherited by nested calls. */
+  taskId?: string
 }
 
 export interface Tool {

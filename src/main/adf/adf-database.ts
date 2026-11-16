@@ -3485,7 +3485,8 @@ export class AdfDatabase {
       'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE id = ?'
     )
     this.stmts.updateTaskStatus = this.db.prepare(
-      'UPDATE adf_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ?'
+      // Cancelled is final: a run that settles after a cancel must not revive the row.
+      "UPDATE adf_tasks SET status = ?, result = ?, error = ?, completed_at = ? WHERE id = ? AND status != 'cancelled'"
     )
     this.stmts.setTaskRequiresAuthorization = this.db.prepare(
       'UPDATE adf_tasks SET requires_authorization = 1 WHERE id = ?'
@@ -4850,9 +4851,10 @@ export class AdfDatabase {
     return this.mapTaskRow(row)
   }
 
-  updateTaskStatus(id: string, status: TaskStatus, result?: string, error?: string): void {
+  /** False when nothing changed: the task does not exist or was cancelled (cancelled is final). */
+  updateTaskStatus(id: string, status: TaskStatus, result?: string, error?: string): boolean {
     const completedAt = ['completed', 'failed', 'denied', 'cancelled'].includes(status) ? Date.now() : null
-    this.stmts.updateTaskStatus!.run(status, result ?? null, error ?? null, completedAt, id)
+    return this.stmts.updateTaskStatus!.run(status, result ?? null, error ?? null, completedAt, id).changes > 0
   }
 
   setTaskRequiresAuthorization(id: string, _value: true): void {

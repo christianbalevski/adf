@@ -1,5 +1,7 @@
 import { IMAGE_ONLY_MEDIA } from '../media-capabilities'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { recordSubscriptionUsage } from '../subscription-usage'
+import { fromGrokHeaders } from '../subscription-usage/adapters'
 
 // OAuth access tokens are accepted by the normal xAI API (api:access scope) —
 // same base URL as API-key usage. Never send the OAuth bearer anywhere else.
@@ -40,6 +42,8 @@ export function createGrokSubscriptionProvider(authManager: {
     }
 
     const response = await globalThis.fetch(input, { ...patchedInit, headers })
+    // xAI's x-ratelimit-* headers, when it sends them. Never throws.
+    recordSubscriptionUsage('grok-subscription', () => fromGrokHeaders(response.headers, Date.now()))
 
     if (!response.ok) {
       try {

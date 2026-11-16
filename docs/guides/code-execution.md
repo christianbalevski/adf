@@ -14,7 +14,7 @@ All code in ADF — whether run by `sys_code`, `sys_lambda`, trigger lambdas, ti
 
 | Context | Entry Point | State Persistence | Authorization | Receives |
 |---------|------------|-------------------|---------------|----------|
-| `sys_code` | LLM calls the tool | Yes — same worker per agent, variables carry over | Always unauthorized | Raw code string |
+| `sys_code` | LLM calls the tool | Yes — same worker per agent, variables carry over (not with `_async`: a task runs in a sandbox of its own, so `clear_state: false` is refused) | Always unauthorized | Raw code string |
 | `sys_lambda` | LLM calls the tool | No — fresh VM context per call | HIL if target is authorized; otherwise unauthorized | `args` object via destructuring |
 | Trigger lambda | System scope trigger fires | No — fresh VM context per call (unless `warm: true`) | Based on file's `authorized` flag | `event` object ([details](triggers.md#lambda-event-object)) |
 | Timer lambda | `on_timer` system scope fires | No — fresh VM context per call (unless `warm: true`) | Based on file's `authorized` flag | `event` object ([details](timers.md#timer-lambda-execution)) |

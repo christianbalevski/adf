@@ -33,7 +33,13 @@ function makeExecutor(executeTool = vi.fn()) {
     updateTaskStatus: (id: string, status: string, result?: string, error?: string) => {
       writes.push([id, `status:${status}`])
       tasks.set(id, { ...tasks.get(id), status, result, error })
+      return true
     },
+    startTaskRun: (id: string) => {
+      workspace.updateTaskStatus(id, 'running')
+      return new AbortController().signal
+    },
+    endTaskRun: () => {},
     setTaskApprovalMeta: (id: string, meta: string) => {
       writes.push([id, 'meta'])
       tasks.set(id, { ...tasks.get(id)!, approval_meta: meta })

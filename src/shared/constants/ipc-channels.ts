@@ -164,6 +164,11 @@ export const IPC = {
   TOKEN_USAGE_GET: 'adf:token-usage:get',
   TOKEN_USAGE_CLEAR: 'adf:token-usage:clear',
   TOKEN_USAGE_EXPORT: 'adf:token-usage:export',
+  // Subscription usage (quota left on signed-in subscriptions)
+  SUBSCRIPTION_USAGE_GET: 'adf:subscription-usage:get',
+  SUBSCRIPTION_USAGE_REFRESH: 'adf:subscription-usage:refresh',
+  SUBSCRIPTION_USAGE_HISTORY: 'adf:subscription-usage:history',
+  SUBSCRIPTION_USAGE_CHANGED: 'adf:subscription-usage:changed',
   TOKEN_COUNT: 'adf:token:count',
   TOKEN_COUNT_BATCH: 'adf:token:count-batch',
   CONTEXT_BREAKDOWN_GET: 'adf:context:breakdown:get',
@@ -218,8 +223,8 @@ export const IPC = {
   // Inbox push (main -> renderer)
   INBOX_UPDATED: 'adf:inbox:updated',
 
-  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files of the
-  // open file mutated; payload is { scope } and consumers refetch.
+  // Workspace data-change push (main -> renderer): data of the open file mutated;
+  // payload is { scope: WorkspaceDataScope } and consumers refetch.
   WORKSPACE_DATA_CHANGED: 'adf:workspace:data-changed',
 
   // MCP

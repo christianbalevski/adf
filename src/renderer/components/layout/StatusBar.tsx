@@ -9,6 +9,7 @@ import { useAppStore } from '../../stores/app.store'
 import { useHomeRuntime } from '../home/home-runtime'
 import { Tooltip } from '../common/Tooltip'
 import { ContextMenu } from '../common/ContextMenu'
+import { MiddleTruncate } from '../common/MiddleTruncate'
 import { IconButton } from '../ui/IconButton'
 import { Button } from '../ui'
 import { ReleaseNotesDialog } from '../common/ReleaseNotesDialog'
@@ -17,6 +18,7 @@ import { RemoteMark } from '../common/RemoteMark'
 import { LOCAL_LABEL } from '../../../shared/runtime-name'
 import { loopColor } from '../../utils/loop-color'
 import { ContextBreakdownModal, formatTokens, resolveLoopThreshold } from './ContextBreakdownModal'
+import { SubscriptionPill } from './SubscriptionPill'
 import type { AppUpdateState } from '../../../shared/types/ipc.types'
 import { CONNECTION_STATE_LABELS, type ConnectionCurrent, type RuntimeView } from '../../../shared/types/connection.types'
 import { runtimeIndicator, useCurrentConnection } from '../../stores/connection.store'
@@ -123,6 +125,24 @@ export async function killAll(runtimes: readonly RuntimeView[]): Promise<string>
   return killResultLabel({ success: !partial, stoppedAgents: counted ? stopped : undefined })
 }
 
+/*
+ * The bar is a size container. As it narrows, labels give way to their icons
+ * in two steps, so the agent's state and Kill stay on screen at any width:
+ * below NARROW, Saved, Logs and Tasks show only their icons and the version
+ * goes; below TIGHT, the model name, the gauge's bar and the words of Mesh and
+ * the server name go too (the gauge's tooltip names the model).
+ */
+const NARROW_HIDE = '@max-[900px]:hidden'
+const NARROW_ONLY = 'hidden @max-[900px]:block'
+const TIGHT_HIDE = '@max-[640px]:hidden'
+
+/** Mesh's label: "Mesh (n)" / "Mesh off", the count alone (or nothing) when tight. */
+function MeshLabel({ enabled, participating }: { enabled: boolean; participating: number }) {
+  return enabled
+    ? <><span className={TIGHT_HIDE}>Mesh (</span>{participating}<span className={TIGHT_HIDE}>)</span></>
+    : <span className={TIGHT_HIDE}>Mesh off</span>
+}
+
 function MeshIcon() {
   return (
     <svg
@@ -155,6 +175,8 @@ export function StatusBar() {
   const tokenUsage = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenUsage)
   const tokenEstimate = useAgentStore((s) => selectLoopSlice(s, s.viewedLoop).tokenEstimate)
   const filePath = useDocumentStore((s) => s.filePath)
+  // The open agent's runtime: its subscriptions are the ones its calls draw on.
+  const openRuntimeId = useDocumentStore((s) => (isAgentWindow ? windowRuntime : s.runtimeId || LOCAL_RUNTIME))
   const [breakdownOpen, setBreakdownOpen] = useState(false)
   // Kill's result line, shown beside it for a few seconds.
   const [killResult, setKillResult] = useState<string | null>(null)
@@ -229,31 +251,40 @@ export function StatusBar() {
   }
 
   return (
-    <div data-compact-status={compact || undefined} className={compact ? 'relative min-w-0 h-11 shrink-0 px-1 gap-1 bg-surface-0 border-t border-hairline flex items-center text-xs text-[var(--adf-ui-text-subtle)]' : 'h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-[var(--adf-ui-text-subtle)]'}>
+    <div data-compact-status={compact || undefined} className={compact ? 'relative min-w-0 h-11 shrink-0 px-1 gap-1 bg-surface-0 border-t border-hairline flex items-center text-xs text-[var(--adf-ui-text-subtle)]' : '@container h-7 bg-surface-0 border-t border-hairline flex items-center px-3 gap-4 text-xs text-[var(--adf-ui-text-subtle)]'}>
       {/* Everything left of the version describes the open agent's session; its
           name and state live in the titlebar. Home has no agent, so the group
           is absent there rather than a row of blank labels. */}
       {filePath && !onHome && (
-        <>
+        // Clips when even the icons do not fit, so what is right of it (Kill) never does.
+        <div className={compact ? 'contents' : 'flex min-w-0 items-center gap-4 overflow-hidden'}>
       <button
         onClick={handleSave}
-        className={`${compact ? 'min-h-11 min-w-11 shrink-0 px-1 ' : ''}hover:text-[var(--adf-ui-text)]`}
-        aria-label={compact ? isDirty ? 'Save unsaved changes' : 'Save' : undefined}
+        className={`${compact ? 'min-h-11 min-w-11 shrink-0 px-1 ' : 'shrink-0 whitespace-nowrap '}hover:text-[var(--adf-ui-text)]`}
+        aria-label={compact ? isDirty ? 'Save unsaved changes' : 'Save' : isDirty ? 'Unsaved changes' : 'Saved'}
         title="Save"
       >
-        {isDirty ? compact ? 'Unsaved' : 'Unsaved changes' : 'Saved'}
+        {compact ? isDirty ? 'Unsaved' : 'Saved' : <>
+          <SaveStateIcon dirty={isDirty} />
+          <span className={NARROW_HIDE}>{isDirty ? 'Unsaved changes' : 'Saved'}</span>
+        </>}
       </button>
-      {!compact && <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />}
+      {!compact && <div className={`w-px h-3.5 shrink-0 bg-[var(--adf-ui-border)] ${TIGHT_HIDE}`} />}
       {/* The model sits beside the gauge: the percentage is of its window. */}
-      <span className={compact ? 'min-w-0 flex-1 truncate' : undefined} title={compact ? viewedModel?.model_id : undefined}>{viewedModel?.model_id ?? 'No model'}</span>
+      {compact
+        ? <span className="min-w-0 flex-1 truncate" title={viewedModel?.model_id}>{viewedModel?.model_id ?? 'No model'}</span>
+        : <MiddleTruncate text={viewedModel?.model_id ?? 'No model'} className={`max-w-[240px] ${TIGHT_HIDE}`} />}
       <ContextGauge
         compact={compact}
+        model={viewedModel?.model_id}
         tokenUsage={tokenUsage}
         tokenEstimate={tokenEstimate}
         threshold={viewedThreshold}
         loop={viewedLoop}
         onOpenBreakdown={() => setBreakdownOpen(true)}
       />
+      {/* The subscription the model draws on, when it is one: its tightest quota window. */}
+      {!compact && <SubscriptionPill providerId={viewedModel?.provider} runtimeId={openRuntimeId} api={isAgentWindow ? window.adfApi : apiFor(openRuntimeId)} />}
       <ContextBreakdownModal
         open={breakdownOpen}
         onClose={() => setBreakdownOpen(false)}
@@ -262,31 +293,33 @@ export function StatusBar() {
         initialLoop={viewedLoop}
       />
       {!compact && <>
-      <div className="w-px h-3.5 bg-[var(--adf-ui-border)]" />
+      <div className="w-px h-3.5 shrink-0 bg-[var(--adf-ui-border)]" />
       <button
         onClick={() => togglePanel('logs')}
-        className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'logs' ? 'text-[var(--adf-ui-text)]' : ''}`}
+        className={`flex shrink-0 items-center gap-1 whitespace-nowrap hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'logs' ? 'text-[var(--adf-ui-text)]' : ''}`}
         title="Toggle Logs Panel"
+        aria-label="Logs"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <polyline points="4 17 10 11 4 5" />
           <line x1="12" y1="19" x2="20" y2="19" />
         </svg>
-        Logs
+        <span className={NARROW_HIDE}>Logs</span>
       </button>
       <button
         onClick={() => togglePanel('tasks')}
-        className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'tasks' ? 'text-[var(--adf-ui-text)]' : ''}`}
+        className={`flex shrink-0 items-center gap-1 whitespace-nowrap hover:text-[var(--adf-ui-text)] ${showLogsPanel && bottomPanelTab === 'tasks' ? 'text-[var(--adf-ui-text)]' : ''}`}
         title="Toggle Tasks Panel"
+        aria-label="Tasks"
       >
         <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
           <path d="M9 11l3 3L22 4" />
           <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
         </svg>
-        Tasks
+        <span className={NARROW_HIDE}>Tasks</span>
       </button>
       </>}
-        </>
+        </div>
       )}
       <span className="ml-auto" />
       {!compact && <>
@@ -295,7 +328,7 @@ export function StatusBar() {
       </>}
       {/* The runtime this window uses, its mesh and its Kill: one group, as all three act on that runtime. */}
       {multi ? <FocusedRuntime runtimes={runtimes} compact={compact} /> : (
-      <div className={compact ? 'flex shrink-0 items-center' : 'flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px'} data-runtime-group>
+      <div className={compact ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px'} data-runtime-group>
       {!compact && <>
       <RuntimeIndicator current={connection} showName={false} onOpen={() => useAppStore.getState().openSettingsAt('connection')} />
       {/* A readout, not a switch: the one Mesh switch is in Settings → Networking, which a click opens. */}
@@ -311,7 +344,7 @@ export function StatusBar() {
         }`}
       >
         <MeshIcon />
-        {meshEnabled ? `Mesh (${activeAgentCount})` : 'Mesh off'}
+        <MeshLabel enabled={meshEnabled} participating={activeAgentCount} />
       </button>
       </Tooltip>
       </>}
@@ -588,7 +621,7 @@ function RuntimeGroup({ runtime, compact = false }: { runtime: RuntimeView; comp
   const header = runtimeHeader(runtime)
 
   return (
-    <div className={compact ? 'flex shrink-0 items-center' : 'flex items-center gap-2 rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px'} data-runtime-group={runtime.id}>
+    <div className={compact ? 'flex shrink-0 items-center' : 'flex shrink-0 items-center gap-2 whitespace-nowrap rounded-full border border-[var(--adf-ui-separator)] py-px pl-2.5 pr-px'} data-runtime-group={runtime.id}>
       {!compact && <>
       <button
         onClick={() => useAppStore.getState().openSettingsAt('connection')}
@@ -597,7 +630,7 @@ function RuntimeGroup({ runtime, compact = false }: { runtime: RuntimeView; comp
         className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${down ? 'text-[var(--adf-ui-danger)]' : ''}`}
       >
         {runtime.kind === 'remote' && <RemoteMark />}
-        <span className="max-w-[180px] truncate">{header}</span>
+        <span className="max-w-[180px] truncate @max-[640px]:max-w-[72px]">{header}</span>
       </button>
       <Tooltip tip={meshLabel} className="flex">
       <button
@@ -611,7 +644,7 @@ function RuntimeGroup({ runtime, compact = false }: { runtime: RuntimeView; comp
         }`}
       >
         <MeshIcon />
-        {mesh.enabled ? `Mesh (${participating})` : 'Mesh off'}
+        <MeshLabel enabled={mesh.enabled} participating={participating} />
       </button>
       </Tooltip>
       </>}
@@ -659,8 +692,20 @@ export function RuntimeIndicator({ current, showName = true, onOpen }: { current
       className={`flex items-center gap-1 hover:text-[var(--adf-ui-text)] ${shown.problem ? 'text-[var(--adf-ui-danger)]' : ''}`}
     >
       {shown.remote && <RemoteMark />}
-      <span className="max-w-[220px] truncate">{shown.text}</span>
+      <span className="max-w-[220px] truncate @max-[640px]:max-w-[72px]">{shown.text}</span>
     </button>
+  )
+}
+
+/** A floppy disk; unsaved changes add a filled dot at its corner, as editors mark a dirty tab. Shown in place of the words when narrow. */
+function SaveStateIcon({ dirty }: { dirty: boolean }) {
+  return (
+    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={NARROW_ONLY}>
+      <path d="M15.2 3a2 2 0 0 1 1.4.6l3.8 3.8a2 2 0 0 1 .6 1.4V19a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z" />
+      <path d="M17 21v-7a1 1 0 0 0-1-1H8a1 1 0 0 0-1 1v7" />
+      <path d="M7 3v4a1 1 0 0 0 1 1h7" />
+      {dirty && <circle cx="19" cy="5" r="4.5" fill="currentColor" stroke="var(--color-surface-0)" strokeWidth="2" />}
+    </svg>
   )
 }
 
@@ -704,13 +749,14 @@ function VersionButton({ version }: { version: string }) {
     )}
   </>
   // Nothing to open: the plain version, as before notes existed.
-  if (!notes) return <span className="flex items-center gap-1 tabular-nums" title={label}>{content}</span>
+  // Hidden when narrow; the dialog is outside what hides, so notes that open by themselves still show.
+  if (!notes) return <span className={`flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums ${NARROW_HIDE}`} title={label}>{content}</span>
   return (
     <>
       <button
         type="button"
         onClick={openNotes}
-        className="flex items-center gap-1 tabular-nums hover:text-[var(--adf-ui-text)]"
+        className={`flex shrink-0 items-center gap-1 whitespace-nowrap tabular-nums hover:text-[var(--adf-ui-text)] ${NARROW_HIDE}`}
         title={`${label}: release notes`}
       >
         {content}
@@ -758,7 +804,7 @@ function UpdateBadge() {
         <button
           onClick={update.status === 'available' ? () => setNotesOpen(true) : clickable ? download : undefined}
           disabled={!clickable}
-          className={`flex items-center gap-1 rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors ${tone} ${clickable ? '' : 'cursor-default'}`}
+          className={`flex shrink-0 items-center gap-1 whitespace-nowrap rounded px-1.5 py-0.5 text-[11px] font-medium tabular-nums transition-colors ${tone} ${clickable ? '' : 'cursor-default'}`}
         >
           <UpdateIcon />
           {label}
@@ -776,6 +822,7 @@ function UpdateBadge() {
 
 function ContextGauge({
   compact = false,
+  model,
   tokenUsage,
   tokenEstimate,
   threshold,
@@ -783,6 +830,8 @@ function ContextGauge({
   onOpenBreakdown
 }: {
   compact?: boolean
+  /** The model whose window this is; the tooltip names it, as the bar may not have room to. */
+  model?: string
   tokenUsage: TokenUsage
   tokenEstimate: number | null
   threshold: number
@@ -802,7 +851,7 @@ function ContextGauge({
 
   return (
     <Tooltip
-      tip={`${isMain ? '' : `${loop}: `}${contextGaugeTooltip(tokenUsage, tokenEstimate, threshold)}`}
+      tip={`${model ? `${model}\n` : ''}${isMain ? '' : `${loop}: `}${contextGaugeTooltip(tokenUsage, tokenEstimate, threshold)}`}
       className="flex"
     >
       <span
@@ -815,21 +864,33 @@ function ContextGauge({
             onOpenBreakdown()
           }
         }}
-        aria-label={compact ? `${isMain ? '' : `${loop}: `}Context ${hasData ? `${tokenEstimate != null ? 'approximately ' : ''}${Math.round(pct)} percent` : 'usage unavailable'}. Open context details` : undefined}
-        className={compact ? 'flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center' : 'flex cursor-pointer items-center gap-1.5'}
+        aria-label={`${isMain ? '' : `${loop}: `}Context ${hasData ? `${tokenEstimate != null ? 'approximately ' : ''}${Math.round(pct)} percent` : 'usage unavailable'}. Open context details`}
+        className={compact ? 'flex min-h-11 min-w-11 shrink-0 cursor-pointer items-center justify-center' : 'flex shrink-0 cursor-pointer items-center gap-1.5 whitespace-nowrap'}
       >
         {!compact && !isMain && (
           <span className={`max-w-20 truncate text-[10px] font-medium ${loopColor(loop).label}`}>{loop}</span>
         )}
-        {!compact && <span className="relative w-16 h-1.5 rounded-full bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
+        {!compact && <span className="relative w-16 h-1.5 rounded-full @max-[640px]:hidden bg-neutral-300 dark:bg-neutral-600 overflow-hidden">
           <span
             className={`absolute inset-y-0 left-0 rounded-full transition-[width] duration-300 ${fillColor}`}
             style={{ width: `${Math.min(pct, 100)}%` }}
           />
         </span>}
-        <span className="tabular-nums">
+        <span className={`tabular-nums ${compact ? '' : '@max-[640px]:hidden'}`}>
           {hasData ? `${tokenEstimate != null ? '~' : ''}${Math.round(pct)}%` : '–%'}
         </span>
+        {/* Tight: a pill whose fill is the window used, the percent inside it. */}
+        {!compact && <span className="hidden items-center @max-[640px]:flex" aria-hidden="true">
+          <span className="relative flex h-3.5 w-8 items-center justify-center overflow-hidden rounded-full bg-neutral-300 dark:bg-neutral-500">
+            <span
+              className={`absolute inset-y-0 left-0 transition-[width] duration-300 ${fillColor}`}
+              style={{ width: `${Math.min(pct, 100)}%` }}
+            />
+            <span className="relative text-[9px] font-semibold leading-none tabular-nums text-neutral-900">
+              {hasData ? Math.min(Math.round(pct), 999) : '–'}
+            </span>
+          </span>
+        </span>}
       </span>
     </Tooltip>
   )

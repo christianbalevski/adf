@@ -19,6 +19,9 @@ const ctl = vi.hoisted(() => ({
   renameFailAlways: null as string | null,
   copyFail: false,
   renameCalls: 0,
+  /** fsync calls, and how many happened before the next rename. */
+  fsyncCalls: 0,
+  fsyncsBeforeRename: [] as number[],
 }))
 
 function errnoError(code: string): NodeJS.ErrnoException {
@@ -31,7 +34,12 @@ vi.mock('fs', async (importOriginal) => {
   const real = await importOriginal<typeof import('fs')>()
   return {
     ...real,
+    fsyncSync: (fd: number) => {
+      ctl.fsyncCalls++
+      return real.fsyncSync(fd)
+    },
     renameSync: (from: string, to: string) => {
+      ctl.fsyncsBeforeRename.push(ctl.fsyncCalls)
       ctl.renameCalls++
       const code = ctl.renameFailAlways ?? ctl.renameFailCodes.shift()
       if (code) throw errnoError(code)
@@ -69,6 +77,8 @@ beforeEach(() => {
   ctl.renameFailAlways = null
   ctl.copyFail = false
   ctl.renameCalls = 0
+  ctl.fsyncCalls = 0
+  ctl.fsyncsBeforeRename = []
 })
 
 afterEach(() => {
@@ -76,6 +86,11 @@ afterEach(() => {
 })
 
 describe('writeJsonAtomic', () => {
+  it('fsyncs the temp file before renaming it over the destination (no zero-filled file after a power loss)', () => {
+    writeJsonAtomic(file, { a: 1 })
+    expect(ctl.fsyncsBeforeRename[0]).toBeGreaterThanOrEqual(1)
+  })
+
   it('round-trips JSON and leaves no temp files behind', () => {
     writeJsonAtomic(file, { a: 1, nested: { b: 'x' } })
     expect(JSON.parse(readFileSync(file, 'utf-8'))).toEqual({ a: 1, nested: { b: 'x' } })

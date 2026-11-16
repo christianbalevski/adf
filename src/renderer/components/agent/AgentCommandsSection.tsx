@@ -34,7 +34,7 @@ export function AgentCommandsSection({ commands, onSave, template = false }: {
       }).catch(() => { /* File suggestions are optional; shared validation still applies. */ })
     }
     refresh()
-    const unsubscribe = openApi()?.onWorkspaceDataChanged?.(refresh)
+    const unsubscribe = openApi()?.onWorkspaceDataChanged?.(({ scope }) => { if (scope === 'files') refresh() })
     return () => { live = false; unsubscribe?.() }
   }, [template])
   const validation = validateAgentCommandsDraft(draft, files)

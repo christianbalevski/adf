@@ -2189,14 +2189,25 @@ function LoopStream({ loop }: { loop: string }) {
     void handleInterrupt()
   }
 
+  const archiveBoundary = archive.hasMore === true || archive.error !== null || archive.unreadable > 0
+  const hasBoundary = earlierCount > 0 || archiveBoundary
+
   return (
     <div className="flex flex-col h-full" onKeyDown={handleLoopKeyDown}>
+      {/* Log */}
+      <div className="relative flex-1 min-h-0">
+      {/* The boundaries overlay the log instead of sitting above it: one that
+          took height from the scroller would shrink it when the user reached
+          the top, and a loop pinned to its tail would then be pushed past the
+          top threshold, hide the boundary, regrow, and show it again, every
+          frame. The space it covers is reserved below whether or not it is
+          showing, so its visibility never moves the content. */}
       {/* Earlier-entries boundary — the loop table holds more rows than the
           loaded window; without this the cutoff is indistinguishable from a
           cleared loop. Only shown once the user scrolls up to the top of the
           loaded window. */}
-      {earlierCount > 0 && atTop && (
-        <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-[var(--ink-faint)]">
+      {atTop && earlierCount > 0 && (
+        <div className="absolute inset-x-0 top-0 z-10 flex min-h-7 items-center justify-center gap-2 bg-[var(--paper)] px-3 text-xs text-[var(--ink-faint)]">
           <span>{earlierCount} earlier {earlierCount === 1 ? 'entry' : 'entries'} not shown</span>
           <button
             onClick={handleLoadOlder}
@@ -2211,8 +2222,8 @@ function LoopStream({ loop }: { loop: string }) {
       {/* Archived-history boundary — past the live table, compactions and
           clears left rows in adf_audit. Shown only at the top of a fully
           loaded window; each click reads one page. */}
-      {earlierCount === 0 && atTop && (archive.hasMore === true || archive.error !== null || archive.unreadable > 0) && (
-        <div className="flex items-center justify-center gap-2 px-3 py-1 text-xs text-[var(--ink-faint)]">
+      {atTop && earlierCount === 0 && archiveBoundary && (
+        <div className="absolute inset-x-0 top-0 z-10 flex min-h-7 items-center justify-center gap-2 bg-[var(--paper)] px-3 text-xs text-[var(--ink-faint)]">
           {archive.error !== null
             ? <span>Archived messages unavailable: {archive.error}</span>
             : archive.unreadable > 0 && archive.hasMore !== true
@@ -2230,8 +2241,6 @@ function LoopStream({ loop }: { loop: string }) {
         </div>
       )}
 
-      {/* Log */}
-      <div className="relative flex-1 min-h-0">
       {/* No ambient loop-colour wash (brand: no tinted page backgrounds). Loop
           identity stays on the tab underline and on `loop_send` card rails. */}
       <div
@@ -2246,6 +2255,7 @@ function LoopStream({ loop }: { loop: string }) {
         className="absolute inset-0 overflow-y-auto"
       >
       <div className={columnClass}>
+        {hasBoundary && <div className="h-7" aria-hidden />}
         {displayItems.length === 0 && !isActive && !starting && (
           <p className="mt-8 text-center text-sm text-[var(--ink-faint)]">
             No messages yet.

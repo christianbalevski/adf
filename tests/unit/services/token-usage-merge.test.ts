@@ -185,3 +185,54 @@ describe('sanitizeUsageData', () => {
     expect(sanitizeUsageData(good)).toEqual(good)
   })
 })
+
+describe('TokenUsageService — backup survives a damaged ledger', () => {
+  const bak = (dir: string) => join(dir, 'token-usage.json.bak')
+
+  it('a flush first backs up the last good ledger it read (before its own delta)', () => {
+    const seed = { '2026-08-01': { p: { m: { input: 50, output: 5 } } } }
+    const dir = makeDir(seed)
+    const service = new TokenUsageService()
+    service.recordUsage('p', 'm', 3, 4)
+    service.flush()
+    expect(JSON.parse(readFileSync(bak(dir), 'utf-8'))).toEqual(seed)
+    expect(onDisk(dir)[today].p.m).toEqual({ input: 3, output: 4 })
+  })
+
+  it('an empty ledger is never backed up', () => {
+    const dir = makeDir()
+    const service = new TokenUsageService()
+    service.recordUsage('p', 'm', 3, 4)
+    service.flush()
+    expect(existsSync(bak(dir))).toBe(false)
+  })
+
+  it('a zero-filled ledger (OS crash) resumes from the backup instead of starting empty', () => {
+    const dir = makeDir()
+    writeFileSync(bak(dir), JSON.stringify({ '2026-08-01': { p: { m: { input: 50, output: 5 } } } }))
+    writeFileSync(join(dir, 'token-usage.json'), Buffer.alloc(4096))
+    const service = new TokenUsageService()
+    expect(service.getUsageData()['2026-08-01'].p.m).toEqual({ input: 50, output: 5 })
+    // The damaged bytes are kept aside, never discarded.
+    expect(readdirSync(dir).some((n) => n.startsWith('token-usage.json.corrupt-'))).toBe(true)
+
+    service.recordUsage('p', 'm', 1, 1)
+    service.flush()
+    const disk = onDisk(dir)
+    expect(disk['2026-08-01'].p.m).toEqual({ input: 50, output: 5 })
+    expect(disk[today].p.m).toEqual({ input: 1, output: 1 })
+  })
+
+  it('clearAll empties the backup so a later damaged ledger cannot resurrect cleared history', () => {
+    const dir = makeDir({ '2026-08-01': { p: { m: { input: 9, output: 9 } } } })
+    const service = new TokenUsageService()
+    service.recordUsage('p', 'm', 9, 9)
+    service.flush()
+    expect(existsSync(bak(dir))).toBe(true)
+    service.clearAll()
+    expect(JSON.parse(readFileSync(bak(dir), 'utf-8'))).toEqual({})
+
+    writeFileSync(join(dir, 'token-usage.json'), Buffer.alloc(64))
+    expect(new TokenUsageService().getUsageData()).toEqual({})
+  })
+})
