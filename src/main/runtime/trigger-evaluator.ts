@@ -439,6 +439,9 @@ export class TriggerEvaluator extends EventEmitter {
         if (!target.filter?.include_self) continue
         if (target.lambda && event.source === this.lambdaSource(target.lambda)) continue
       }
+      // Nor a task it created itself: an on_task_create lambda making an _async
+      // call would otherwise re-trigger itself forever.
+      if (triggerType === 'on_task_create' && target.lambda && event.source === this.lambdaSource(target.lambda)) continue
 
       const key = `${triggerType}:${i}`
 
@@ -700,7 +703,8 @@ export class TriggerEvaluator extends EventEmitter {
   onTaskCreate(task: TaskEntry): void {
     const event = createEvent({
       type: 'task_create' as const,
-      source: `agent:${this.config.name ?? 'unknown'}`,
+      // A lambda's task carries the lambda as source, so its own target skips it.
+      source: task.origin === 'lambda' ? currentSourceOrUnknown() : `agent:${this.config.name ?? 'unknown'}`,
       data: { task },
     })
     this.evaluateTargets('on_task_create', event, { tool: task.tool })

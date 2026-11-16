@@ -217,8 +217,8 @@ export const IPC = {
   // Inbox push (main -> renderer)
   INBOX_UPDATED: 'adf:inbox:updated',
 
-  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files of the
-  // open file mutated; payload is { scope } and consumers refetch.
+  // Workspace data-change push (main -> renderer): data of the open file mutated;
+  // payload is { scope: WorkspaceDataScope } and consumers refetch.
   WORKSPACE_DATA_CHANGED: 'adf:workspace:data-changed',
 
   // MCP

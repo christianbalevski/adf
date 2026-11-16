@@ -1,5 +1,7 @@
 import { getSandboxHost, readAllowlist, type RemoteWorker } from './sandbox-host'
 import { cpus } from 'os'
+import { randomUUID } from 'crypto'
+import { AsyncResource } from 'node:async_hooks'
 import { clampTimerDelay } from '../utils/timer-delay'
 
 export interface CodeResult {
@@ -250,6 +252,9 @@ export type OnAdfCallFn = (method: string, args: unknown) => Promise<AdfCallResu
  *   `<agentId>:lambda:<file>`         warm trigger lambdas, per source file
  *   `<agentId>:lambda:<file>:<uuid>`  cold trigger lambdas, one per invocation
  *   `<agentId>:fn:<file>`             sys_lambda, per source file
+ *   `<agentId>:task:<id>:<uuid>`      sys_code / sys_lambda run as a task (executeIsolated)
+ *   `<agentId>:cmd:<file>:<id>:<uuid>`  owner commands, one per invocation (executeIsolated)
+ *   `<agentId>:pre_llm_hook:<uuid>`   pre-LLM hook, one per request (executeIsolated)
  *   `<agentId>:mw` / `:api` / `:ws` / `:tap:<n>`   middleware, routes, taps
  * Warm lambdas and sys_lambda both partition per *file* so the two paths agree
  * about granularity: everything in one file shares module state, and a file is
@@ -414,6 +419,10 @@ export class CodeSandboxService {
     // Only Node's timer range bounds it (the worker guard adds its buffer).
     const effectiveTimeout = clampTimerDelay(timeout ?? DEFAULT_TIMEOUT, WORKER_GUARD_BUFFER_MS)
     const ephemeral = options?.ephemeral ?? false
+    // The worker's message router runs in the async context the worker was
+    // spawned in, not this caller's: bind the handler here so adf.* calls run
+    // in the context of the execution that made them (its task, its signal).
+    onAdfCall = onAdfCall && AsyncResource.bind(onAdfCall)
     if (options?.signal?.aborted) {
       return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
     }
@@ -552,6 +561,31 @@ export class CodeSandboxService {
     }
 
     return result
+  }
+
+  /**
+   * Execute in a sandbox of its own (`<baseId>:<uuid>`), torn down afterwards.
+   * Nothing else shares the worker, so an abort terminates it outright — use
+   * this whenever `options.signal` must stop code that ignores it. The worker
+   * takes a warm permit unless `options.ephemeral` asks for a cold one; either
+   * way the teardown hands it back. Warm suits long task runs (they must not
+   * starve the small cold cap); at the warm cap one may evict an idle warm
+   * resident, as any warm creation does. One-shot callers pass ephemeral.
+   */
+  async executeIsolated(
+    baseId: string,
+    code: string,
+    timeout?: number,
+    onAdfCall?: OnAdfCallFn,
+    toolConfig?: ToolConfig,
+    options?: Omit<ExecuteOptions, 'terminateOnAbort'>
+  ): Promise<CodeResult> {
+    const sandboxId = `${baseId}:${randomUUID()}`
+    try {
+      return await this.execute(sandboxId, code, timeout, onAdfCall, toolConfig, { ...options, terminateOnAbort: true })
+    } finally {
+      this.destroy(sandboxId)
+    }
   }
 
   /**

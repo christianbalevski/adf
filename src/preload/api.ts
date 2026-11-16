@@ -4,7 +4,8 @@ import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, Spellche
   QuickCreateResult, IdentityDraft, FileSharePrepareResult,
   AgentTemplateListResult,
   AgentTemplateContents,
-  ShippedTemplateId
+  ShippedTemplateId,
+  WorkspaceDataScope
 } from '../shared/types/ipc.types'
 import type { AgentConfig, AdfLogEntry, McpToolInfo, McpServerState, McpInstalledPackage, McpInstallProgress, McpServerLogEntry, LoopTokenUsage, ContextBaseline } from '../shared/types/adf-v02.types'
 import type { AdapterState, AdapterAgentStatus, AdapterLogEntry, AdapterInstallProgress, AdapterStatus } from '../shared/types/channel-adapter.types'
@@ -460,8 +461,8 @@ export interface AdfApi {
   // Inbox push updates (main -> renderer)
   onInboxUpdated: (callback: (data: { inbox: import('../shared/types/adf.types').Inbox }) => void) => () => void
 
-  // Workspace data-change push (main -> renderer): inbox/outbox/tables/files mutated
-  onWorkspaceDataChanged: (callback: (data: { scope: 'inbox' | 'outbox' | 'tables' | 'files' }) => void) => () => void
+  // Workspace data-change push (main -> renderer): see WorkspaceDataScope
+  onWorkspaceDataChanged: (callback: (data: { scope: WorkspaceDataScope }) => void) => () => void
 
   // MCP
   probeMcpServer: (args: {

@@ -55,6 +55,8 @@ A tool call that waits on something external can be made asynchronous by includi
 
 The LLM can continue its turn without waiting. The task updates to `completed` or `failed` when execution finishes.
 
+To stop it, run `kill task_def456` in `adf_shell`. The row becomes `cancelled`, the run is aborted, and `on_task_complete` fires once with status `cancelled`. `cancelled` is final: a result that arrives later is discarded. A `sys_code` or `sys_lambda` task runs in a sandbox of its own, so `kill` terminates it; for the same reason it does not see state that `sys_code` keeps with `clear_state: false`. Other tools stop if they honour the abort (`compute_exec` host shells, MCP calls); the rest finish in the background with their result discarded.
+
 ## Task Statuses
 
 | Status | Description |
@@ -65,7 +67,7 @@ The LLM can continue its turn without waiting. The task updates to `completed` o
 | `completed` | Finished successfully |
 | `failed` | Finished with an error |
 | `denied` | Approval rejected |
-| `cancelled` | Cancelled before completion |
+| `cancelled` | Cancelled before completion (`kill`, or swept on load); final |
 
 Terminal statuses (`completed`, `failed`, `denied`, `cancelled`) record a `completed_at` timestamp.
 

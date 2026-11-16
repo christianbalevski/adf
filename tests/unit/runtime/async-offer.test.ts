@@ -77,11 +77,11 @@ function newAgentFile(): string {
   return filePath
 }
 
-async function open(filePath: string, provider: LLMProvider, opts: { restricted?: string[]; sandbox?: boolean } = {}) {
+async function open(filePath: string, provider: LLMProvider, opts: { restricted?: string[]; sandbox?: boolean; enable?: string[] } = {}) {
   const workspace = AdfWorkspace.open(filePath)
   const config = workspace.getAgentConfig()
   // Enable the turn-bound tools so their schemas and refusals are exercised.
-  const turnBound = ['ask', 'loop_clear', 'loop_compact']
+  const turnBound = ['ask', 'loop_clear', 'loop_compact', ...(opts.enable ?? [])]
   const restricted = new Set(opts.restricted ?? [])
   config.tools = [
     ...config.tools.filter(t => !turnBound.includes(t.name)),
@@ -263,6 +263,28 @@ describe('task-backed approvals (_async on a restricted tool)', () => {
   })
 })
 
+describe('tasks started from code', () => {
+  it('reports a lambda _async task as created (on_task_create), as the LLM loop does', async () => {
+    const { workspace, agent } = await open(newAgentFile(), new MockLLMProvider(), { sandbox: true })
+    const wired = agent.adfCallHandler!.onTaskCreated
+    expect(wired).toBeTypeOf('function')
+    const created: string[] = []
+    agent.adfCallHandler!.onTaskCreated = (task) => {
+      created.push(task.id)
+      wired!(task)
+    }
+    try {
+      workspace.writeFile('notes.md', 'hi')
+      const res = await agent.adfCallHandler!.handleCall('fs_read', { path: 'notes.md', _async: true })
+      const { task_id } = JSON.parse(res.result!) as { task_id: string }
+      expect(created).toEqual([task_id])
+      expect(workspace.getTask(task_id)?.origin).toBe('lambda')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
 describe('approval tasks at load', () => {
   function seedApproval(filePath: string, taskId: string, opts: { handedOut: boolean }) {
     const workspace = AdfWorkspace.open(filePath)
@@ -304,6 +326,134 @@ describe('approval tasks at load', () => {
     const { workspace, agent } = await open(filePath, new MockLLMProvider(), { restricted: ['fs_read'] })
     try {
       expect(workspace.getTask('task_blocking_seed')?.status).toBe('cancelled')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+})
+
+describe('cancelling a task', () => {
+  // Would write late.md after 1.5s; a cancelled run must never get there.
+  const slowScript = "await new Promise(r => setTimeout(r, 1500)); await adf.fs_write({ path: 'late.md', content: 'x' }); return 'finished'"
+
+  function countCompletions(agent: Awaited<ReturnType<typeof open>>['agent']) {
+    const seen: Array<[string, string]> = []
+    const wrap = <F extends ((...a: never[]) => void) | undefined>(fn: F) =>
+      ((taskId: string, tool: string, status: string, ...rest: unknown[]) => {
+        seen.push([taskId, status])
+        ;(fn as ((...a: unknown[]) => void) | undefined)?.(taskId, tool, status, ...rest)
+      }) as NonNullable<F>
+    agent.executor.onTaskCompleted = wrap(agent.executor.onTaskCompleted)
+    agent.adfCallHandler!.onTaskCompleted = wrap(agent.adfCallHandler!.onTaskCompleted)
+    return seen
+  }
+
+  it("kill stops an async sys_code run and leaves the agent's sandbox state alone", async () => {
+    const provider = new ScriptedProvider('sys_code', { code: slowScript, _async: true })
+    const { workspace, agent } = await open(newAgentFile(), provider, { sandbox: true, enable: ['sys_code', 'adf_shell'] })
+    const completions = countCompletions(agent)
+    const shell = (command: string) => agent.registry.executeTool('adf_shell', { command }, workspace)
+    try {
+      const kept = await agent.registry.executeTool('sys_code', { code: 'globalThis.kept = 42; return kept', clear_state: false }, workspace)
+      expect(kept.content).toContain('42')
+
+      await agent.executor.executeTurn(chatDispatch())
+      const task = await waitForTask(workspace, 'sys_code', 'running')
+      expect(task?.status).toBe('running')
+
+      const killed = await shell(`kill ${task!.id}`)
+      expect(killed.isError).toBeFalsy()
+      expect(killed.content).toContain(`Task ${task!.id} cancelled.`)
+
+      await sleep(2_000)
+      expect(workspace.getTask(task!.id)?.status).toBe('cancelled')
+      expect(workspace.readFile('late.md')).toBeNull()
+      expect(completions.filter(([id]) => id === task!.id)).toEqual([[task!.id, 'cancelled']])
+
+      // The agent's persistent sandbox was neither used nor torn down.
+      const after = await agent.registry.executeTool('sys_code', { code: 'return globalThis.kept', clear_state: false }, workspace)
+      expect(after.content).toContain('42')
+
+      // Nothing left to cancel: the command says why.
+      const again = await shell(`kill ${task!.id}`)
+      expect(again.content).toContain('is cancelled; only pending or running tasks can be cancelled')
+      const unknown = await shell('kill task_nope')
+      expect(unknown.content).toContain('no task task_nope')
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 15_000)
+
+  it('cancelling an async sys_lambda run terminates it; the warm file worker keeps serving', async () => {
+    const provider = new ScriptedProvider('sys_lambda', { source: 'slow.js', _async: true })
+    const { workspace, agent } = await open(newAgentFile(), provider, { sandbox: true, enable: ['sys_lambda'] })
+    const completions = countCompletions(agent)
+    try {
+      workspace.writeFile('slow.js', `async function main() { ${slowScript} }\nfunction ping() { return 'pong' }`)
+      await agent.executor.executeTurn(chatDispatch())
+      const task = await waitForTask(workspace, 'sys_lambda', 'running')
+      expect(task?.status).toBe('running')
+
+      expect(workspace.cancelTask(task!.id)).toBe(true)
+      const ping = await agent.registry.executeTool('sys_lambda', { source: 'slow.js:ping' }, workspace)
+      expect(ping.content).toContain('pong')
+
+      await sleep(2_000)
+      expect(workspace.getTask(task!.id)?.status).toBe('cancelled')
+      expect(workspace.readFile('late.md')).toBeNull()
+      expect(completions.filter(([id]) => id === task!.id)).toEqual([[task!.id, 'cancelled']])
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 15_000)
+
+  it("cancels a task code started with _async, reporting it once through the code path's callback", async () => {
+    const { workspace, agent } = await open(newAgentFile(), new MockLLMProvider(), { sandbox: true, enable: ['sys_code'] })
+    const completions = countCompletions(agent)
+    try {
+      const res = await agent.adfCallHandler!.handleCall('sys_code', { code: slowScript, _async: true })
+      const { task_id } = JSON.parse(res.result!) as { task_id: string }
+      expect(workspace.getTask(task_id)?.status).toBe('running')
+      expect(workspace.cancelTask(task_id)).toBe(true)
+
+      await sleep(2_000)
+      expect(workspace.getTask(task_id)?.status).toBe('cancelled')
+      expect(workspace.readFile('late.md')).toBeNull()
+      expect(completions.filter(([id]) => id === task_id)).toEqual([[task_id, 'cancelled']])
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 15_000)
+
+  it('turning the agent off stops its task runs, though the workspace stays open', async () => {
+    const { workspace, agent } = await open(newAgentFile(), new MockLLMProvider(), { sandbox: true, enable: ['sys_code'] })
+    const completions = countCompletions(agent)
+    agent.setWorkspaceOwnership(false) // as Studio's foreground: the file stays open after Off
+    try {
+      const res = await agent.adfCallHandler!.handleCall('sys_code', { code: slowScript, _async: true })
+      const { task_id } = JSON.parse(res.result!) as { task_id: string }
+      expect(workspace.getTask(task_id)?.status).toBe('running')
+      await agent.disposeAsync({ mode: 'owner-off' })
+
+      await sleep(2_000)
+      expect(workspace.readFile('late.md')).toBeNull()
+      // The row says so; nothing is reported to the stopped agent.
+      expect(workspace.getTask(task_id)).toMatchObject({ status: 'cancelled', error: 'Agent stopped before the task finished' })
+      expect(completions.filter(([id]) => id === task_id)).toEqual([])
+    } finally {
+      workspace.close()
+    }
+  }, 15_000)
+
+  it('refuses sys_code clear_state: false as a task: it cannot see saved state', async () => {
+    const { workspace, agent } = await open(newAgentFile(), new MockLLMProvider(), { sandbox: true, enable: ['sys_code'] })
+    try {
+      const res = await agent.adfCallHandler!.handleCall('sys_code', { code: 'return 1', clear_state: false, _async: true })
+      const { task_id } = JSON.parse(res.result!) as { task_id: string }
+      const deadline = Date.now() + 2_000
+      while (workspace.getTask(task_id)?.status === 'running' && Date.now() < deadline) await sleep(10)
+      expect(workspace.getTask(task_id)).toMatchObject({ status: 'failed' })
+      expect(workspace.getTask(task_id)?.error).toContain('cannot run as a task (_async)')
     } finally {
       await agent.disposeAsync()
     }
