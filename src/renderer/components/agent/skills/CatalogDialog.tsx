@@ -2,16 +2,13 @@ import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { useAppStore } from '../../../stores/app.store'
 import {
   CATALOG_PAGE_SIZE,
-  addBrowserSource,
   browserResults,
   configuredBrowserSources,
-  removeBrowserSource,
   settleBrowserSource,
   toCatalogSourceResult,
   buildCatalogCards,
   catalogSourceLabel,
   filterCatalogCards,
-  isCatalogUrl,
   normalizeCatalogSources,
   sanitizeDisplayText,
   type BrowserSource,
@@ -28,17 +25,14 @@ import { ReplaceConfirm } from './ReplaceConfirm'
 import { SkillPreview } from './SkillPreview'
 
 /**
- * Catalog browser — a marketplace over every configured source at once, or
- * over one URL pasted at the top of it.
+ * Catalog browser over the sources configured in Settings → Skills.
  *
  * The source list is an APP preference (Settings → Skills), not agent config:
  * the dialog reads `skillCatalogSources` each time it opens and fetches every
  * source concurrently in the main process, since the renderer's CSP blocks
  * remote origins. Catalog entries merge first-wins by name in LIST ORDER.
  *
- * A pasted URL (a GitHub repository, folder, SKILL.md or marketplace.json, or
- * any catalog document) is added first to the same source list. A GitHub
- * source lists packages straight from the repository tree, pinned to one
+ * A GitHub source lists packages straight from the repository tree, pinned to one
  * commit; their SKILL.md files load a page at a time (and all at once only
  * when asked), so a repository of hundreds of skills costs no more requests
  * than the cards on screen. A package is its source and folder until its
@@ -68,14 +62,11 @@ export function CatalogDialog({
   const openSettingsAt = useAppStore((s) => s.openSettingsAt)
 
   /**
-   * The one list of sources the browser reads, in precedence order: pasted
-   * URLs first (this dialog-open only, never saved), then the configured list.
+   * The configured sources in precedence order, managed only in Settings.
    * `null` until the configured list has been read.
    */
   const [sources, setSources] = useState<BrowserSource[] | null>(null)
   const [query, setQuery] = useState('')
-  const [pasteInput, setPasteInput] = useState('')
-  const [pasteError, setPasteError] = useState<string | null>(null)
   /** Install outcomes per card key. */
   const [outcomes, setOutcomes] = useState<Record<string, { error?: string; notice?: string }>>({})
   /** A prepared install that replaces existing files, waiting for explicit confirmation. */
@@ -99,13 +90,11 @@ export function CatalogDialog({
    */
   const sessionRef = useRef(0)
   useEffect(() => () => { sessionRef.current++ }, [])
-  /** Source fetch ids, so a late answer for a replaced or removed row is dropped. */
-  const requestRef = useRef(0)
   /** Manifest loads waiting or running, so a URL is fetched once. */
   const queueRef = useRef<{ waiting: string[]; running: number; known: Set<string> }>({ waiting: [], running: 0, known: new Set() })
 
-  /** Fetch one source into its row, if the row still waits for this request. */
-  const fetchSource = useCallback(async (url: string, request: number) => {
+  /** Fetch one configured source into its row for this dialog session. */
+  const fetchSource = useCallback(async (url: string) => {
     const session = sessionRef.current
     let result: CatalogSourceResult
     try {
@@ -113,7 +102,7 @@ export function CatalogDialog({
     } catch (err) {
       result = { url, ok: false, entries: [], error: err instanceof Error ? err.message : String(err) }
     }
-    if (session === sessionRef.current) setSources((prev) => (prev ? settleBrowserSource(prev, url, request, result) : prev))
+    if (session === sessionRef.current) setSources((prev) => (prev ? settleBrowserSource(prev, url, result) : prev))
   }, [])
 
   useEffect(() => {
@@ -125,7 +114,6 @@ export function CatalogDialog({
     setPreview(null)
     setPreviews(new Map())
     setSources(null)
-    setPasteError(null)
     setPageSize(CATALOG_PAGE_SIZE)
     sessionRef.current++
     const session = sessionRef.current
@@ -134,10 +122,9 @@ export function CatalogDialog({
       const stored = (await openApi()?.getSettings?.()) as unknown as
         { skillCatalogSources?: unknown } | undefined
       if (session !== sessionRef.current) return
-      const rows = configuredBrowserSources(normalizeCatalogSources(stored?.skillCatalogSources), () => ++requestRef.current)
-      // A URL pasted while Settings was being read stays first.
-      setSources((prev) => [...(prev ?? []).filter((s) => s.transient), ...rows.filter((r) => !(prev ?? []).some((s) => s.url === r.url))])
-      for (const row of rows) void fetchSource(row.url, row.request)
+      const rows = configuredBrowserSources(normalizeCatalogSources(stored?.skillCatalogSources))
+      setSources(rows)
+      for (const row of rows) void fetchSource(row.url)
     })()
   }, [open, fetchSource])
 
@@ -242,21 +229,6 @@ export function CatalogDialog({
     if (!previews.has(card.manifestUrl)) enqueue([card.manifestUrl])
   }
 
-  /** Add a pasted URL to the source list (first, this dialog-open only), or fetch it again if it is listed. */
-  const openPasted = useCallback(() => {
-    const url = pasteInput.trim()
-    if (!isCatalogUrl(url)) {
-      setPasteError('Paste an https:// URL: a GitHub repository, folder, SKILL.md or marketplace.json, or a catalog document.')
-      return
-    }
-    setPasteError(null)
-    setPasteInput('')
-    setPageSize(CATALOG_PAGE_SIZE)
-    const request = ++requestRef.current
-    setSources((prev) => addBrowserSource(prev ?? [], url, request))
-    void fetchSource(url, request)
-  }, [fetchSource, pasteInput])
-
   const manageSources = () => {
     onClose()
     openSettingsAt('skills')
@@ -304,28 +276,6 @@ export function CatalogDialog({
             />
           ) : (
             <>
-              <form
-                className="flex items-center gap-1.5"
-                onSubmit={(e) => { e.preventDefault(); openPasted() }}
-              >
-                <input
-                  type="url"
-                  value={pasteInput}
-                  onChange={(e) => setPasteInput(e.target.value)}
-                  spellCheck={false}
-                  aria-label="Skill source URL"
-                  placeholder="Paste a GitHub repository, folder, SKILL.md or marketplace.json URL…"
-                  className="min-w-0 flex-1 px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
-                />
-                <button
-                  type="submit"
-                  className="shrink-0 px-2.5 py-1.5 text-[11px] font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-md hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
-                >
-                  Add
-                </button>
-              </form>
-              {pasteError && <p className="mt-1 text-[10px] text-red-600 dark:text-red-400">{pasteError}</p>}
-
               <input
                 type="text"
                 autoFocus
@@ -334,7 +284,7 @@ export function CatalogDialog({
                 spellCheck={false}
                 aria-label="Search skills"
                 placeholder="Search skills…"
-                className="mt-2 w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
+                className="w-full px-2 py-1.5 text-xs border border-neutral-300 dark:border-neutral-600 dark:bg-neutral-700 dark:text-neutral-100 rounded-md focus:outline-none focus:border-blue-400"
               />
 
               <div className="mt-2 flex items-center gap-2">
@@ -366,12 +316,12 @@ export function CatalogDialog({
               {/* Per-source status: how many it contributed, or why it failed. */}
               {sources && sources.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
-                  {sources.map(({ url, transient, result }) => (
+                  {sources.map(({ url, result }) => (
                     <span
                       key={url}
                       title={
                         result?.ok
-                          ? `${url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}${transient ? ' — added here for this session, not saved' : ''}`
+                          ? `${url}${result.dropped ? ` — ${result.dropped} entr${result.dropped === 1 ? 'y' : 'ies'} dropped as invalid` : ''}`
                           : url
                       }
                       className={`inline-flex max-w-full items-center gap-1 truncate rounded px-1.5 py-0.5 text-[10px] ${
@@ -391,16 +341,6 @@ export function CatalogDialog({
                               : `${result.entries.length} loaded`
                             : sanitizeDisplayText(result.error)}
                       </span>
-                      {transient && (
-                        <button
-                          onClick={() => setSources((prev) => (prev ? removeBrowserSource(prev, url) : prev))}
-                          aria-label={`Remove ${url}`}
-                          title="Remove this pasted source"
-                          className="shrink-0 cursor-pointer hover:text-neutral-700 dark:hover:text-neutral-200"
-                        >
-                          ×
-                        </button>
-                      )}
                     </span>
                   ))}
                 </div>

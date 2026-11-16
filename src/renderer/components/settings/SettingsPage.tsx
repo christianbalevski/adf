@@ -18,6 +18,7 @@ import { ProvidersPanel } from '../providers/ProvidersPanel'
 import { saveProviderList, type ProviderListSnapshot, type ProviderSaveFailure } from '../providers/provider-save'
 import { AboutTab, UpdatesGroup } from './AboutTab'
 import { AgentTemplatesTab } from './AgentTemplatesTab'
+import { SkillSourceCount } from './SkillSourceCount'
 import { TokenUsageSection } from './UsageSection'
 import { ConnectionSettings } from './ConnectionSettings'
 import { SettingsRuntimeBanner, SettingsRuntimeProvider, useSettingsApi, useSettingsRuntimeId } from './settings-runtime'
@@ -628,7 +629,7 @@ function SkillsTab() {
       hint="A source is discovery metadata only. Installing a skill writes its SKILL.md and the files it ships (scripts, references, license files) under skills/<name>/ in the open agent, in one write; nothing is run, and no tools or approvals are granted."
     >
       <SettingsRow
-        label={<>Sources<InfoHint tip="All sources are read each time the browser opens, in this order. A name a catalog document lists more than once across sources resolves to the first source that lists it. Cards follow this order. GitHub packages are always listed by folder, so two cards can name the same skill; both install into skills/<name>/, and installing asks before replacing anything there. A GitHub source spends unauthenticated GitHub API requests on each open (60 an hour per address, shared)." /></>}
+        label={<>Sources<InfoHint tip="Sources are counted here and read when the browser opens, in this order. A name a catalog document lists more than once across sources resolves to the first source that lists it. Cards follow this order. GitHub packages are always listed by folder, so two cards can name the same skill; both install into skills/<name>/, and installing asks before replacing anything there. Counting or browsing a GitHub source spends unauthenticated GitHub API requests (60 an hour per address, shared)." /></>}
         stacked
       >
         {sources !== null && list.length === 0 ? (
@@ -642,6 +643,7 @@ function SkillsTab() {
                 <span className="min-w-0 flex-1 truncate font-mono text-[12px] text-[var(--adf-ui-text)]" title={source}>
                   {source}
                 </span>
+                <SkillSourceCount url={source} />
                 {source === ADF_SKILLS_REGISTRY_URL && (
                   <span className="shrink-0 rounded bg-[var(--adf-ui-surface-hover)] px-1.5 py-0.5 text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
                     Default

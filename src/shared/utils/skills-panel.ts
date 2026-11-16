@@ -367,8 +367,8 @@ export type CatalogCard =
     }
 
 /**
- * Cards for every source, in SOURCE-LIST order (a pasted source is first, so
- * its cards are first). Within a source, catalog entries by name, then its
+ * Cards for every source, in configured SOURCE-LIST order.
+ * Within a source, catalog entries by name, then its
  * discovered packages by folder. A name a catalog document lists that an
  * earlier source's catalog already listed is left out, as before; packages
  * are never merged away. Two cards may name the same skill: both install into
@@ -435,43 +435,21 @@ export const CATALOG_PAGE_SIZE = 24
 /* The browser's one source list                                               */
 /* -------------------------------------------------------------------------- */
 
-/**
- * One source the catalog browser reads: a configured one (Settings → Skills)
- * or a transient one pasted into the browser for this dialog-open only (never
- * saved). `request` names the fetch whose answer the row is waiting for; a
- * late answer to an older request, or for a row removed meanwhile, is dropped.
- */
+/** One configured source, with its result for the current browser session. */
 export interface BrowserSource {
   url: string
-  transient: boolean
-  request: number
   /** null while the fetch is in flight. */
   result: CatalogSourceResult | null
 }
 
 /** The configured list, every row waiting for its fetch. */
-export function configuredBrowserSources(urls: string[], request: (url: string) => number): BrowserSource[] {
-  return urls.map((url) => ({ url, transient: false, request: request(url), result: null }))
+export function configuredBrowserSources(urls: string[]): BrowserSource[] {
+  return urls.map((url) => ({ url, result: null }))
 }
 
-/**
- * Add a pasted URL ahead of everything else, so its cards come first. A URL
- * already in the list is not added twice: its row is fetched again in place,
- * configured or not.
- */
-export function addBrowserSource(sources: BrowserSource[], url: string, request: number): BrowserSource[] {
-  if (sources.some((s) => s.url === url)) return sources.map((s) => (s.url === url ? { ...s, request, result: null } : s))
-  return [{ url, transient: true, request, result: null }, ...sources]
-}
-
-/** Record a fetch's answer, only if the row still exists and still waits for that request. */
-export function settleBrowserSource(sources: BrowserSource[], url: string, request: number, result: CatalogSourceResult): BrowserSource[] {
-  return sources.map((s) => (s.url === url && s.request === request ? { ...s, result } : s))
-}
-
-/** Remove a pasted source; configured ones are removed in Settings. */
-export function removeBrowserSource(sources: BrowserSource[], url: string): BrowserSource[] {
-  return sources.filter((s) => !(s.url === url && s.transient))
+/** Record a fetch's answer without changing configured precedence. */
+export function settleBrowserSource(sources: BrowserSource[], url: string, result: CatalogSourceResult): BrowserSource[] {
+  return sources.map((s) => (s.url === url ? { ...s, result } : s))
 }
 
 /** The answered rows, in list order: what the cards are built from. */

@@ -1,10 +1,8 @@
 import { describe, expect, it } from 'vitest'
 import {
-  addBrowserSource,
   browserResults,
   configuredBrowserSources,
   installSlot,
-  removeBrowserSource,
   settleBrowserSource,
   toCatalogSourceResult,
   buildCatalogCards,
@@ -35,7 +33,7 @@ describe('catalog cards', () => {
     expect(cards.filter((c) => c.kind === 'package').map((c) => cardName(c, null))).toEqual([null, null, null])
   })
 
-  it('a source listed first (a pasted one) has its cards first, ahead of the configured catalog', () => {
+  it('a GitHub source listed first has its cards first, ahead of the next catalog', () => {
     expect(buildCatalogCards([gh, json1]).map((c) => c.key)).toEqual(['https://github.com/o/r#a/react', 'https://github.com/o/r#b/react', 'https://github.com/o/r#c/pdf', 'entry:docx', 'entry:pdf'])
   })
 
@@ -81,57 +79,23 @@ describe('catalog entry cards: first-wins in source order, search ranks names fi
   })
 })
 
-describe('one source list: pasted sources are transient rows ahead of the configured ones', () => {
-  const ok = (url: string, names: string[]): CatalogSourceResult => ({ url, ok: true, entries: names.map((n) => ({ name: n, description: n, raw_url: `${url}/${n}` })) })
-  let n = 0
-  const next = () => ++n
-
-  it('a pasted URL goes first, and its names take precedence (first-wins) over a configured source', () => {
-    let list = configuredBrowserSources(['https://cfg.test/c.json'], next)
-    list = settleBrowserSource(list, 'https://cfg.test/c.json', list[0].request, ok('https://cfg.test/c.json', ['pdf']))
-    const r = next()
-    list = addBrowserSource(list, 'https://paste.test/c.json', r)
-    list = settleBrowserSource(list, 'https://paste.test/c.json', r, ok('https://paste.test/c.json', ['pdf', 'xlsx']))
-    expect(list.map((s) => [s.url, s.transient])).toEqual([['https://paste.test/c.json', true], ['https://cfg.test/c.json', false]])
-    const cards = buildCatalogCards(browserResults(list))
-    expect(cards.find((c) => c.key === 'entry:pdf')!.sourceUrl).toBe('https://paste.test/c.json')
+describe('configured browser sources', () => {
+  it('keeps configured precedence when answers arrive out of order', () => {
+    const first = 'https://first.test/c.json'
+    const second = 'https://second.test/c.json'
+    let list = configuredBrowserSources([first, second])
+    expect(browserResults(list)).toEqual([])
+    list = settleBrowserSource(list, second, { url: second, ok: true, entries: [entry('pdf')] })
+    list = settleBrowserSource(list, first, { url: first, ok: true, entries: [entry('pdf')] })
+    expect(buildCatalogCards(browserResults(list))[0].sourceUrl).toBe(first)
   })
 
-  it('pasting a URL already listed (configured or pasted) adds no second row: it is fetched again in place', () => {
-    let list = configuredBrowserSources(['https://cfg.test/c.json'], next)
-    const r = next()
-    list = addBrowserSource(list, 'https://cfg.test/c.json', r)
-    expect(list).toEqual([{ url: 'https://cfg.test/c.json', transient: false, request: r, result: null }])
-    const p1 = next()
-    list = addBrowserSource(list, 'https://paste.test/c.json', p1)
-    const p2 = next()
-    list = addBrowserSource(list, 'https://paste.test/c.json', p2)
-    expect(list.filter((s) => s.url === 'https://paste.test/c.json')).toEqual([{ url: 'https://paste.test/c.json', transient: true, request: p2, result: null }])
-    // The answer to the superseded request is dropped; the current one lands.
-    list = settleBrowserSource(list, 'https://paste.test/c.json', p1, ok('https://paste.test/c.json', ['old']))
-    expect(list[0].result).toBeNull()
-    list = settleBrowserSource(list, 'https://paste.test/c.json', p2, ok('https://paste.test/c.json', ['new']))
-    expect(list[0].result?.entries.map((e) => e.name)).toEqual(['new'])
-  })
-
-  it('removing a pasted source drops it, a late answer for it is ignored, and configured rows cannot be removed here', () => {
-    let list = configuredBrowserSources(['https://cfg.test/c.json'], next)
-    const r = next()
-    list = addBrowserSource(list, 'https://paste.test/c.json', r)
-    list = removeBrowserSource(list, 'https://paste.test/c.json')
-    list = settleBrowserSource(list, 'https://paste.test/c.json', r, ok('https://paste.test/c.json', ['late']))
-    expect(list.map((s) => s.url)).toEqual(['https://cfg.test/c.json'])
-    expect(removeBrowserSource(list, 'https://cfg.test/c.json')).toEqual(list)
-  })
-
-  it('a refused source is its own failed row; the others still list', () => {
-    let list = configuredBrowserSources(['https://cfg.test/c.json'], next)
-    list = settleBrowserSource(list, 'https://cfg.test/c.json', list[0].request, ok('https://cfg.test/c.json', ['pdf']))
-    const r = next()
-    list = addBrowserSource(list, 'https://github.com/o/r', r)
-    list = settleBrowserSource(list, 'https://github.com/o/r', r, toCatalogSourceResult('https://github.com/o/r', { ok: false, error: 'HTTP 404 Not Found' }))
-    expect(browserResults(list).map((x) => [x.url, x.ok, x.error ?? null])).toEqual([['https://github.com/o/r', false, 'HTTP 404 Not Found'], ['https://cfg.test/c.json', true, null]])
-    expect(buildCatalogCards(browserResults(list)).map((c) => c.key)).toEqual(['entry:pdf'])
+  it('keeps a failed source separate from successful configured sources', () => {
+    const url = 'https://github.com/o/r'
+    const failure = toCatalogSourceResult(url, { ok: false, error: 'HTTP 404 Not Found' })
+    const list = settleBrowserSource(configuredBrowserSources([url]), url, failure)
+    expect(browserResults(list)).toEqual([failure])
+    expect(buildCatalogCards(browserResults(list))).toEqual([])
   })
 })
 

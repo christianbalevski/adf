@@ -48,11 +48,10 @@ A source can also be a public GitHub URL: a repository page
 (`https://github.com/<owner>/<repo>`), a folder (`…/tree/<ref>/<path>`), one
 `SKILL.md` (`…/blob/<ref>/…/SKILL.md`, or its `raw.githubusercontent.com` URL),
 or a Claude (`.claude-plugin/marketplace.json`) or Codex
-(`.agents/plugins/marketplace.json`) marketplace. Add one in Settings, or paste
-it at the top of the browser: a pasted URL joins the list of sources first, for
-that browser session only (it is not saved), and can be removed again. Cards
-follow the source list, so a pasted source's cards come first. A pasted URL
-already in the list is fetched again in place and keeps its position. Any other URL (a
+(`.agents/plugins/marketplace.json`) marketplace. Manage sources only in **Settings → Skills**, where each source
+shows its skill count after loading. The catalog browser searches skills from
+those sources and links to Settings to manage them. Cards follow the configured
+source order. Any other URL (a
 JSON catalog document, including one addressed through github.com `raw/…` or
 `?raw=`) is fetched once and read as before, with no GitHub API request.
 
