@@ -22,6 +22,8 @@
  * directly unit-testable.
  */
 
+import { MAX_SKILL_FILE_BYTES, SKILL_DESCRIPTION_MAX, SKILL_NAME, indexScalar as scalar } from '../../shared/schemas/skills-catalog.schema'
+export { MAX_SKILL_FILE_BYTES }
 import type { FileProtectionLevel } from '@shared/types/adf-v02.types'
 import { withSource } from '../runtime/execution-context'
 
@@ -30,7 +32,6 @@ export const SKILLS_REGISTRY_PATH = 'skills-registry.json'
 export const SKILLS_STATE_PATH = 'skills-state.json'
 
 /** Ported verbatim from the skill-loader lambda — see skills/skill-loader/SKILL.md. */
-export const MAX_SKILL_FILE_BYTES = 256 * 1024
 export const MAX_SKILLS = 48
 export const MAX_REGISTRY_BYTES = 32 * 1024
 
@@ -43,7 +44,6 @@ export const SKILLS_REGISTRY_INJECT_KEY = 'skills_registry'
 /** Prefix of the injected payload — states that it replaces earlier catalogs. */
 export const SKILLS_REGISTRY_INJECT_PREFIX = 'This catalog supersedes previous skill catalogs:'
 
-const SKILL_NAME = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/
 const SKILL_FILE_PATH = /^skills\/[^/]+\/SKILL\.md$/
 
 /**
@@ -169,23 +169,6 @@ export function parseDisabledSkills(stateText: string | null): string[] {
   return readSkillsState(stateText).disabled
 }
 
-/** Decode a single YAML scalar (bare, double-quoted, or single-quoted). */
-function scalar(raw: string): string | null {
-  const value = raw.trim()
-  if (!value) return null
-  if (value.startsWith('"')) {
-    try {
-      const parsed = JSON.parse(value)
-      return typeof parsed === 'string' ? parsed : null
-    } catch { return null }
-  }
-  if (value.startsWith("'")) {
-    if (!value.endsWith("'")) return null
-    return value.slice(1, -1).replace(/''/g, "'")
-  }
-  return value
-}
-
 /**
  * Frontmatter keys as they are actually written in the wild. Hyphens are the
  * common case in Claude-style packages (`allowed-tools:`, `license-key:`), so a
@@ -235,8 +218,8 @@ export function parseSkillFrontmatter(
     fields[item[1]] = value
   }
   if (!SKILL_NAME.test(fields.name ?? '')) return { error: 'invalid skill name' }
-  if (!fields.description || fields.description.length > 500 || /[\r\n\0]/.test(fields.description)) {
-    return { error: 'description must be one line and at most 500 characters' }
+  if (!fields.description || fields.description.length > SKILL_DESCRIPTION_MAX || /[\r\n\0]/.test(fields.description)) {
+    return { error: `description must be one line and at most ${SKILL_DESCRIPTION_MAX} characters` }
   }
   return { name: fields.name, description: fields.description }
 }

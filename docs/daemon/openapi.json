@@ -2916,6 +2916,61 @@
         }
       }
     },
+    "/agents/{id}/files/batch": {
+      "post": {
+        "tags": [
+          "Files"
+        ],
+        "summary": "Write several files atomically",
+        "description": "All files or none, in one transaction. Each file carries exactly one precondition: `mustNotExist` (a create) or the `baseRevision` it was read at. Every path, duplicate, size bound, read-only protection and precondition is checked before anything is written; any refusal writes nothing and fires nothing. Only the listed paths are written (no file is removed); existing protections are kept. File-change triggers and events fire after the commit; a listener that fails then does not undo it. At most 256 files and 8 MiB of content (before base64).",
+        "operationId": "writeAgentFilesBatch",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/AgentIdPath"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FileBatchBody"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Every file written",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FileBatchResult"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "409": {
+            "$ref": "#/components/responses/StaleRevision"
+          },
+          "500": {
+            "$ref": "#/components/responses/ServerError"
+          }
+        }
+      }
+    },
     "/agents/{id}/files/rename": {
       "post": {
         "tags": [
@@ -8455,124 +8510,6 @@
         }
       }
     },
-    "/runtime/subscription-usage": {
-      "get": {
-        "tags": [
-          "Runtime"
-        ],
-        "summary": "Quota left on signed-in subscriptions",
-        "description": "One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.",
-        "operationId": "getSubscriptionUsage",
-        "responses": {
-          "200": {
-            "description": "Current state",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubscriptionUsageState"
-                }
-              }
-            }
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/runtime/subscription-usage/refresh": {
-      "post": {
-        "tags": [
-          "Runtime"
-        ],
-        "summary": "Probe subscription usage now",
-        "description": "Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.",
-        "operationId": "refreshSubscriptionUsage",
-        "requestBody": {
-          "required": false,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "properties": {
-                  "auto": {
-                    "type": "boolean",
-                    "description": "Not a user click: honour the providerChecksEnabled opt-out. Default false."
-                  }
-                },
-                "additionalProperties": false
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Current state",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubscriptionUsageState"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
-    "/runtime/subscription-usage/history": {
-      "get": {
-        "tags": [
-          "Runtime"
-        ],
-        "summary": "Subscription usage history",
-        "description": "Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.",
-        "operationId": "getSubscriptionUsageHistory",
-        "parameters": [
-          {
-            "name": "since",
-            "in": "query",
-            "required": false,
-            "description": "Only samples at or after this epoch ms.",
-            "schema": {
-              "type": "number"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Samples, oldest first",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/SubscriptionUsageHistoryResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "$ref": "#/components/responses/BadRequest"
-          },
-          "401": {
-            "$ref": "#/components/responses/Unauthorized"
-          },
-          "403": {
-            "$ref": "#/components/responses/Forbidden"
-          }
-        }
-      }
-    },
     "/runtime/token-count": {
       "post": {
         "tags": [
@@ -11859,7 +11796,7 @@
           "Registries"
         ],
         "summary": "Fetch a skill catalog",
-        "description": "https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s).",
+        "description": "https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s). A github.com repository page, `tree/…` folder page, or `blob/…` page of a SKILL.md or marketplace.json is resolved to one commit and listed in `discovered`, unauthenticated, through the GitHub API. Any other URL (github.com `raw/…` and `?raw=` forms included) is fetched once: a JSON catalog document is parsed as before, and a raw.githubusercontent.com SKILL.md or marketplace.json body is discovered the same way.",
         "operationId": "getSkillsCatalog",
         "parameters": [
           {
@@ -11897,7 +11834,7 @@
         "tags": [
           "Registries"
         ],
-        "summary": "Fetch a SKILL.md package",
+        "summary": "Fetch a SKILL.md, or one package resource as bytes",
         "operationId": "getSkillPackage",
         "parameters": [
           {
@@ -11907,6 +11844,18 @@
             "description": "SKILL.md URL (https)",
             "schema": {
               "type": "string"
+            }
+          },
+          {
+            "name": "binary",
+            "in": "query",
+            "required": false,
+            "description": "`1`: the exact bytes, base64",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
             }
           }
         ],
@@ -11927,7 +11876,8 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           }
-        }
+        },
+        "description": "Without `binary`: a SKILL.md as text (at most 256 KB) with `import`, how it would install (name, `adf` declaration, any description adjustment). With `binary=1`: one package resource as base64 bytes (at most 8 MiB, an install batch's whole bound). https only, through the catalog guard."
       }
     },
     "/admin/mcp/probe": {
@@ -13558,6 +13508,18 @@
           },
           {
             "$ref": "#/components/parameters/FilePathQuery"
+          },
+          {
+            "name": "revision",
+            "in": "query",
+            "required": false,
+            "description": "`1` adds `revision`: the file's current revision, the one a write's `baseRevision` is checked against (as `X-ADF-Revision` on GET …/files/raw). The daemon reads the bytes to compute it and sends none.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1"
+              ]
+            }
           }
         ],
         "responses": {
@@ -18322,6 +18284,124 @@
             }
           }
         ]
+      }
+    },
+    "/runtime/subscription-usage": {
+      "get": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Quota left on signed-in subscriptions",
+        "description": "One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.",
+        "operationId": "getSubscriptionUsage",
+        "responses": {
+          "200": {
+            "description": "Current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsageState"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/subscription-usage/refresh": {
+      "post": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Probe subscription usage now",
+        "description": "Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.",
+        "operationId": "refreshSubscriptionUsage",
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "auto": {
+                    "type": "boolean",
+                    "description": "Not a user click: honour the providerChecksEnabled opt-out. Default false."
+                  }
+                },
+                "additionalProperties": false
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Current state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsageState"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
+      }
+    },
+    "/runtime/subscription-usage/history": {
+      "get": {
+        "tags": [
+          "Runtime"
+        ],
+        "summary": "Subscription usage history",
+        "description": "Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.",
+        "operationId": "getSubscriptionUsageHistory",
+        "parameters": [
+          {
+            "name": "since",
+            "in": "query",
+            "required": false,
+            "description": "Only samples at or after this epoch ms.",
+            "schema": {
+              "type": "number"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Samples, oldest first",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SubscriptionUsageHistoryResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/BadRequest"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "403": {
+            "$ref": "#/components/responses/Forbidden"
+          }
+        }
       }
     }
   },
@@ -29721,6 +29801,11 @@
           },
           "error": {
             "type": "string"
+          },
+          "discovered": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "For a GitHub URL: `repository`, `sha` (the one commit every URL names), `ref`, `scope`, `url`, `packages` (each with `id`, `dir`, `raw_url`, `totalBytes`, `files` (license files flagged `license`), optional `problem`), and `problems` (what was named but not listed, and notes)."
           }
         }
       },
@@ -29736,6 +29821,18 @@
           "content": {
             "type": "string",
             "description": "SKILL.md text"
+          },
+          "import": {
+            "type": "object",
+            "additionalProperties": true,
+            "description": "How the SKILL.md installs: `ok`, `name`, `description`, `manifest` (the bytes to install), `changes` (description adjustments; empty when installed as published), `compat` (the `adf` declaration), or `error`."
+          },
+          "contentBase64": {
+            "type": "string",
+            "description": "With `binary`: the resource bytes"
+          },
+          "size": {
+            "type": "integer"
           },
           "error": {
             "type": "string"
@@ -30847,6 +30944,10 @@
           "text": {
             "type": "boolean",
             "description": "Studio's file viewer reads it as text (by extension)"
+          },
+          "revision": {
+            "type": "integer",
+            "description": "The file's current revision; only with `revision=1` (or for an agent with no .adf file)"
           }
         }
       },
@@ -33187,6 +33288,67 @@
             "description": "Positional arguments in the shared IPC shape; no second browser-specific API mapping."
           }
         }
+      },
+      "FileBatchBody": {
+        "type": "object",
+        "required": [
+          "files"
+        ],
+        "properties": {
+          "files": {
+            "type": "array",
+            "maxItems": 256,
+            "items": {
+              "type": "object",
+              "required": [
+                "path"
+              ],
+              "properties": {
+                "path": {
+                  "type": "string"
+                },
+                "content": {
+                  "type": "string",
+                  "description": "Text (UTF-8). Exactly one of content / contentBase64."
+                },
+                "contentBase64": {
+                  "type": "string",
+                  "description": "Exact bytes"
+                },
+                "mimeType": {
+                  "type": "string"
+                },
+                "mustNotExist": {
+                  "type": "boolean",
+                  "description": "The file must not exist yet. Exactly one of mustNotExist / baseRevision."
+                },
+                "baseRevision": {
+                  "type": "integer",
+                  "description": "The revision the file was read at"
+                }
+              }
+            }
+          }
+        }
+      },
+      "FileBatchResult": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/AgentSuccess"
+          },
+          {
+            "type": "object",
+            "properties": {
+              "revisions": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "integer"
+                },
+                "description": "The revision each written path has now"
+              }
+            }
+          }
+        ]
       },
       "SubscriptionProviderId": {
         "type": "string",

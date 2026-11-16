@@ -72,6 +72,8 @@ export function createFilesFetch(mock: MockDaemon, next: typeof fetch = globalTh
     const found = mock.agents.get(agent) ?? [...mock.agents.values()].find(a => a.handle === agent || a.name === agent)
     return found ? byId.get(found.id) : undefined
   }
+  /** A content revision for W3-F preconditions: stable for the same bytes. */
+  const revisionOf = (f: FixtureFile) => [...f.content].reduce((h, b) => (h * 31 + b) >>> 0, f.content.length)
   const json = (status: number, body: unknown) => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })
   const findFile = (data: FixtureAgentData, path: string | null) => data.files.find(f => f.path === path)
   const listEntry = (f: FixtureFile) => ({ path: f.path, size: f.content.length, mime_type: f.mime, protection: f.protection, authorized: f.authorized, created_at: f.updated_at, updated_at: f.updated_at })
@@ -86,7 +88,7 @@ export function createFilesFetch(mock: MockDaemon, next: typeof fetch = globalTh
   }
 
   const handle = async (url: URL, method: string, body: Record<string, unknown> | undefined): Promise<Response | null> => {
-    const m = url.pathname.match(/^\/agents\/([^/]+)\/(document|mind|files(?:\/content|\/rename|\/rename-folder|\/protection|\/authorized)?|inbox|outbox|meta)$/)
+    const m = url.pathname.match(/^\/agents\/([^/]+)\/(document|mind|files(?:\/meta|\/content|\/batch|\/rename|\/rename-folder|\/protection|\/authorized)?|inbox|outbox|meta)$/)
     if (!m) return null
     const agentId = decodeURIComponent(m[1])
     const data = resolve(agentId)
@@ -99,11 +101,33 @@ export function createFilesFetch(mock: MockDaemon, next: typeof fetch = globalTh
       case 'GET mind': return json(200, { agentId, content: findFile(data, 'mind.md')?.content.toString('utf-8') ?? '' })
       case 'PUT mind': write(data, 'mind.md', Buffer.from(String(body?.content ?? ''), 'utf-8'), 'no_delete'); return json(200, { agentId, success: true })
       case 'GET files': return json(200, { agentId, files: data.files.map(listEntry) })
+      case 'GET files/meta': {
+        const f = findFile(data, path)
+        if (!f) return json(404, { error: 'File not found' })
+        return json(200, { agentId, ...listEntry(f), mime_type: f.mime, ...(url.searchParams.get('revision') === '1' ? { revision: revisionOf(f) } : {}) })
+      }
       case 'GET files/content': {
         const f = findFile(data, path)
         if (!f) return json(404, { error: 'File not found' })
         const binary = f.mime === 'image/png'
-        return json(200, { agentId, ...listEntry(f), mime_type: f.mime, encoding: binary ? 'base64' : 'utf-8', ...(binary ? { content_base64: f.content.toString('base64') } : { content: f.content.toString('utf-8') }) })
+        return json(200, { agentId, ...listEntry(f), revision: revisionOf(f), mime_type: f.mime, encoding: binary ? 'base64' : 'utf-8', ...(binary ? { content_base64: f.content.toString('base64') } : { content: f.content.toString('utf-8') }) })
+      }
+      // As the daemon's POST /agents/:id/files/batch: every precondition checked first, then all written.
+      case 'POST files/batch': {
+        const batch = Array.isArray(body?.files) ? body.files as Array<{ path: string; content?: string; contentBase64?: string; mustNotExist?: boolean; baseRevision?: number }> : null
+        if (!batch) return json(400, { error: 'files is required' })
+        for (const one of batch) {
+          const f = findFile(data, one.path)
+          if (one.mustNotExist && f) return json(409, { error: `"${one.path}" already exists`, code: 'stale_revision', path: one.path })
+          if (one.baseRevision !== undefined && (!f || revisionOf(f) !== one.baseRevision)) return json(409, { error: `"${one.path}" changed`, code: 'stale_revision', path: one.path })
+          if (f?.protection === 'read_only') return json(403, { error: `"${one.path}" is read-only.`, code: 'file_protected', path: one.path })
+        }
+        const revisions: Record<string, number> = {}
+        for (const one of batch) {
+          write(data, one.path, one.contentBase64 !== undefined ? Buffer.from(one.contentBase64, 'base64') : Buffer.from(one.content ?? '', 'utf-8'))
+          revisions[one.path] = revisionOf(findFile(data, one.path)!)
+        }
+        return json(200, { agentId, success: true, revisions })
       }
       case 'PUT files/content': {
         if (!path) return json(400, { error: 'path is required' })

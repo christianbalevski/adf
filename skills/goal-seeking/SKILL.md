@@ -1,6 +1,7 @@
 ---
 name: goal-seeking
 description: Pursue an authorized goal through concrete action, creative experiments, learning and pivots, coordinating ADF loops, peers and timers through verified delivery. Use for open-ended or multi-session goals, not routine one-step answers.
+adf: ">=0.2"
 requires:
   tools: [fs_read, fs_write, fs_list]
 ---

@@ -191,6 +191,11 @@ const ROUTES: RouteCase[] = [
   { method: 'GET', path: `${A}/files`, url: c => `/agents/${c.id}/files`, expect: { ok: 200 } },
   { method: 'PUT', path: `${A}/files/content`, url: c => `/agents/${c.id}/files/content?path=notes/a.txt`, body: { content: 'hi' }, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/files/content`, url: c => `/agents/${c.id}/files/content?path=notes/a.txt`, expect: { ok: 200 } },
+  {
+    method: 'POST', path: `${A}/files/batch`, url: c => `/agents/${c.id}/files/batch`, expect: { ok: 200 },
+    body: { files: [{ path: 'notes/batch-a.txt', content: 'a', mustNotExist: true }, { path: 'notes/batch-b.bin', contentBase64: Buffer.from([0, 255]).toString('base64'), mustNotExist: true }] },
+    after: r => expect(Object.keys(r.json().revisions)).toEqual(['notes/batch-a.txt', 'notes/batch-b.bin']),
+  },
   { method: 'GET', path: `${A}/files/meta`, url: c => `/agents/${c.id}/files/meta?path=notes/a.txt`, expect: { ok: 200 } },
   { method: 'GET', path: `${A}/files/raw`, url: c => `/agents/${c.id}/files/raw?path=notes/a.txt`, expect: { ok: 200 }, after: r => expect(r.body).toBe('hi') },
   { method: 'PUT', path: `${A}/files/raw`, url: c => `/agents/${c.id}/files/raw?path=notes/raw.bin`, raw: Buffer.from([1, 2, 3]), expect: { ok: 200 } },

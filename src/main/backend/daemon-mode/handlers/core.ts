@@ -209,13 +209,13 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
    * binary is never downloaded, and an inline binary is capped by the daemon
    * (maxBytes) rather than downloaded to be thrown away.
    */
-  [IPC.DOC_READ_INTERNAL_FILE]: async (ctx, _event, args: { path: string; binaryContent?: boolean }) => {
+  [IPC.DOC_READ_INTERNAL_FILE]: async (ctx, _event, args: { path: string; binaryContent?: boolean; revisionOnly?: boolean }) => {
     if (!ctx.session.filePath) return { content: null, binary: false }
     const client = await ctx.ready()
     const agentId = requireOpenAgent(ctx, 'Reading a file of the open agent')
-    let meta: { mime_type: string | null; size: number }
+    let meta: { mime_type: string | null; size: number; revision?: unknown }
     try {
-      meta = await client.request<{ mime_type: string | null; size: number }>('GET', `/agents/${enc(agentId)}/files/meta`, { query: { path: args.path } })
+      meta = await client.fileMeta(agentId, args.path, args.revisionOnly)
     } catch (err) {
       if (!isNotFound(err)) throw err
       // Unknown file, or the daemon no longer has the agent: tell them apart.
@@ -224,6 +224,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     }
     const ext = args.path.split('.').pop()?.toLowerCase() ?? ''
     const text = TEXT_EXTS.has(ext)
+    // No bytes: the metadata and the revision the daemon hashed (a daemon without it sends none).
+    if (args.revisionOnly) return { content: '', binary: !text, mimeType: meta.mime_type, size: meta.size, ...(Number.isSafeInteger(meta.revision) ? { revision: meta.revision as number } : {}) }
     if (!text && !args.binaryContent) return { content: '', binary: true, mimeType: meta.mime_type, size: meta.size }
     if (!text && meta.size > MAX_INLINE_BINARY_BYTES) return { content: '', binary: true, tooLarge: true, mimeType: meta.mime_type, size: meta.size }
     const res = await ctx.raw(`/agents/${enc(agentId)}/files/raw`, { path: args.path, ...(text ? {} : { maxBytes: MAX_INLINE_BINARY_BYTES }) })
@@ -235,7 +237,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     // W3-F: the revision an editor saves over (writeInternalFile's baseRevision), as embedded.
     const revision = Number(res.headers.get('x-adf-revision') ?? NaN)
     if (text) return { content: buf.toString('utf-8'), binary: false, ...info, ...(Number.isSafeInteger(revision) ? { revision } : {}) }
-    return { content: buf.toString('base64'), binary: true, ...info }
+    return { content: buf.toString('base64'), binary: true, ...info, ...(Number.isSafeInteger(revision) ? { revision } : {}) }
   },
 
   [IPC.AGENT_STATUS]: async (ctx, _event, opts?: { mediaFor?: string }) => {

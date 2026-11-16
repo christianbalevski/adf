@@ -112,7 +112,12 @@ describe('skill catalog routes', () => {
     guarded.fn.mockResolvedValueOnce({ bytes: Buffer.from('not json') })
     expect((await server.inject({ method: 'GET', url: '/catalog/skills?url=https%3A%2F%2Fx.test%2Fc.json' })).json()).toEqual({ ok: false, error: 'Catalog is not valid JSON' })
     guarded.fn.mockResolvedValueOnce({ bytes: Buffer.from('# Skill\n') })
-    expect((await server.inject({ method: 'GET', url: '/catalog/skills/package?url=https%3A%2F%2Fx.test%2FSKILL.md' })).json()).toEqual({ ok: true, content: '# Skill\n' })
+    // The text as before, with its import decision beside it (no frontmatter: not installable).
+    expect((await server.inject({ method: 'GET', url: '/catalog/skills/package?url=https%3A%2F%2Fx.test%2FSKILL.md' })).json()).toMatchObject({ ok: true, content: '# Skill\n', import: { ok: false, error: 'missing YAML frontmatter' } })
     expect(guarded.fn).toHaveBeenLastCalledWith('https://x.test/SKILL.md', expect.objectContaining({ timeoutMs: 10_000 }))
+    // binary=1: the exact bytes, capped at the batch bound (8 MiB): one byte rule, no per-file cap.
+    guarded.fn.mockResolvedValueOnce({ bytes: Buffer.from([0, 1, 255]) })
+    expect((await server.inject({ method: 'GET', url: '/catalog/skills/package?url=https%3A%2F%2Fx.test%2Flogo.png&binary=1' })).json()).toEqual({ ok: true, contentBase64: Buffer.from([0, 1, 255]).toString('base64'), size: 3 })
+    expect(guarded.fn).toHaveBeenLastCalledWith('https://x.test/logo.png', { maxBytes: 8 * 1024 * 1024, timeoutMs: 10_000 })
   })
 })

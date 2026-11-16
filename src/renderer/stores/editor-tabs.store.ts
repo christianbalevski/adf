@@ -1,3 +1,4 @@
+import { useSyncExternalStore } from 'react'
 import { create } from 'zustand'
 import type { ContainerPhase } from '../../shared/types/compute.types'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
@@ -383,12 +384,22 @@ export function beginAgentSwitch(): void {
     }
   }
   agentSwitchDepth++
+  if (agentSwitchDepth === 1) for (const listener of switchListeners) listener()
 }
 
 export function endAgentSwitch(): void {
-  if (agentSwitchDepth > 0) agentSwitchDepth--
+  if (agentSwitchDepth === 0) return
+  agentSwitchDepth--
+  if (agentSwitchDepth === 0) for (const listener of switchListeners) listener()
 }
 
 export function isAgentSwitching(): boolean {
   return agentSwitchDepth > 0
+}
+
+/** Components that read the open agent re-render when a switch starts and when it is over. */
+const switchListeners = new Set<() => void>()
+const subscribeAgentSwitch = (listener: () => void) => { switchListeners.add(listener); return () => { switchListeners.delete(listener) } }
+export function useAgentSwitching(): boolean {
+  return useSyncExternalStore(subscribeAgentSwitch, isAgentSwitching)
 }

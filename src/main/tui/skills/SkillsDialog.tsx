@@ -11,6 +11,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from 'react'
 import { Box, Text, useApp, useBoxMetrics, type DOMElement } from 'ink'
 import * as panelNs from '../../../shared/utils/skills-panel'
 import * as previewNs from '../../../shared/utils/skill-preview'
+import * as planNs from '../../../shared/utils/skill-install-plan'
 import type { MergedCatalogEntry } from '../../../shared/utils/skills-panel'
 import { useTheme } from '../app/theme'
 import { WHEEL_STEP, useKeys, useWheel } from '../app/keys'
@@ -42,9 +43,13 @@ import {
   type SkillsStep,
   type SkillsViewState,
 } from './model'
-import { installPackage, loadInstalled, loadPackage, readSkillFile, removeSkill, setSkillMuted, type InstalledData } from './ops'
+import { installPackage, loadInstalled, loadPackage, readSkillFile, removeSkill, setSkillMuted, type InstalledData, type OccupiedPlan } from './ops'
 
-const { catalogSourceLabel, filterCatalogEntries, mergeCatalogResults, unindexedHint, MAX_SKILL_FILE_BYTES } = cjs(panelNs)
+const { buildCatalogCards, catalogSourceLabel, filterCatalogCards, unindexedHint, MAX_SKILL_FILE_BYTES } = cjs(panelNs)
+const { slotOf } = cjs(planNs)
+/** The catalog's entries in source-list order (the Studio browser's cards; GitHub packages are Studio's). */
+const catalogEntries = (results: Parameters<typeof buildCatalogCards>[0], query = ''): MergedCatalogEntry[] =>
+  filterCatalogCards(buildCatalogCards(results), query, () => null).flatMap(card => (card.kind === 'entry' ? [card.entry] : []))
 const { elideMiddle } = cjs(previewNs)
 
 type Row =
@@ -103,6 +108,8 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
   }, [agentId, vs.rev])
 
   const model = useMemo(() => (data ? buildInstalled(data.files, data.registryText, vs.overrides) : null), [data, vs.overrides])
+  /** Names whose skills/<name>/ already has any file: "name in use", never "installed". */
+  const occupied = useMemo(() => new Set((data?.files ?? []).flatMap(f => slotOf(f.path) ?? [])), [data])
   const rows: Row[] = useMemo(() => model ? [
     ...model.skills.map((skill): Row => ({ type: 'skill', key: `s:${skill.name}`, skill })),
     ...model.problems.map((p): Row => ({ type: 'problem', key: `p:${p.key}`, label: p.label, path: p.path, reason: p.reason, isPackage: p.isPackage })),
@@ -128,13 +135,13 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
       patch(s => ({ catalog: { loading: false, sources, results, sourcesNote: configured.note } }))
       const now = read()
       if (now.step.kind === 'catalog' && now.step.autoPreview) {
-        const hit = exactEntry(mergeCatalogResults(results), now.query)
+        const hit = exactEntry(catalogEntries(results), now.query)
         patch({ step: hit ? { kind: 'package', source: { type: 'catalog', entry: hit }, back: 'catalog' } : { kind: 'catalog' } })
       }
     })()
   }, [needsCatalog])
-  const merged = useMemo(() => mergeCatalogResults(vs.catalog?.results ?? []), [vs.catalog?.results])
-  const visible = useMemo(() => filterCatalogEntries(merged, vs.query), [merged, vs.query])
+  const merged = useMemo(() => catalogEntries(vs.catalog?.results ?? []), [vs.catalog?.results])
+  const visible = useMemo(() => catalogEntries(vs.catalog?.results ?? [], vs.query), [vs.catalog?.results, vs.query])
 
   // --- package preview --------------------------------------------------------------
   const pkgKey = step.kind === 'package' ? packageKey(step.source) : null
@@ -208,11 +215,23 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
   const install = async (pkg: SkillPackage, key: string) => {
     if (read().installs[key]?.status === 'installing') return
     patch(s => ({ installs: { ...s.installs, [key]: { status: 'installing' } } }))
-    const outcome = await installPackage(store.client, agentId, pkg).catch(err => ({ error: errorText(err), warnings: [] as string[], written: 0 }))
-    patch(s => ({ installs: { ...s.installs, [key]: outcome.error ? { status: 'error', error: outcome.error, warnings: outcome.warnings } : { status: 'done', warnings: outcome.warnings } } }))
+    // An occupied slot always asks, listing what is replaced and what is kept; declining writes nothing.
+    const confirmReplace = (plan: OccupiedPlan) => store.actions.confirm({
+      title: `skills/${plan.name}/ already has files`,
+      message: `Replaces: ${plan.replaces.join(', ') || 'nothing'}. Kept as they are: ${plan.keeps.join(', ') || 'nothing'}.`,
+      confirmLabel: plan.replaces.length ? 'Replace files' : 'Install beside them',
+      danger: plan.replaces.length > 0,
+    })
+    const outcome = await installPackage(store.client, agentId, pkg, confirmReplace).catch(err => ({ error: errorText(err), written: 0, declined: false }))
+    patch(s => {
+      const installs = { ...s.installs }
+      if (outcome.declined) delete installs[key]
+      else installs[key] = outcome.error ? { status: 'error', error: outcome.error } : { status: 'done' }
+      return { installs }
+    })
+    if (outcome.declined) return
     if (outcome.error) store.actions.toast(`Install ${pkg.name} failed: ${outcome.error}`, 'error', 10_000)
-    else if (outcome.warnings.length) store.actions.toast(`Installed ${pkg.name} in ${who} without ${outcome.warnings.length} file${outcome.warnings.length === 1 ? '' : 's'}: ${outcome.warnings.join('; ')}`, 'warn', 10_000)
-    else store.actions.toast(`Installed ${pkg.name} in ${who} (${outcome.written} file${outcome.written === 1 ? '' : 's'})`, 'success')
+    else store.actions.toast(`Written to skills/${pkg.name}/ in ${who}`, 'success')
     bump()
   }
 
@@ -354,7 +373,7 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
     const loading = !catalog || catalog.loading
     const noSources = !!catalog && !catalog.loading && catalog.sources.length === 0
     const failures = (catalog?.results ?? []).filter(r => !r.ok)
-    const chips = (catalog?.results ?? []).map(r => `${catalogSourceLabel(r.url, r.publisher)}: ${r.ok ? `${r.entries.length} loaded${r.dropped ? `, ${r.dropped} invalid` : ''}` : safe(r.error)}`).join(`  ${theme.glyph.sep} `)
+    const chips = (catalog?.results ?? []).map(r => `${catalogSourceLabel(r.url, r.publisher)}: ${r.ok ? (r.discovered ? `${r.discovered.packages.length} GitHub package${r.discovered.packages.length === 1 ? '' : 's'} (browse and install them in Studio)` : `${r.entries.length} loaded${r.dropped ? `, ${r.dropped} invalid` : ''}`) : safe(r.error)}`).join(`  ${theme.glyph.sep} `)
     const count = vs.query ? `${visible.length} of ${merged.length}` : `${merged.length}`
     const hints: KeyHintSpec[] = [
       { keys: 'enter', label: 'preview' }, { keys: 'up down', label: 'move' }, { keys: 'esc', label: vs.query ? 'clear' : props.add !== undefined ? 'close' : 'back' },
@@ -390,7 +409,7 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
             onSelectedIndexChange={index => patch({ catalogCursor: index })}
             onSubmit={e => setStep({ kind: 'package', source: { type: 'catalog', entry: e }, back: 'catalog' })}
             emptyText={`No skill matches "${safe(vs.query)}". Esc clears the search.`}
-            renderItem={(e, { selected }) => <CatalogRow entry={e} installed={!!model?.installed.has(e.name)} selected={selected} width={inner} />}
+            renderItem={(e, { selected }) => <CatalogRow entry={e} inUse={occupied.has(e.name)} selected={selected} width={inner} />}
           />
         )}
       </Modal>
@@ -400,26 +419,26 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
   // --- package preview (catalog entry, URL, or local folder) ---
   const pkg = pkgState?.status === 'ready' ? pkgState.pkg : null
   const installState = pkgKey ? vs.installs[pkgKey] : undefined
-  const installed = !!pkg && !!model?.installed.has(pkg.name)
+  const inUse = !!pkg && occupied.has(pkg.name)
   const origin = step.source.type === 'catalog' ? step.source.entry.raw_url : step.source.type === 'url' ? step.source.url : step.source.path
   const name = step.source.type === 'catalog' ? step.source.entry.name : pkg?.name ?? ''
   const busy = installState?.status === 'installing'
   const hints: KeyHintSpec[] = [
-    ...(pkg ? [{ keys: 'enter', label: busy ? 'installing…' : installed ? 'reinstall' : 'install' }] : pkgState?.status === 'error' ? [{ keys: 'r', label: 'retry' }] : []),
+    ...(pkg ? [{ keys: 'enter', label: busy ? 'installing…' : inUse ? 'replace' : 'install' }] : pkgState?.status === 'error' ? [{ keys: 'r', label: 'retry' }] : []),
     { keys: 'up down', label: 'scroll' },
     { keys: 'esc', label: step.back === 'close' ? 'close' : 'back' },
   ]
   const resources = pkg?.resources ?? []
   const notes: Array<{ text: string; color?: string }> = []
   if (installState?.status === 'error') notes.push({ text: `${theme.glyph.cross} Install failed: ${safe(installState.error)}`, color: theme.color.error })
-  if (installState?.status === 'done') notes.push({ text: `${theme.glyph.check} Installed in ${who}${installState.warnings.length ? ` without: ${safe(installState.warnings.join('; '))}` : ''}`, color: installState.warnings.length ? theme.color.warn : theme.color.success })
+  if (installState?.status === 'done') notes.push({ text: `${theme.glyph.check} Written to skills/${safe(pkg?.name ?? name)}/ in ${who}`, color: theme.color.success })
   for (const warning of pkg?.warnings ?? []) notes.push({ text: `${theme.glyph.warn} ${safe(warning)}`, color: theme.color.warn })
   const headerRows = 3 + (resources.length ? 1 : 0) + notes.length
   return (
     <Modal title={`${title} ${theme.glyph.sep} ${name ? safe(name) : 'package'}`} width={dialogWidth} hints={hints}>
       <Text wrap="truncate-end">
         <Text bold color={theme.color.accent}>{safe(name) || '…'}</Text>
-        {installed ? <Text color={theme.color.success}>{`  ${theme.glyph.check} installed`}</Text> : null}
+        {inUse ? <Text color={theme.color.warn}>{'  name in use'}</Text> : null}
         {pkg ? <Text color={theme.color.dim}>{`  ${theme.glyph.sep} ${safe(pkg.label)}`}</Text> : null}
         {pkg ? <Text color={theme.color.dim}>{`  ${theme.glyph.sep} ${tokenLabel(Math.ceil(Buffer.byteLength(pkg.manifest, 'utf-8') / 4))}`}</Text> : null}
       </Text>
@@ -475,7 +494,7 @@ function InstalledRow({ row, selected, width }: { row: Row; selected: boolean; w
   )
 }
 
-function CatalogRow({ entry, installed, selected, width }: { entry: MergedCatalogEntry; installed: boolean; selected: boolean; width: number }) {
+function CatalogRow({ entry, inUse, selected, width }: { entry: MergedCatalogEntry; inUse: boolean; selected: boolean; width: number }) {
   const theme = useTheme()
   const label = safe(entry.sourceLabel)
   return (
@@ -483,7 +502,7 @@ function CatalogRow({ entry, installed, selected, width }: { entry: MergedCatalo
       <Text wrap="truncate-end" inverse={theme.mono && selected}>
         <Text color={selected ? theme.color.accent : theme.color.dim}>{selected ? theme.glyph.pointer : ' '} </Text>
         <Text bold={selected} color={selected ? theme.color.accent : theme.color.text}>{safe(entry.name)}</Text>
-        {installed ? <Text color={theme.color.success}>{`  ${theme.glyph.check} installed`}</Text> : null}
+        {inUse ? <Text color={theme.color.warn}>{'  name in use'}</Text> : null}
         <Text color={theme.color.dim}>{`  ${theme.glyph.sep} ${truncate(label, 32)}`}</Text>
       </Text>
       <Text wrap="truncate-end" color={theme.color.muted}>{`  ${safe(entry.description)}`}</Text>

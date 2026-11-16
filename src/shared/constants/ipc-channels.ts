@@ -198,6 +198,7 @@ export const IPC = {
   DOC_SET_FILE_AUTHORIZED: 'adf:doc:set-file-authorized',
   DOC_READ_INTERNAL_FILE: 'adf:doc:read-internal-file',
   DOC_WRITE_INTERNAL_FILE: 'adf:doc:write-internal-file',
+  DOC_WRITE_INTERNAL_FILES: 'adf:doc:write-internal-files',
   DOC_DOWNLOAD_INTERNAL_FILE: 'adf:doc:download-internal-file',
 
   // Meta (renderer -> main)

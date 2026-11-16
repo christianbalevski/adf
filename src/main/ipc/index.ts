@@ -106,7 +106,8 @@ import { AskAnswerError } from '../../shared/utils/ask-form'
 import { AgentSession } from '../runtime/agent-session'
 import { TriggerEvaluator } from '../runtime/trigger-evaluator'
 import { withSource } from '../runtime/execution-context'
-import { AGENT_WRITER, configRevision, documentRevision, fileRevision, runAsWriter } from '../runtime/resource-revisions'
+import { AGENT_WRITER, configRevision, documentRevision, fileRevision, fileRevisionKey, observeRevision, runAsWriter } from '../runtime/resource-revisions'
+import { atomicBatchFailure, commitFileBatch } from '../runtime/file-batch'
 import { isValidAgentFileName } from '../../shared/utils/agent-file-name'
 import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-conflicts'
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
@@ -218,7 +219,7 @@ import { buildMeshStatus } from '../services/mesh-status'
 import { appendMcpLog, ensurePythonRuntime, mcpOAuthSignOut, mcpOAuthStatus, probeMcpServer, runMcpRegistrationTest } from '../services/mcp-connect-tests'
 import { mergeAdapterStates } from '../services/adapter-status'
 import { fetchPeerSharedFile, probePeerHealth } from '../services/peer-fetch'
-import { fetchSkillPackage, fetchSkillsCatalog } from '../services/skills-catalog-fetch'
+import { fetchSkillPackage, fetchSkillPackageBytes, fetchSkillsCatalog } from '../services/skills-catalog-fetch'
 import { getComputeBrowserInfo } from '../services/compute-browser-info'
 
 // Application state
@@ -3562,7 +3563,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     return { success: currentWorkspace.setMetaProtection(key, protection) }
   })
 
-  ipcMain.handle(IPC.DOC_READ_INTERNAL_FILE, async (_event, { path: filePath, binaryContent }: { path: string; binaryContent?: boolean }) => {
+  ipcMain.handle(IPC.DOC_READ_INTERNAL_FILE, async (_event, { path: filePath, binaryContent, revisionOnly }: { path: string; binaryContent?: boolean; revisionOnly?: boolean }) => {
     if (!currentWorkspace) return { content: null, binary: false }
     const entry = currentWorkspace.getDatabase().readFile(filePath)
     if (!entry) return { content: null, binary: false }
@@ -3571,6 +3572,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     const textExts = new Set(['md', 'txt', 'json', 'js', 'ts', 'py', 'html', 'css', 'csv', 'xml', 'yaml', 'yml', 'toml', 'sh', 'bat', 'log', 'sql', 'env', 'cfg', 'ini', 'jsx', 'tsx'])
     const isText = textExts.has(ext)
+    // No bytes cross IPC: the revision of the bytes just read (fileRevision without a second read).
+    if (revisionOnly) return { content: '', binary: !isText, ...info, revision: observeRevision(currentWorkspace, fileRevisionKey(filePath), buf).revision }
     if (isText) {
       // W3-F: the revision an editor saves over (writeInternalFile's baseRevision).
       return { content: buf.toString('utf-8'), binary: false, ...info, revision: fileRevision(currentWorkspace, filePath).revision }
@@ -3582,7 +3585,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // The cap is enforced here, not in the renderer: past it the renderer would
     // have to hold the base64 string, the decoded bytes and the blob at once.
     if (buf.length > MAX_INLINE_BINARY_BYTES) return { content: '', binary: true, tooLarge: true, ...info }
-    return { content: buf.toString('base64'), binary: true, ...info }
+    return { content: buf.toString('base64'), binary: true, ...info, revision: fileRevision(currentWorkspace, filePath).revision }
   })
 
   ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILE, async (_event, { path, content, baseRevision }: { path: string; content: string; baseRevision?: number }) => {
@@ -3599,6 +3602,28 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       workspace.writeFile(path, content)
     }))
     return { success: true, revision: fileRevision(workspace, path, STUDIO_WRITER).revision }
+  })
+
+  /**
+   * Several files of the open agent in one transaction (AdfWorkspace.writeFilesAtomic).
+   * The renderer names the file it means (`expectFilePath`); it is compared
+   * with the open file and the batch committed in the SAME synchronous turn,
+   * with no await in between, so a switch cannot redirect the write.
+   */
+  ipcMain.handle(IPC.DOC_WRITE_INTERNAL_FILES, async (_event, args: { expectFilePath?: unknown; files?: unknown }) => {
+    if (!currentWorkspace || !currentFilePath) return { success: false, code: 'not_open', error: 'No agent is open — nothing was written.' }
+    if (typeof args?.expectFilePath !== 'string' || args.expectFilePath !== currentFilePath) {
+      return { success: false, code: 'agent_changed', error: 'The open agent changed — nothing was written.' }
+    }
+    const workspace = currentWorkspace
+    try {
+      const revisions = commitFileBatch(workspace, args.files, STUDIO_WRITER, (commit) => runAsWriter(STUDIO_WRITER, () => withSource('system:studio', workspace.getAgentConfig().id, commit)))
+      return { success: true, revisions }
+    } catch (err) {
+      const refused = atomicBatchFailure(err)
+      if (refused) return { success: false, code: refused.code, error: refused.message, ...refused.details }
+      return { success: false, error: err instanceof Error ? err.message : String(err) }
+    }
   })
 
   ipcMain.handle(IPC.DOC_DOWNLOAD_INTERNAL_FILE, async (_event, { path: filePath }: { path: string }) => {
@@ -7101,7 +7126,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
   ipcMain.handle(IPC.SKILLS_CATALOG_GET, async (_event, { url }: { url: string }) => fetchSkillsCatalog(url))
 
-  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url }: { url: string }) => fetchSkillPackage(url))
+  ipcMain.handle(IPC.SKILLS_PACKAGE_GET, async (_event, { url, binary }: { url: string; binary?: boolean }) => (binary === true ? fetchSkillPackageBytes(url) : fetchSkillPackage(url)))
 
   // --- Sandbox Package Management ---
 

@@ -59,6 +59,7 @@ import { FileOpError, leaseHolderElsewhere, requireAdfPath } from './file-ops'
 import { convertOwnLegacyPassword } from '../services/envelope-actions'
 import { readFileProviderConfig } from './path-agent-ops'
 import { parseBaseRevision } from '../runtime/resource-revisions'
+import { FILE_BATCH_BODY_LIMIT } from '../runtime/file-batch'
 import { acceptAgentReview, checkAgentReview, ReviewError } from './review-ops'
 import { ProviderKeyVaultLockedError, SECRET_STORE_KEY_STORAGE } from './provider-key-vault'
 import { SECRET_STORAGE_POLICY_KEY, SETTINGS_SECRET_KEYS, isSecretSettingsKey } from '../services/secret-storage-policy'
@@ -1844,6 +1845,17 @@ export function createDaemonHttpApi(
         protection: request.body.protection,
         baseRevision,
       })
+    } catch (err) {
+      return handleRuntimeError(reply, err)
+    }
+  })
+
+  // Several files in one transaction: each carries mustNotExist or the
+  // baseRevision it was read at; any refusal writes nothing (AdfWorkspace.writeFilesAtomic).
+  server.post<{ Params: AgentIdParams; Body: { files?: unknown } }>('/agents/:id/files/batch', { bodyLimit: FILE_BATCH_BODY_LIMIT }, async (request, reply) => {
+    if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
+    try {
+      return runtime.writeAgentFiles(request.params.id, request.body?.files)
     } catch (err) {
       return handleRuntimeError(reply, err)
     }

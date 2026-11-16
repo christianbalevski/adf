@@ -10,6 +10,7 @@
 // timers. Where the token comes from is injected (DaemonCredentials); the
 // Node implementation (env, token file, local proof) is cli/daemon-url.ts.
 
+import type { InternalFileBatchInput } from '../types/file-batch.types'
 import { EventStream, clientFrameDedupeKey, isClientFrame, isRedirect, redirectMessage, type EventStreamOptions, type StreamFrame } from './sse'
 import { normalizeRuntime } from './normalize'
 import type { AskAnswer } from '../utils/ask-form'
@@ -761,8 +762,18 @@ export class DaemonClient {
     return this.get(`/agents/${enc(agentId)}/files/content`, { path })
   }
 
+  /** File metadata, optionally with the revision for a guarded write; no content bytes. */
+  fileMeta(agentId: string, path: string, revision = false): Promise<{ mime_type: string | null; size: number; revision?: number }> {
+    return this.get(`/agents/${enc(agentId)}/files/meta`, { path, ...(revision ? { revision: '1' } : {}) })
+  }
+
   writeFile(agentId: string, path: string, input: FileWriteInput): Promise<SuccessResult> {
     return this.put(`/agents/${enc(agentId)}/files/content`, input, { path })
+  }
+
+  /** Several files in one transaction; any refusal (409 stale_revision, 403 file_protected, 400) writes nothing. */
+  writeFiles(agentId: string, files: InternalFileBatchInput[]): Promise<{ agentId: string; success: true; revisions: Record<string, number> }> {
+    return this.post(`/agents/${enc(agentId)}/files/batch`, { files })
   }
 
   deleteFile(agentId: string, path: string): Promise<SuccessResult> {

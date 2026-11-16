@@ -8,6 +8,7 @@ import { enc, type DaemonHandlerTable, type DaemonModeContext } from '../context
 import { errorString, isAgentGone, onOpenFile } from './open-file'
 import { baseRevisionArg, conflictAnswer } from '../../edit-conflicts'
 import type { ResourceWriter } from '../../../../shared/types/resource-revision.types'
+import { isMissingBatchRoute, RUNTIME_OUTDATED_CODE, RUNTIME_PREDATES_ATOMIC_INSTALLS } from '../../../../shared/utils/file-batch'
 
 /**
  * Daemon-mode DOC_* handlers: the open file's document, config, chat pages,
@@ -475,6 +476,35 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
       return conflictAnswer({ resource: args.path, ...stale, content: now && now.encoding !== 'base64' ? now.content ?? null : null })
     }
   }),
+
+  /**
+   * One atomic batch (POST /agents/:id/files/batch). The renderer's expected
+   * file is checked against this session and the agent id taken from it in
+   * the same synchronous turn; the request then names that id, so a switch
+   * while it is in flight cannot retarget it.
+   */
+  [IPC.DOC_WRITE_INTERNAL_FILES]: async (ctx, _event, args: { expectFilePath?: unknown; files?: unknown }) => {
+    const filePath = ctx.session.filePath
+    if (!filePath) return { success: false, code: 'not_open', error: 'No agent is open — nothing was written.' }
+    if (typeof args?.expectFilePath !== 'string' || args.expectFilePath !== filePath) {
+      return { success: false, code: 'agent_changed', error: 'The open agent changed — nothing was written.' }
+    }
+    const agentId = ctx.session.agentId
+    if (!agentId) return { success: false, code: 'not_open', error: `${filePath} is not open in the ADF daemon any more — nothing was written. Open it again.` }
+    const client = await ctx.ready()
+    try {
+      const saved = await client.request<{ revisions?: Record<string, number> }>(
+        'POST', `/agents/${enc(agentId)}/files/batch`, { body: { files: args.files }, timeoutMs: 120_000 })
+      return { success: true, revisions: saved.revisions ?? {} }
+    } catch (err) {
+      if (isMissingBatchRoute(err)) return { success: false, code: RUNTIME_OUTDATED_CODE, error: RUNTIME_PREDATES_ATOMIC_INSTALLS }
+      if (err instanceof DaemonError && err.status !== null && err.status >= 400 && err.status < 500) {
+        const body = (err.body && typeof err.body === 'object' ? err.body : {}) as Record<string, unknown>
+        return { ...body, success: false, code: typeof body.code === 'string' ? body.code : 'error', error: err.message }
+      }
+      throw err
+    }
+  },
 
   // The bytes come from the daemon; the save dialog and the write stay in Studio main.
   [IPC.DOC_DOWNLOAD_INTERNAL_FILE]: (ctx, _event, args: { path: string }) => onOpenFile(ctx, 'Downloading a file of the open agent', { success: false }, async (_client, id) => {

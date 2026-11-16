@@ -14,7 +14,9 @@ import type { ChatHistory, ChatHistoryEntry, Inbox, RendererOutboxMessage } from
 import type { ContentBlock } from '../shared/types/provider.types'
 import type { ResourceConflict, ResourceWriter } from '../shared/types/resource-revision.types'
 import type { BrowserSessionEvent, BrowserSessionInfo, ComputeSetupResult, ContainerPhaseEvent, ContainerSummary, ExecutionTargetProbeResult, LocalContainerExecutionTarget } from '../shared/types/compute.types'
-import type { SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
+import type { DiscoveredSkillSource, SkillCatalogEntry } from '../shared/schemas/skills-catalog.schema'
+import type { ManifestImport } from '../shared/utils/skill-import'
+import type { InternalFileBatchInput, InternalFileBatchResult } from '../shared/types/file-batch.types'
 import type { SecretStorageView } from '../shared/types/secret-storage.types'
 import type { OrbitalCacheRequest } from '../shared/utils/orbital-cache-key'
 import type { AgentActivity, AgentVitals } from '../shared/types/agent-vitals.types'
@@ -436,19 +438,28 @@ export interface AdfApi {
    * Text files come back as `content`. A binary file comes back with
    * `binary: true` and empty content unless `binaryContent` is set, in which
    * case `content` is base64 — or stays empty with `tooLarge` when the file is
-   * over the inline cap. `size` is the stored byte length.
+   * over the inline cap. `size` is the stored byte length. `revisionOnly`
+   * sends no content (empty) for any file, only its metadata and `revision`
+   * (a daemon that predates it answers without `revision`).
    */
-  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) => Promise<{
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean; revisionOnly?: boolean }) => Promise<{
     content: string | null
     binary: boolean
     mimeType?: string
     size?: number
     tooLarge?: boolean
-    /** W3-F: a text file's revision, what writeInternalFile passes as `baseRevision`. */
+    /** W3-F: the file's revision, what a write passes as `baseRevision`. */
     revision?: number
   }>
   /** W3-F: `baseRevision` as setDocument; a refusal's `conflict.content` is the file's text now. */
   writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) => Promise<{ success: boolean; revision?: number; error?: string; conflict?: ResourceConflict }>
+  /**
+   * Write several files of the open agent in ONE transaction: all of them or
+   * none. `expectFilePath` is the agent the caller means; when another one is
+   * open by the time main handles it, nothing is written. Every file carries
+   * `mustNotExist` or the `baseRevision` it was read at.
+   */
+  writeInternalFiles: (expectFilePath: string, files: InternalFileBatchInput[]) => Promise<InternalFileBatchResult>
   downloadInternalFile: (path: string) => Promise<{ success: boolean; error?: string }>
 
   // Meta
@@ -520,12 +531,17 @@ export interface AdfApi {
   // Skill catalogs (fetched main-side; the renderer's CSP blocks remote origins)
   /** Fetch and validate a skill catalog document. Never throws — failures come back as { ok: false }. */
   getSkillsCatalog: (url: string) => Promise<
-    | { ok: true; entries: SkillCatalogEntry[]; publisher?: string; dropped: number }
+    | { ok: true; entries: SkillCatalogEntry[]; publisher?: string; dropped: number; discovered?: DiscoveredSkillSource }
     | { ok: false; error: string }
   >
-  /** Fetch one catalog entry's SKILL.md body. Installing is writing it to skills/<name>/SKILL.md. */
+  /** Fetch one SKILL.md as text, with how it imports (name, `adf` label, any previewed adjustment). */
   getSkillPackage: (url: string) => Promise<
-    | { ok: true; content: string }
+    | { ok: true; content: string; import: ManifestImport }
+    | { ok: false; error: string }
+  >
+  /** Fetch one package resource as exact bytes (base64), capped at the batch's 8 MiB. */
+  getSkillPackageBytes: (url: string) => Promise<
+    | { ok: true; contentBase64: string; size: number }
     | { ok: false; error: string }
   >
 

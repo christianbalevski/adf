@@ -4,6 +4,7 @@ import type { AppSettings, AppUpdateState, FleetSettableState, NotificationsSnap
 import type { AgentConfig } from './types/adf-v02.types'
 import type { SubscriptionUsageHistoryRequest, SubscriptionUsageState } from './types/subscription-usage.types'
 import type { ResourceWriter } from './types/resource-revision.types'
+import type { InternalFileBatchInput } from './types/file-batch.types'
 import type { AdfApi } from '../preload/api'
 import type { AskAnswer } from './utils/ask-form'
 import type { ConnectionAddRequest, ConnectionsView, RuntimesMoved } from './types/connection.types'
@@ -342,10 +343,12 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.DOC_SET_FILE_PROTECTION, { path, protection }),
   setFileAuthorized: (path: string, authorized: boolean) =>
     ipcRenderer.invoke(IPC.DOC_SET_FILE_AUTHORIZED, { path, authorized }),
-  readInternalFile: (path: string, opts?: { binaryContent?: boolean }) =>
-    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true }),
+  readInternalFile: (path: string, opts?: { binaryContent?: boolean; revisionOnly?: boolean }) =>
+    ipcRenderer.invoke(IPC.DOC_READ_INTERNAL_FILE, { path, binaryContent: opts?.binaryContent === true, ...(opts?.revisionOnly ? { revisionOnly: true } : {}) }),
   writeInternalFile: (path: string, content: string, opts?: { baseRevision?: number }) =>
     ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILE, opts?.baseRevision !== undefined ? { path, content, baseRevision: opts.baseRevision } : { path, content }),
+  writeInternalFiles: (expectFilePath: string, files: InternalFileBatchInput[]) =>
+    ipcRenderer.invoke(IPC.DOC_WRITE_INTERNAL_FILES, { expectFilePath, files }),
   downloadInternalFile: (path: string) =>
     ipcRenderer.invoke(IPC.DOC_DOWNLOAD_INTERNAL_FILE, { path }),
 
@@ -443,6 +446,8 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
     ipcRenderer.invoke(IPC.SKILLS_CATALOG_GET, { url }),
   getSkillPackage: (url: string) =>
     ipcRenderer.invoke(IPC.SKILLS_PACKAGE_GET, { url }),
+  getSkillPackageBytes: (url: string) =>
+    ipcRenderer.invoke(IPC.SKILLS_PACKAGE_GET, { url, binary: true }),
 
   // Compute environment
   computeStatus: () =>

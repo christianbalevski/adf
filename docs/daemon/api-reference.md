@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 349 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 350 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -32,7 +32,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Agents](#tag-agents) (33)
 - [Loops](#tag-loops) (9)
 - [Chat](#tag-chat) (8)
-- [Files](#tag-files) (15)
+- [Files](#tag-files) (16)
 - [Identity (agent)](#tag-identity-agent) (23)
 - [Owner identity](#tag-owner-identity) (11)
 - [Credentials](#tag-credentials) (10)
@@ -3723,6 +3723,7 @@ The agent's virtual file system, including its primary document and mind.
 | GET | [`/agents/{id}/files/content`](#op-getagentfilecontent) | Read one file |
 | PUT | [`/agents/{id}/files/content`](#op-writeagentfilecontent) | Write one file |
 | DELETE | [`/agents/{id}/files/content`](#op-deleteagentfilecontent) | Delete one file |
+| POST | [`/agents/{id}/files/batch`](#op-writeagentfilesbatch) | Write several files atomically |
 | POST | [`/agents/{id}/files/rename`](#op-renameagentfile) | Rename a file |
 | POST | [`/agents/{id}/files/rename-folder`](#op-renameagentfolder) | Rename a folder (path prefix) |
 | PATCH | [`/agents/{id}/files/protection`](#op-setagentfileprotection) | Set a file's protection |
@@ -3915,6 +3916,71 @@ Example 200 (`application/json`):
 {
   "agentId": "Xk3v9QpLm2",
   "success": true
+}
+```
+
+<a id="op-writeagentfilesbatch"></a>
+
+### POST `/agents/{id}/files/batch`
+
+**Write several files atomically**
+
+All files or none, in one transaction. Each file carries exactly one precondition: `mustNotExist` (a create) or the `baseRevision` it was read at. Every path, duplicate, size bound, read-only protection and precondition is checked before anything is written; any refusal writes nothing and fires nothing. Only the listed paths are written (no file is removed); existing protections are kept. File-change triggers and events fire after the commit; a listener that fails then does not undo it. At most 256 files and 8 MiB of content (before base64).
+
+Operation `writeAgentFilesBatch` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `id` | path | string | yes | Loaded agent: its id, handle or name. |
+
+**Request body** (required): [FileBatchBody](#schema-filebatchbody)
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `files` | object[] | yes |  |
+| `files[].path` | string | yes |  |
+| `files[].content` | string |  | Text (UTF-8). Exactly one of content / contentBase64. |
+| `files[].contentBase64` | string |  | Exact bytes |
+| `files[].mimeType` | string |  |  |
+| `files[].mustNotExist` | boolean |  | The file must not exist yet. Exactly one of mustNotExist / baseRevision. |
+| `files[].baseRevision` | integer |  | The revision the file was read at |
+
+```json
+{
+  "files": [
+    {
+      "path": "string",
+      "content": "string",
+      "contentBase64": "string",
+      "mimeType": "string",
+      "mustNotExist": true,
+      "baseRevision": 0
+    }
+  ]
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [FileBatchResult](#schema-filebatchresult) | Every file written |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+| 404 | [ErrorResponse](#schema-errorresponse) | Unknown agent (or the named resource: loop, task, file, …) |
+| 409 | [StaleRevisionError](#schema-stalerevisionerror) | W3-F: the resource changed since the write's base revision (`stale_revision`); nothing was written. A write to a document another runtime holds answers 409 `agent_leased` (or `file_moving` during a move) instead. |
+| 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "agentId": "Xk3v9QpLm2",
+  "success": true,
+  "revisions": {}
 }
 ```
 
@@ -4297,6 +4363,7 @@ Operation `getAgentFileMeta` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `path` | query | string | yes | File path inside the agent |
+| `revision` | query | `"1"` |  | `1` adds `revision`: the file's current revision, the one a write's `baseRevision` is checked against (as `X-ADF-Revision` on GET …/files/raw). The daemon reads the bytes to compute it and sends none. |
 
 **Responses**
 
@@ -4320,7 +4387,8 @@ Example 200 (`application/json`):
   "authorized": true,
   "created_at": "string",
   "updated_at": "string",
-  "text": true
+  "text": true,
+  "revision": 0
 }
 ```
 
@@ -10819,9 +10887,6 @@ Runtime diagnostics, token usage and token counting, daemon-wide and per agent.
 | GET | [`/runtime/settings`](#op-getruntimesettings) | Sanitized settings summary |
 | GET | [`/runtime/usage`](#op-getruntimeusage) | Token usage totals by provider and model |
 | DELETE | [`/runtime/usage`](#op-clearruntimeusage) | Clear token usage |
-| GET | [`/runtime/subscription-usage`](#op-getsubscriptionusage) | Quota left on signed-in subscriptions |
-| POST | [`/runtime/subscription-usage/refresh`](#op-refreshsubscriptionusage) | Probe subscription usage now |
-| GET | [`/runtime/subscription-usage/history`](#op-getsubscriptionusagehistory) | Subscription usage history |
 | POST | [`/runtime/token-count`](#op-countruntimetokens) | Count tokens in one string |
 | POST | [`/runtime/token-count/batch`](#op-countruntimetokensbatch) | Count tokens in several strings |
 | GET | [`/agents/{id}/runtime`](#op-getagentruntime) | One agent's runtime diagnostics |
@@ -10831,6 +10896,9 @@ Runtime diagnostics, token usage and token counting, daemon-wide and per agent.
 | GET | [`/agents/{id}/ws`](#op-getagentws) | One agent's WebSocket connections (same as …/runtime/ws) |
 | POST | [`/runtime/emergency-stop`](#op-emergencystop) | Emergency stop |
 | GET | [`/runtime/tools/descriptions`](#op-gettooldescriptions) | Tool schema catalog |
+| GET | [`/runtime/subscription-usage`](#op-getsubscriptionusage) | Quota left on signed-in subscriptions |
+| POST | [`/runtime/subscription-usage/refresh`](#op-refreshsubscriptionusage) | Probe subscription usage now |
+| GET | [`/runtime/subscription-usage/history`](#op-getsubscriptionusagehistory) | Subscription usage history |
 
 <a id="op-getruntime"></a>
 
@@ -11254,157 +11322,6 @@ Example 200 (`application/json`):
 ```json
 {
   "success": true
-}
-```
-
-<a id="op-getsubscriptionusage"></a>
-
-### GET `/runtime/subscription-usage`
-
-**Quota left on signed-in subscriptions**
-
-One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.
-
-Operation `getSubscriptionUsage` · bearer token
-
-**Responses**
-
-| Status | Body | Description |
-|---|---|---|
-| 200 | [SubscriptionUsageState](#schema-subscriptionusagestate) | Current state |
-| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-
-Example 200 (`application/json`):
-
-```json
-{
-  "snapshots": [
-    {
-      "provider": "claude-subscription",
-      "status": "ok",
-      "plan": "string",
-      "windows": [
-        {
-          "key": "string",
-          "label": "string",
-          "usedPercent": 0,
-          "resetsAt": 0,
-          "limited": true,
-          "observedAt": 0
-        }
-      ],
-      "credits": {
-        "balance": 0,
-        "hasCredits": true
-      },
-      "observedAt": 0,
-      "error": "string",
-      "errorAt": 0
-    }
-  ]
-}
-```
-
-<a id="op-refreshsubscriptionusage"></a>
-
-### POST `/runtime/subscription-usage/refresh`
-
-**Probe subscription usage now**
-
-Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.
-
-Operation `refreshSubscriptionUsage` · bearer token
-
-**Request body** (optional): object
-
-| Field | Type | Required | Description |
-|---|---|---|---|
-| `auto` | boolean |  | Not a user click: honour the providerChecksEnabled opt-out. Default false. |
-
-```json
-{
-  "auto": true
-}
-```
-
-**Responses**
-
-| Status | Body | Description |
-|---|---|---|
-| 200 | [SubscriptionUsageState](#schema-subscriptionusagestate) | Current state |
-| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
-| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-
-Example 200 (`application/json`):
-
-```json
-{
-  "snapshots": [
-    {
-      "provider": "claude-subscription",
-      "status": "ok",
-      "plan": "string",
-      "windows": [
-        {
-          "key": "string",
-          "label": "string",
-          "usedPercent": 0,
-          "resetsAt": 0,
-          "limited": true,
-          "observedAt": 0
-        }
-      ],
-      "credits": {
-        "balance": 0,
-        "hasCredits": true
-      },
-      "observedAt": 0,
-      "error": "string",
-      "errorAt": 0
-    }
-  ]
-}
-```
-
-<a id="op-getsubscriptionusagehistory"></a>
-
-### GET `/runtime/subscription-usage/history`
-
-**Subscription usage history**
-
-Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.
-
-Operation `getSubscriptionUsageHistory` · bearer token
-
-**Parameters**
-
-| Name | In | Type | Required | Description |
-|---|---|---|---|---|
-| `since` | query | number |  | Only samples at or after this epoch ms. |
-
-**Responses**
-
-| Status | Body | Description |
-|---|---|---|
-| 200 | [SubscriptionUsageHistoryResponse](#schema-subscriptionusagehistoryresponse) | Samples, oldest first |
-| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
-| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
-| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
-
-Example 200 (`application/json`):
-
-```json
-{
-  "samples": [
-    {
-      "t": 0,
-      "provider": "claude-subscription",
-      "window": "string",
-      "usedPercent": 0
-    }
-  ]
 }
 ```
 
@@ -11910,6 +11827,157 @@ Example 200 (`application/json`):
 
 ```json
 {}
+```
+
+<a id="op-getsubscriptionusage"></a>
+
+### GET `/runtime/subscription-usage`
+
+**Quota left on signed-in subscriptions**
+
+One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.
+
+Operation `getSubscriptionUsage` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SubscriptionUsageState](#schema-subscriptionusagestate) | Current state |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "snapshots": [
+    {
+      "provider": "claude-subscription",
+      "status": "ok",
+      "plan": "string",
+      "windows": [
+        {
+          "key": "string",
+          "label": "string",
+          "usedPercent": 0,
+          "resetsAt": 0,
+          "limited": true,
+          "observedAt": 0
+        }
+      ],
+      "credits": {
+        "balance": 0,
+        "hasCredits": true
+      },
+      "observedAt": 0,
+      "error": "string",
+      "errorAt": 0
+    }
+  ]
+}
+```
+
+<a id="op-refreshsubscriptionusage"></a>
+
+### POST `/runtime/subscription-usage/refresh`
+
+**Probe subscription usage now**
+
+Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.
+
+Operation `refreshSubscriptionUsage` · bearer token
+
+**Request body** (optional): object
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `auto` | boolean |  | Not a user click: honour the providerChecksEnabled opt-out. Default false. |
+
+```json
+{
+  "auto": true
+}
+```
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SubscriptionUsageState](#schema-subscriptionusagestate) | Current state |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "snapshots": [
+    {
+      "provider": "claude-subscription",
+      "status": "ok",
+      "plan": "string",
+      "windows": [
+        {
+          "key": "string",
+          "label": "string",
+          "usedPercent": 0,
+          "resetsAt": 0,
+          "limited": true,
+          "observedAt": 0
+        }
+      ],
+      "credits": {
+        "balance": 0,
+        "hasCredits": true
+      },
+      "observedAt": 0,
+      "error": "string",
+      "errorAt": 0
+    }
+  ]
+}
+```
+
+<a id="op-getsubscriptionusagehistory"></a>
+
+### GET `/runtime/subscription-usage/history`
+
+**Subscription usage history**
+
+Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.
+
+Operation `getSubscriptionUsageHistory` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `since` | query | number |  | Only samples at or after this epoch ms. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SubscriptionUsageHistoryResponse](#schema-subscriptionusagehistoryresponse) | Samples, oldest first |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "samples": [
+    {
+      "t": 0,
+      "provider": "claude-subscription",
+      "window": "string",
+      "usedPercent": 0
+    }
+  ]
+}
 ```
 
 <a id="tag-network"></a>
@@ -14922,7 +14990,7 @@ Agent registry, curated MCP registry and skill catalogs.
 | POST | [`/registry/agents/{id}/bring-home`](#op-bringregistryagenthome) | Copy a registry agent into the agents folder |
 | GET | [`/registry/mcp`](#op-getmcpregistry) | Curated MCP registry |
 | GET | [`/catalog/skills`](#op-getskillscatalog) | Fetch a skill catalog |
-| GET | [`/catalog/skills/package`](#op-getskillpackage) | Fetch a SKILL.md package |
+| GET | [`/catalog/skills/package`](#op-getskillpackage) | Fetch a SKILL.md, or one package resource as bytes |
 
 <a id="op-getagentregistry"></a>
 
@@ -15057,7 +15125,7 @@ Example 200 (`application/json`):
 
 **Fetch a skill catalog**
 
-https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s).
+https only, through the catalog guard (SSRF guard, redirect cap, size cap, 10 s). A github.com repository page, `tree/…` folder page, or `blob/…` page of a SKILL.md or marketplace.json is resolved to one commit and listed in `discovered`, unauthenticated, through the GitHub API. Any other URL (github.com `raw/…` and `?raw=` forms included) is fetched once: a JSON catalog document is parsed as before, and a raw.githubusercontent.com SKILL.md or marketplace.json body is discovered the same way.
 
 Operation `getSkillsCatalog` · bearer token
 
@@ -15085,7 +15153,8 @@ Example 200 (`application/json`):
   ],
   "publisher": null,
   "dropped": 0,
-  "error": "string"
+  "error": "string",
+  "discovered": {}
 }
 ```
 
@@ -15093,7 +15162,9 @@ Example 200 (`application/json`):
 
 ### GET `/catalog/skills/package`
 
-**Fetch a SKILL.md package**
+**Fetch a SKILL.md, or one package resource as bytes**
+
+Without `binary`: a SKILL.md as text (at most 256 KB) with `import`, how it would install (name, `adf` declaration, any description adjustment). With `binary=1`: one package resource as base64 bytes (at most 8 MiB, an install batch's whole bound). https only, through the catalog guard.
 
 Operation `getSkillPackage` · bearer token
 
@@ -15102,6 +15173,7 @@ Operation `getSkillPackage` · bearer token
 | Name | In | Type | Required | Description |
 |---|---|---|---|---|
 | `url` | query | string | yes | SKILL.md URL (https) |
+| `binary` | query | `"1"` |  | `1`: the exact bytes, base64 |
 
 **Responses**
 
@@ -15117,6 +15189,9 @@ Example 200 (`application/json`):
 {
   "ok": true,
   "content": "string",
+  "import": {},
+  "contentBase64": "string",
+  "size": 0,
   "error": "string"
 }
 ```
@@ -22791,6 +22866,7 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 | `publisher` | any |  |  |
 | `dropped` | integer |  |  |
 | `error` | string |  |  |
+| `discovered` | object |  | For a GitHub URL: `repository`, `sha` (the one commit every URL names), `ref`, `scope`, `url`, `packages` (each with `id`, `dir`, `raw_url`, `totalBytes`, `files` (license files flagged `license`), optional `problem`), and `problems` (what was named but not listed, and notes). |
 
 <a id="schema-skillpackageresult"></a>
 
@@ -22800,6 +22876,9 @@ Curated MCP registry, remote-first with cached and bundled fallback (McpRegistry
 |---|---|---|---|
 | `ok` | boolean | yes |  |
 | `content` | string |  | SKILL.md text |
+| `import` | object |  | How the SKILL.md installs: `ok`, `name`, `description`, `manifest` (the bytes to install), `changes` (description adjustments; empty when installed as published), `compat` (the `adf` declaration), or `error`. |
+| `contentBase64` | string |  | With `binary`: the resource bytes |
+| `size` | integer |  |  |
 | `error` | string |  |  |
 
 <a id="schema-mcpprobebody"></a>
@@ -23286,6 +23365,7 @@ The path → id rule. `loaded`: the /agents/{id} routes take `agentId` now. Not 
 | `created_at` | string |  |  |
 | `updated_at` | string |  |  |
 | `text` | boolean | yes | Studio's file viewer reads it as text (by extension) |
+| `revision` | integer |  | The file's current revision; only with `revision=1` (or for an agent with no .adf file) |
 
 <a id="schema-rawfilewriteresult"></a>
 
@@ -24053,6 +24133,30 @@ Type: object \| object \| object
 | `generation` | string |  | The web:tab-generation handshake value. The Studio client waits for the first handshake and includes this on every invocation; a different generation returns 409 web_tab_reset before the handler executes. |
 | `channel` | string | yes | A shared Studio IPC channel. Availability and argument/result shapes are defined by the shared renderer API and this daemon version. |
 | `args` | any[] | yes | Positional arguments in the shared IPC shape; no second browser-specific API mapping. |
+
+<a id="schema-filebatchbody"></a>
+
+### FileBatchBody
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `files` | object[] | yes |  |
+| `files[].path` | string | yes |  |
+| `files[].content` | string |  | Text (UTF-8). Exactly one of content / contentBase64. |
+| `files[].contentBase64` | string |  | Exact bytes |
+| `files[].mimeType` | string |  |  |
+| `files[].mustNotExist` | boolean |  | The file must not exist yet. Exactly one of mustNotExist / baseRevision. |
+| `files[].baseRevision` | integer |  | The revision the file was read at |
+
+<a id="schema-filebatchresult"></a>
+
+### FileBatchResult
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes | Agent id |
+| `success` | boolean | yes |  |
+| `revisions` | map<string, integer> |  | The revision each written path has now |
 
 <a id="schema-subscriptionproviderid"></a>
 

@@ -124,6 +124,7 @@
     "html-to-text": "^9.0.5",
     "imapflow": "^1.2.16",
     "jq-wasm": "^3.0.0-jq-1.8.2",
+    "js-yaml": "^4.3.2",
     "mailparser": "^3.9.4",
     "marked": "^17.0.1",
     "nanoid": "^5.1.6",
