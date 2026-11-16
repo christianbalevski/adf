@@ -88,7 +88,7 @@ export function createFilesFetch(mock: MockDaemon, next: typeof fetch = globalTh
   }
 
   const handle = async (url: URL, method: string, body: Record<string, unknown> | undefined): Promise<Response | null> => {
-    const m = url.pathname.match(/^\/agents\/([^/]+)\/(document|mind|files(?:\/content|\/batch|\/rename|\/rename-folder|\/protection|\/authorized)?|inbox|outbox|meta)$/)
+    const m = url.pathname.match(/^\/agents\/([^/]+)\/(document|mind|files(?:\/meta|\/content|\/batch|\/rename|\/rename-folder|\/protection|\/authorized)?|inbox|outbox|meta)$/)
     if (!m) return null
     const agentId = decodeURIComponent(m[1])
     const data = resolve(agentId)
@@ -101,6 +101,11 @@ export function createFilesFetch(mock: MockDaemon, next: typeof fetch = globalTh
       case 'GET mind': return json(200, { agentId, content: findFile(data, 'mind.md')?.content.toString('utf-8') ?? '' })
       case 'PUT mind': write(data, 'mind.md', Buffer.from(String(body?.content ?? ''), 'utf-8'), 'no_delete'); return json(200, { agentId, success: true })
       case 'GET files': return json(200, { agentId, files: data.files.map(listEntry) })
+      case 'GET files/meta': {
+        const f = findFile(data, path)
+        if (!f) return json(404, { error: 'File not found' })
+        return json(200, { agentId, ...listEntry(f), mime_type: f.mime, ...(url.searchParams.get('revision') === '1' ? { revision: revisionOf(f) } : {}) })
+      }
       case 'GET files/content': {
         const f = findFile(data, path)
         if (!f) return json(404, { error: 'File not found' })

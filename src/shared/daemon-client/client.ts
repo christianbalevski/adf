@@ -762,6 +762,11 @@ export class DaemonClient {
     return this.get(`/agents/${enc(agentId)}/files/content`, { path })
   }
 
+  /** File metadata, optionally with the revision for a guarded write; no content bytes. */
+  fileMeta(agentId: string, path: string, revision = false): Promise<{ mime_type: string | null; size: number; revision?: number }> {
+    return this.get(`/agents/${enc(agentId)}/files/meta`, { path, ...(revision ? { revision: '1' } : {}) })
+  }
+
   writeFile(agentId: string, path: string, input: FileWriteInput): Promise<SuccessResult> {
     return this.put(`/agents/${enc(agentId)}/files/content`, input, { path })
   }

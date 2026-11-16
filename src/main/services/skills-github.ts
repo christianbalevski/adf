@@ -415,24 +415,39 @@ function marketplaceScopes(doc: unknown, root: string, items: TreeItem[]): { dir
  * with the reason; nothing is fetched to decide.
  */
 function inventory(owner: string, repo: string, sha: string, dir: string, items: TreeItem[], sourceUrl: string): DiscoveredSkillPackage {
-  const problems: string[] = []
   const files: DiscoveredSkillPackage['files'] = []
-  let total = 0
+  const manifestPath = dir ? `${dir}/SKILL.md` : 'SKILL.md'
+  const manifest = items.find((item) => item.path === manifestPath && item.type === 'blob')
+  let total = manifest?.size ?? 0
+  const result = (problem?: string): DiscoveredSkillPackage => ({
+    id: `${sourceUrl}#${dir}`,
+    dir,
+    raw_url: pinnedRawUrl(owner, repo, sha, manifestPath),
+    totalBytes: total,
+    // A refused package has no install inventory. Do not retain or transmit
+    // partial lists, or multiply oversized descendants across ancestor skills.
+    files: problem ? [] : files,
+    ...(problem ? { problem } : {}),
+  })
+  const add = (item: TreeItem, path: string, license = false): string | null => {
+    const size = item.size ?? 0
+    total += size
+    const bounds = batchBoundsProblem(files.length + 2, total) // manifest + this resource
+    if (bounds) return bounds
+    files.push({ path, raw_url: pinnedRawUrl(owner, repo, sha, item.path), size, ...(license ? { license: true } : {}) })
+    return null
+  }
+  if (total > MAX_SKILL_FILE_BYTES) return result(`SKILL.md is ${total} bytes (the ADF index reads at most ${MAX_SKILL_FILE_BYTES})`)
   for (const item of items) {
     if (!within(item.path, dir) || item.path === dir) continue
     const rel = dir ? item.path.slice(dir.length + 1) : item.path
-    if (item.type === 'commit') { problems.push(`${rel} is a git submodule`); continue }
+    if (item.type === 'commit') return result(`${rel} is a git submodule`)
     if (item.type !== 'blob') continue
-    if (item.mode === '120000') { problems.push(`${rel} is a symbolic link`); continue }
-    const size = item.size ?? 0
-    if (rel === 'SKILL.md') {
-      if (size > MAX_SKILL_FILE_BYTES) problems.push(`SKILL.md is ${size} bytes (the ADF index reads at most ${MAX_SKILL_FILE_BYTES})`)
-      total += size
-      continue
-    }
-    if (!isSafePackageRelativePath(rel)) { problems.push(`${rel}: path has characters ADF package paths do not allow`); continue }
-    total += size
-    files.push({ path: rel, raw_url: pinnedRawUrl(owner, repo, sha, item.path), size })
+    if (item.mode === '120000') return result(`${rel} is a symbolic link`)
+    if (rel === 'SKILL.md') continue
+    if (!isSafePackageRelativePath(rel)) return result(`${rel}: path has characters ADF package paths do not allow`)
+    const problem = add(item, rel)
+    if (problem) return result(problem)
   }
   // Ancestor license / notice files: kept beside the package so its terms travel with it.
   const own = new Set(files.map((file) => file.path))
@@ -444,25 +459,15 @@ function inventory(owner: string, repo: string, sha: string, dir: string, items:
       const name = item.path.slice(ancestor ? ancestor.length + 1 : 0)
       if (!LICENSE_FILE.test(name)) continue
       const target = `LICENSES/${ancestor || '_root'}/${name}`
-      if (!isSafePackageRelativePath(target)) { problems.push(`${item.path}: license file path cannot be kept beside the package`); continue }
-      if (own.has(target)) { problems.push(`${target} already exists in the package; the license ${item.path} would collide`); continue }
-      if (item.mode === '120000') { problems.push(`${item.path} is a symbolic link`); continue }
-      const size = item.size ?? 0
-      total += size
+      if (!isSafePackageRelativePath(target)) return result(`${item.path}: license file path cannot be kept beside the package`)
+      if (own.has(target)) return result(`${target} already exists in the package; the license ${item.path} would collide`)
+      if (item.mode === '120000') return result(`${item.path} is a symbolic link`)
+      const problem = add(item, target, true)
+      if (problem) return result(problem)
       own.add(target)
-      files.push({ path: target, raw_url: pinnedRawUrl(owner, repo, sha, item.path), size, license: true })
     }
   }
-  const bounds = batchBoundsProblem(files.length + 1, total)
-  if (bounds) problems.push(bounds)
-  return {
-    id: `${sourceUrl}#${dir}`,
-    dir,
-    raw_url: pinnedRawUrl(owner, repo, sha, dir ? `${dir}/SKILL.md` : 'SKILL.md'),
-    totalBytes: total,
-    files,
-    ...(problems.length ? { problem: problems.join('; ') } : {}),
-  }
+  return result()
 }
 
 /** What the scope of a URL is, once its ref is resolved. */
@@ -533,8 +538,9 @@ export async function discoverGithubSkills(target: GithubTarget, sourceUrl: stri
   }
   dirs.sort((a, b) => a.localeCompare(b))
   const packages = dirs.map((dir) => inventory(ctx.owner, ctx.repo, sha, dir, items, sourceUrl))
-  if (!packages.some((pkg) => pkg.files.some((f) => f.license || LICENSE_FILE.test(f.path.split('/').pop() ?? '')))) {
-    if (packages.length > 0) problems.push(`No license file found for these packages in ${ctx.owner}/${ctx.repo} at ${sha.slice(0, 7)}. Check the repository's terms before installing.`)
+  const installable = packages.filter((pkg) => !pkg.problem)
+  if (installable.length > 0 && !installable.some((pkg) => pkg.files.some((f) => f.license || LICENSE_FILE.test(f.path.split('/').pop() ?? '')))) {
+    problems.push(`No license file found for these packages in ${ctx.owner}/${ctx.repo} at ${sha.slice(0, 7)}. Check the repository's terms before installing.`)
   }
   const scopePath = scope.kind === 'marketplace' ? scope.path : scopeDir
   return {

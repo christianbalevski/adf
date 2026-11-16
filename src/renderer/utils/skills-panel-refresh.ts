@@ -55,7 +55,9 @@ export async function readSkillsPanel(view: AgentView, api: AdfApi): Promise<Ski
     const cached = key === undefined ? undefined : known.get(key)
     if (cached) return [entry.name, cached, key] as const
     const file = await api.readInternalFile(entry.path).catch(() => null)
-    return [entry.name, readAdfCompat(file && !file.binary ? file.content : null), key] as const
+    const content = file && !file.binary ? file.content : null
+    // A failed read says nothing about unchanged bytes: retry next refresh.
+    return [entry.name, readAdfCompat(content), typeof content === 'string' ? key : undefined] as const
   }))
   if (!isCurrentAgentView(view)) return null
   labels = { agent, byKey: new Map(read.flatMap(([, compat, key]) => (key === undefined ? [] : [[key, compat] as const]))) }

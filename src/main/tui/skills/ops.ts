@@ -179,7 +179,7 @@ export async function installPackage(client: DaemonClient, agentId: string, pkg:
     plan = await preparePackageWrite({
       fetchBytes: (url) => fetchBytes(url).catch((err: unknown) => ({ ok: false as const, error: errorText(err) })),
       listFiles: async () => (await client.files(agentId)).files,
-      readRevision: async (path) => (await client.file(agentId, path)).revision,
+      readRevision: async (path) => (await client.fileMeta(agentId, path, true)).revision,
     }, pkg.name, pkg.manifest, resources)
   } catch (err) {
     // Reads only: nothing has been sent.

@@ -215,7 +215,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     const agentId = requireOpenAgent(ctx, 'Reading a file of the open agent')
     let meta: { mime_type: string | null; size: number; revision?: unknown }
     try {
-      meta = await client.request<{ mime_type: string | null; size: number; revision?: unknown }>('GET', `/agents/${enc(agentId)}/files/meta`, { query: { path: args.path, ...(args.revisionOnly ? { revision: '1' } : {}) } })
+      meta = await client.fileMeta(agentId, args.path, args.revisionOnly)
     } catch (err) {
       if (!isNotFound(err)) throw err
       // Unknown file, or the daemon no longer has the agent: tell them apart.

@@ -40,6 +40,10 @@ function fakeClient(initial: Record<string, string> = {}) {
       if (!files.has(path)) throw Object.assign(new Error('File not found'), { status: 404 })
       return { encoding: 'utf-8', content: files.get(path), revision: revisionOf(files.get(path)) }
     },
+    fileMeta: async (_id: string, path: string) => {
+      if (!files.has(path)) throw Object.assign(new Error('File not found'), { status: 404 })
+      return { size: files.get(path)!.length, mime_type: 'text/plain', revision: revisionOf(files.get(path)) }
+    },
     writeFile: async (_id: string, path: string, input: { content?: string; contentBase64?: string }) => {
       writes.push(path)
       files.set(path, input.content ?? Buffer.from(input.contentBase64 ?? '', 'base64').toString('utf-8'))
@@ -167,11 +171,13 @@ describe('skills ops', () => {
   it('reinstall goes over the revisions it read; a file changed meanwhile refuses the whole batch', async () => {
     const { client, writes, files } = fakeClient({ 'skills/pdf/SKILL.md': skillMd('pdf', 'old'), 'skills/pdf/ref.md': 'old ref' })
     const pkg = { name: 'pdf', description: 'd', source: 'disk' as const, origin: '/x', label: 'local', warnings: [], manifest: skillMd('pdf', 'new'), resources: [{ path: 'ref.md', contentBase64: b64('new ref') }] }
+    const contentRead = vi.spyOn(client, 'file').mockRejectedValue(new Error('must not download old bytes'))
     expect((await install(client, 'a', pkg)).error).toBeNull()
+    expect(contentRead).not.toHaveBeenCalled()
     expect(files.get('skills/pdf/ref.md')).toBe('new ref')
     // Someone edits ref.md between the read and the write: nothing is written.
-    const realFile = client.file.bind(client)
-    ;(client as unknown as { file: typeof client.file }).file = async (id, path) => {
+    const realFile = client.fileMeta.bind(client)
+    ;(client as unknown as { fileMeta: typeof client.fileMeta }).fileMeta = async (id, path) => {
       const read = await realFile(id, path)
       if (path === 'skills/pdf/ref.md') files.set(path, 'edited by the agent')
       return read

@@ -157,11 +157,20 @@ describe('adf label', () => {
     ['adf: [0.2]', { native: false, reason: 'invalid', detail: 'adf must be a version such as ">=0.2"' }],
     ['adf: true', { native: false, reason: 'invalid', detail: 'adf must be a version such as ">=0.2"' }],
     ['license: MIT', { native: false, reason: 'absent' }],
-    // The index's scalar rule, not YAML's: a trailing comment is part of the value; a nested adf is not top-level.
-    ['adf: ">=0.2" # pinned', { native: false, reason: 'invalid', detail: 'adf must be a version such as ">=0.2"' }],
+    // Valid YAML supports comments and quoted keys; version components stay lexical.
+    ['adf: ">=0.2" # pinned', { native: true, range: '>=0.2' }],
+    ['"adf": ">=0.2"', { native: true, range: '>=0.2' }],
+    ["'adf': 0.20 # minor version twenty", { native: true, range: '0.20' }],
+    ['adf: >-\n  >=0.2\n  <1.0', { native: true, range: '>=0.2 <1.0' }],
     ['meta:\n  adf: ">=0.2"', { native: false, reason: 'absent' }],
   ])('%s', (line, expected) => {
     expect(readAdfCompat(doc(line))).toEqual(expected)
+  })
+
+  it('does not accept duplicate keys through the non-YAML fallback', () => {
+    for (const description of ['d', 'Use when: needed']) {
+      expect(readAdfCompat(`---\nname: a\ndescription: ${description}\nadf: ">=0.2"\n"adf": ">=0.3"\n---\n`)).toMatchObject({ native: false, reason: 'unreadable' })
+    }
   })
 
   it('an unreadable manifest is not native, and the tooltip never claims trust or verification', () => {

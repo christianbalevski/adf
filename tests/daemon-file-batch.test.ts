@@ -29,7 +29,8 @@ import { AgentRuntimeBuilder } from '../src/main/runtime/agent-runtime-builder'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import { clearAllUmbilicalBuses } from '../src/main/runtime/umbilical-bus'
 import { FILE_BATCH_BODY_LIMIT } from '../src/main/runtime/file-batch'
-import { isMissingBatchRoute } from '../src/shared/utils/file-batch'
+import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES, isMissingBatchRoute } from '../src/shared/utils/file-batch'
+import { VFS_PATH_MAX_LENGTH } from '../src/shared/utils/vfs-path'
 import { DaemonClient, DaemonError } from '../src/shared/daemon-client'
 import { IPC } from '../src/shared/constants/ipc-channels'
 import { createStudioDaemonClient } from '../src/main/backend/daemon-mode/credentials'
@@ -115,6 +116,25 @@ describe('POST /agents/:id/files/batch', () => {
     expect(await refused(client.writeFiles(one.agentId, [{ path: 'skills/a/x.md', content: 'x' }]))).toMatchObject({ status: 400, body: { code: 'bad_request' } })
     expect(await refused(client.request('POST', `/agents/${one.agentId}/files/batch`, { body: {} }))).toMatchObject({ status: 400 })
     expect(await refused(client.writeFiles('nobody', [{ path: 'x.md', content: 'x', mustNotExist: true }]))).toMatchObject({ status: 404 })
+  })
+
+  it('accepts maximum escaped text and Unicode paths together, and still refuses excess decoded bytes', async () => {
+    const { client, one } = await daemon()
+    const content = '\u0001'.repeat(FILE_BATCH_MAX_BYTES)
+    const files = Array.from({ length: FILE_BATCH_MAX_FILES }, (_, i) => ({
+      path: '漢'.repeat(VFS_PATH_MAX_LENGTH - 3) + String(i).padStart(3, '0'),
+      content: i === 0 ? content : '',
+      mustNotExist: true,
+    }))
+    const result = await client.writeFiles(one.agentId, files)
+    expect(Object.keys(result.revisions)).toHaveLength(FILE_BATCH_MAX_FILES)
+    const meta = await client.fileMeta(one.agentId, files[0].path, true)
+    expect(meta).toMatchObject({ size: FILE_BATCH_MAX_BYTES, revision: result.revisions[files[0].path] })
+    expect(meta).not.toHaveProperty('content')
+    expect(meta).not.toHaveProperty('content_base64')
+    const over = await refused(client.writeFiles(one.agentId, [{ path: 'over.bin', content: 'x'.repeat(FILE_BATCH_MAX_BYTES + 1), mustNotExist: true }]))
+    expect(over).toMatchObject({ status: 400, body: { code: 'payload_too_large' } })
+    expect((await client.files(one.agentId)).files.some((f) => f.path === 'over.bin')).toBe(false)
   })
 
   it('the body bound covers 8 MiB of content as base64; past it the request is refused unread', async () => {

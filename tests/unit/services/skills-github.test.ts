@@ -289,6 +289,24 @@ describe('completeness and bounds (synthetic trees)', () => {
     expect(await fetchSkillsCatalog('https://github.com/o/r')).toEqual({ ok: false, error: `${MAX_DISCOVERED_PACKAGES + 1} packages found; this browser lists at most ${MAX_DISCOVERED_PACKAGES} from one URL. Paste the URL of a folder that holds fewer.` })
   })
 
+  it('bounds refused inventories even when many nested skills share the same resources', async () => {
+    const folders = Array.from({ length: 50 }, (_, i) => Array(i + 1).fill('a').join('/'))
+    const tree = [
+      ...folders.flatMap((path) => [dir(path), blob(`${path}/SKILL.md`)]),
+      ...Array.from({ length: 1000 }, (_, i) => blob(`${folders.at(-1)}/r${i}.md`)),
+    ]
+    serve({ ...head, [`${API}/repos/o/r/git/trees/${SHA}?recursive=1`]: json({ truncated: false, tree }) })
+    const source = await discovered('https://github.com/o/r')
+    expect(source.packages).toHaveLength(50)
+    for (const pkg of source.packages) {
+      expect(pkg.problem).toContain('257 files')
+      expect(pkg.files).toEqual([])
+    }
+    expect(Buffer.byteLength(JSON.stringify(source))).toBeLessThan(100_000)
+    // Refused inventories were not examined in full; do not claim no license exists.
+    expect(source.problems).toEqual([])
+  })
+
   const MiB = 1024 * 1024
   it('per-package bounds at their exact edges, counting SKILL.md and license files; symlinks, submodules and unusable paths refuse the package', async () => {
     const files = (n: number) => Array.from({ length: n }, (_, i) => blob(`full/r${i}.md`))
@@ -319,7 +337,7 @@ describe('completeness and bounds (synthetic trees)', () => {
     expect(by.full.problem).toBeUndefined()
     expect(by.over.problem).toBe(`${FILE_BATCH_MAX_FILES + 1} files (at most ${FILE_BATCH_MAX_FILES}, SKILL.md and license files included)`)
     expect(by.big.problem).toBeUndefined()
-    expect(by.heavy.problem).toBe(`${8 * MiB + 1 + 10} bytes in all (at most ${FILE_BATCH_MAX_BYTES})`)
+    expect(by.heavy.problem).toBe(`${8 * MiB + 1} bytes in all (at most ${FILE_BATCH_MAX_BYTES})`)
     expect(by.link.problem).toBe('to-secret is a symbolic link')
     expect(by.sub.problem).toBe('vendor is a git submodule')
     expect(by.spaces.problem).toBe('my file.md: path has characters ADF package paths do not allow')

@@ -11,6 +11,7 @@ import {
 } from '../adf/adf-workspace'
 import type { InternalFileBatchInput } from '../../shared/types/file-batch.types'
 import { FILE_BATCH_MAX_BYTES, FILE_BATCH_MAX_FILES } from '../../shared/utils/file-batch'
+import { VFS_PATH_MAX_LENGTH } from '../../shared/utils/vfs-path'
 import { fileRevision, type ResourceWriter } from './resource-revisions'
 
 
@@ -22,10 +23,12 @@ export interface AgentFileBatchResult {
 }
 
 /**
- * HTTP body bound for a batch: the content cap as base64 (4/3), plus room for
- * paths and JSON framing of every file.
+ * HTTP body bound for a batch: JSON text can escape each decoded byte as
+ * six ASCII bytes (e.g. a control character). This also covers base64 (4/3),
+ * plus escaped paths at their VFS length limit and per-file JSON framing.
+ * The decoded 8 MiB cap still applies.
  */
-export const FILE_BATCH_BODY_LIMIT = Math.ceil(FILE_BATCH_MAX_BYTES * 4 / 3) + FILE_BATCH_MAX_FILES * 2048 + 64 * 1024
+export const FILE_BATCH_BODY_LIMIT = FILE_BATCH_MAX_BYTES * 6 + FILE_BATCH_MAX_FILES * (VFS_PATH_MAX_LENGTH * 6 + 2048) + 64 * 1024
 
 const BASE64 = /^[A-Za-z0-9+/]*={0,2}$/
 

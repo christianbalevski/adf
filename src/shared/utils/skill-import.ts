@@ -8,9 +8,9 @@
  * already reads installs byte-for-byte, whatever a YAML parser would make of
  * its other lines. It reads `name` and a single-line `description` of at most
  * SKILL_DESCRIPTION_MAX characters. Packages from other ecosystems commonly use a YAML block
- * scalar (`description: |`) or a longer description; only then is the file
- * parsed as strict YAML (duplicate keys refused, so nothing is silently lost
- * in the rewrite). Import then rewrites only the `description` entry of the
+ * scalar (`description: |`) or a longer description; only then does rewriting
+ * require strict YAML (duplicate keys refused, so nothing is silently lost).
+ * Import then rewrites only the `description` entry of the
  * frontmatter, keeps the full original text at the top of the body, and adds a
  * notice that the file was adjusted on install and where it came from. Every
  * other byte of the file is kept. Nothing is translated, no `adf` marker is
@@ -21,7 +21,7 @@
  * not import main-process code.
  */
 
-import { load as loadYaml, CORE_SCHEMA } from 'js-yaml'
+import { load as loadYaml, CORE_SCHEMA, FAILSAFE_SCHEMA } from 'js-yaml'
 import { MAX_SKILL_FILE_BYTES as MAX_MANIFEST_BYTES, SKILL_DESCRIPTION_MAX, SKILL_NAME, indexScalar, safeText } from '../schemas/skills-catalog.schema'
 
 /** The index's parser, as skill-indexer.ts exports it. */
@@ -46,12 +46,12 @@ const VERSION = String.raw`(?:>=|<=|>|<|=|\^|~)?\s*v?\d{1,6}(?:\.\d{1,6}){0,2}`
 const ADF_RANGE = new RegExp(`^${VERSION}(?:\\s+${VERSION})?$`)
 
 /** Parse a SKILL.md's frontmatter as YAML. Duplicate keys are an error, never a silent last-wins. */
-export function readSkillFrontmatter(text: string): { ok: true; data: Record<string, unknown>; block: string } | { ok: false; error: string } {
+export function readSkillFrontmatter(text: string, schema = CORE_SCHEMA): { ok: true; data: Record<string, unknown>; block: string } | { ok: false; error: string } {
   const match = FRONTMATTER.exec(text)
   if (!match) return { ok: false, error: 'missing YAML frontmatter' }
   let data: unknown
   try {
-    data = loadYaml(match[1], { schema: CORE_SCHEMA })
+    data = loadYaml(match[1], { schema })
   } catch (err) {
     const reason = (err as { reason?: string }).reason ?? (err instanceof Error ? err.message : String(err))
     return { ok: false, error: `frontmatter is not valid YAML: ${reason}` }
@@ -63,18 +63,27 @@ export function readSkillFrontmatter(text: string): { ok: true; data: Record<str
 
 /**
  * The label of a SKILL.md's text: native only for a valid explicit `adf`
- * declaration, read the way the index reads its fields (one top-level `adf:`
- * line, the index's scalar rule) whether or not the frontmatter is strict
- * YAML. Two `adf:` lines are not native.
+ * declaration. Read valid YAML as a mapping, preserving scalar spellings
+ * (version 0.20 must not become number 0.2). For non-YAML indexable manifests,
+ * fall back to the index's single-line scalar rule. Duplicate keys are refused.
  */
 export function readAdfCompat(text: string | null | undefined): AdfCompat {
   if (!text) return { native: false, reason: 'unreadable' }
   const block = FRONTMATTER.exec(text)?.[1]
   if (block === undefined) return { native: false, reason: 'unreadable', detail: 'missing YAML frontmatter' }
-  const lines = block.split(/\r?\n/).flatMap((line) => /^adf:(.*)$/.exec(line)?.[1] ?? [])
-  if (lines.length > 1) return { native: false, reason: 'unreadable', detail: 'duplicate adf' }
-  if (lines.length === 0) return { native: false, reason: 'absent' }
-  const value = indexScalar(lines[0])?.trim()
+  const parsed = readSkillFrontmatter(text, FAILSAFE_SCHEMA)
+  let declaration: unknown
+  if (parsed.ok) {
+    if (!Object.hasOwn(parsed.data, 'adf')) return { native: false, reason: 'absent' }
+    declaration = parsed.data.adf
+  } else {
+    if (parsed.error.includes('duplicated mapping key')) return { native: false, reason: 'unreadable', detail: parsed.error }
+    const lines = block.split(/\r?\n/).flatMap((line) => /^(?:adf|"adf"|'adf'):(.*)$/.exec(line)?.[1] ?? [])
+    if (lines.length > 1) return { native: false, reason: 'unreadable', detail: 'duplicate adf' }
+    if (lines.length === 0) return { native: false, reason: 'absent' }
+    declaration = indexScalar(lines[0])
+  }
+  const value = typeof declaration === 'string' ? declaration.trim() : null
   if (!value || !ADF_RANGE.test(value)) return { native: false, reason: 'invalid', detail: `adf must be a version such as ">=0.2"` }
   return { native: true, range: value }
 }
@@ -152,7 +161,7 @@ export function importAs(imp: ManifestImport, expectedName?: string): ManifestIm
  * in the notice an adjusted file carries.
  */
 export function importSkillManifest(text: string, source: string, indexParse: SkillIndexParser): ManifestImport {
-  // The label reads the `adf` declaration the index's way; unreadable is not native.
+  // The label reads the declaration without changing the installed bytes.
   const compat = readAdfCompat(text)
   // The index's bounds on the file itself, for every source (catalog, GitHub, URL, local).
   if (text.slice(0, 8192).includes('\u0000')) return { ok: false, error: 'SKILL.md is not text', compat }

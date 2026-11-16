@@ -395,6 +395,31 @@ describe('the adf label reads frontmatter the way the index does', () => {
  * requests each), and refresh now follows every file write.
  */
 describe('panel refresh rereads only the manifests whose file-list entry changed', () => {
+  it.each(['reject', 'missing'] as const)('retries a transient %s manifest read without a file change', async (failure) => {
+    const path = 'skills/retry/SKILL.md'
+    A.ws.writeFile(path, '---\nname: retry\ndescription: d\nadf: ">=0.2"\n---\n')
+    A.ws.refreshSkillIndex()
+    const api = apiFor('local') as AdfApi
+    const realRead = api.readInternalFile
+    let attempts = 0
+    const spy = vi.spyOn(api, 'readInternalFile').mockImplementation(async (file, opts) => {
+      if (file === path && ++attempts === 1) {
+        if (failure === 'reject') throw new Error('temporary disconnect')
+        return { content: null, binary: false }
+      }
+      return realRead(file, opts)
+    })
+    try {
+      const refresh = () => readSkillsPanel(captureAgentView(), api)
+      expect((await refresh())?.compat.retry).toMatchObject({ native: false, reason: 'unreadable' })
+      expect((await refresh())?.compat.retry).toEqual({ native: true, range: '>=0.2' })
+      expect((await refresh())?.compat.retry).toEqual({ native: true, range: '>=0.2' })
+      expect(attempts).toBe(2)
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
   it('an unchanged list rereads 0 manifests; one changed manifest rereads exactly 1', async () => {
     for (const name of ['one', 'two', 'three']) A.ws.writeFile(`skills/${name}/SKILL.md`, `---\nname: ${name}\ndescription: d\n---\n`)
     await new Promise((resolve) => setTimeout(resolve, 500))
