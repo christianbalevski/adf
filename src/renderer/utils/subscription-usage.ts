@@ -59,6 +59,12 @@ export const TONE_FILL: Record<UsageTone, string> = {
   critical: 'bg-red-500',
 }
 
+export const TONE_STROKE: Record<UsageTone, string> = {
+  normal: 'stroke-green-500',
+  warn: 'stroke-amber-500',
+  critical: 'stroke-red-500',
+}
+
 export const TONE_TEXT: Record<UsageTone, string> = {
   normal: '',
   warn: 'text-amber-600 dark:text-amber-400',
@@ -128,11 +134,4 @@ export function subscriptionTokenTotals(
     }
   }
   return out
-}
-
-/** A window label short enough for the status bar: `5-hour` → `5h`, `7-day` → `7d`; others as they are. */
-export function shortWindowLabel(label: string): string {
-  return label
-    .replace(/\b(\d+)[-\s]?hours?\b/i, '$1h')
-    .replace(/\b(\d+)[-\s]?days?\b/i, '$1d')
 }

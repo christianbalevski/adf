@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest'
 import {
   formatPercent,
   formatPlan,
-  shortWindowLabel,
   subscriptionProviderIds,
   subscriptionStatusLine,
   subscriptionTitle,
@@ -67,11 +66,6 @@ describe('labels', () => {
     expect(formatPercent(undefined)).toBe('–')
     expect(formatPercent(41.6)).toBe('42%')
     expect(formatPercent(0)).toBe('0%')
-  })
-  it('shortens hour and day windows', () => {
-    expect(shortWindowLabel('5-hour')).toBe('5h')
-    expect(shortWindowLabel('7-day')).toBe('7d')
-    expect(shortWindowLabel('Weekly (Opus)')).toBe('Weekly (Opus)')
   })
 })
 

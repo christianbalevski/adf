@@ -9,22 +9,17 @@ import { useSubscriptionProviderIds, useSubscriptionUsage } from '../../stores/s
 import { useAppStore } from '../../stores/app.store'
 import { requestSettingsRuntime } from '../../stores/settings-runtime.store'
 import { timeUntil } from '../../utils/relative-time'
-import { TONE_TEXT, formatPercent, shortWindowLabel, subscriptionStatusLine, subscriptionTitle, tightestWindow, usageTone } from '../../utils/subscription-usage'
+import { TONE_STROKE, formatPercent, subscriptionStatusLine, subscriptionTitle, tightestWindow, usageTone } from '../../utils/subscription-usage'
 
-/*
- * Same steps as the rest of the status bar (StatusBar.tsx): below 900px the
- * subscription's name goes, below 640px the window's label too, leaving the
- * percent. The tooltip names both.
- */
-const NARROW_HIDE = '@max-[900px]:hidden'
-const TIGHT_HIDE = '@max-[640px]:hidden'
+const RING_R = 5.5
+const RING_C = 2 * Math.PI * RING_R
 
 /**
  * Beside the context gauge while the open agent's model runs on a
- * subscription: that subscription's tightest window, `Claude Max · 5h 42%`,
- * amber from 80%, red from 95%. A click lists every subscription's windows
- * and links to Settings → Usage. Nothing for an API-key provider, which
- * never polls.
+ * subscription: a ring filled to that subscription's tightest window's used
+ * percent, green, amber from 80%, red from 95%. The figures are in the
+ * tooltip; a click lists every subscription's windows and links to
+ * Settings → Usage. Nothing for an API-key provider, which never polls.
  */
 export function SubscriptionPill({ providerId, runtimeId, api }: { providerId: string | undefined; runtimeId: string; api: AdfApi | undefined }) {
   const ids = useSubscriptionProviderIds(runtimeId, api, providerId)
@@ -44,17 +39,20 @@ function UsagePill({ subscription, runtimeId, api }: { subscription: Subscriptio
   const snapshot: SubscriptionUsageSnapshot | undefined = usage.state.snapshots.find((s) => s.provider === subscription)
   const title = subscriptionTitle(snapshot ?? { provider: subscription })
   const tight = snapshot && snapshot.status !== 'signed_out' ? tightestWindow(snapshot.windows) : null
+  const used = tight?.usedPercent
   const tone = tight ? usageTone(tight.usedPercent, tight.limited) : 'normal'
   const stale = snapshot?.status === 'stale'
 
-  const tip = tight
-    ? [
-        `${title}: ${tight.label} ${formatPercent(tight.usedPercent)} used`,
-        timeUntil(tight.resetsAt, now) ? `Resets in ${timeUntil(tight.resetsAt, now)}` : null,
-        snapshot ? subscriptionStatusLine(snapshot, now) : null,
-        'Click for all subscriptions',
-      ].filter(Boolean).join('\n')
-    : `${title}: ${(snapshot && subscriptionStatusLine(snapshot, now)) ?? 'No usage figures reported'}\nClick for all subscriptions`
+  const windows = snapshot && snapshot.status !== 'signed_out' ? snapshot.windows : []
+  const tip = [
+    title,
+    ...windows.map((w) => {
+      const resetIn = timeUntil(w.resetsAt, now)
+      return `${w.label}: ${formatPercent(w.usedPercent)} used${w.limited ? ', limit reached' : ''}${resetIn ? `, resets in ${resetIn}` : ''}`
+    }),
+    (snapshot && subscriptionStatusLine(snapshot, now)) ?? (windows.length === 0 ? 'No usage figures reported' : null),
+    'Click for all subscriptions',
+  ].filter(Boolean).join('\n')
 
   const toggle = () => {
     if (open) { setOpen(null); return }
@@ -76,17 +74,28 @@ function UsagePill({ subscription, runtimeId, api }: { subscription: Subscriptio
           aria-haspopup="menu"
           aria-expanded={open !== null}
           aria-label={`${title} usage: ${tight ? `${tight.label} ${formatPercent(tight.usedPercent)}` : 'not reported'}. Show subscriptions`}
-          className={`flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full border border-[var(--adf-ui-separator)] px-2 py-px tabular-nums hover:text-[var(--adf-ui-text)] ${TONE_TEXT[tone]} ${stale ? 'opacity-70' : ''}`}
+          className={`flex shrink-0 items-center rounded-full p-0.5 hover:bg-[var(--adf-ui-surface-hover)] ${stale ? 'opacity-60' : ''}`}
           data-subscription-pill={subscription}
         >
-          <span className={`max-w-[140px] truncate ${NARROW_HIDE}`}>{title}</span>
-          <span className={NARROW_HIDE} aria-hidden="true">·</span>
-          {tight && <span className={TIGHT_HIDE}>{shortWindowLabel(tight.label)}</span>}
-          <span>{tight ? formatPercent(tight.usedPercent) : '–%'}</span>
+          <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" className="-rotate-90">
+            <circle cx={7} cy={7} r={RING_R} fill="none" strokeWidth={2} className="stroke-neutral-300 dark:stroke-neutral-600" />
+            {used != null && (
+              <circle
+                cx={7}
+                cy={7}
+                r={RING_R}
+                fill="none"
+                strokeWidth={2}
+                strokeLinecap={used > 0 ? 'round' : 'butt'}
+                strokeDasharray={`${(Math.max(0, Math.min(used, 100)) / 100) * RING_C} ${RING_C}`}
+                className={TONE_STROKE[tone]}
+              />
+            )}
+          </svg>
         </button>
       </Tooltip>
       <ContextMenu position={open} onClose={() => setOpen(null)} placement={{ x: 'start', y: 'above' }} label="Subscriptions" anchor={buttonRef}>
-        <div className="w-[min(300px,calc(100vw-24px))] space-y-3 px-3 py-2" data-subscription-popover="">
+        <div className="w-[min(340px,calc(100vw-24px))] space-y-3 px-3 py-2" data-subscription-popover="">
           {listed.length === 0
             ? <p className="text-[11px] text-[var(--adf-ui-text-subtle)]">No subscription is signed in.</p>
             : listed.map((s, i) => (

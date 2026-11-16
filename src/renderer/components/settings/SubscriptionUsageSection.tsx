@@ -6,7 +6,7 @@ import { MAX_NAMED_SERIES, SERIES_COLORS } from './UsageChart'
 import { SubscriptionUsageCard } from '../common/SubscriptionUsageList'
 import { useNow } from '../../hooks/useNow'
 import { useSubscriptionProviderIds, useSubscriptionUsage } from '../../stores/subscription-usage.store'
-import { subscriptionName, subscriptionTitle, subscriptionTokenTotals } from '../../utils/subscription-usage'
+import { subscriptionName, subscriptionTokenTotals } from '../../utils/subscription-usage'
 import { formatTokenCount } from '../../utils/token-estimate'
 import { useSettingsApi, useSettingsRuntimeId } from './settings-runtime'
 import { windowRuntime } from '../../utils/window-kind'
@@ -15,8 +15,8 @@ const DAY = 24 * 60 * 60 * 1000
 
 /**
  * Settings → Usage, above the token chart: each signed-in subscription's
- * quota windows, their used percent over the selected days, and the tokens
- * agents spent through it. Signed-out subscriptions are listed dimmed, in one
+ * quota windows and the tokens agents spent through it, then one chart of
+ * every window's used percent over the selected days. Signed-out subscriptions are listed dimmed, in one
  * line, so their absence is not mistaken for zero usage.
  */
 export function SubscriptionUsageSection({ tokenUsage, days, windowDays }: { tokenUsage: TokenUsageData; days: string[]; windowDays: string }) {
@@ -66,11 +66,10 @@ export function SubscriptionUsageSection({ tokenUsage, days, windowDays }: { tok
         <div className="space-y-3 rounded-[var(--adf-ui-control-radius)] bg-[var(--adf-ui-canvas)] p-3 ring-1 ring-inset ring-[var(--adf-ui-separator)]">
           {shown.map((s, i) => (
             <div key={s.provider} className={i > 0 ? 'border-t border-[var(--adf-ui-separator)] pt-3' : undefined}>
-              <SubscriptionUsageCard snapshot={s} now={now} />
-              <SubscriptionHistoryChart snapshot={s} samples={history} since={since} now={now} />
-              <TokensLine provider={s.provider} totals={tokens[s.provider]} windowDays={windowDays} />
+              <SubscriptionUsageCard snapshot={s} now={now} meta={tokens[s.provider] && <TokensMeta provider={s.provider} totals={tokens[s.provider]!} windowDays={windowDays} />} />
             </div>
           ))}
+          <SubscriptionHistoryChart snapshots={shown} samples={history} since={since} now={now} />
         </div>
       )}
 
@@ -83,19 +82,12 @@ export function SubscriptionUsageSection({ tokenUsage, days, windowDays }: { tok
   )
 }
 
-function TokensLine({ provider, totals, windowDays }: { provider: SubscriptionProviderId; totals?: { input: number; output: number }; windowDays: string }) {
+/** Agent tokens spent through a subscription over the selected days; the in/out split on hover. */
+function TokensMeta({ provider, totals, windowDays }: { provider: SubscriptionProviderId; totals: { input: number; output: number }; windowDays: string }) {
   return (
-    <div className="mt-2 text-[11px] text-[var(--adf-ui-text-muted)]" data-subscription-tokens={provider}>
-      Agent tokens, last {windowDays} days{' '}
-      {totals ? (
-        <span className="tabular-nums text-[var(--adf-ui-text)]" title={`${totals.input.toLocaleString()} in + ${totals.output.toLocaleString()} out`}>
-          {formatTokenCount(totals.input + totals.output)}
-          <span className="text-[var(--adf-ui-text-subtle)]"> ({formatTokenCount(totals.input)} in · {formatTokenCount(totals.output)} out)</span>
-        </span>
-      ) : (
-        <span className="tabular-nums text-[var(--adf-ui-text)]">–</span>
-      )}
-    </div>
+    <span data-subscription-tokens={provider} title={`Agent tokens, last ${windowDays} days: ${totals.input.toLocaleString()} in, ${totals.output.toLocaleString()} out`}>
+      <span className="tabular-nums text-[var(--adf-ui-text-muted)]">{formatTokenCount(totals.input + totals.output)}</span> tokens, {windowDays}d
+    </span>
   )
 }
 
@@ -103,11 +95,12 @@ const MARGIN = { top: 6, right: 8, bottom: 18, left: 32 }
 const HEIGHT = 96
 
 /**
- * Used percent over time, one line per window of a subscription, 0–100 on
- * the y axis. Only reported samples are drawn; gaps between them are lines,
- * not invented points. Hover shows the nearest sample of each window.
+ * Used percent over time, one line per window of every shown subscription,
+ * 0–100 on the y axis. Only reported samples are drawn; gaps between them are
+ * lines, not invented points. Drawn once some window has two samples: a lone
+ * point says nothing the bars do not. Hover shows the nearest sample of each.
  */
-function SubscriptionHistoryChart({ snapshot, samples, since, now }: { snapshot: SubscriptionUsageSnapshot; samples: SubscriptionUsageSample[]; since: number; now: number }) {
+function SubscriptionHistoryChart({ snapshots, samples, since, now }: { snapshots: SubscriptionUsageSnapshot[]; samples: SubscriptionUsageSample[]; since: number; now: number }) {
   const [width, setWidth] = useState(0)
   const [hoverT, setHoverT] = useState<number | null>(null)
   // A callback ref: the wrapper mounts only once samples arrive, which can be after this component does.
@@ -119,28 +112,36 @@ function SubscriptionHistoryChart({ snapshot, samples, since, now }: { snapshot:
   }, [])
 
   const series = useMemo(() => {
+    const keyOf = (provider: SubscriptionProviderId, window: string) => `${provider}|${window}`
+    const shown = new Set(snapshots.map((s) => s.provider))
     const byWindow = new Map<string, SubscriptionUsageSample[]>()
     for (const sample of samples) {
-      if (sample.provider !== snapshot.provider || sample.t < since) continue
-      const list = byWindow.get(sample.window) ?? []
+      if (!shown.has(sample.provider) || sample.t < since) continue
+      const key = keyOf(sample.provider, sample.window)
+      const list = byWindow.get(key) ?? []
       list.push(sample)
-      byWindow.set(sample.window, list)
+      byWindow.set(key, list)
     }
-    // Colour by the window's place in the snapshot, so a window keeps its colour across redraws;
+    // Colour by the window's place in the snapshots, so a window keeps its colour across redraws;
     // past the named slots it wraps, never taking the slot reserved for "Other".
-    const order = snapshot.windows.map((w) => w.key)
+    const labels = new Map<string, string>()
+    for (const s of snapshots) for (const w of s.windows) labels.set(keyOf(s.provider, w.key), `${subscriptionName(s.provider)} · ${w.label}`)
+    const order = [...labels.keys()]
     for (const key of byWindow.keys()) if (!order.includes(key)) order.push(key)
     return order
       .filter((key) => byWindow.has(key))
-      .map((key) => ({
-        key,
-        label: snapshot.windows.find((w) => w.key === key)?.label ?? key,
-        color: order.indexOf(key) % MAX_NAMED_SERIES,
-        points: byWindow.get(key)!.sort((a, b) => a.t - b.t),
-      }))
-  }, [samples, snapshot, since])
+      .map((key) => {
+        const points = byWindow.get(key)!.sort((a, b) => a.t - b.t)
+        return {
+          key,
+          label: labels.get(key) ?? `${subscriptionName(points[0].provider)} · ${points[0].window}`,
+          color: order.indexOf(key) % MAX_NAMED_SERIES,
+          points,
+        }
+      })
+  }, [samples, snapshots, since])
 
-  if (series.length === 0) return null
+  if (!series.some((s) => s.points.length > 1)) return null
 
   const plotW = Math.max(0, width - MARGIN.left - MARGIN.right)
   const plotH = HEIGHT - MARGIN.top - MARGIN.bottom
@@ -155,7 +156,7 @@ function SubscriptionHistoryChart({ snapshot, samples, since, now }: { snapshot:
   const fmtDate = (t: number) => new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
 
   return (
-    <div className="mt-2" data-subscription-history={snapshot.provider}>
+    <div className="border-t border-[var(--adf-ui-separator)] pt-3" data-subscription-history="">
       <div ref={wrapRef} className="relative w-full select-none">
         {width > 0 && (
           <svg
@@ -163,7 +164,7 @@ function SubscriptionHistoryChart({ snapshot, samples, since, now }: { snapshot:
             height={HEIGHT}
             className="block overflow-visible"
             role="img"
-            aria-label={`${subscriptionTitle(snapshot)}: used percent over time`}
+            aria-label="Subscription used percent over time"
             onMouseMove={(e) => {
               const rect = e.currentTarget.getBoundingClientRect()
               const x = e.clientX - rect.left
@@ -210,16 +211,14 @@ function SubscriptionHistoryChart({ snapshot, samples, since, now }: { snapshot:
           </div>
         )}
       </div>
-      {series.length > 1 && (
-        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
-          {series.map((s) => (
-            <span key={s.key} className="inline-flex items-center gap-1.5">
-              <span className={`h-2 w-2 shrink-0 rounded-full ${SERIES_COLORS[s.color].bg}`} />
-              <span className="text-[var(--adf-ui-text-muted)]">{s.label}</span>
-            </span>
-          ))}
-        </div>
-      )}
+      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px]">
+        {series.map((s) => (
+          <span key={s.key} className="inline-flex items-center gap-1.5">
+            <span className={`h-2 w-2 shrink-0 rounded-full ${SERIES_COLORS[s.color].bg}`} />
+            <span className="text-[var(--adf-ui-text-muted)]">{s.label}</span>
+          </span>
+        ))}
+      </div>
     </div>
   )
 }

@@ -41,7 +41,7 @@ Settings save as you change them. There is no Save button, except in a dialog th
 Studio sends no telemetry. Each request it or the runtime makes on its own has an off switch:
 
 - **Studio → Updates → Automatic checks** (`updateChecksEnabled`) — packaged builds ask GitHub Releases for a newer version 15 s after launch and every hour. Nothing downloads until you click the update badge. Off = Studio never contacts GitHub for updates. **Check for updates** checks now.
-- **Server → Providers → Models** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. With a ChatGPT subscription signed in, it also covers the usage check (`GET chatgpt.com/backend-api/wham/usage`) sent when you open **Settings → Usage** or the status-bar usage pill. Off = providers are contacted only when you click **Test** or **Refresh**, or an agent runs.
+- **Server → Providers → Models** (`providerChecksEnabled`) — a `GET /models` with each configured provider's key when Home loads, when the provider list first shows a provider, and when an agent review opens. With a ChatGPT subscription signed in, it also covers the usage check (`GET chatgpt.com/backend-api/wham/usage`) sent when you open **Settings → Usage** or the status-bar usage ring. Off = providers are contacted only when you click **Test** or **Refresh**, or an agent runs.
 - **Server → MCP servers → Live catalogs** (`remoteCatalogsEnabled`) — fetch the current MCP server registry from GitHub when you open Settings → MCP servers (and the agent registry, which the current UI does not use). Off = only the copies bundled with the build and the last fetched copy.
 - **Studio → Privacy → Spell-check dictionaries** (Linux only, `spellcheckDownloadsEnabled`) — a **Download** button. Linux spell check uses Hunspell dictionaries from Google's CDN; nothing is fetched until you click it. After that, a newly added spell-check language downloads the same way. Windows and macOS use the OS spell checker and never download.
 
@@ -530,7 +530,7 @@ ADF Studio tracks token usage across all agents. View it in **Settings → Usage
 
 ### Subscriptions
 
-Above the token chart, each signed-in subscription (Claude, ChatGPT, Grok) has a card: its plan, each quota window with the percent used and the time until it resets, and a chart of that percent over the selected days. Subscriptions you are not signed in to are listed in one line below.
+Above the token chart, each signed-in subscription (Claude, ChatGPT, Grok) has its plan, its agent tokens over the selected days, and one line per quota window with the percent used and the time until it resets. Below them, one chart shows each window's percent over the selected days, once a window has been reported more than once. Subscriptions you are not signed in to are listed in one line below.
 
 The figures come from the providers' replies to agent calls; for ChatGPT, also from a usage check. They are not a public API and can stop at any time. A card says so in plain words:
 
@@ -540,7 +540,7 @@ The figures come from the providers' replies to agent calls; for ChatGPT, also f
 - **Claude has not reported usage yet**: signed in, but no agent call has returned figures.
 - **ChatGPT usage not available: …**: the usage check failed and there are no figures yet.
 
-**Refresh** re-reads every sign-in and runs the ChatGPT usage check, at most once every 10 seconds and not at all for 15 minutes after three failures in a row. Signing out of a subscription clears its figures and history, so a different account does not start with them. While an agent's model is on a subscription, the status bar shows a pill with that subscription's fullest window, for example `Claude Max · 5h 42%`; click it to see every subscription.
+**Refresh** re-reads every sign-in and runs the ChatGPT usage check, at most once every 10 seconds and not at all for 15 minutes after three failures in a row. Signing out of a subscription clears its figures and history, so a different account does not start with them. While an agent's model is on a subscription, the status bar shows a ring filled to that subscription's fullest window: green, amber from 80%, red from 95%. Hover it for each window's figures; click it to see every subscription.
 
 The figures and their full history are stored on the server's computer in `<userData>/subscription-usage.json`.
 
