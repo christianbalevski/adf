@@ -228,15 +228,28 @@ describe('SubscriptionUsageService', () => {
     ])
   })
 
-  it('drops a window with no reset time once the subscription reports others FRESH_MS later', async () => {
-    const s = make()
-    s.record('grok-subscription', win('requests', 0))
-    now += FRESH_MS
-    s.record('grok-subscription', win('pool', 30, now + 60_000))
-    expect((await snap(s, 'grok-subscription')).windows.map((w) => w.key)).toEqual(['requests', 'pool'])
+  it('drops windows a newer usage check left out, in this process and from the file', async () => {
+    const daemon = make()
+    daemon.record('grok-subscription', win('requests', 0))
+    daemon.flush()
     now += 1
-    s.record('grok-subscription', win('pool', 31, now + 60_000))
-    expect((await snap(s, 'grok-subscription')).windows.map((w) => w.key)).toEqual(['pool'])
+    const studio = make({ probes: { 'grok-subscription': async () => win('pool', 30, now + 60_000) } })
+    expect((await snap(studio, 'grok-subscription')).windows.map((w) => w.key)).toEqual(['requests'])
+    await studio.refresh()
+    expect((await snap(studio, 'grok-subscription')).windows.map((w) => w.key)).toEqual(['pool'])
+    studio.flush()
+    // The daemon still holds the old window in memory; merging on save must not bring it back.
+    daemon.record('claude-subscription', win('five_hour', 1))
+    daemon.flush()
+    expect((await snap(make(), 'grok-subscription')).windows.map((w) => w.key)).toEqual(['pool'])
+  })
+
+  it('keeps windows reported in separate events when no usage check left them out', async () => {
+    const s = make()
+    s.record('claude-subscription', win('five_hour', 10))
+    now += 1
+    s.record('claude-subscription', win('seven_day', 20))
+    expect((await snap(s, 'claude-subscription')).windows.map((w) => w.key)).toEqual(['five_hour', 'seven_day'])
   })
 
   it('keeps reset-less windows reported together, stale but shown, when nothing newer arrives', async () => {

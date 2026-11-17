@@ -32,7 +32,11 @@ export const PROBE_THROTTLE_MS = 10_000
 export const PROBE_BACKOFF_AFTER = 3
 export const PROBE_BACKOFF_MS = 15 * 60_000
 
-type Stored = Omit<SubscriptionUsageSnapshot, 'provider' | 'status' | 'windows'> & { windows: Record<string, SubscriptionUsageWindow> }
+/**
+ * `completeAt`: when a usage check (a probe, which returns every window the
+ * provider has) last answered; a window reported before it was left out of it.
+ */
+type Stored = Omit<SubscriptionUsageSnapshot, 'provider' | 'status' | 'windows'> & { windows: Record<string, SubscriptionUsageWindow>; completeAt?: number }
 /** `cleared`: when each subscription was last seen signed out; data observed before it belongs to the previous account. */
 interface Disk { snapshots: Map<SubscriptionProviderId, Stored>; samples: SubscriptionUsageSample[]; cleared: Map<SubscriptionProviderId, number> }
 
@@ -93,6 +97,8 @@ function sanitizeStored(raw: unknown): Stored | null {
   if (typeof raw.error === 'string') out.error = raw.error
   const errorAt = num(raw.errorAt)
   if (errorAt !== undefined) out.errorAt = errorAt
+  const completeAt = num(raw.completeAt)
+  if (completeAt !== undefined) out.completeAt = completeAt
   return out
 }
 
@@ -117,6 +123,8 @@ export function mergeStored(a: Stored | undefined, b: Stored | undefined): Store
   for (const [key, w] of Object.entries(newer.windows)) {
     if ((out.windows[key]?.observedAt ?? -1) <= w.observedAt) out.windows[key] = w
   }
+  const completeAt = Math.max(a.completeAt ?? -1, b.completeAt ?? -1)
+  if (completeAt >= 0) out.completeAt = completeAt
   const failed = (a.errorAt ?? -1) >= (b.errorAt ?? -1) ? a : b
   delete out.error
   delete out.errorAt
@@ -125,15 +133,13 @@ export function mergeStored(a: Stored | undefined, b: Stored | undefined): Store
 }
 
 /**
- * Windows that still describe the quota: not past their reset, and, for a
- * window with no reset time, not FRESH_MS older than the subscription's
- * newest report (the provider no longer sends it).
+ * Windows that still describe the quota: not past their reset, and not left
+ * out of the latest usage check (the provider no longer has that window).
  */
 function liveWindows(s: Stored | undefined, now: number): SubscriptionUsageWindow[] {
   if (!s) return []
-  const windows = Object.values(s.windows)
-  const newest = Math.max(...windows.map((w) => w.observedAt))
-  return windows.filter((w) => (w.resetsAt !== undefined ? w.resetsAt > now : newest - w.observedAt <= FRESH_MS))
+  return Object.values(s.windows).filter((w) =>
+    (w.resetsAt === undefined || w.resetsAt > now) && w.observedAt >= (s.completeAt ?? -Infinity))
 }
 
 /**
@@ -174,7 +180,8 @@ export class SubscriptionUsageService {
   // --- input ---------------------------------------------------------------------------
 
   /** Merge a report (windows by key). Never throws. */
-  record(provider: SubscriptionProviderId, report: UsageReport | null): void {
+  /** `complete`: the report lists every window the provider has (a usage check), so others are gone. */
+  record(provider: SubscriptionProviderId, report: UsageReport | null, complete = false): void {
     if (!report) return
     try {
       const now = this.now()
@@ -188,6 +195,7 @@ export class SubscriptionUsageService {
         next.windows[w.key] = w
         if (w.usedPercent !== undefined) this.sample(provider, w.key, w.usedPercent, now)
       }
+      if (complete) next.completeAt = Math.min(now, ...report.windows.map((w) => w.observedAt))
       this.snapshots.set(provider, next)
       this.changed()
     } catch (err) {
@@ -233,7 +241,7 @@ export class SubscriptionUsageService {
     state.inFlight = (async () => {
       try {
         if ((await this.account(provider, true))?.signedIn === false) return
-        this.record(provider, await probe())
+        this.record(provider, await probe(), true)
         state.failures = 0
       } catch (err) {
         state.failures++
