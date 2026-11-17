@@ -65,6 +65,7 @@ function api(): AdfApi {
         const buf = foreground.readFileBuffer(String(arg.path))
         return buf ? { content: buf.toString('utf8'), binary: false, revision: fileRevision(foreground, String(arg.path)).revision } : { content: null, binary: false }
       }
+      if (channel === IPC.DOC_DELETE_INTERNAL_FILE) return { success: foreground.deleteFile(String(arg.path)) }
       throw new Error(`unexpected channel ${channel}`)
     },
     send: () => {},
@@ -193,5 +194,78 @@ describe('a failed read for the current view', () => {
     await settle()
     expect(ui.text()).toContain('beta-only')
     expect(ui.text()).not.toContain('Could not read skills')
+  })
+})
+
+async function requestRemoval(name = 'alpha-one') {
+  const button = ui!.find((n) => n.type === 'button' && n.props['aria-label'] === `Remove ${name}`)[0]
+  expect(button).toBeDefined()
+  ;(button.props.onClick as () => void)()
+  await settle()
+}
+
+async function answerRemoval(label: 'Cancel' | 'Remove skill') {
+  const button = ui!.find((n) => n.type === 'button' && n.children.some((c) => c.text === label))[0]
+  ;(button.props.onClick as () => void)()
+  await settle()
+}
+
+describe('removing installed skills', () => {
+  it('cancel keeps the package; confirmation removes its nested files and closes their tabs', async () => {
+    const resource = 'skills/alpha-one/references/guide.md'
+    A.ws.writeFile(resource, 'local edits')
+    useEditorTabsStore.getState().openTab(resource, 'local edits')
+    ui = mount(<SkillsPanel />)
+    await settle()
+    await requestRemoval()
+    expect(ui.text()).toContain('including local edits and unsaved changes')
+    expect(A.ws.readFile('skills/alpha-one/SKILL.md')).not.toBeNull()
+    await answerRemoval('Cancel')
+    expect(A.ws.readFile(resource)).toBe('local edits')
+    await requestRemoval()
+    await answerRemoval('Remove skill')
+    await settle(800)
+    expect(A.ws.listFiles().filter((f) => f.path.startsWith('skills/alpha-one/'))).toEqual([])
+    expect(A.ws.readFile('skills/alpha-two/SKILL.md')).not.toBeNull()
+    expect(useEditorTabsStore.getState().tabs.some((t) => t.path === resource)).toBe(false)
+    expect(ui.text()).toContain('1 skill installed')
+    expect(ui.text()).not.toContain('alpha-one')
+  })
+
+  it('allows removal of muted skills and rejected packages', async () => {
+    A.ws.writeFile('skills-state.json', JSON.stringify({ schema: 1, disabled: ['alpha-one'] }))
+    A.ws.writeFile('skills/broken/SKILL.md', 'missing frontmatter')
+    A.ws.refreshSkillIndex()
+    ui = mount(<SkillsPanel />)
+    await settle()
+    expect(ui.text()).toContain('muted — description removed from context')
+    await requestRemoval()
+    await answerRemoval('Remove skill')
+    await requestRemoval('broken')
+    await answerRemoval('Remove skill')
+    expect(A.ws.readFile('skills/alpha-one/SKILL.md')).toBeNull()
+    expect(A.ws.readFile('skills/broken/SKILL.md')).toBeNull()
+  })
+
+  it('preflights protected resources before deleting the manifest', async () => {
+    A.ws.writeFile('skills/alpha-one/keep.md', 'keep')
+    A.ws.setFileProtection('skills/alpha-one/keep.md', 'no_delete')
+    ui = mount(<SkillsPanel />)
+    await settle()
+    await requestRemoval()
+    await answerRemoval('Remove skill')
+    expect(A.ws.readFile('skills/alpha-one/SKILL.md')).not.toBeNull()
+    expect(A.ws.readFile('skills/alpha-one/keep.md')).toBe('keep')
+    expect(ui.text()).toContain('Cannot remove protected file')
+  })
+
+  it('does not delete anything if the agent switches while confirmation is open', async () => {
+    ui = mount(<SkillsPanel />)
+    await settle()
+    await requestRemoval()
+    await switchTo(B)
+    await answerRemoval('Remove skill')
+    expect(A.ws.readFile('skills/alpha-one/SKILL.md')).not.toBeNull()
+    expect(B.ws.readFile('skills/beta-only/SKILL.md')).not.toBeNull()
   })
 })

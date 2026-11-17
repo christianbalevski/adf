@@ -3,6 +3,7 @@ import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useAgentSwitching, useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { DocsLink, InfoHint } from '../common/DocsLink'
+import { useConfirm } from '../common/ConfirmDialog'
 import { DOCS } from '../../../shared/constants/docs-links'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
 import {
@@ -24,6 +25,7 @@ import { setSkillMuted, syncOpenTab } from '../../utils/skills-state'
 import { apiFor, openApi, useOpenRuntime } from '../../utils/runtime-api'
 import { captureAgentView, isCurrentAgentView } from '../../utils/agent-view'
 import { readSkillsPanel } from '../../utils/skills-panel-refresh'
+import { removeSkillPackage } from '../../utils/skill-remove'
 import { commitSkillInstall, prepareSkillInstall, type InstallOutcome, type InstallRequest, type PreparedInstall } from '../../utils/skill-install'
 import { CatalogDialog } from './skills/CatalogDialog'
 import { CompatChip } from './skills/CompatChip'
@@ -82,6 +84,7 @@ export function SkillsPanel() {
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})
   const [notice, setNotice] = useState<string | null>(null)
   const [catalogOpen, setCatalogOpen] = useState(false)
+  const [confirmDialog, confirm] = useConfirm()
 
   /**
    * Pending mute/unmute the registry has not caught up with yet. The indexer is
@@ -301,6 +304,37 @@ export function SkillsPanel() {
     }
   }, [later, markBusy, refresh, setRowError])
 
+  const handleRemove = useCallback(async (name: string, path: string) => {
+    const view = captureAgentView()
+    if (!isCurrentAgentView(view)) return
+    markBusy(name, true)
+    try {
+      const confirmed = await confirm({
+        title: `Remove ${sanitizeDisplayText(name)}?`,
+        body: `This deletes all files in skills/${name}/ from this agent, including local edits and unsaved changes in open tabs. This cannot be undone.`,
+        confirmLabel: 'Remove skill',
+        danger: true,
+      })
+      if (!confirmed || !isCurrentAgentView(view)) return
+      setRowError(name, null)
+      setNotice(null)
+      const result = await removeSkillPackage(path, view, apiFor(view.runtimeId), (deletedPath) => {
+        useEditorTabsStore.getState().closeTab(deletedPath)
+      })
+      if (!isCurrentAgentView(view)) return
+      if (result.error) {
+        setRowError(name, result.error)
+        setNotice(result.deleted
+          ? `Removal of ${name} is incomplete: ${result.deleted} file(s) deleted. ${result.error} Remaining files are available in Files.`
+          : result.error)
+      }
+      await refresh()
+      later(600, () => { if (isCurrentAgentView(view)) void refresh() })
+    } finally {
+      markBusy(name, false)
+    }
+  }, [confirm, later, markBusy, refresh, setRowError])
+
   /** Prepare an install (skill-install.ts): every byte fetched, the batch planned, nothing written yet. */
   const prepareInstall = useCallback(async (request: InstallRequest): Promise<InstallOutcome> => {
     markBusy(request.key, true)
@@ -450,24 +484,35 @@ export function SkillsPanel() {
                   <p className="text-[11px] text-red-600 dark:text-red-400 mt-1">{rowErrors[skill.name]}</p>
                 )}
               </div>
-              {/* The row opens SKILL.md; the checkbox must not. */}
-              <label
-                className="flex items-center gap-1.5 shrink-0 cursor-pointer"
-                title={skill.enabled ? 'Mute this skill' : 'Unmute this skill'}
-                onClick={(e) => e.stopPropagation()}
-              >
-                <input
-                  type="checkbox"
-                  checked={skill.enabled}
-                  disabled={busy.has(skill.name)}
+              {/* Controls must not trigger the row's mouse or keyboard activation. */}
+              <div className="flex flex-col items-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
+                <label
+                  className="flex items-center gap-1.5 shrink-0 cursor-pointer"
+                  title={skill.enabled ? 'Mute this skill' : 'Unmute this skill'}
                   onClick={(e) => e.stopPropagation()}
-                  onChange={(e) => void handleToggle(skill.name, e.target.checked)}
-                  className="rounded text-blue-500"
-                />
-                <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                  {skill.enabled ? 'on' : 'off'}
-                </span>
-              </label>
+                >
+                  <input
+                    type="checkbox"
+                    checked={skill.enabled}
+                    disabled={busy.has(skill.name)}
+                    onClick={(e) => e.stopPropagation()}
+                    onChange={(e) => void handleToggle(skill.name, e.target.checked)}
+                    className="rounded text-blue-500"
+                  />
+                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
+                    {skill.enabled ? 'on' : 'off'}
+                  </span>
+                </label>
+                <button
+                  type="button"
+                  aria-label={`Remove ${skill.name}`}
+                  disabled={busy.has(skill.name)}
+                  onClick={() => void handleRemove(skill.name, skill.path)}
+                  className="text-[11px] text-red-600 dark:text-red-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-default"
+                >
+                  Remove
+                </button>
+              </div>
             </div>
           </div>
         ))}
@@ -499,6 +544,17 @@ export function SkillsPanel() {
             <div className="text-[10px] text-amber-500 dark:text-amber-600 mt-1 font-mono truncate" title={problem.path}>
               {sanitizeDisplayText(problem.path)}
             </div>
+            {problem.isPackage && (
+              <button
+                type="button"
+                aria-label={`Remove ${problem.label}`}
+                disabled={busy.has(problem.key)}
+                onClick={() => void handleRemove(problem.key, problem.path)}
+                className="mt-2 text-[11px] text-red-600 dark:text-red-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-default"
+              >
+                Remove
+              </button>
+            )}
           </div>
         ))}
       </div>
@@ -528,6 +584,7 @@ export function SkillsPanel() {
         )}
       </div>
 
+      {confirmDialog}
       <CatalogDialog
         open={catalogOpen}
         onClose={() => setCatalogOpen(false)}
