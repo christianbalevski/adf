@@ -3,7 +3,7 @@
  * plus a downsampled history, kept in `<userData>/subscription-usage.json`.
  *
  * Figures arrive passively off real agent calls (`record`) or from an
- * on-demand probe (`refresh`, Codex only). Every source is undocumented, so a
+ * on-demand probe (`refresh`: ChatGPT and Grok). Every source is undocumented, so a
  * failure only ever becomes a plain status on the snapshot: `record` and
  * `markError` never throw, and nothing here runs on the agent call path except
  * an in-memory merge.
@@ -124,9 +124,16 @@ export function mergeStored(a: Stored | undefined, b: Stored | undefined): Store
   return out
 }
 
-/** Windows whose reset has not passed: an expired one no longer describes the quota. */
+/**
+ * Windows that still describe the quota: not past their reset, and, for a
+ * window with no reset time, not FRESH_MS older than the subscription's
+ * newest report (the provider no longer sends it).
+ */
 function liveWindows(s: Stored | undefined, now: number): SubscriptionUsageWindow[] {
-  return s ? Object.values(s.windows).filter((w) => w.resetsAt === undefined || w.resetsAt > now) : []
+  if (!s) return []
+  const windows = Object.values(s.windows)
+  const newest = Math.max(...windows.map((w) => w.observedAt))
+  return windows.filter((w) => (w.resetsAt !== undefined ? w.resetsAt > now : newest - w.observedAt <= FRESH_MS))
 }
 
 /**

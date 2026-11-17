@@ -1,9 +1,12 @@
 import type { ReactNode } from 'react'
+import { DocsLink } from './DocsLink'
 import type { SubscriptionUsageSnapshot, SubscriptionUsageWindow } from '../../../shared/types/subscription-usage.types'
 import {
+  SUBSCRIPTION_USAGE_PAGES,
   TONE_FILL,
   TONE_TEXT,
   formatPercent,
+  subscriptionName,
   subscriptionStatusLine,
   subscriptionTitle,
   usageTone,
@@ -39,9 +42,10 @@ export function SubscriptionWindowBar({ window: w, now, dimmed = false }: { wind
 }
 
 /**
- * One subscription: a header line (title; credits, `meta` and freshness on
- * the right), one line per window, and a plain status line when not current
- * (a quiet note when only a later check failed).
+ * One subscription: a header line (title and a link to the provider's own
+ * usage page; credits, `meta` and freshness on the right), one line per
+ * window, and a plain status line when not current (a quiet note when only a
+ * later check failed).
  */
 export function SubscriptionUsageCard({ snapshot: s, now, meta }: { snapshot: SubscriptionUsageSnapshot; now: number; meta?: ReactNode }) {
   const status = subscriptionStatusLine(s, now)
@@ -57,7 +61,10 @@ export function SubscriptionUsageCard({ snapshot: s, now, meta }: { snapshot: Su
   return (
     <div className="space-y-1" data-subscription={s.provider}>
       <div className="flex items-baseline justify-between gap-3">
-        <span className={`shrink-0 text-xs font-medium ${s.status === 'signed_out' ? 'text-[var(--adf-ui-text-subtle)]' : 'text-[var(--adf-ui-text)]'}`}>{subscriptionTitle(s)}</span>
+        <span className="flex shrink-0 items-baseline gap-1.5">
+          <span className={`text-xs font-medium ${s.status === 'signed_out' ? 'text-[var(--adf-ui-text-subtle)]' : 'text-[var(--adf-ui-text)]'}`}>{subscriptionTitle(s)}</span>
+          <DocsLink href={SUBSCRIPTION_USAGE_PAGES[s.provider]} label={<span className="sr-only">{subscriptionName(s.provider)} usage page</span>} />
+        </span>
         {details.length > 0 && (
           <span className="flex min-w-0 flex-wrap justify-end gap-x-1.5 text-[10px] text-[var(--adf-ui-text-subtle)]">
             {details.map((d, i) => (

@@ -95,7 +95,7 @@ const MARGIN = { top: 6, right: 8, bottom: 18, left: 32 }
 const HEIGHT = 96
 
 /**
- * Used percent over time, one line per window of every shown subscription,
+ * Used percent over time, one line per shown window of every shown subscription,
  * 0–100 on the y axis. Only reported samples are drawn; gaps between them are
  * lines, not invented points. Drawn once some window has two samples: a lone
  * point says nothing the bars do not. Hover shows the nearest sample of each.
@@ -122,23 +122,20 @@ function SubscriptionHistoryChart({ snapshots, samples, since, now }: { snapshot
       list.push(sample)
       byWindow.set(key, list)
     }
+    // Only windows the cards show: one the provider stopped sending is not charted.
     // Colour by the window's place in the snapshots, so a window keeps its colour across redraws;
     // past the named slots it wraps, never taking the slot reserved for "Other".
     const labels = new Map<string, string>()
     for (const s of snapshots) for (const w of s.windows) labels.set(keyOf(s.provider, w.key), `${subscriptionName(s.provider)} · ${w.label}`)
     const order = [...labels.keys()]
-    for (const key of byWindow.keys()) if (!order.includes(key)) order.push(key)
     return order
       .filter((key) => byWindow.has(key))
-      .map((key) => {
-        const points = byWindow.get(key)!.sort((a, b) => a.t - b.t)
-        return {
-          key,
-          label: labels.get(key) ?? `${subscriptionName(points[0].provider)} · ${points[0].window}`,
-          color: order.indexOf(key) % MAX_NAMED_SERIES,
-          points,
-        }
-      })
+      .map((key) => ({
+        key,
+        label: labels.get(key)!,
+        color: order.indexOf(key) % MAX_NAMED_SERIES,
+        points: byWindow.get(key)!.sort((a, b) => a.t - b.t),
+      }))
   }, [samples, snapshots, since])
 
   if (!series.some((s) => s.points.length > 1)) return null

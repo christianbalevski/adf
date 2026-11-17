@@ -9,6 +9,13 @@ import { relativeTime } from './relative-time'
  * never as 0.
  */
 
+/** Each provider's own usage page, opened in the browser. Grok's is its Settings → Usage tab. */
+export const SUBSCRIPTION_USAGE_PAGES: Record<SubscriptionProviderId, string> = {
+  'claude-subscription': 'https://claude.ai/settings/usage',
+  'chatgpt-subscription': 'https://chatgpt.com/codex/settings/usage',
+  'grok-subscription': 'https://grok.com/?_s=usage',
+}
+
 /** The catalog label: `Claude`, `ChatGPT`, `Grok`. */
 export function subscriptionName(provider: SubscriptionProviderId): string {
   return findCatalogEntry(provider)?.label ?? provider

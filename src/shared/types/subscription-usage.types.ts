@@ -2,8 +2,8 @@
  * Subscription usage — how much of a signed-in subscription's quota is left.
  *
  * Sources are undocumented provider internals (Claude Code rate-limit events,
- * Codex `x-codex-*` headers, Codex's `wham/usage` endpoint, xAI rate-limit
- * headers). Any of them can change or vanish without notice, so every field
+ * Codex `x-codex-*` headers, Codex's `wham/usage` endpoint, Grok Build's
+ * billing endpoint). Any of them can change or vanish without notice, so every field
  * past `provider`/`status`/`windows` is optional and the UI renders whatever
  * is present. App-level data: never stored in an .adf file, never exposed to
  * agents.

@@ -108,6 +108,8 @@ export function ContextMenu({ position, items = [], children, onClose, placement
     const onScroll = (e: Event) => {
       // A long touch menu must be scrollable without dismissing itself.
       if (compact && e.target instanceof Node && menuRef.current?.contains(e.target)) return
+      // An anchored menu stays put while something that does not move its anchor scrolls (a chat following a running agent).
+      if (anchor?.current && e.target instanceof Node && !e.target.contains(anchor.current)) return
       onClose()
     }
     document.addEventListener('pointerdown', onPointerDown, true)
@@ -124,7 +126,7 @@ export function ContextMenu({ position, items = [], children, onClose, placement
       if (compact) viewport?.removeEventListener('resize', onClose)
       window.removeEventListener('resize', onClose)
     }
-  }, [open, onClose, compact, viewport])
+  }, [open, onClose, compact, viewport, anchor])
 
   /** Close, and give the focus back to the anchor, else to what had it when the menu opened. */
   function closeAndReturnFocus() {

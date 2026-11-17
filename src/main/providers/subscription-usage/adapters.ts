@@ -167,35 +167,47 @@ export function fromCodexUsage(body: unknown, now: number): UsageReport | null {
   return report(windows, extra)
 }
 
-// --- Grok (xAI `x-ratelimit-*` headers) -----------------------------------------------
+// --- Grok (Grok Build's `GET cli-chat-proxy.grok.com/v1/billing?format=credits`) ----
 
-/** `1s`, `6m0s`, `1h2m`, `250ms` → ms; a bare number is seconds from now, or an epoch. */
-export function resetMs(raw: string | null, now: number): number | undefined {
-  if (!raw) return undefined
-  const n = num(raw)
-  if (n !== undefined) return n > 1e9 ? epochMs(n) : now + Math.round(n * 1000)
-  const parts = [...raw.matchAll(/(\d+(?:\.\d+)?)(ms|h|m|s)/g)]
-  if (parts.length === 0 || parts.map((p) => p[0]).join('') !== raw.trim()) return undefined
-  const unit: Record<string, number> = { h: 3_600_000, m: 60_000, s: 1000, ms: 1 }
-  return now + Math.round(parts.reduce((sum, p) => sum + Number(p[1]) * unit[p[2]], 0))
+const GROK_PERIOD_LABELS: Record<string, string> = {
+  USAGE_PERIOD_TYPE_WEEKLY: 'Weekly',
+  USAGE_PERIOD_TYPE_MONTHLY: 'Monthly',
 }
 
-/** Requests and tokens windows from `x-ratelimit-{limit,remaining,reset}-{requests,tokens}`. */
-export function fromGrokHeaders(headers: Headers, now: number): UsageReport | null {
-  const windows = (['requests', 'tokens'] as const).map((kind): SubscriptionUsageWindow => {
-    const limit = num(headers.get(`x-ratelimit-limit-${kind}`))
-    const remaining = num(headers.get(`x-ratelimit-remaining-${kind}`))
-    const resetsAt = resetMs(headers.get(`x-ratelimit-reset-${kind}`), now)
-    const usedPercent = limit !== undefined && limit > 0 && remaining !== undefined
-      ? clampPercent(100 * (1 - remaining / limit))
-      : undefined
-    return {
-      key: kind,
-      label: kind === 'requests' ? 'Requests' : 'Tokens',
-      ...(usedPercent !== undefined ? { usedPercent, limited: remaining! <= 0 } : {}),
-      ...(resetsAt !== undefined ? { resetsAt } : {}),
-      observedAt: now,
-    }
-  })
-  return report(windows)
+/** USD cents as `{ "val": n }`; proto3 JSON omits a zero, so `{}` is 0. */
+function cents(v: unknown): number | undefined {
+  if (!isRecord(v)) return undefined
+  return v.val === undefined ? 0 : num(v.val)
+}
+
+/**
+ * The shared weekly (or monthly) pool: `creditUsagePercent` and
+ * `currentPeriod`, falling back to the older `used` / `monthlyLimit` and
+ * `billingPeriodEnd`. proto3 JSON omits a zero, so with a period present and
+ * no figure the pool is at 0%, as Grok Build reads it. Purchased credits are
+ * `prepaidBalance`, in cents, shown only when there are some.
+ */
+export function fromGrokCredits(body: unknown, now: number): UsageReport | null {
+  const config = isRecord(body) && isRecord(body.config) ? body.config : null
+  if (!config) return null
+  const used = cents(config.used)
+  const limit = cents(config.monthlyLimit)
+  const period = isRecord(config.currentPeriod) ? config.currentPeriod : {}
+  const end = typeof period.end === 'string' ? period.end : typeof config.billingPeriodEnd === 'string' ? config.billingPeriodEnd : undefined
+  const resetsAt = end !== undefined && Number.isFinite(Date.parse(end)) ? Date.parse(end) : undefined
+  const usedPercent = clampPercent(
+    num(config.creditUsagePercent)
+      ?? (used !== undefined && limit ? (100 * used) / limit : undefined)
+      ?? (config.creditUsagePercent === undefined && resetsAt !== undefined ? 0 : undefined),
+  )
+  const label = (typeof period.type === 'string' && GROK_PERIOD_LABELS[period.type]) || 'Usage'
+  const prepaid = cents(config.prepaidBalance)
+  const window: SubscriptionUsageWindow = {
+    key: 'pool',
+    label,
+    ...(usedPercent !== undefined ? { usedPercent, limited: usedPercent >= 100 } : {}),
+    ...(resetsAt !== undefined ? { resetsAt } : {}),
+    observedAt: now,
+  }
+  return report([window], prepaid ? { credits: { balance: prepaid / 100 } } : {})
 }

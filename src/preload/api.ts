@@ -357,7 +357,7 @@ export interface AdfApi {
   // Subscription usage: quota left on signed-in subscriptions (Claude, ChatGPT, Grok)
   getSubscriptionUsage: () => Promise<SubscriptionUsageState>
   /**
-   * Re-reads sign-ins and runs the probes that exist (Codex only), subject to throttle/backoff; resolves with the
+   * Re-reads sign-ins and runs the probes that exist (ChatGPT, Grok), subject to throttle/backoff; resolves with the
    * current state either way. `auto`: not a click, so the runtime's providerChecksEnabled opt-out applies.
    */
   refreshSubscriptionUsage: (opts?: { auto?: boolean }) => Promise<SubscriptionUsageState>

@@ -12,7 +12,7 @@ import { getChatGptAuthManager } from '../chatgpt-subscription/auth-manager'
 import { getGrokAuthManager } from '../grok-subscription/auth-manager'
 import { getClaudeAuthManager } from '../claude-subscription/auth-manager'
 import { SubscriptionUsageService, defaultFilePath, type SubscriptionAccount } from './service'
-import { probeCodexUsage } from './codex-probe'
+import { probeCodexUsage, probeGrokUsage } from './probes'
 import type { UsageReport } from './adapters'
 
 /** Claude's sign-in is read by running Claude Code, so a 60 s poll reuses it for this long. */
@@ -48,7 +48,10 @@ export function getSubscriptionUsageService(): SubscriptionUsageService {
   instance ??= new SubscriptionUsageService({
     filePath: defaultFilePath(getUserDataPath()),
     account,
-    probes: { 'chatgpt-subscription': () => probeCodexUsage(getChatGptAuthManager()) },
+    probes: {
+      'chatgpt-subscription': () => probeCodexUsage(getChatGptAuthManager()),
+      'grok-subscription': () => probeGrokUsage(getGrokAuthManager()),
+    },
   })
   return instance
 }

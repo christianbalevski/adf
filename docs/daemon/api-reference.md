@@ -11835,7 +11835,7 @@ Example 200 (`application/json`):
 
 **Quota left on signed-in subscriptions**
 
-One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, xAI `x-ratelimit-*` headers); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.
+One snapshot per subscription provider (Claude, ChatGPT, Grok) as this runtime last saw it. Figures come from undocumented provider internals (Claude Code rate-limit events, Codex `x-codex-*` headers and its usage endpoint, Grok Build's billing endpoint); a failed source shows as a status (`stale`, `error`, `unavailable`) or, while the figures are still current, as `error` on an `ok` snapshot, never as a guessed figure. Windows past their reset are left out. Changes are also pushed on the client stream as topic `subscription_usage`.
 
 Operation `getSubscriptionUsage` · bearer token
 
@@ -11884,7 +11884,7 @@ Example 200 (`application/json`):
 
 **Probe subscription usage now**
 
-Re-reads each subscription's sign-in and runs the usage probes that exist (only ChatGPT/Codex today: GET https://chatgpt.com/backend-api/wham/usage), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.
+Re-reads each subscription's sign-in and runs the usage probes that exist (ChatGPT: GET https://chatgpt.com/backend-api/wham/usage; Grok: GET https://cli-chat-proxy.grok.com/v1/billing?format=credits), at most once per 10 s per provider and not at all for 15 minutes after three consecutive failures. With `auto: true` (a refresh the user did not click for) nothing is probed while the runtime's `providerChecksEnabled` setting is off. A failed probe is recorded on the snapshot (`error`), not returned as an HTTP error. Returns the current state either way.
 
 Operation `refreshSubscriptionUsage` · bearer token
 
@@ -11946,7 +11946,7 @@ Example 200 (`application/json`):
 
 **Subscription usage history**
 
-Used-percent samples per provider and window, at most one per 5 minutes, kept 90 days.
+Used-percent samples per provider and window, at most one per 5 minutes, all kept. Signing out of a subscription removes its samples.
 
 Operation `getSubscriptionUsageHistory` · bearer token
 

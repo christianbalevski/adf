@@ -51,7 +51,6 @@ function UsagePill({ subscription, runtimeId, api }: { subscription: Subscriptio
       return `${w.label}: ${formatPercent(w.usedPercent)} used${w.limited ? ', limit reached' : ''}${resetIn ? `, resets in ${resetIn}` : ''}`
     }),
     (snapshot && subscriptionStatusLine(snapshot, now)) ?? (windows.length === 0 ? 'No usage figures reported' : null),
-    'Click for all subscriptions',
   ].filter(Boolean).join('\n')
 
   const toggle = () => {
@@ -78,7 +77,7 @@ function UsagePill({ subscription, runtimeId, api }: { subscription: Subscriptio
           data-subscription-pill={subscription}
         >
           <svg width={14} height={14} viewBox="0 0 14 14" aria-hidden="true" className="-rotate-90">
-            <circle cx={7} cy={7} r={RING_R} fill="none" strokeWidth={2} className="stroke-neutral-300 dark:stroke-neutral-600" />
+            <circle cx={7} cy={7} r={RING_R} fill="none" strokeWidth={2} className="stroke-neutral-400 dark:stroke-neutral-500" />
             {used != null && (
               <circle
                 cx={7}

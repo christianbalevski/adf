@@ -6,11 +6,10 @@ import {
   fromClaudeRateLimit,
   fromCodexHeaders,
   fromCodexUsage,
-  fromGrokHeaders,
-  resetMs,
+  fromGrokCredits,
   type UsageReport,
 } from '../../../src/main/providers/subscription-usage/adapters'
-import { probeCodexUsage } from '../../../src/main/providers/subscription-usage/codex-probe'
+import { probeCodexUsage, probeGrokUsage } from '../../../src/main/providers/subscription-usage/probes'
 import {
   FRESH_MS,
   PROBE_BACKOFF_MS,
@@ -141,32 +140,54 @@ describe('Codex usage probe', () => {
   })
 })
 
-describe('Grok headers', () => {
-  it('maps requests and tokens windows from remaining/limit', () => {
-    const h = new Headers({
-      'x-ratelimit-limit-requests': '100', 'x-ratelimit-remaining-requests': '75', 'x-ratelimit-reset-requests': '6m0s',
-      'x-ratelimit-limit-tokens': '1000', 'x-ratelimit-remaining-tokens': '0',
+describe('Grok credits (Grok Build billing endpoint)', () => {
+  const end = '2027-01-15T08:00:00Z'
+
+  it('maps the weekly pool, its end as the reset, and purchased credits in dollars', () => {
+    const r = fromGrokCredits({ config: { creditUsagePercent: 37.5, currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', start: '2027-01-08T08:00:00Z', end }, prepaidBalance: { val: 1250 } } }, NOW)
+    expect(r).toEqual({
+      windows: [{ key: 'pool', label: 'Weekly', usedPercent: 37.5, limited: false, resetsAt: Date.parse(end), observedAt: NOW }],
+      credits: { balance: 12.5 },
     })
-    expect(fromGrokHeaders(h, NOW)?.windows).toEqual([
-      { key: 'requests', label: 'Requests', usedPercent: 25, limited: false, resetsAt: NOW + 360_000, observedAt: NOW },
-      { key: 'tokens', label: 'Tokens', usedPercent: 100, limited: true, observedAt: NOW },
-    ])
   })
 
-  it('returns null when xAI sends no rate-limit headers', () => {
-    expect(fromGrokHeaders(new Headers({ 'content-type': 'application/json' }), NOW)).toBeNull()
-    expect(fromGrokHeaders(new Headers({ 'x-ratelimit-limit-requests': '0', 'x-ratelimit-remaining-requests': 'x' }), NOW)).toBeNull()
+  it('falls back to the older used / monthlyLimit cents and billingPeriodEnd', () => {
+    const r = fromGrokCredits({ config: { monthlyLimit: { val: 2000 }, used: { val: 2000 }, billingPeriodEnd: end } }, NOW)
+    expect(r?.windows).toEqual([{ key: 'pool', label: 'Usage', usedPercent: 100, limited: true, resetsAt: Date.parse(end), observedAt: NOW }])
+    expect(r?.credits).toBeUndefined()
   })
 
-  it('parses reset durations, seconds and epochs; rejects junk', () => {
-    expect(resetMs('1.5s', NOW)).toBe(NOW + 1500)
-    expect(resetMs('1h2m3s', NOW)).toBe(NOW + 3_723_000)
-    expect(resetMs('250ms', NOW)).toBe(NOW + 250)
-    expect(resetMs('30', NOW)).toBe(NOW + 30_000)
-    expect(resetMs('1800000500', NOW)).toBe(1_800_000_500_000)
-    expect(resetMs('soon', NOW)).toBeUndefined()
-    expect(resetMs('5m later', NOW)).toBeUndefined()
-    expect(resetMs(null, NOW)).toBeUndefined()
+  it('reads an omitted percent as 0 within a period (proto3 drops zeros), hides a zero balance', () => {
+    const r = fromGrokCredits({ config: { currentPeriod: { type: 'USAGE_PERIOD_TYPE_WEEKLY', end }, prepaidBalance: {} } }, NOW)
+    expect(r).toEqual({ windows: [{ key: 'pool', label: 'Weekly', usedPercent: 0, limited: false, resetsAt: Date.parse(end), observedAt: NOW }] })
+  })
+
+  it('returns null when nothing usable is left', () => {
+    expect(fromGrokCredits({ config: {} }, NOW)).toBeNull()
+    expect(fromGrokCredits({ config: { creditUsagePercent: 'x', currentPeriod: { end: 'soon' } } }, NOW)).toBeNull()
+    expect(fromGrokCredits({ renamed: {} }, NOW)).toBeNull()
+    expect(fromGrokCredits(null, NOW)).toBeNull()
+  })
+})
+
+describe('Grok usage probe', () => {
+  it('sends the Grok Build auth headers and parses the body', async () => {
+    const fetchImpl = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe('https://cli-chat-proxy.grok.com/v1/billing?format=credits')
+      const h = init.headers as Record<string, string>
+      expect(h.Authorization).toBe('Bearer tok')
+      expect(h['X-XAI-Token-Auth']).toBe('xai-grok-cli')
+      expect(h['x-userid']).toBe('user-1')
+      return new Response(JSON.stringify({ config: { creditUsagePercent: 12 } }), { status: 200 })
+    })
+    const r = await probeGrokUsage({ getValidAccessToken: async () => 'tok', getAccountId: () => 'user-1' }, fetchImpl as unknown as typeof fetch, () => NOW)
+    expect(r.windows[0].usedPercent).toBe(12)
+  })
+
+  it('names the endpoint and the sign-in when they fail', async () => {
+    const auth = { getValidAccessToken: async () => 'tok', getAccountId: () => undefined }
+    await expect(probeGrokUsage(auth, (async () => new Response('', { status: 401 })) as unknown as typeof fetch)).rejects.toThrow('Grok usage endpoint returned HTTP 401')
+    await expect(probeGrokUsage({ ...auth, getValidAccessToken: async () => { throw new Error('expired') } }, fetch)).rejects.toThrow('Grok sign-in could not be used: expired')
   })
 })
 
@@ -205,6 +226,25 @@ describe('SubscriptionUsageService', () => {
     expect(state.snapshots.map((x) => [x.provider, x.status])).toEqual([
       ['claude-subscription', 'unavailable'], ['chatgpt-subscription', 'unavailable'], ['grok-subscription', 'signed_out'],
     ])
+  })
+
+  it('drops a window with no reset time once the subscription reports others FRESH_MS later', async () => {
+    const s = make()
+    s.record('grok-subscription', win('requests', 0))
+    now += FRESH_MS
+    s.record('grok-subscription', win('pool', 30, now + 60_000))
+    expect((await snap(s, 'grok-subscription')).windows.map((w) => w.key)).toEqual(['requests', 'pool'])
+    now += 1
+    s.record('grok-subscription', win('pool', 31, now + 60_000))
+    expect((await snap(s, 'grok-subscription')).windows.map((w) => w.key)).toEqual(['pool'])
+  })
+
+  it('keeps reset-less windows reported together, stale but shown, when nothing newer arrives', async () => {
+    const s = make()
+    s.record('chatgpt-subscription', { windows: [{ key: 'primary', label: 'p', usedPercent: 5, observedAt: now }, { key: 'secondary', label: 's', usedPercent: 0, observedAt: now }] })
+    now += FRESH_MS + 1
+    const c = await snap(s, 'chatgpt-subscription')
+    expect([c.status, c.windows.length]).toEqual(['stale', 2])
   })
 
   it('merges windows by key across events', async () => {

@@ -26,7 +26,7 @@ export function DocsLink({
   stopPropagation = true
 }: {
   href: string
-  label?: string
+  label?: ReactNode
   className?: string
   /** Section headers toggle collapse on click — don't let the link do that too. */
   stopPropagation?: boolean
