@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { buildTranscript, claudeToolAlias, fingerprint, fromClaudeToolName, toApiMessage, toClaudeToolName, toolAliasMap } from '../../../src/main/providers/claude-subscription/transcript'
 import { sessionConfig, splitForColdStart } from '../../../src/main/providers/claude-subscription/provider'
-import { extractLoginUrl, stripAnsi } from '../../../src/main/providers/claude-subscription/auth-manager'
+import { claudePlanName, extractLoginUrl, stripAnsi } from '../../../src/main/providers/claude-subscription/auth-manager'
 import { compareVersions } from '../../../src/main/utils/version-compare'
 import type { LLMMessage } from '../../../src/shared/types/provider.types'
 
@@ -133,5 +133,15 @@ describe('claude-subscription auth helpers', () => {
     expect(compareVersions('2.1.296', '2.1.248')).toBe(1)
     expect(compareVersions('2.1.248', '2.1.248')).toBe(0)
     expect(compareVersions('2.0.999', '2.1.0')).toBe(-1)
+  })
+})
+
+describe('claudePlanName', () => {
+  it('maps the tiers Claude Code still reports by their old names', () => {
+    expect(claudePlanName({ subscriptionType: 'max', planTier: 'max_20x' })).toBe('ultra')
+    expect(claudePlanName({ subscriptionType: 'max', planTier: 'max_5x' })).toBe('max')
+    expect(claudePlanName({ subscriptionType: 'pro' })).toBe('pro')
+    expect(claudePlanName({ subscriptionType: 'ultra', planTier: 'ultra' })).toBe('ultra')
+    expect(claudePlanName({})).toBeUndefined()
   })
 })

@@ -22,6 +22,18 @@ interface CliAuthStatus {
   email?: string
   orgName?: string
   subscriptionType?: string
+  planTier?: string
+}
+
+/**
+ * The plan's current name. Claude Code still reports the names from before
+ * Anthropic's October 2026 rename: `max` with tier `max_20x` is the plan now
+ * called Ultra, and `max_5x` the one now called Max. Other values pass through.
+ */
+export function claudePlanName(cli: Pick<CliAuthStatus, 'subscriptionType' | 'planTier'>): string | undefined {
+  if (cli.planTier === 'max_20x') return 'ultra'
+  if (cli.planTier === 'max_5x') return 'max'
+  return cli.subscriptionType || undefined
 }
 
 /** Remove ANSI CSI/OSC sequences (Claude Code prints the URL as an OSC 8 link). */
@@ -142,7 +154,7 @@ class ClaudeAuthManager {
       // signed in; report the failure so callers don't mistake it for success.
       ...(this.lastFlowError ? { flowError: this.lastFlowError } : {}),
       ...(cli.email ? { email: cli.email } : {}),
-      ...(cli.subscriptionType ? { plan: cli.subscriptionType } : {}),
+      ...(claudePlanName(cli) ? { plan: claudePlanName(cli) } : {}),
     }
   }
 
