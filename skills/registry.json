@@ -318,6 +318,18 @@
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/scripts/selftest.js"
         }
       ]
+    },
+    {
+      "name": "subconscious-loops",
+      "description": "Build a subconscious for an agent out of inner loops. Four loops each run one abstract operation (replay, expectation, association, weighing), process without acting, and give main a short list of what is on its mind. This covers one use of inner loops; loops that complete tasks are a different use and are not covered here.",
+      "path": "skills/subconscious-loops/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/subconscious-loops/SKILL.md",
+      "files": [
+        {
+          "path": "references/loop-goals.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/subconscious-loops/references/loop-goals.md"
+        }
+      ]
     }
   ]
 }
