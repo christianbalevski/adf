@@ -1061,6 +1061,13 @@ function Chevron({ expanded }: { expanded: boolean }) {
  * status dot is the single running indicator, so a row at rest carries no
  * chrome at all and the tree reads as names.
  */
+const RUN_CONTROL_SLOT = 'sidebar-run-control w-4 h-4 shrink-0'
+
+/** Keep the same target while pending, and swallow a second start/stop click. */
+function RunControlPlaceholder() {
+  return <span className={RUN_CONTROL_SLOT} onClick={(event) => event.stopPropagation()} />
+}
+
 function runButtonClass(stop: boolean): string {
   // Tinted at reveal, full strength under the pointer: stop leans red, play
   // takes the app's running green. `[&>svg]` opacity keeps the row-hover reveal
@@ -1069,7 +1076,7 @@ function runButtonClass(stop: boolean): string {
     ? 'text-[var(--adf-ui-danger)] hover:bg-[var(--adf-ui-danger-subtle)]'
     : 'text-[var(--adf-ui-success)] hover:bg-[var(--adf-ui-success-subtle)]'
   return (
-    'w-4 h-4 shrink-0 rounded flex items-center justify-center transition-opacity outline-none ' +
+    RUN_CONTROL_SLOT + ' rounded flex items-center justify-center transition-opacity outline-none ' +
     '[&>svg]:opacity-70 hover:[&>svg]:opacity-100 ' +
     'opacity-0 group-hover:opacity-100 focus-visible:opacity-100 ' +
     'focus-visible:ring-1 focus-visible:ring-[var(--adf-ui-focus)] ' +
@@ -1338,7 +1345,7 @@ const DirectorySection = memo(function DirectorySection({
           {/* Same empty box as the agent row: the button steps aside while
               the folder is mid-flip, the slot keeps the count from shifting. */}
           {totalCount > 0 && (toggling ? (
-            <span className="w-4 h-4 shrink-0" />
+            <RunControlPlaceholder />
           ) : (
             <Tooltip tip={allActive ? 'Stop all' : 'Start all'} className="flex shrink-0">
               <button
@@ -1493,7 +1500,7 @@ const TreeNode = memo(function TreeNode({
             {/* Same empty box as the agent row: the button steps aside while
                 the folder is mid-flip, the slot keeps the count from shifting. */}
             {totalCount > 0 && (toggling ? (
-              <span className="w-4 h-4 shrink-0" />
+              <RunControlPlaceholder />
             ) : (
               <Tooltip tip={allActive ? 'Stop all' : 'Start all'} className="flex shrink-0">
                 <button
@@ -1684,6 +1691,7 @@ const AgentFileRow = memo(function AgentFileRow({
       onContextMenu={rowMenu.onContextMenu}
       onKeyDown={rowMenu.onKeyDown}
       data-active={isActive || undefined}
+      data-sidebar-agent-row=""
       className={`group flex items-center relative gap-1.5 py-[3px] text-[11px] leading-4 cursor-pointer transition-colors ${
         isActive
           ? 'bg-[var(--adf-ui-selection)] text-[var(--adf-ui-text)] [--row-bg:var(--adf-ui-selection)]'
@@ -1783,7 +1791,7 @@ const AgentFileRow = memo(function AgentFileRow({
         {busy ? (
           // Swallows the click: a second press on Start lands here once the
           // button has stepped aside, and must not open the agent instead.
-          <span className="w-4 h-4 shrink-0" onClick={(e) => e.stopPropagation()} />
+          <RunControlPlaceholder />
         ) : (
           <Tooltip tip={isRunning ? 'Stop' : 'Start'} className="flex shrink-0">
             <button

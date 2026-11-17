@@ -329,7 +329,7 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
   }
 
   return (
-    <Dialog lightDismiss={false} open={open} onClose={handleClose} title={isEdit ? 'Edit Timer' : 'Add Timer'}>
+    <Dialog wide={scope === 'agent'} lightDismiss={false} open={open} onClose={handleClose} title={isEdit ? 'Edit Timer' : 'Add Timer'}>
       <div className="space-y-4">
         {/* Schedule mode */}
         <div>
@@ -563,13 +563,14 @@ function TimerDialog({ open, onClose, onSaved, editTimer }: {
 
         {/* Payload */}
         <div>
-          <label className={labelClass}>Payload</label>
-          <input
-            type="text"
-            placeholder="Optional data passed to handler"
+          <label htmlFor="timer-payload" className={labelClass}>Payload</label>
+          <textarea
+            id="timer-payload"
+            rows={scope === 'agent' ? 6 : 2}
+            placeholder={scope === 'agent' ? 'Instructions for the agent when this timer fires' : 'Optional data passed to handler'}
             value={payload}
             onChange={(e) => setPayload(e.target.value)}
-            className={inputClass}
+            className={inputClass + ' resize-y'}
           />
         </div>
 
@@ -623,6 +624,12 @@ export function AgentTimers() {
   // Gated on visibility: the panel stays mounted behind other dock tabs and in
   // a backgrounded window, where a 5s IPC round-trip buys nothing.
   usePollWhenVisible(fetchTimers, 5000, { ref: rootRef })
+
+  const openTimer = (timer: Timer) => {
+    if (timer.locked) return
+    setEditingTimer(timer)
+    setDialogOpen(true)
+  }
 
   const handleDelete = async (id: number) => {
     if (!window.confirm('Delete this timer? It will not fire again.')) return
@@ -694,7 +701,10 @@ export function AgentTimers() {
           {activeTimers.map((timer) => (
             <div
               key={timer.id}
-              className="border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-white dark:bg-neutral-800"
+              role="group"
+              aria-label={`Timer ${timer.id}`}
+              onClick={() => openTimer(timer)}
+              className={`border border-neutral-200 dark:border-neutral-700 rounded-lg p-3 bg-white dark:bg-neutral-800 ${timer.locked ? '' : 'cursor-pointer hover:border-blue-400'}`}
             >
               <div className="flex items-start justify-between gap-2">
                 <div className="flex-1 min-w-0">
@@ -752,7 +762,7 @@ export function AgentTimers() {
                     Created {new Date(timer.created_at).toLocaleString()}
                   </div>
                 </div>
-                <div className="shrink-0 flex flex-col gap-1">
+                <div className="shrink-0 flex flex-col gap-1" onClick={(event) => event.stopPropagation()}>
                   <button
                     onClick={() => handleToggleLock(timer)}
                     className={`px-2 py-1 text-[10px] rounded ${
@@ -765,7 +775,7 @@ export function AgentTimers() {
                     {timer.locked ? 'Unlock' : 'Lock'}
                   </button>
                   <button
-                    onClick={() => { setEditingTimer(timer); setDialogOpen(true) }}
+                    onClick={() => openTimer(timer)}
                     disabled={timer.locked}
                     className={`px-2 py-1 text-[10px] rounded ${
                       timer.locked
