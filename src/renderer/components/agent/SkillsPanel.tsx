@@ -29,6 +29,7 @@ import { removeSkillPackage } from '../../utils/skill-remove'
 import { commitSkillInstall, prepareSkillInstall, type InstallOutcome, type InstallRequest, type PreparedInstall } from '../../utils/skill-install'
 import { CatalogDialog } from './skills/CatalogDialog'
 import { CompatChip } from './skills/CompatChip'
+import { SkillActionsMenu } from './skills/SkillActionsMenu'
 
 /**
  * Skills — the human half of file-backed skills (design doc §4).
@@ -55,7 +56,7 @@ import { CompatChip } from './skills/CompatChip'
  * 2. skills-state.json is read-modify-write, so two toggles racing lose one
  *    edit. That is handled in utils/skills-state.ts, whose write queue is
  *    shared with the composer's `/skills disable|enable` commands; the
- *    checkbox here is optimistic with rollback so the UI never stalls on IPC.
+ *    toggle here is optimistic with rollback so the UI never stalls on IPC.
  */
 
 interface FileEntry {
@@ -270,7 +271,7 @@ export function SkillsPanel() {
    * Mute or unmute through the shared serialized writer, which merges into
    * skills-state.json — unknown keys and names this panel cannot see (a package
    * removed while muted) survive untouched. The write itself triggers the
-   * reindex; the catalog arrives over the `file_updated` push, and the checkbox
+   * reindex; the catalog arrives over the `file_updated` push, and the toggle
    * does not wait for it.
    */
   const handleToggle = useCallback(async (name: string, enabled: boolean) => {
@@ -484,35 +485,15 @@ export function SkillsPanel() {
                   <p className="text-[11px] text-red-600 dark:text-red-400 mt-1">{rowErrors[skill.name]}</p>
                 )}
               </div>
-              {/* Controls must not trigger the row's mouse or keyboard activation. */}
-              <div className="flex flex-col items-end gap-2 shrink-0" onClick={(e) => e.stopPropagation()} onKeyDown={(e) => e.stopPropagation()}>
-                <label
-                  className="flex items-center gap-1.5 shrink-0 cursor-pointer"
-                  title={skill.enabled ? 'Mute this skill' : 'Unmute this skill'}
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  <input
-                    type="checkbox"
-                    checked={skill.enabled}
-                    disabled={busy.has(skill.name)}
-                    onClick={(e) => e.stopPropagation()}
-                    onChange={(e) => void handleToggle(skill.name, e.target.checked)}
-                    className="rounded text-blue-500"
-                  />
-                  <span className="text-[10px] text-[var(--adf-ui-text-subtle)]">
-                    {skill.enabled ? 'on' : 'off'}
-                  </span>
-                </label>
-                <button
-                  type="button"
-                  aria-label={`Remove ${skill.name}`}
-                  disabled={busy.has(skill.name)}
-                  onClick={() => void handleRemove(skill.name, skill.path)}
-                  className="text-[11px] text-red-600 dark:text-red-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-default"
-                >
-                  Remove
-                </button>
-              </div>
+              <SkillActionsMenu
+                name={skill.name}
+                busy={busy.has(skill.name)}
+                items={[
+                  { label: 'Open in editor', onSelect: () => void openInEditor(skill.path) },
+                  { label: skill.enabled ? 'Turn off' : 'Turn on', onSelect: () => void handleToggle(skill.name, !skill.enabled) },
+                  { label: 'Remove skill', danger: true, separatorBefore: true, onSelect: () => void handleRemove(skill.name, skill.path) },
+                ]}
+              />
             </div>
           </div>
         ))}
@@ -523,8 +504,20 @@ export function SkillsPanel() {
             key={problem.key}
             className="border border-amber-300 dark:border-amber-600 bg-amber-50/50 dark:bg-amber-900/10 rounded-lg p-3"
           >
-            <div className="text-xs font-medium text-amber-700 dark:text-amber-400 font-mono truncate">
-              {sanitizeDisplayText(problem.label)}
+            <div className="flex items-start justify-between gap-2">
+              <div className="text-xs font-medium text-amber-700 dark:text-amber-400 font-mono truncate">
+                {sanitizeDisplayText(problem.label)}
+              </div>
+              {problem.isPackage && (
+                <SkillActionsMenu
+                  name={problem.label}
+                  busy={busy.has(problem.key)}
+                  items={[
+                    { label: 'Open in editor', onSelect: () => void openInEditor(problem.path) },
+                    { label: 'Remove skill', danger: true, separatorBefore: true, onSelect: () => void handleRemove(problem.key, problem.path) },
+                  ]}
+                />
+              )}
             </div>
             {problem.reason ? (
               <p className="text-[11px] text-amber-600 dark:text-amber-500 mt-1 leading-relaxed">
@@ -544,17 +537,6 @@ export function SkillsPanel() {
             <div className="text-[10px] text-amber-500 dark:text-amber-600 mt-1 font-mono truncate" title={problem.path}>
               {sanitizeDisplayText(problem.path)}
             </div>
-            {problem.isPackage && (
-              <button
-                type="button"
-                aria-label={`Remove ${problem.label}`}
-                disabled={busy.has(problem.key)}
-                onClick={() => void handleRemove(problem.key, problem.path)}
-                className="mt-2 text-[11px] text-red-600 dark:text-red-400 hover:underline cursor-pointer disabled:opacity-50 disabled:cursor-default"
-              >
-                Remove
-              </button>
-            )}
           </div>
         ))}
       </div>

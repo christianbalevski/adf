@@ -12,6 +12,7 @@ import { useAgentStore } from '../../../src/renderer/stores/agent.store'
 import { beginAgentSwitch, endAgentSwitch, useEditorTabsStore } from '../../../src/renderer/stores/editor-tabs.store'
 import type { AdfApi } from '../../../src/preload/api'
 import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
+import type { ContextMenuItem } from '../../../src/renderer/components/common/ContextMenu'
 import { mount, type Mounted } from './support/host-render'
 
 /**
@@ -27,6 +28,15 @@ vi.mock('../../../src/renderer/utils/runtime-api', () => ({
   apiFor: () => backend.api,
   openApi: () => backend.api,
   useOpenRuntime: () => 'local',
+}))
+// The shared menu's portal/viewport behavior is tested separately. Keep its
+// open/closed state and item selection here, without a browser DOM.
+vi.mock('../../../src/renderer/components/common/ContextMenu', () => ({
+  ContextMenu: ({ position, items, onClose }: { position: unknown; items: ContextMenuItem[]; onClose: () => void }) => position ? (
+    <div role="menu">
+      {items.map((item) => <button key={item.label} role="menuitem" disabled={item.disabled} onClick={() => { onClose(); item.onSelect() }}>{item.label}</button>)}
+    </div>
+  ) : null,
 }))
 
 import { SkillsPanel } from '../../../src/renderer/components/agent/SkillsPanel'
@@ -59,13 +69,17 @@ function api(): AdfApi {
   return createAdfApi({
     runtimeId: 'local',
     invoke: async (channel: string, ...args: unknown[]) => {
-      const arg = (args[0] ?? {}) as { path?: string }
+      const arg = (args[0] ?? {}) as { path?: string; content?: string }
       if (channel === IPC.DOC_GET_FILES) { if (failNextList) { failNextList = false; throw new Error('daemon restarting') } return { files: foreground.listFiles() } }
       if (channel === IPC.DOC_READ_INTERNAL_FILE) {
         const buf = foreground.readFileBuffer(String(arg.path))
         return buf ? { content: buf.toString('utf8'), binary: false, revision: fileRevision(foreground, String(arg.path)).revision } : { content: null, binary: false }
       }
       if (channel === IPC.DOC_DELETE_INTERNAL_FILE) return { success: foreground.deleteFile(String(arg.path)) }
+      if (channel === IPC.DOC_WRITE_INTERNAL_FILE) {
+        foreground.writeFile(String(arg.path), String(arg.content))
+        return { success: true }
+      }
       throw new Error(`unexpected channel ${channel}`)
     },
     send: () => {},
@@ -197,11 +211,24 @@ describe('a failed read for the current view', () => {
   })
 })
 
-async function requestRemoval(name = 'alpha-one') {
-  const button = ui!.find((n) => n.type === 'button' && n.props['aria-label'] === `Remove ${name}`)[0]
+async function openActions(name = 'alpha-one') {
+  const button = ui!.find((n) => n.type === 'button' && n.props['aria-label'] === `Actions for ${name}`)[0]
   expect(button).toBeDefined()
+  Object.assign(button, { getBoundingClientRect: () => ({ right: 300, bottom: 100 }) })
   ;(button.props.onClick as () => void)()
   await settle()
+}
+
+async function selectAction(label: string) {
+  const item = ui!.find((n) => n.props.role === 'menuitem' && n.children.some((c) => c.text === label))[0]
+  expect(item).toBeDefined()
+  ;(item.props.onClick as () => void)()
+  await settle()
+}
+
+async function requestRemoval(name = 'alpha-one') {
+  await openActions(name)
+  await selectAction('Remove skill')
 }
 
 async function answerRemoval(label: 'Cancel' | 'Remove skill') {
@@ -211,6 +238,25 @@ async function answerRemoval(label: 'Cancel' | 'Remove skill') {
 }
 
 describe('removing installed skills', () => {
+  it('keeps controls in the three-dot menu and toggles skills from there', async () => {
+    ui = mount(<SkillsPanel />)
+    await settle()
+    expect(ui.find((n) => n.props.type === 'checkbox')).toHaveLength(0)
+    expect(ui.text()).not.toContain('Remove skill')
+    await openActions()
+    expect(ui.text()).toContain('Open in editor')
+    expect(ui.text()).toContain('Turn off')
+    await selectAction('Turn off')
+    expect(JSON.parse(A.ws.readFile('skills-state.json')!).disabled).toContain('alpha-one')
+    expect(ui.find((n) => n.props.role === 'menu')).toHaveLength(0)
+    await openActions()
+    await selectAction('Turn on')
+    expect(JSON.parse(A.ws.readFile('skills-state.json')!).disabled).not.toContain('alpha-one')
+    await openActions()
+    await selectAction('Open in editor')
+    expect(useEditorTabsStore.getState().activeTabPath).toBe('skills/alpha-one/SKILL.md')
+  })
+
   it('cancel keeps the package; confirmation removes its nested files and closes their tabs', async () => {
     const resource = 'skills/alpha-one/references/guide.md'
     A.ws.writeFile(resource, 'local edits')

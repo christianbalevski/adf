@@ -265,9 +265,9 @@ it stays visible (and cheap) as a bare name.
 Uninstall by deleting the package files, subject to normal file protection, and
 remove any stale `disabled` entry.
 
-In Studio, the Skills panel lists every indexed package: the checkbox mutes and
-unmutes, and clicking the row opens that skill's `SKILL.md` in the editor.
-Choose **Remove** and confirm to delete the skill's entire folder from the
+In Studio, each skill's three-dot menu contains **Open in editor**, **Turn off**
+(or **Turn on**), and **Remove skill**. Clicking the row also opens its `SKILL.md`.
+Choose **Remove skill** and confirm to delete the skill's entire folder from the
 agent, including local edits. Protected files block removal. Rejected packages
 can also be removed from the panel.
 
