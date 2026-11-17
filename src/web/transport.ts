@@ -11,6 +11,8 @@ export class WebTransport implements IpcRendererLike {
   private stream: EventSource | null = null
   private closed = false
   private generation: string | null = null
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined
+  private removeResumeListeners: (() => void) | undefined
   private readonly generationWaiters = new Set<(generation: string | null) => void>()
   constructor(
     readonly clientId: string,
@@ -83,12 +85,22 @@ export class WebTransport implements IpcRendererLike {
   }
   connect(): void {
     if (this.stream || this.closed) return
+    if (!this.removeResumeListeners && typeof window !== 'undefined' && typeof document !== 'undefined') {
+      const visible = () => { if (document.visibilityState === 'visible') this.reconnect() }
+      const online = () => this.reconnect()
+      document.addEventListener('visibilitychange', visible)
+      window.addEventListener('online', online)
+      this.removeResumeListeners = () => {
+        document.removeEventListener('visibilitychange', visible)
+        window.removeEventListener('online', online)
+      }
+    }
     this.onState('connecting')
     const stream = new this.eventSource(`/web/events?${new URLSearchParams({ clientId: this.clientId, storageScope: this.storageScope })}`, { withCredentials: true })
     this.stream = stream
-    stream.onopen = () => { if (!this.closed) this.onState('connecting') }
+    stream.onopen = () => { if (!this.closed && this.stream === stream) this.onState('connecting') }
     stream.onmessage = (event) => {
-      if (this.closed) return
+      if (this.closed || this.stream !== stream) return
       try {
         const message = JSON.parse(event.data) as { channel: string; args: unknown[] }
         if (message.channel === 'web:tab-generation') {
@@ -106,19 +118,44 @@ export class WebTransport implements IpcRendererLike {
       } catch (error) { console.error('[Studio Web] Invalid event', error) }
     }
     stream.onerror = () => {
-      if (this.closed) return
+      if (this.closed || this.stream !== stream) return
       this.onState('disconnected')
+      // Some failures close EventSource permanently. Native retries only apply
+      // while CONNECTING; otherwise explicitly create a fresh stream.
+      if (stream.readyState === 2) {
+        clearTimeout(this.reconnectTimer)
+        this.reconnectTimer = setTimeout(() => this.reconnect(), 3000)
+      }
       // EventSource does not expose HTTP status. Check the session without
-      // replaying any mutations; reconnecting SSE is handled by the browser.
+      // replaying any mutations; CONNECTING streams retry in the browser.
       void this.request('/web/session', { credentials: 'same-origin' })
         .then(async (response) => {
+          // Authentication belongs to this session, even if a retry replaced
+          // the socket while the session request was in flight.
           if (this.closed) return
           const session = response.ok ? await response.json() : null
+          if (this.closed) return
           if (response.status === 401 || response.status === 403 || (session && (!session.authenticated || session.storageScope !== this.storageScope))) {
             this.close(); this.onState('unauthorized')
           }
         }).catch(() => {})
     }
   }
-  close(): void { this.closed = true; this.stream?.close(); this.stream = null; for (const ready of [...this.generationWaiters]) ready(null) }
+  /** Resume suspended mobile sockets without replaying calls or losing tab identity. */
+  private reconnect(): void {
+    if (this.closed) return
+    clearTimeout(this.reconnectTimer)
+    this.stream?.close()
+    this.stream = null
+    this.connect()
+  }
+  close(): void {
+    this.closed = true
+    clearTimeout(this.reconnectTimer)
+    this.removeResumeListeners?.()
+    this.removeResumeListeners = undefined
+    this.stream?.close()
+    this.stream = null
+    for (const ready of [...this.generationWaiters]) ready(null)
+  }
 }

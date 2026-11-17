@@ -130,7 +130,10 @@ body { display: flex; flex-direction: column; min-width: 360px; }
 .adf-web[data-compact-web] [data-compact-container-table] { overflow: auto; }
 .adf-web[data-compact-web] [data-compact-container-table] > .grid { min-width: 540px; }
 .adf-web[data-compact-web] nav[aria-label="Application navigation"] button { min-width: 36px; min-height: 36px; }
-.adf-web[data-compact-web] [data-compact-sidebar] button.opacity-0 { opacity: 1; min-width: 36px; min-height: 36px; }
+/* Start, Stop and pending controls share a slot in both agent and folder rows.
+   Keep agent rows at a steady touch-target height when their state changes. */
+.adf-web[data-compact-web] [data-compact-sidebar] .sidebar-run-control { opacity: 1; width: 36px; height: 36px; min-width: 36px; min-height: 36px; }
+.adf-web[data-compact-web] [data-sidebar-agent-row] { min-height: 44px; padding-top: 0; padding-bottom: 0; }
 .adf-web[data-compact-web] :is(pre, .tableWrapper) { max-width: 100%; overflow-x: auto; }
 
 /* Native <dialog> lives in the top layer, so it needs the visual viewport

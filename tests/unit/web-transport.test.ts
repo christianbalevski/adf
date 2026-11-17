@@ -6,6 +6,7 @@ import { mediaUrl, resolveHtmlMediaUrls, setMediaUrlResolver } from '../../src/r
 
 class Events {
   static last: Events
+  readyState = 0
   onopen: (() => void) | null = null
   onmessage: ((event: { data: string }) => void) | null = null
   onerror: (() => void) | null = null
@@ -22,7 +23,95 @@ function readyTransport(...args: ConstructorParameters<typeof WebTransport>): We
 
 
 describe('browser Studio transport', () => {
-  afterEach(() => vi.unstubAllGlobals())
+  afterEach(() => { vi.unstubAllGlobals(); vi.useRealTimers() })
+  it('reopens a permanently closed event stream without replaying mutations', () => {
+    vi.useFakeTimers()
+    const state = vi.fn()
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({ authenticated: true, storageScope: 'session-one' })))
+    const transport = readyTransport('tab-one', 'session-one', state, fetcher, source)
+    const old = Events.last
+    old.readyState = 2
+    old.onerror!()
+    expect(state).toHaveBeenLastCalledWith('disconnected')
+    vi.advanceTimersByTime(3000)
+    expect(old.close).toHaveBeenCalledOnce()
+    expect(Events.last).not.toBe(old)
+    Events.last.onmessage!({ data: JSON.stringify({ channel: 'web:tab-generation', args: ['generation-one'] }) })
+    expect(state).toHaveBeenLastCalledWith('connected')
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    expect(fetcher).toHaveBeenCalledWith('/web/session', expect.anything())
+    transport.close()
+  })
+  it('reconnects on mobile resume and network restoration, ignoring superseded sockets', () => {
+    const page = new EventTarget()
+    Object.assign(page, { visibilityState: 'hidden' })
+    const browser = new EventTarget()
+    vi.stubGlobal('document', page)
+    vi.stubGlobal('window', browser)
+    const state = vi.fn()
+    const transport = readyTransport('tab-one', 'session-one', state, vi.fn(), source)
+    const old = Events.last
+    page.dispatchEvent(new Event('visibilitychange'))
+    expect(Events.last).toBe(old)
+    Object.assign(page, { visibilityState: 'visible' })
+    page.dispatchEvent(new Event('visibilitychange'))
+    expect(Events.last).not.toBe(old)
+    expect(old.close).toHaveBeenCalledOnce()
+    Events.last.onmessage!({ data: JSON.stringify({ channel: 'web:tab-generation', args: ['generation-one'] }) })
+    old.onerror!()
+    old.onopen!()
+    old.onmessage!({ data: JSON.stringify({ channel: 'web:tab-generation', args: ['stale-generation'] }) })
+    expect(state).toHaveBeenLastCalledWith('connected')
+    const resumed = Events.last
+    browser.dispatchEvent(new Event('online'))
+    expect(Events.last).not.toBe(resumed)
+    // A genuinely new backend context must still take the recovery path.
+    Events.last.onmessage!({ data: JSON.stringify({ channel: 'web:tab-generation', args: ['generation-two'] }) })
+    expect(state).toHaveBeenLastCalledWith('reset')
+    const closed = Events.last
+    page.dispatchEvent(new Event('visibilitychange'))
+    browser.dispatchEvent(new Event('online'))
+    expect(Events.last).toBe(closed)
+  })
+  it('cancels a pending reconnect when closed', () => {
+    vi.useFakeTimers()
+    const transport = readyTransport('tab-one', 'session-one', vi.fn(), vi.fn().mockResolvedValue(new Response('', { status: 401 })), source)
+    const old = Events.last
+    old.readyState = 2
+    old.onerror!()
+    transport.close()
+    vi.advanceTimersByTime(3000)
+    expect(Events.last).toBe(old)
+    expect(old.close).toHaveBeenCalledOnce()
+  })
+  it.each(['response', 'body'] as const)('honors expired authentication after reconnect while waiting for the session %s', async (delay) => {
+    vi.useFakeTimers()
+    let finish!: () => void
+    const pending = new Promise<void>((resolve) => { finish = resolve })
+    const response = delay === 'response'
+      ? new Response('', { status: 401 })
+      : { ok: true, status: 200, json: async () => { await pending; return { authenticated: false } } } as Response
+    const fetcher = vi.fn(async () => {
+      if (delay === 'response') await pending
+      return response
+    })
+    const state = vi.fn()
+    const transport = readyTransport('tab-one', 'session-one', state, fetcher, source)
+    const old = Events.last
+    old.readyState = 2
+    old.onerror!()
+    await vi.advanceTimersByTimeAsync(3000)
+    const replacement = Events.last
+    expect(replacement).not.toBe(old)
+    finish()
+    await vi.advanceTimersByTimeAsync(0)
+    expect(state).toHaveBeenLastCalledWith('unauthorized')
+    expect(replacement.close).toHaveBeenCalledOnce()
+    await expect(transport.invoke('write')).rejects.toBeInstanceOf(WebSessionError)
+    await vi.advanceTimersByTimeAsync(6000)
+    expect(Events.last).toBe(replacement)
+    expect(fetcher).toHaveBeenCalledTimes(1)
+  })
   it('refuses reload when the shared edit stasher swallowed a storage quota failure', async () => {
     const quota = new Error('Storage quota exceeded')
     const stash = async (api: { recoveryStash: (entry: { agentFilePath: string; path: string; content: string }) => Promise<unknown> }) => {
