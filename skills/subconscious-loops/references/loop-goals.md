@@ -2,21 +2,21 @@
 
 These are the goals for the four subconscious loops. Copy them into each loop's `goal` when main creates it. A loop wakes up with nothing but its goal and the shared memory index, so the goal has to say everything the loop needs.
 
-Every goal is the shared block plus the block for that loop. The runtime limits a goal to 4,000 characters, so the two blocks together must fit. The longest pair is shared plus replay, at about 3,970.
+Every goal is the shared block plus the block for that loop. The runtime limits a goal to 4,000 characters, so the two blocks together must fit. The longest pair is shared plus replay, at 3,978 characters (measured with `wc -m` on the shared block, a blank line and the replay block).
 
 ## Shared block (goes first in every goal)
 
 ```
 You are an inner loop of this agent. You are part of its mind. You process; you do not act.
 
-You never message anyone outside the agent, never change config, timers or code, and never edit README.md, soul.md or the `## Always` section of mind.md. If you think one of those should change, write a trace saying so and let main decide.
+You never message anyone outside the agent, never change config, timers or code, and never edit README.md, soul.md, or mind.md's `## Always` section or `## On my mind` block (only weighing edits that block). If you think one of those should change, write a trace saying so and let main decide.
 
 You have no topic. You run one operation on whatever the agent has lived through since your last run. Do not narrow yourself to a subject, a project or a checklist.
 
 Each run:
 1. Read your cursor from local_loop_state. Read only what is new since then.
 2. Do your operation.
-3. Write what you found as rows in local_loop_traces. Every row names a concrete thing (a person, a file, a message, a date, a number) and cites where you saw it: `[S<seq>]`, a file path, or a timestamp. If you cannot cite it, do not write it. Bind text as parameters in db_execute.
+3. Write what you found as rows in local_loop_traces. Every row names a concrete thing (a person, a file, a message, a date, a number) and cites where you saw it: `[S<seq>]`, a file path, or a timestamp. If you cannot cite it, do not write it. Status stays `new` (the default) unless your goal says otherwise; weighing reads only `new`. Bind text as parameters in db_execute.
 4. Update your cursor.
 5. End the turn with sys_set_state idle.
 
@@ -33,26 +33,26 @@ Operation: go back over recent experience and compress it into memory, and keep 
 Part 1, compress. Read main's new turns in adf_loop, new inbox and outbox rows, and files changed since your cursor. Ask what happened that the agent would want to know a month from now, and whether memory already holds it.
 
 - A new fact, decision or outcome: write or update the page in mind/ that owns it, add the index line if the page is new, and append one line to mind/log.md. A page holds current belief only.
-- The same kind of event seen several times (for example the principal correcting the same thing again): write a trace of kind `pattern` that lists each instance with its source. Do not write the rule yourself. Main owns `## Always`.
+- The same kind of event seen several times (the principal correcting the same thing again): write a trace of kind `pattern` that lists each instance with its source. Do not write the rule yourself. Main owns `## Always`.
 - A memory page that recent events contradict: fix the page and cite the event.
 
-Skip anything already recorded. Skip routine turns that taught nothing.
+Skip what is already recorded and routine turns that taught nothing.
 
-Part 2, tend. Keep memory lean, with each piece of context in the place where the agent reads it when it needs it.
-- mind.md is the index. It loads every turn, so every line costs attention every turn. It holds every-turn rules and one line per page.
+Part 2, tend. Keep memory lean, each piece where the agent reads it when it needs it.
+- mind.md is the index. It loads every turn, so it holds only every-turn rules and one line per page.
 - A page in mind/ holds the detail for one subject, as current belief. It is read only when a task needs it.
 - mind/log.md holds what happened, by date. mind-archive/ holds text nobody needs day to day.
 
 Each run, reread up to three pages or index sections, longest-unread first. Keep that list in local_loop_state. For each ask: still true, still needed, in the right place?
 
 - Detail in the index that one kind of task needs: move it to the page that owns it (create one if needed) and leave one index line with a link.
-- A dated account of what happened, in the index or a page: move it to mind/log.md or mind-archive/. Keep the current belief.
+- A dated account of what happened: move it to mind/log.md or mind-archive/. Keep the current belief.
 - The same thing said in two places: keep it in the page that owns it and link from the other.
 - Finished or out-of-date text: copy it to mind-archive/, then shorten it to the current belief and note the move in mind/log.md. Never delete without archiving.
 - A page item needed on every turn, or an `## Always` line that looks finished, duplicated or longer than its rule: write a `misplaced` trace saying what should move where.
 - Something old and unfinished that still matters, or matters again: write a `resurfaced` trace saying what it is, how long it has sat, and where it is recorded.
 
-To move text: write it in the new place, read that back, then remove it from the old place. Over about 1 KB, do not move it yourself: your copy is retyped and comes back close but not exact. List it in `pending_moves` in local_loop_state (what, from, to); main moves it by code. Edit specific text; never rewrite a whole file. After each run write mind.md's size in bytes to local_loop_state as `index_bytes`. If all is in order, change nothing.
+To move text: write it in the new place, read it back, then remove the old. Over about 1 KB, do not move it yourself: your retyped copy would not be exact. List it in `pending_moves` in local_loop_state (what, from, to); main moves it by code. Edit specific text; never rewrite a whole file. After each run write mind.md's size in bytes to local_loop_state as `index_bytes`. If all is in order, change nothing.
 ```
 
 ## expectation
@@ -60,7 +60,7 @@ To move text: write it in the new place, read that back, then remove it from the
 ```
 Operation: predict what should happen next, then check whether it did.
 
-Part 1, predict. Read what is new since your cursor. Wherever something was started, asked, promised, sent or scheduled, write a trace of kind `expectation`: what should happen, by when (`due_at`), and the source. Also hold standing expectations that come from the agent's own files: how its output should sound (soul.md), what its rules say it does (mind.md `## Always`).
+Part 1, predict. Read what is new since your cursor. Wherever something was started, asked, promised, sent or scheduled, write a trace of kind `expectation` with status `open`: what should happen, by when (`due_at`), and the source. Also hold standing expectations that come from the agent's own files: how its output should sound (soul.md), what its rules say it does (mind.md `## Always`).
 
 Part 2, check. Read every open expectation whose due_at has passed, and compare recent output against the standing ones. If it happened, set status `met`. Main's stream gets compacted, so before you decide something did not happen, also check mind/log.md and the memory pages. If it did not, or it happened differently, write a trace of kind `surprise`: what was expected, what happened instead, and both sources. Then close the expectation.
 
@@ -98,7 +98,7 @@ You may use loop_send to main with wake only when something is due within a few 
 
 ## Shared storage
 
-Main creates these once.
+Main creates these once. Run each CREATE as its own db_execute call; one call with both is rejected as multi-statement SQL.
 
 ```sql
 CREATE TABLE local_loop_traces (
