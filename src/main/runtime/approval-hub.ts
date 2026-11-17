@@ -30,15 +30,17 @@
  * the in-chat card too. Asks are registered but NOT resolvable here: an answer
  * is a form, so the UI jumps to the agent's chat rather than faking a composer.
  *
- * Everything that LEAVES the pending list lands in a small, session-scoped
- * history (newest first, capped at HISTORY_MAX) carrying how it ended. The menu
+ * Everything that LEAVES the pending list lands in persistent history
+ * (newest first, retained until manually cleared) carrying how it ended. The menu
  * is a notification centre, not a queue: a bell that empties itself the instant
  * you answer gives you no way to check what you just did, and no way to tell
  * "I approved that" from "that agent was torn down before I looked".
  */
 
+import { NotificationStore, notificationReceipt } from './notification-store'
 import type {
   NotificationOutcome,
+  NotificationHistoryPage,
   NotificationsSnapshot,
   PendingNotification,
   PendingNotificationKind,
@@ -67,13 +69,8 @@ export interface ApprovalResolveResult {
 }
 
 export const PREVIEW_MAX = 120
-
-/**
- * How many resolved rows the menu remembers. Deliberately small and in-memory
- * only: this is "what did I just answer?", not an audit log — the umbilical
- * (`hil.resolved`, `ask.resolved`) is the durable record.
- */
-export const HISTORY_MAX = 50
+/** Live pushes stay small; older receipts are fetched explicitly. */
+export const HISTORY_PAGE_SIZE = 50
 
 /** Hub key. Ask ids are a per-executor counter, so they need the agent + loop. */
 export function notificationKey(filePath: string, loop: string, requestId: string): string {
@@ -167,9 +164,60 @@ export function summarizeQuestion(question: string): string {
 
 export class ApprovalHub {
   private entries = new Map<string, RegisteredNotification>()
-  /** Newest first, capped at HISTORY_MAX. Session-scoped, never persisted. */
+  /** Newest first, retained until the user clears history. */
   private history: ResolvedNotification[] = []
   private listeners = new Set<(snapshot: NotificationsSnapshot) => void>()
+  private store: NotificationStore | null = null
+  private persistenceUnavailable = false
+  private persistenceDirty = false
+
+  /** Called once by the runtime host, before any executors start. */
+  initializePersistence(path: string): void {
+    if (this.store) return
+    try {
+      const store = new NotificationStore(path)
+      const history = store.load()
+      this.history = this.history.concat(history)
+      this.store = store
+      this.persistenceUnavailable = false
+    } catch (err) {
+      this.persistenceUnavailable = true
+      console.error('[ApprovalHub] Could not initialize notification history:', err)
+      return
+    }
+    this.persistenceDirty = true
+    this.flushPersistence()
+    this.notify(false)
+  }
+
+  /** Shutdown/OS session-end durability hook, also used by the coalesced flush. */
+  flushPersistence(): void {
+    if (!this.store || !this.persistenceDirty) return
+    try {
+      this.store.save({ pending: this.snapshot(), history: this.history })
+      this.persistenceDirty = false
+    } catch (err) {
+      // Keep the dirty state and retry on the next mutation or shutdown.
+      console.error('[ApprovalHub] Could not save notification history:', err)
+    }
+  }
+
+  /** Clearing receipts never answers or hides a live request. */
+  clearHistory(): ApprovalResolveResult {
+    if (this.persistenceUnavailable) return { success: false, error: 'Notification history could not be loaded. Restart the runtime and try again.' }
+    try {
+      // Persist first: a failed clear must not appear successful then return
+      // on restart. Normal notification writes must not interrupt executors.
+      this.store?.save({ pending: this.snapshot(), history: [] })
+    } catch (err) {
+      console.error('[ApprovalHub] Could not clear notification history:', err)
+      return { success: false, error: 'Could not save the cleared notification history. Please try again.' }
+    }
+    this.history = []
+    this.persistenceDirty = false
+    this.notify(false)
+    return { success: true }
+  }
 
   /**
    * Register a pending request. Idempotent per id: a re-register (e.g. both
@@ -282,25 +330,33 @@ export class ApprovalHub {
     return entry.input
   }
 
-  /** Recently resolved, newest first. A copy — callers must not mutate it. */
+  /** Resolved history, newest first. A copy — callers must not mutate it. */
   historySnapshot(): ResolvedNotification[] {
     return [...this.history]
   }
 
-  /** Pending + history in one object — the shape pushed to every window. */
+  /** Cursor counts remaining entries from the oldest end, stable under arrivals. */
+  historyPage(before = this.history.length): NotificationHistoryPage {
+    if (!Number.isSafeInteger(before) || before < 0) throw new Error('History cursor must be a nonnegative integer')
+    const remaining = Math.min(this.history.length, before)
+    const start = this.history.length - remaining
+    const history = this.history.slice(start, start + HISTORY_PAGE_SIZE)
+    const nextBefore = remaining - history.length
+    return { history, nextBefore: nextBefore > 0 ? nextBefore : null }
+  }
+
+  /** Pending + the newest history page — bounded history on every live push. */
   fullSnapshot(): NotificationsSnapshot {
-    return { pending: this.snapshot(), history: this.historySnapshot() }
+    return { pending: this.snapshot(), history: this.history.slice(0, HISTORY_PAGE_SIZE) }
   }
 
   /**
-   * Move an entry into the bounded history. The raw tool `input` and the
+   * Move an entry into history. The raw tool `input` and the
    * resolve callback are dropped: one is only useful while the request is live,
    * the other would pin the executor for the life of the history.
    */
   private remember(entry: RegisteredNotification, outcome: NotificationOutcome): void {
-    const { resolve: _resolve, input: _input, ...rest } = entry
-    this.history.unshift({ ...rest, outcome, resolvedAt: Date.now() })
-    if (this.history.length > HISTORY_MAX) this.history.length = HISTORY_MAX
+    this.history.unshift(notificationReceipt({ ...entry, outcome, resolvedAt: Date.now() }))
   }
 
   count(): number {
@@ -328,6 +384,7 @@ export class ApprovalHub {
     const had = this.entries.size > 0 || this.history.length > 0
     this.entries.clear()
     this.history = []
+    this.persistenceDirty = false
     // A reset is a test/lifecycle hook, not a live change — flush synchronously
     // and cancel any coalesced push so nothing leaks across the boundary.
     if (this.notifyTimer) { clearTimeout(this.notifyTimer); this.notifyTimer = null }
@@ -340,16 +397,20 @@ export class ApprovalHub {
    * notify() schedules a single trailing flush ~COALESCE_MS out, so the whole
    * burst collapses into one push carrying the final state. Correctness is
    * unaffected — the snapshot is always the live state at flush time, and
-   * COALESCE_MS is well under human reaction time.
+   * COALESCE_MS is well under human reaction time. Disk saves share this batch
+   * even without subscribers. Shutdown flushes synchronously; an abrupt kill
+   * can lose the last 50ms of notifications.
    */
   private notifyTimer: ReturnType<typeof setTimeout> | null = null
   private static readonly NOTIFY_COALESCE_MS = 50
 
-  private notify(): void {
-    if (this.listeners.size === 0) return
+  private notify(persist = true): void {
+    if (persist && this.store) this.persistenceDirty = true
+    if (this.listeners.size === 0 && !this.persistenceDirty) return
     if (this.notifyTimer) return // a flush is already scheduled for this burst
     this.notifyTimer = setTimeout(() => {
       this.notifyTimer = null
+      this.flushPersistence()
       this.emitSnapshot()
     }, ApprovalHub.NOTIFY_COALESCE_MS)
   }
@@ -368,7 +429,6 @@ export class ApprovalHub {
 
 /**
  * Process-wide singleton. Executors register into it unconditionally; hosts
- * that have no UI (daemon, CLI, tests) simply never subscribe, so the hub is
- * an inert map for them.
+ * configure persistence before starting agents. Tests can use an in-memory hub.
  */
 export const approvalHub = new ApprovalHub()

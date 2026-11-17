@@ -29,6 +29,7 @@ import { uptime as osUptime } from 'node:os'
 import { DaemonHost } from '../src/main/daemon/daemon-host'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { MockLLMProvider } from '../src/main/runtime/headless'
+import { ApprovalHub } from '../src/main/runtime/approval-hub'
 
 const scratchDir = join(tmpdir(), `adf-daemon-host-pid-${process.pid}`)
 
@@ -43,6 +44,34 @@ describe('DaemonHost', () => {
     // clear it so each test can register agents again.
     const { RuntimeGate } = await import('../src/main/runtime/runtime-gate')
     ;(RuntimeGate as unknown as { _resetForTests?: () => void })._resetForTests?.()
+  })
+
+  it('flushes notification receipts before shutdown and final outcomes after teardown', async () => {
+    const path = pidFilePath('shutdown-notifications.json')
+    const hub = new ApprovalHub()
+    hub.initializePersistence(path)
+    hub.register({ id: 'pending', kind: 'approval', requestId: 'pending', filePath: '/a.adf', agentName: 'a', loop: 'main', preview: 'Write a file', requestedAt: 1 })
+    const runtime = new RuntimeService({ enforceReviewGate: false })
+    const unload = vi.spyOn(runtime, 'shutdownAll').mockImplementation(async () => {
+      // Still saved if teardown subsequently hangs or the process is killed.
+      expect(JSON.parse(readFileSync(path, 'utf8')).pending).toHaveLength(1)
+      hub.unregister('pending', 'expired')
+    })
+    const host = new DaemonHost({
+      runtime,
+      onShutdownStart: [() => hub.flushPersistence()],
+      onShutdown: [() => hub.flushPersistence()],
+    })
+    try {
+      await host.stop()
+      expect(unload).toHaveBeenCalledOnce()
+      const saved = JSON.parse(readFileSync(path, 'utf8'))
+      expect(saved.pending).toEqual([])
+      expect(saved.history).toMatchObject([{ id: 'pending', outcome: 'expired' }])
+    } finally {
+      hub.clear()
+      rmSync(path, { force: true })
+    }
   })
 
   it('unloads agents and stops all compute containers on shutdown', async () => {

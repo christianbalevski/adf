@@ -123,6 +123,14 @@ export const APP_HANDLERS: DaemonHandlerTable = {
   },
 
   // --- approvals (W1-D routes) ---------------------------------------------------
+  [IPC.APPROVALS_HISTORY]: async (ctx, _event, before?: number) => {
+    const client = await ctx.ready()
+    return client.request('GET', '/approvals/history', { query: { before } })
+  },
+  [IPC.APPROVALS_CLEAR_HISTORY]: async (ctx) => {
+    const client = await ctx.ready()
+    return client.request('DELETE', '/approvals/history')
+  },
   [IPC.APPROVALS_LIST]: async (ctx) => {
     const client = await ctx.ready()
     return client.request<NotificationsSnapshot>('GET', '/approvals')

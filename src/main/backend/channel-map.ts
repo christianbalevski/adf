@@ -205,6 +205,8 @@ export const CHANNEL_MAP = {
 
   // --- Approvals hub ---------------------------------------------------------
   [IPC.APPROVALS_LIST]: proxied('invoke', ['GET /approvals']),
+  [IPC.APPROVALS_CLEAR_HISTORY]: proxied('invoke', ['DELETE /approvals/history']),
+  [IPC.APPROVALS_HISTORY]: proxied('invoke', ['GET /approvals/history']),
   [IPC.APPROVALS_RESOLVE]: proxied('invoke', ['POST /approvals/resolve']),
   [IPC.APPROVALS_CHANGED]: aggregate(proxied('push', [], {
     frame: 'push:approvals',

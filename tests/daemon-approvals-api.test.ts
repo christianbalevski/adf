@@ -57,6 +57,42 @@ function setup() {
 }
 
 describe('approvals hub routes', () => {
+  it('pages older history and rejects malformed cursors', async () => {
+    const server = setup()
+    for (let i = 0; i < 55; i++) {
+      const entry = approval(FILE_1, `history-${i}`)
+      approvalHub.register(entry)
+      approvalHub.unregister(entry.id, 'approved')
+    }
+    const recent = (await server.inject({ method: 'GET', url: '/approvals' })).json()
+    expect(recent.history).toHaveLength(50)
+    const first = (await server.inject({ method: 'GET', url: '/approvals/history' })).json()
+    expect(first.history).toEqual(recent.history)
+    expect(first.nextBefore).toBe(5)
+    const older = (await server.inject({ method: 'GET', url: '/approvals/history?before=5' })).json()
+    expect(older.history.map((entry: { requestId: string }) => entry.requestId)).toEqual(['history-4', 'history-3', 'history-2', 'history-1', 'history-0'])
+    expect(older.nextBefore).toBeNull()
+    for (const before of ['-1', '1.5', 'nope', 'Infinity', '']) {
+      expect((await server.inject({ method: 'GET', url: `/approvals/history?before=${before}` })).statusCode).toBe(400)
+    }
+  })
+
+  it('DELETE /approvals/history clears receipts without answering pending requests', async () => {
+    const server = setup()
+    const resolve = vi.fn()
+    approvalHub.register(approval(FILE_1, 'done'))
+    approvalHub.unregister(notificationKey(FILE_1, 'main', 'done'), 'approved')
+    approvalHub.register(approval(FILE_2, 'waiting', 'main', resolve))
+
+    const res = await server.inject({ method: 'DELETE', url: '/approvals/history' })
+    expect(res.statusCode).toBe(200)
+    expect(res.json()).toEqual({ success: true })
+    const snapshot = (await server.inject({ method: 'GET', url: '/approvals' })).json()
+    expect(snapshot.history).toEqual([])
+    expect(snapshot.pending).toHaveLength(1)
+    expect(resolve).not.toHaveBeenCalled()
+  })
+
   it('GET /approvals returns the hub snapshot Studio returns', async () => {
     const server = setup()
     approvalHub.register(approval(FILE_1, randomUUID(), 'main', () => {}))

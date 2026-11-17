@@ -136,7 +136,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
  * another one (`local` included). Untagged, an agent window's call is its
  * own runtime's, as every call.
  */
-const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
+const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_CLEAR_HISTORY, IPC.APPROVALS_HISTORY, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
 
 /** Main-window calls that open a file on their runtime: that runtime holds the main window's open agent (§4.3). */
 const MAIN_OPEN_CHANNELS: ReadonlySet<string> = new Set([IPC.FILE_OPEN, IPC.FILE_CREATE, IPC.FILE_CREATE_QUICK])

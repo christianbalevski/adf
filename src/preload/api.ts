@@ -1,7 +1,7 @@
 import type { OwnerCommandResult } from '../shared/types/owner-command.types'
 import type { AskAnswer } from '../shared/utils/ask-form'
 import type { QueueHandoverEntry, AppUpdateState, AppUpdateCheckResult, SpellcheckDownloadResult, FileOperationResult, AgentStatusResult, AgentExecutionEvent, AppSettings, TrackedDirEntry, MeshStatusResult, MeshEvent, MeshDebugInfo, FleetPendingInteraction, NotificationsSnapshot, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, FleetBurnResult, BackgroundAgentStatus, RendererBackgroundAgentEvent, TokenUsageData, ContextBreakdown, McpServerStatusEvent, McpCredentialFileInfo, McpRegistrationTestResult, McpRegistryGetResult, AdapterStatusEvent, AdapterCredentialFileInfo, ProviderCredentialFileInfo, AgentProviderKeySource, AgentConfigSummary, DashboardQuickStats, DashboardProviderTests, DashboardContainers, DashboardAgentStats, AgentRegistryGetResult, AgentRegistryBringHomeResult,
-  QuickCreateResult, IdentityDraft, FileSharePrepareResult,
+  QuickCreateResult, IdentityDraft, FileSharePrepareResult, NotificationHistoryPage,
   AgentTemplateListResult,
   AgentTemplateContents,
   ShippedTemplateId,
@@ -173,6 +173,8 @@ export interface AdfApi {
   // agent and inner loop, foreground and background, plus the recently
   // resolved tail the menu greys out under them.
   listPendingNotifications: () => Promise<NotificationsSnapshot>
+  clearNotificationHistory: () => Promise<{ success: boolean; error?: string }>
+  getNotificationHistory: (before?: number) => Promise<NotificationHistoryPage>
   /** Approvals only; routes into the emitting executor's own resolveApproval (the in-chat card's path). Asks are refused — they need a typed answer. */
   resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) => Promise<{ success: boolean; error?: string }>
   /** Full snapshot on every change — replace local state, do not merge. */

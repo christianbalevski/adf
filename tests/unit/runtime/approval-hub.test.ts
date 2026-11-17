@@ -20,7 +20,6 @@ import {
   notificationKey,
   summarizeApprovalArgs,
   summarizeQuestion,
-  HISTORY_MAX,
   PREVIEW_MAX,
 } from '../../../src/main/runtime/approval-hub'
 import {
@@ -334,7 +333,7 @@ describe('ApprovalHub cleanup', () => {
  * instant it stops blocking leaves the user no way to check what they just
  * answered — or to tell "I said no" from "that agent died before I looked".
  * The distinction the history has to carry is exactly that: a DECISION vs an
- * expiry, per row, for the last HISTORY_MAX rows of this app session.
+ * expiry, per row, retained until manually cleared.
  */
 describe('ApprovalHub history', () => {
   const baseEntry = (id: string, requestedAt = 1000) => ({
@@ -427,15 +426,15 @@ describe('ApprovalHub history', () => {
     expect(approvalHub.historySnapshot()[0]).not.toHaveProperty('resolve')
   })
 
-  it('is bounded — the oldest rows fall off, never the newest', () => {
-    for (let i = 0; i < HISTORY_MAX + 10; i++) {
+  it('retains older history until manually cleared', () => {
+    for (let i = 0; i < 60; i++) {
       approvalHub.register({ ...baseEntry(`k${i}`), resolve: vi.fn() })
       approvalHub.unregister(`k${i}`, 'approved')
     }
     const history = approvalHub.historySnapshot()
-    expect(history).toHaveLength(HISTORY_MAX)
-    expect(history[0].id).toBe(`k${HISTORY_MAX + 9}`)
-    expect(history[history.length - 1].id).toBe('k10')
+    expect(history).toHaveLength(60)
+    expect(history[0].id).toBe('k59')
+    expect(history[history.length - 1].id).toBe('k0')
   })
 
   it('never double-records: a second unregister of the same id is a no-op', () => {
