@@ -11,7 +11,7 @@ function fixture(hydrated = true) {
   let seq = 0
   const workspace = { getFilePath: () => '/agent.adf', insertLog: vi.fn(), appendToLoop: vi.fn(() => ++seq) }
   const session = { getWorkspace: () => workspace, getMessages: () => messages, addMessage: vi.fn((message: any, _: any, opts: any) => { message.seq = opts?.seq ?? ++seq; messages.push(message) }), flushToLoop: vi.fn() }
-  const executor = new AgentExecutor({ id: 'a', name: 'a', model: { provider: 'anthropic', model_id: 'test' }, tools: [], triggers: {}, limits: { max_tool_result_tokens: 100, max_tool_result_preview_chars: 100 } } as unknown as AgentConfig, {} as never, {} as never, session as never)
+  const executor = new AgentExecutor({ id: 'a', name: 'a', model: { provider: 'anthropic', model_id: 'test' }, tools: [{ name: 'sys_code', enabled: true, visible: true }], triggers: {}, limits: { max_tool_result_tokens: 100, max_tool_result_preview_chars: 100 } } as unknown as AgentConfig, {} as never, { get: () => ({}) } as never, session as never)
   const events: any[] = []
   executor.on('event', e => events.push(e))
   return { executor, session, workspace, messages, events }
@@ -58,6 +58,9 @@ describe('owner command safe records', () => {
     const f = fixture()
     const result = f.executor.boundToolResult('x'.repeat(1000000), '/big')
     expect(result).toContain('[TRUNCATED]')
+    // A slash command can't be repeated from code, so no sys_code remedy.
+    expect(result).toContain('Request a smaller or more specific result.')
+    expect(result).not.toContain('sys_code')
     expect(result.length).toBeLessThan(2000)
   })
   it('keeps a swept session empty when an active system dispatch releases queued records', async () => {
