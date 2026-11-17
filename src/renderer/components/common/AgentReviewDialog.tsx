@@ -142,6 +142,8 @@ function ReviewContent({ summary }: { summary: AgentConfigSummary }) {
   const provider = summary.provider
   const providerGap = provider?.status === 'unchecked'
     ? ' — not checked (provider checks are off in Settings)'
+    : provider?.status === 'offline'
+      ? ' — no response from server'
     : providers && providers.length === 0
       ? ' — connect a provider when you run it'
       : ' — no API key on this computer'

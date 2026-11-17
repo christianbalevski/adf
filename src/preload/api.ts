@@ -373,7 +373,7 @@ export interface AdfApi {
   getDashboardQuickStats: () => Promise<DashboardQuickStats>
   getDashboardProviderTests: () => Promise<DashboardProviderTests>
   /** Test a single provider's connection; `force` busts the session cache. */
-  testProvider: (providerId: string, force?: boolean) => Promise<{ status: 'ok' | 'failed' | 'unconfigured' }>
+  testProvider: (providerId: string, force?: boolean) => Promise<{ status: 'ok' | 'failed' | 'offline' | 'unconfigured' | 'unknown' }>
   getDashboardContainers: () => Promise<DashboardContainers>
   getDashboardAgentStats: () => Promise<DashboardAgentStats>
 

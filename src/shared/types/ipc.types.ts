@@ -1144,7 +1144,7 @@ export interface AgentConfigSummary {
     configuredType?: string
     modelId: string
     /** 'missing' = no local provider matches by id or embedded type; 'unchecked' = provider checks are turned off. */
-    status: 'ok' | 'failed' | 'unconfigured' | 'missing' | 'unchecked'
+    status: 'ok' | 'failed' | 'offline' | 'unconfigured' | 'missing' | 'unchecked'
     /** Local settings.providers id the probe ran against. */
     resolvedLocalId?: string
   }
@@ -1206,8 +1206,10 @@ export interface DashboardQuickStats {
 export interface DashboardProviderTests {
   /** Tested successfully. */
   ok: number
-  /** Tested but failed (timeout / 4xx / 5xx). */
+  /** The server answered with an error (4xx / 5xx). */
   failed: number
+  /** No response (refused / timeout / DNS): typically a local server that is not running. */
+  offline: number
   /** Missing credentials and therefore not tested. */
   unconfigured: number
 }

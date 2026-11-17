@@ -79,6 +79,7 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
   const total = agentStats?.total ?? 0
   const todayTokens = quick ? quick.tokens.today.input + quick.tokens.today.output : 0
   const failedProviders = providerTests?.failed ?? 0
+  const offlineProviders = providerTests?.offline ?? 0
   const toggle = (d: Detail) => setDetail((cur) => (cur === d ? null : d))
 
   return (
@@ -125,6 +126,18 @@ export function HomeStatusLine({ data }: { data: DashboardData }) {
               className="rounded px-1 text-[var(--adf-ui-danger)] hover:underline"
             >
               {failedProviders} provider{failedProviders === 1 ? '' : 's'} failing
+            </button>
+          </>
+        )}
+        {offlineProviders > 0 && (
+          <>
+            <Dot />
+            <button
+              type="button"
+              onClick={() => openSettingsAt('providers')}
+              className="rounded px-1 text-[var(--adf-ui-text-muted)] hover:underline"
+            >
+              {offlineProviders} provider{offlineProviders === 1 ? '' : 's'} offline
             </button>
           </>
         )}

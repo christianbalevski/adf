@@ -40,14 +40,16 @@ export function buildQuickStats(src: QuickStatsSource) {
 export async function runDashboardProviderTests(providers: ProviderConfig[], checks: ProviderChecks) {
   let ok = 0
   let failed = 0
+  let offline = 0
   let unconfigured = 0
   await Promise.all(providers.map(async (cfg) => {
     const result = await checks.autoCheck(cfg)
     if (result === 'ok') ok++
     else if (result === 'failed') failed++
+    else if (result === 'offline') offline++
     else if (result === 'unconfigured') unconfigured++
   }))
-  return { ok, failed, unconfigured }
+  return { ok, failed, offline, unconfigured }
 }
 
 /**

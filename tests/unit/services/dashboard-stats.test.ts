@@ -58,14 +58,14 @@ describe('ProviderChecks', () => {
     expect(await checks.test({ ...anthropic, apiKey: undefined })).toBe('unconfigured') // key presence is part of the cache key
   })
 
-  it('a network error is failed; the opt-out serves the cache or unchecked without a request', async () => {
+  it('a network error is offline; the opt-out serves the cache or unchecked without a request', async () => {
     fetchMock.mockRejectedValue(new Error('offline'))
     let enabled = true
     const checks = new ProviderChecks({ isEnabled: () => enabled })
-    expect(await checks.autoCheck(anthropic)).toBe('failed')
+    expect(await checks.autoCheck(anthropic)).toBe('offline')
     enabled = false
     fetchMock.mockClear()
-    expect(await checks.autoCheck(anthropic)).toBe('failed')
+    expect(await checks.autoCheck(anthropic)).toBe('offline')
     expect(await checks.autoCheck(router)).toBe('unchecked')
     expect(fetchMock).not.toHaveBeenCalled()
   })
@@ -75,9 +75,16 @@ describe('dashboard slices', () => {
   it('provider tests count ok / failed / unconfigured; unchecked counts nowhere', async () => {
     fetchMock.mockResolvedValue({ ok: true })
     const checks = new ProviderChecks({ isEnabled: () => true })
-    expect(await runDashboardProviderTests([anthropic, openai, grok, chatgpt], checks)).toEqual({ ok: 2, failed: 0, unconfigured: 2 })
+    expect(await runDashboardProviderTests([anthropic, openai, grok, chatgpt], checks)).toEqual({ ok: 2, failed: 0, offline: 0, unconfigured: 2 })
     const off = new ProviderChecks({ isEnabled: () => false })
-    expect(await runDashboardProviderTests([anthropic], off)).toEqual({ ok: 0, failed: 0, unconfigured: 0 })
+    expect(await runDashboardProviderTests([anthropic], off)).toEqual({ ok: 0, failed: 0, offline: 0, unconfigured: 0 })
+    // An error reply is failed; no reply (a local server that is not running) is offline.
+    fetchMock.mockImplementation(async (url: string) => {
+      if (String(url).includes('127.0.0.1')) throw new TypeError('fetch failed')
+      return { ok: false }
+    })
+    const split = new ProviderChecks({ isEnabled: () => true })
+    expect(await runDashboardProviderTests([anthropic, local], split)).toEqual({ ok: 0, failed: 1, offline: 1, unconfigured: 0 })
   })
 
   it('PROVIDER_TEST: unknown id is unconfigured, force probes live, otherwise the opt-out applies', async () => {

@@ -69,14 +69,14 @@ function resolveAskOn(executor: AgentExecutor, requestId: string, answers: unkno
  */
 const providerChecks = new ProviderChecks({ isEnabled: () => settings?.get('providerChecksEnabled') !== false })
 
-async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'unconfigured' | 'unchecked'> {
+async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'offline' | 'unconfigured' | 'unchecked'> {
   return providerChecks.autoCheck(cfg)
 }
 
 async function testProviderCredentialsForDashboard(
   cfg: ProviderConfig,
   force = false
-): Promise<'ok' | 'failed' | 'unconfigured'> {
+): Promise<ProviderCheckResult> {
   return providerChecks.test(cfg, force)
 }
 
@@ -210,7 +210,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
 import { readRecentToolsFromWorkspace } from '../services/recent-tools'
-import { ProviderChecks } from '../services/provider-checks'
+import { ProviderChecks, type ProviderCheckResult } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
 import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword, convertOwnLegacyPassword } from '../services/envelope-actions'

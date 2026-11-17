@@ -379,6 +379,7 @@ export function keyCheckResult(status: ProviderTestStatus | undefined, hasKey: b
   if (status === 'testing') return 'Checking…'
   if (status === 'ok') return <span className="text-[var(--adf-ui-success)]">Connected</span>
   if (status === 'failed') return <span className="text-[var(--adf-ui-danger)]">{hasKey ? 'Key rejected' : 'Connection failed'}</span>
+  if (status === 'offline') return <span className="text-[var(--adf-ui-text-muted)]">No response from server</span>
   return undefined
 }
 

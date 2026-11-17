@@ -28,8 +28,8 @@ export function providerReady(provider: ProviderConfig, status: ProviderTestStat
   if (status === 'unconfigured') return false
   if (isSubscriptionType(provider.type)) return true
   if (provider.apiKeyStatus === 'missing' || provider.apiKeyStatus === 'unavailable') return false
-  // 'failed': main had a credential to try; the endpoint did not answer.
-  return hasCredential(provider, status, false) || status === 'failed'
+  // 'failed' / 'offline': main had a credential to try; the endpoint refused it or did not answer.
+  return hasCredential(provider, status, false) || status === 'failed' || status === 'offline'
 }
 
 /**

@@ -10,13 +10,19 @@
  * from this session if there is one, else 'unchecked' (a subscription's
  * check reads its sign-in state, never cached, and runs either way: it sends
  * nothing). An explicit Test click
- * calls test(cfg, true) directly. Requests time out after 5 s.
+ * calls test(cfg, true) directly. Requests time out after 5 s; a request
+ * that gets no response is 'offline', one answered with an error 'failed'.
  */
 
 import type { ProviderConfig } from '../../shared/types/ipc.types'
 import { isSubscriptionType } from '../../shared/constants/provider-catalog'
 
-export type ProviderCheckResult = 'ok' | 'failed' | 'unconfigured'
+/**
+ * 'failed': the server answered with an error (bad key, unknown endpoint).
+ * 'offline': no answer at all (refused, timed out, DNS), e.g. a local model
+ * server that is not running.
+ */
+export type ProviderCheckResult = 'ok' | 'failed' | 'offline' | 'unconfigured'
 
 export interface ProviderChecksOptions {
   /** False when the owner turned automatic checks off (`providerChecksEnabled: false`). */
@@ -87,7 +93,7 @@ export class ProviderChecks {
         })
         return finish(response.ok ? 'ok' : 'failed')
       } catch {
-        return finish('failed')
+        return finish('offline')
       }
     }
 
@@ -101,7 +107,7 @@ export class ProviderChecks {
         })
         return finish(response.ok ? 'ok' : 'failed')
       } catch {
-        return finish('failed')
+        return finish('offline')
       }
     }
 
@@ -118,7 +124,7 @@ export class ProviderChecks {
       const response = await fetch(url, { headers, signal: AbortSignal.timeout(5000) })
       return finish(response.ok ? 'ok' : 'failed')
     } catch {
-      return finish('failed')
+      return finish('offline')
     }
   }
 }

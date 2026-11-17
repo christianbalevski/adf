@@ -71,7 +71,7 @@ describe('dashboard slices', () => {
 
   it('provider tests probe each provider once per session; the opt-out sends nothing', async () => {
     const { server, data } = setup({ providers: [anthropic, openai] })
-    expect((await server.inject({ method: 'GET', url: '/dashboard/provider-tests' })).json()).toEqual({ ok: 1, failed: 0, unconfigured: 1 })
+    expect((await server.inject({ method: 'GET', url: '/dashboard/provider-tests' })).json()).toEqual({ ok: 1, failed: 0, offline: 0, unconfigured: 1 })
     expect(fetchMock).toHaveBeenCalledTimes(1)
     expect(fetchMock.mock.calls[0][1].signal).toBeInstanceOf(AbortSignal)
     await server.inject({ method: 'GET', url: '/dashboard/provider-tests' })
@@ -80,7 +80,7 @@ describe('dashboard slices', () => {
     data.providerChecksEnabled = false
     data.providers = [{ ...anthropic, id: 'anthropic-2' }]
     fetchMock.mockClear()
-    expect((await server.inject({ method: 'GET', url: '/dashboard/provider-tests' })).json()).toEqual({ ok: 0, failed: 0, unconfigured: 0 })
+    expect((await server.inject({ method: 'GET', url: '/dashboard/provider-tests' })).json()).toEqual({ ok: 0, failed: 0, offline: 0, unconfigured: 0 })
     expect(fetchMock).not.toHaveBeenCalled()
   })
 
