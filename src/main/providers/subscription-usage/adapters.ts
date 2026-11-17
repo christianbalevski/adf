@@ -112,14 +112,20 @@ export function fromClaudeRateLimit(info: unknown, now: number): UsageReport | n
 
 // --- ChatGPT / Codex ------------------------------------------------------------------
 
-function codexWindow(key: 'primary' | 'secondary', w: { usedPercent?: unknown; minutes?: unknown; resetAt?: unknown; resetAfterSeconds?: unknown }, now: number): SubscriptionUsageWindow {
+/**
+ * One of Codex's two fixed slots. A slot with neither a length nor a reset
+ * time is not a limit (Pro sends an empty secondary slot): null. A real slot
+ * whose length is missing is labelled `Usage`, never a guessed length.
+ */
+function codexWindow(key: 'primary' | 'secondary', w: { usedPercent?: unknown; minutes?: unknown; resetAt?: unknown; resetAfterSeconds?: unknown }, now: number): SubscriptionUsageWindow | null {
   const minutes = num(w.minutes)
   const after = num(w.resetAfterSeconds)
   const resetsAt = epochMs(w.resetAt) ?? (after !== undefined && after >= 0 ? now + Math.round(after * 1000) : undefined)
+  if (!(minutes && minutes > 0) && resetsAt === undefined) return null
   const usedPercent = clampPercent(num(w.usedPercent))
   return {
     key,
-    label: windowLabel(minutes, key === 'primary' ? 'Short window' : 'Long window'),
+    label: windowLabel(minutes, 'Usage'),
     ...(usedPercent !== undefined ? { usedPercent } : {}),
     ...(resetsAt !== undefined ? { resetsAt } : {}),
     ...(usedPercent !== undefined ? { limited: usedPercent >= 100 } : {}),
@@ -137,10 +143,11 @@ function credits(balance: unknown, hasCredits: unknown): UsageReport['credits'] 
 /** Percent 0–100, window in minutes, reset-at epoch seconds or reset-after seconds. */
 export function fromCodexHeaders(meta: ChatGPTResponseMeta | undefined, now: number): UsageReport | null {
   if (!meta) return null
-  return report([
+  const windows = [
     codexWindow('primary', { usedPercent: meta.primaryUsedPercent, minutes: meta.primaryWindowMinutes, resetAt: meta.primaryResetAt, resetAfterSeconds: meta.primaryResetAfterSeconds }, now),
     codexWindow('secondary', { usedPercent: meta.secondaryUsedPercent, minutes: meta.secondaryWindowMinutes, resetAt: meta.secondaryResetAt }, now),
-  ], { plan: meta.planType, credits: credits(meta.creditsBalance, meta.creditsHasCredits) })
+  ].filter((w): w is SubscriptionUsageWindow => w !== null)
+  return report(windows, { plan: meta.planType, credits: credits(meta.creditsBalance, meta.creditsHasCredits) })
 }
 
 /**

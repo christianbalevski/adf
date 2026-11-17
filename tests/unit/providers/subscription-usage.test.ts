@@ -67,6 +67,11 @@ describe('Codex headers', () => {
     })
   })
 
+  it('skips an empty slot: no length and no reset is not a limit (Pro sends one)', () => {
+    const r = fromCodexHeaders({ primaryUsedPercent: 29, primaryWindowMinutes: 10080, primaryResetAfterSeconds: 3600, secondaryUsedPercent: 0 }, NOW)
+    expect(r?.windows.map((w) => [w.key, w.label, w.usedPercent])).toEqual([['primary', 'Weekly', 29]])
+  })
+
   it('returns null when no x-codex-* header was present, and ignores NaN', () => {
     expect(fromCodexHeaders({}, NOW)).toBeNull()
     expect(fromCodexHeaders({ primaryUsedPercent: Number('garbage') }, NOW)).toBeNull()
@@ -99,7 +104,7 @@ describe('Codex usage endpoint body', () => {
   it('survives shape drift field by field', () => {
     const r = fromCodexUsage({ plan_type: 3, rate_limit: { primary_window: { used_percent: 'x', reset_after_seconds: 60 }, secondary_window: 'gone' } }, NOW)
     expect(r?.plan).toBeUndefined()
-    expect(r?.windows).toEqual([{ key: 'primary', label: 'Short window', resetsAt: NOW + 60_000, observedAt: NOW }])
+    expect(r?.windows).toEqual([{ key: 'primary', label: 'Usage', resetsAt: NOW + 60_000, observedAt: NOW }])
     expect(fromCodexUsage({ rate_limit: 'renamed' }, NOW)).toBeNull()
     expect(fromCodexUsage({ plan_type: 'plus' }, NOW)).toBeNull()
     expect(fromCodexUsage([], NOW)).toBeNull()
@@ -117,7 +122,7 @@ describe('Codex usage probe', () => {
       expect(h.Authorization).toBe('Bearer tok')
       expect(h['ChatGPT-Account-ID']).toBe('acct')
       expect(h.originator).toBe('codex_cli_rs')
-      return new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 20 } } }), { status: 200 })
+      return new Response(JSON.stringify({ rate_limit: { primary_window: { used_percent: 20, limit_window_seconds: 604800 } } }), { status: 200 })
     })
     const r = await probeCodexUsage(auth, fetchImpl as unknown as typeof fetch, () => NOW)
     expect(r.windows[0].usedPercent).toBe(20)
