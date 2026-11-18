@@ -1,4 +1,22 @@
 -- schema version 32
+CREATE INDEX idx_adf_attestations_subject ON adf_attestations(subject);
+CREATE INDEX idx_adf_audit_source_start ON adf_audit(source, start_seq);
+CREATE INDEX idx_adf_inbox_from ON adf_inbox("from");
+CREATE INDEX idx_adf_inbox_message_id ON adf_inbox(message_id);
+CREATE INDEX idx_adf_inbox_received ON adf_inbox(received_at);
+CREATE INDEX idx_adf_inbox_source ON adf_inbox(source);
+CREATE INDEX idx_adf_inbox_status ON adf_inbox(status);
+CREATE INDEX idx_adf_inbox_thread ON adf_inbox(thread_id);
+CREATE INDEX idx_adf_logs_level ON adf_logs(level);
+CREATE INDEX idx_adf_logs_origin ON adf_logs(origin);
+CREATE INDEX idx_adf_loop_loop_seq ON adf_loop(loop, seq);
+CREATE INDEX idx_adf_loop_stream ON adf_loop(loop, COALESCE(ord, seq), seq);
+CREATE INDEX idx_adf_outbox_created ON adf_outbox(created_at);
+CREATE INDEX idx_adf_outbox_message_id ON adf_outbox(message_id);
+CREATE INDEX idx_adf_outbox_status ON adf_outbox(status);
+CREATE INDEX idx_adf_outbox_thread ON adf_outbox(thread_id);
+CREATE INDEX idx_adf_tasks_status ON adf_tasks(status);
+CREATE INDEX idx_adf_timers_wake ON adf_timers(next_wake_at);
 CREATE TABLE adf_attestations ( id INTEGER PRIMARY KEY AUTOINCREMENT, issuer TEXT NOT NULL, subject TEXT NOT NULL, role TEXT NOT NULL, issued_at TEXT NOT NULL, expires_at TEXT, scope TEXT, signature TEXT NOT NULL, raw_json TEXT NOT NULL );
 CREATE TABLE adf_audit ( id INTEGER PRIMARY KEY AUTOINCREMENT, source TEXT NOT NULL, start_seq INTEGER, end_seq INTEGER, ref TEXT, entry_count INTEGER NOT NULL, size_bytes INTEGER NOT NULL, data BLOB NOT NULL, created_at INTEGER NOT NULL );
 CREATE TABLE adf_config ( id INTEGER PRIMARY KEY CHECK (id = 1), config_json TEXT NOT NULL, updated_at TEXT NOT NULL );

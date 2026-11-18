@@ -770,6 +770,10 @@ Use `template` to specify a path to a `.adf` file stored in the calling agent's 
 - Setting a locked field or tool to the value it already has is not a change, and is accepted.
 - Setting it to a different value returns an error naming the lock (`Template locks 'model.model_id'; it cannot be changed.`), and nothing is created.
 - A section the call replaces whole (`logging`, `audit`, `mcp`) keeps its locked fields even if the replacement leaves them out.
+- Locked commands, triggers, trigger targets and API routes follow the same rule: restating one unchanged is accepted, changing it is refused.
+- A `name` lock does not apply here: each child takes the name given in the call.
+
+The merge covers the settings this tool takes as parameters. Template settings outside them are not carried into the child, locked or not; for example `compute`, `loops`, `recovery`, `sandbox`, `bare_prompt`, `include_base_prompt`, `umbilical_taps` and `stream_bindings`. The child gets the defaults for those.
 
 The creating agent cannot strip `locked_fields`; the locks carry forward to the child.
 

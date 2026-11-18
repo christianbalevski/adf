@@ -97,7 +97,7 @@ const counts = Object.fromEntries(Object.entries(hits).map(([id, h]) => [id, h.l
 if (args[0] === '--update') {
   const baseline = JSON.parse(readFileSync(BASELINE, 'utf8'))
   const raised = Object.keys(counts).filter((id) => baseline[id] !== undefined && counts[id] > baseline[id])
-  if (raised.length && !args.includes('--allow-increase')) {
+  if (raised.length) {
     console.error(`--update only lowers the baseline. Over it: ${raised.join(', ')}. Remove the new occurrences.`)
     process.exit(1)
   }

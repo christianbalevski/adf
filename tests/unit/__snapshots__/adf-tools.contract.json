@@ -1,4 +1,16 @@
 {
+  "adf_shell": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "description": "Bash command or pipeline"
+      }
+    },
+    "required": [
+      "command"
+    ]
+  },
   "agent_discover": {
     "type": "object",
     "properties": {

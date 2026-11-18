@@ -1029,7 +1029,6 @@ export function canonicalizeCardForSignature(card: AlfAgentCard): string {
   signable.description = card.description
   if (card.icon !== undefined) signable.icon = card.icon
   if (card.resolution) {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { endpoint, ...resolutionRest } = card.resolution as unknown as { endpoint?: string; [k: string]: unknown }
     signable.resolution = resolutionRest
   }

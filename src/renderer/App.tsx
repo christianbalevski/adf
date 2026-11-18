@@ -202,7 +202,7 @@ export default function App() {
   const windowLabel = useRuntimesStore((s) => runtimeLabel(windowRuntime, s.runtimes))
   useEffect(() => {
     if (!isAgentWindow) return
-    const fileName = agentWindowFile?.split(/[\\/]/).pop()?.replace(/\.adf$/i, '')
+    const fileName = agentWindowFile ? agentNameOf(agentWindowFile) : ''
     document.title = fileName ? (windowLabel ? `${fileName} · ${windowLabel}` : fileName) : document.title
   }, [agentWindowFile, windowLabel])
 

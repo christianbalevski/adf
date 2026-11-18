@@ -2490,7 +2490,6 @@ export class MeshManager extends EventEmitter {
     const from = typeof message.from === 'string' ? message.from : null
     const result: StoredAttachment[] = []
     for (const att of message.payload.attachments ?? []) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { data, ...record } = att as StoredAttachment
       delete record.path
       delete record.skipped

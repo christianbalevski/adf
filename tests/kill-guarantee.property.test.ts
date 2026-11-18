@@ -4,7 +4,8 @@
 // every await that matters (provider resolution, each Kill pass, each unload)
 // yields to a scheduler, and the outcome is checked against when each request
 // was made. fast-check explores orderings at random; orderings it found that
-// need a precise sequence are pinned below so they run every time.
+// need a precise sequence are pinned below so they run every time. A start
+// asked for after the last Kill must load the agent.
 //
 // The runtime refuses a mid-Kill load at entry and again at registration, so
 // removing one guard alone changes no outcome; removing both fails the pinned
@@ -30,36 +31,11 @@ type Op =
   | { kind: 'load'; agent: number }
   | { kind: 'open'; agent: number }
   | { kind: 'autostart' }
-  // Lets one scheduled step run (the oldest with `step`, else any) before the next request.
-  | { kind: 'tick'; step?: Step }
+  // Lets one scheduled step run before the next request.
+  | { kind: 'tick' }
 
-/** What the scenario needs from a scheduler: fast-check's, or the queue below. */
-interface Scheduler {
-  schedule<T>(p: Promise<T>, label: Step): Promise<T>
-  tick(step?: Step): Promise<void>
-  drain(): Promise<void>
-}
-
-function fromFastCheck(s: fc.Scheduler): Scheduler {
-  return {
-    schedule: (p, label) => s.schedule(p, label),
-    tick: async () => { if (s.count() > 0) await s.waitOne() },
-    drain: () => s.waitAll(),
-  }
-}
-
-/** Releases steps in the order the ops name them. */
-function queue(): Scheduler {
-  const waiting: { label: Step; release: () => void }[] = []
-  return {
-    schedule: (p, label) => new Promise<void>((release) => waiting.push({ label, release })).then(() => p),
-    tick: async (step) => {
-      const i = step ? waiting.findIndex((w) => w.label === step) : 0
-      if (i >= 0 && waiting[i]) waiting.splice(i, 1)[0].release()
-    },
-    drain: async () => { for (const w of waiting.splice(0)) w.release() },
-  }
-}
+/** Releases steps oldest first (each id in turn; more ids than any run schedules). */
+const fifo = () => fc.schedulerFor(Array.from({ length: 500 }, (_, i) => i + 1))
 
 // Real work between scheduled steps (workspace I/O, timers of 0) runs to
 // its next scheduled step before the next request.
@@ -75,11 +51,13 @@ function seed(dir: string, n: number): { filePath: string; id: string } {
   return { filePath, id: config.id }
 }
 
-async function scenario(sched: Scheduler, ops: Op[]): Promise<void> {
+async function scenario(sched: fc.Scheduler, ops: Op[]): Promise<void> {
   RuntimeGate._resetForTests()
   const dir = mkdtempSync(join(tmpdir(), 'adf-kill-property-'))
   const agents = Array.from({ length: AGENTS }, (_, n) => seed(dir, n))
-  const settings = { get: () => undefined, set: () => {} }
+  // Reviewed, so autostart loads them.
+  const reviewed = agents.map((a) => a.id)
+  const settings = { get: (key: string) => (key === 'reviewedAgents' ? reviewed : undefined), set: () => {} }
   const runtime = new RuntimeService({ settings, enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
   const server = createDaemonHttpApi(runtime, { settingsStore: settings })
 
@@ -127,8 +105,8 @@ async function scenario(sched: Scheduler, ops: Op[]): Promise<void> {
         settle(runtime.autostartFromDirectories([dir], { maxDepth: 0 }))
       } else if (o.kind === 'open') {
         settle(runtime.openDocument(agents[o.agent].filePath, { holder: HOLDER }).then(() => runtime.releaseDocument(agents[o.agent].id, HOLDER)))
-      } else {
-        await sched.tick(o.step)
+      } else if (sched.count() > 0) {
+        await sched.waitOne()
       }
       await nextTurn()
     }
@@ -137,7 +115,7 @@ async function scenario(sched: Scheduler, ops: Op[]): Promise<void> {
     void Promise.all(pending).then(() => { settled = true })
     for (let i = 0; !settled; i++) {
       if (i > 500) throw new Error(`ops did not settle: ${JSON.stringify(ops)}`)
-      await sched.drain()
+      await sched.waitAll()
       await nextTurn()
     }
 
@@ -146,7 +124,7 @@ async function scenario(sched: Scheduler, ops: Op[]): Promise<void> {
     const counts = (a: { t: number; midKill: boolean }) => a.t > lastKillAt && !a.midKill
     const loaded = new Set(runtime.listAgents().map((a) => a.id))
     agents.forEach((agent, n) => {
-      if (loaded.has(agent.id)) expect(asks[n].some(counts), `agent-${n} is loaded, but no start for it counts. Ops: ${JSON.stringify(ops)}`).toBe(true)
+      expect(loaded.has(agent.id), `agent-${n}: loaded must match whether a start for it counts. Ops: ${JSON.stringify(ops)}`).toBe(asks[n].some(counts))
     })
     if (lastKillAt >= 0 && !asks.some((a) => a.some(counts))) {
       expect(RuntimeGate.killing).toBe(false)
@@ -179,7 +157,7 @@ afterEach(() => {
 describe('Kill guarantee', () => {
   it('holds for random interleavings of Kills, starts, loads, opens and autostarts', async () => {
     await fc.assert(
-      fc.asyncProperty(fc.scheduler(), fc.array(op, { minLength: 1, maxLength: 16 }), (s, ops) => scenario(fromFastCheck(s), ops)),
+      fc.asyncProperty(fc.scheduler(), fc.array(op, { minLength: 1, maxLength: 16 }), (s, ops) => scenario(s, ops)),
       { numRuns: 100 },
     )
   }, 120_000)
@@ -191,10 +169,13 @@ describe('Kill guarantee', () => {
     ['a load asked for while the Kill unloads', [
       { kind: 'start', agent: 0 }, { kind: 'kill' }, { kind: 'tick' }, { kind: 'tick' }, { kind: 'load', agent: 1 },
     ]],
+    ['a start asked for after the Kill loads the agent', [
+      { kind: 'start', agent: 0 }, { kind: 'kill' }, { kind: 'tick' }, { kind: 'tick' }, { kind: 'tick' }, { kind: 'start', agent: 0 },
+    ]],
     ['a start asked for while the Kill unloads', [
       { kind: 'start', agent: 0 }, { kind: 'kill' }, { kind: 'tick' }, { kind: 'tick' }, { kind: 'start', agent: 1 },
     ]],
   ])('%s', async (_name, ops) => {
-    await scenario(queue(), ops)
+    await scenario(fifo(), ops)
   }, 30_000)
 })

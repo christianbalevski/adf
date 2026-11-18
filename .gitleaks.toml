@@ -23,8 +23,9 @@ regexTarget = "line"
 regexes = ['''\bprivateKeyPkcs8\b''']
 
 # Personal details. The repository is public: real tailnet addresses and real
-# agent DIDs never belong in code, docs, fixtures or placeholders. Use
-# documentation values instead (100.101.102.103, did:key:z6Mk...).
+# agent DIDs never belong in code, docs or placeholders. Use documentation
+# values instead (100.101.102.103, did:key:z6Mk...). tests/ is not scanned
+# (allowlist above); its fixtures use made-up values.
 [[rules]]
 id = "tailnet-address"
 description = "Tailscale (CGNAT 100.64.0.0/10) address; use 100.101.102.103 in examples"

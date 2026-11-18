@@ -20,7 +20,6 @@ import type {
   ToolDeclaration,
   TriggersConfigV3,
   TriggerTypeV3,
-  ServingApiRoute,
   ServingConfig
 } from '../../shared/types/adf-v02.types'
 
@@ -239,8 +238,16 @@ export function mergeTemplateWithOverrides(
   // A lock is a top-level key or a dotted path ('model', 'model.model_id').
   // Leaving a locked field out of the overrides keeps the template value;
   // setting it to anything else is refused. Fields beside it stay open.
+  // `name` is the new file's name, so every child sets its own.
+  const locks: { lock: string; path: string[] }[] = []
   for (const lock of lockedFields) {
     const path = lock.split('.')
+    if (path.some((key) => UNSAFE_KEYS.has(key))) {
+      return { ok: false, error: `Template lock '${lock}' is not a config path.` }
+    }
+    if (path[0] !== 'name') locks.push({ lock, path })
+  }
+  for (const { lock, path } of locks) {
     const wanted = valueAt(overrides, path)
     if (wanted !== undefined && changes(wanted, valueAt(templateConfig, path))) {
       return { ok: false, error: `Template locks '${lock}'; it cannot be changed. Leave it out of the overrides to keep the template value.` }
@@ -264,12 +271,13 @@ export function mergeTemplateWithOverrides(
   const mergedServing = mergeServing(templateConfig.serving, overrides.serving)
   if (!mergedServing.ok) return mergedServing
 
-  const lockedCommands = (templateConfig.commands ?? []).filter(command => command.locked)
-  if (overrides.commands?.some(command => lockedCommands.some(locked => locked.name === command.name))) {
-    return { ok: false, error: 'Cannot override a locked template command' }
+  let commands = templateConfig.commands
+  if (overrides.commands !== undefined) {
+    const kept = keepLocked((templateConfig.commands ?? []).filter((c) => c.locked), overrides.commands,
+      (a, b) => a.name === b.name, (c) => `command '${c.name}'`)
+    if (!kept.ok) return kept
+    commands = kept.value
   }
-  const commands = overrides.commands === undefined ? templateConfig.commands
-    : [...lockedCommands, ...overrides.commands]
 
   // ---- 5. Build final CreateAgentOptions ----
   const options: CreateAgentOptions = {
@@ -352,10 +360,14 @@ export function mergeTemplateWithOverrides(
 
   // Sections taken whole from the overrides (audit, mcp, logging, ...) can
   // drop a locked field by leaving it out; put the template value back.
-  for (const lock of lockedFields) {
-    const path = lock.split('.')
+  for (const { path } of locks) {
     const kept = valueAt(templateConfig, path)
     if (kept !== undefined) setAt(options as unknown as Record<string, unknown>, path, structuredClone(kept))
+  }
+  // A child records its own creation time, even under a `metadata` lock.
+  if (options.metadata) {
+    const { author, tags, version } = options.metadata
+    options.metadata = { author, tags, version }
   }
 
   // A template baseline must never be able to pre-grant a locked dangerous
@@ -380,13 +392,16 @@ export function mergeTemplateWithOverrides(
   return { ok: true, options }
 }
 
+// A lock path is walked into objects; these would reach a prototype.
+const UNSAFE_KEYS = new Set(['__proto__', 'prototype', 'constructor'])
+
 const isRecord = (v: unknown): v is Record<string, unknown> =>
   typeof v === 'object' && v !== null && !Array.isArray(v)
 
 function valueAt(obj: unknown, path: string[]): unknown {
   let cur = obj
   for (const key of path) {
-    if (!isRecord(cur)) return undefined
+    if (!isRecord(cur) || !Object.hasOwn(cur, key)) return undefined
     cur = cur[key]
   }
   return cur
@@ -395,7 +410,7 @@ function valueAt(obj: unknown, path: string[]): unknown {
 function setAt(obj: Record<string, unknown>, path: string[], value: unknown): void {
   let cur = obj
   for (const key of path.slice(0, -1)) {
-    if (!isRecord(cur[key])) cur[key] = {}
+    if (!Object.hasOwn(cur, key) || !isRecord(cur[key])) cur[key] = {}
     cur = cur[key] as Record<string, unknown>
   }
   cur[path[path.length - 1]] = value
@@ -407,6 +422,25 @@ function changes(wanted: unknown, current: unknown): boolean {
     return Object.keys(wanted).some((k) => wanted[k] !== undefined && changes(wanted[k], current[k]))
   }
   return !isDeepStrictEqual(wanted, current)
+}
+
+type KeepResult<T> = { ok: true; value: T[] } | { ok: false; error: string }
+
+/**
+ * A list the overrides replace, with the template's locked items carried
+ * forward. An override item matching a locked one may restate it unchanged
+ * (it is not added twice); changing it is refused.
+ */
+function keepLocked<T>(locked: T[], incoming: T[], same: (a: T, b: T) => boolean, label: (item: T) => string): KeepResult<T> {
+  const rest: T[] = []
+  for (const item of incoming) {
+    const held = locked.find((l) => same(l, item))
+    if (!held) rest.push(item)
+    else if (changes(item, held)) {
+      return { ok: false, error: `Template locks ${label(held)}; it cannot be changed. Leave it out of the overrides to keep the template setting.` }
+    }
+  }
+  return { ok: true, value: [...locked, ...rest] }
 }
 
 // ---------------------------------------------------------------------------
@@ -438,8 +472,7 @@ function mergeTools(
       }
       merged.push(tmplTool)
     } else if (override) {
-      // Merge, preserving locked flag from template
-      merged.push({ ...tmplTool, ...override, ...(tmplTool.locked ? { locked: true } : {}) })
+      merged.push({ ...tmplTool, ...override })
     } else {
       merged.push(tmplTool)
     }
@@ -485,34 +518,22 @@ function mergeTriggers(
       continue
     }
 
-    // Check trigger-level lock
     if (tmplTrigger.locked) {
-      return {
-        ok: false,
-        error: `Template has locked trigger '${triggerType}' — cannot override`
+      if (changes(override, tmplTrigger)) {
+        return { ok: false, error: `Template locks trigger '${triggerType}'; it cannot be changed. Leave it out of the overrides to keep the template setting.` }
       }
+      continue
     }
 
-    // Check for locked targets within the trigger
+    // Override is replacing targets — carry locked targets forward. A target
+    // has no name, so a restated locked target is one equal to it (its
+    // `locked` flag aside); any other target is a new one.
     const lockedTargets = tmplTrigger.targets.filter((t) => t.locked)
     if (lockedTargets.length > 0) {
-      // Override is replacing targets — must carry locked targets forward
-      const mergedTargets = [...lockedTargets]
-
-      // Add non-locked targets from override
-      if (override.targets) {
-        for (const overrideTarget of override.targets) {
-          // Don't allow override to include targets with same identity as locked ones
-          mergedTargets.push(overrideTarget)
-        }
-      }
-
-      merged[triggerType] = {
-        ...override,
-        targets: mergedTargets,
-        // Preserve trigger-level locked flag
-        ...(tmplTrigger.locked ? { locked: true } : {})
-      }
+      const same = (l: object, t: object) => isDeepStrictEqual({ ...l, locked: undefined }, { ...t, locked: undefined })
+      const kept = keepLocked(lockedTargets, override.targets ?? [], same, () => `a '${triggerType}' target`)
+      if (!kept.ok) return kept
+      merged[triggerType] = { ...override, targets: kept.value }
     } else {
       // No locked targets — use override entirely
       merged[triggerType] = override
@@ -557,25 +578,10 @@ function mergeServing(
     const lockedRoutes = templateRoutes.filter((r) => r.locked)
 
     if (lockedRoutes.length > 0) {
-      // Cannot wholesale replace if locked routes exist
-      // Carry locked routes forward, merge in non-locked from override
-      const mergedRoutes: ServingApiRoute[] = [...lockedRoutes]
-
-      for (const overrideRoute of overrideServing.api) {
-        // Check if this override conflicts with a locked route (same method+path)
-        const conflictsWithLocked = lockedRoutes.some(
-          (lr) => lr.method === overrideRoute.method && lr.path === overrideRoute.path
-        )
-        if (conflictsWithLocked) {
-          return {
-            ok: false,
-            error: `Template has locked API route '${overrideRoute.method} ${overrideRoute.path}' — cannot override`
-          }
-        }
-        mergedRoutes.push(overrideRoute)
-      }
-
-      merged.api = mergedRoutes
+      const kept = keepLocked(lockedRoutes, overrideServing.api,
+        (a, b) => a.method === b.method && a.path === b.path, (r) => `API route '${r.method} ${r.path}'`)
+      if (!kept.ok) return kept
+      merged.api = kept.value
     } else {
       // No locked routes — use override entirely
       merged.api = overrideServing.api

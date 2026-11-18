@@ -14,7 +14,8 @@ import type { Tool } from '../../src/main/tools/tool.interface'
 // snapshots make any change to it a reviewed diff. If one fails, the change
 // needs the justification AGENTS.md asks for, not a routine snapshot update.
 
-const TOOLS_DIR = join(__dirname, '../../src/main/tools/built-in')
+// Built-in tools, plus adf_shell, which lives beside its command parser.
+const TOOL_DIRS = ['built-in', 'shell'].map((d) => join(__dirname, '../../src/main/tools', d))
 
 // Tool constructors take bound callbacks and services; the schema never
 // depends on them, so any argument works. compute_exec shapes its schema
@@ -22,12 +23,14 @@ const TOOLS_DIR = join(__dirname, '../../src/main/tools/built-in')
 const stub: unknown = new Proxy(() => undefined, { get: () => stub, apply: () => undefined })
 const CTOR_ARGS: Record<string, unknown[]> = {
   ComputeExecTool: [null, { hasIsolated: true, hasShared: true, hasHost: true }, () => undefined],
+  ShellTool: [stub, stub, {}],
 }
 
 async function builtInTools(): Promise<Tool[]> {
   const tools: Tool[] = []
-  for (const file of readdirSync(TOOLS_DIR).filter((f) => f.endsWith('.tool.ts')).sort()) {
-    const mod = await import(join(TOOLS_DIR, file)) as Record<string, unknown>
+  const files = TOOL_DIRS.flatMap((dir) => readdirSync(dir).filter((f) => f.endsWith('.tool.ts')).map((f) => join(dir, f)))
+  for (const file of files) {
+    const mod = await import(file) as Record<string, unknown>
     for (const [exported, value] of Object.entries(mod)) {
       if (typeof value !== 'function' || !/^class\s/.test(Function.prototype.toString.call(value))) continue
       const Ctor = value as new (...args: unknown[]) => Partial<Tool>
@@ -62,7 +65,7 @@ describe('ADF format contract', () => {
     AdfDatabase.create(filePath, { name: 'contract' }).close()
     const db = new Database(filePath, { readonly: true })
     const rows = db.prepare(
-      `SELECT type, name, sql FROM sqlite_master WHERE name LIKE 'adf\\_%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY type, name`
+      `SELECT type, name, sql FROM sqlite_master WHERE tbl_name LIKE 'adf\\_%' ESCAPE '\\' AND sql IS NOT NULL ORDER BY type, name`
     ).all() as { type: string; name: string; sql: string }[]
     db.close()
     const ddl = [`-- schema version ${ADF_LATEST_SCHEMA_VERSION}`, ...rows.map((r) => `${r.sql.replace(/\s+/g, ' ').trim()};`)].join('\n')

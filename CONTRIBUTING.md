@@ -125,8 +125,9 @@ npm test
   built-in tables, the agent config schema and every tool's input schema. A
   failing snapshot is a change to the `.adf` format; see [AGENTS.md](AGENTS.md).
 - **Property tests** (`*.property.test.ts`, [fast-check](https://fast-check.dev))
-  check a rule against generated inputs or orderings: Kill, error state,
-  template locks. When you add one, break the code it guards and confirm it
+  check a rule against generated inputs or orderings: Kill, template locks.
+  When the inputs are a short fixed list, test every one with `it.each`
+  instead. When you add one, break the code it guards and confirm it
   fails; a property test that cannot fail checks nothing.
 
 ## Reporting bugs

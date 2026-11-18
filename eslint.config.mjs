@@ -11,8 +11,9 @@ export default tseslint.config(
   {
     ignores: ['dist/**', 'out/**'],
     linterOptions: {
-      // The repository predates ESLint. Existing suppressions are cleaned up as
-      // their surrounding files enter the enforced ruleset.
+      // Off: suppressions for the backlog rules below (no-explicit-any,
+      // exhaustive-deps) count as unused while those rules are off, and are
+      // needed again when they turn on. scripts/check-ratchet.mjs counts them.
       reportUnusedDisableDirectives: 'off',
     },
   },

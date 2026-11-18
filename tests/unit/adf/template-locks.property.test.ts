@@ -59,15 +59,18 @@ describe('template locks (property)', () => {
         if (o.tools.length) overrides.tools = o.tools.map(([name, enabled]) => ({ name, enabled }))
 
         const result = mergeTemplateWithOverrides(template, overrides)
+        const toolChanged = o.tools.some(([name, enabled]) =>
+          lockedTools.includes(name) && enabled !== template.tools.find((t) => t.name === name)?.enabled)
         if (!result.ok) {
           // Refused only for an override that changes a locked value.
           const changed = [...o.leaves, ...o.top].some(([path, value]) =>
             locks.some((lock) => (path === lock || path.startsWith(`${lock}.`)) && !Object.is(value, get(template, path))))
-          const toolChanged = o.tools.some(([name, enabled]) =>
-            lockedTools.includes(name) && enabled !== template.tools.find((t) => t.name === name)?.enabled)
           expect(changed || toolChanged, `refused (${result.error}) with no locked value changed; overrides ${JSON.stringify(overrides)}`).toBe(true)
           return
         }
+        // Accepted only when no locked tool changed (locked values are put
+        // back either way, so this is what shows a change was refused).
+        expect(toolChanged, `a change to a locked tool was accepted; overrides ${JSON.stringify(overrides)}`).toBe(false)
         const child = result.options as unknown as Record<string, unknown>
         for (const lock of locks) {
           expect(get(child, lock), `locked '${lock}' changed; overrides ${JSON.stringify(overrides)}`).toEqual(get(template, lock))
@@ -106,5 +109,72 @@ describe('template locks (property)', () => {
     const template = locked(['logging.default_level'], { logging: { default_level: 'warn', max_rows: 100 } as AgentConfig['logging'] })
     const result = mergeTemplateWithOverrides(template, { logging: { max_rows: 5 } as AgentConfig['logging'] })
     expect(result.ok && result.options.logging).toEqual({ default_level: 'warn', max_rows: 5 })
+  })
+
+  it('a locked command, trigger or route restated as it is is kept once; a change is refused', () => {
+    const command = { name: 'deploy', lambda: 'lib/deploy.ts:run', locked: true }
+    const target = { scope: 'agent' as const, locked: true }
+    const route = { method: 'GET' as const, path: '/status', lambda: 'lib/api.ts:status', locked: true }
+    const template = locked([], {
+      commands: [command],
+      triggers: { ...base.triggers, on_inbox: { enabled: true, targets: [target] } },
+      serving: { ...base.serving, api: [route] },
+    } as Partial<AgentConfig>)
+
+    const same = mergeTemplateWithOverrides(template, {
+      commands: [{ ...command, locked: undefined }],
+      triggers: { on_inbox: { enabled: true, targets: [target] } },
+      serving: { api: [route] },
+    } as never)
+    expect(same.ok).toBe(true)
+    if (!same.ok) return
+    expect(same.options.commands).toEqual([command])
+    expect(same.options.triggers.on_inbox?.targets).toEqual([target])
+    expect(same.options.serving?.api).toEqual([route])
+
+    const changed = mergeTemplateWithOverrides(template, { commands: [{ ...command, lambda: 'lib/other.ts:run' }] } as never)
+    expect(!changed.ok && changed.error).toContain("command 'deploy'")
+    const route2 = mergeTemplateWithOverrides(template, { serving: { api: [{ ...route, lambda: 'lib/x.ts:y' }] } } as never)
+    expect(!route2.ok && route2.error).toContain("API route 'GET /status'")
+  })
+
+  it('a locked trigger restated as it is is accepted; a change is refused', () => {
+    const trigger = { enabled: true, locked: true, targets: [{ scope: 'agent' as const }] }
+    const template = locked([], { triggers: { ...base.triggers, on_inbox: trigger } } as Partial<AgentConfig>)
+    expect(mergeTemplateWithOverrides(template, { triggers: { on_inbox: { enabled: true, targets: [{ scope: 'agent' }] } } } as never).ok).toBe(true)
+    const off = mergeTemplateWithOverrides(template, { triggers: { on_inbox: { enabled: false, targets: [] } } } as never)
+    expect(!off.ok && off.error).toContain("trigger 'on_inbox'")
+  })
+
+  it('a lock path that reaches a prototype is refused and writes nothing', () => {
+    const template = JSON.parse(JSON.stringify(locked(['__proto__.polluted']))) as AgentConfig
+    Object.defineProperty(template, '__proto__', { value: { polluted: true }, enumerable: true, configurable: true, writable: true })
+    const result = mergeTemplateWithOverrides(template, {})
+    expect(result.ok).toBe(false)
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined()
+  })
+
+  it('a name lock does not stop a child from taking its own name', () => {
+    expect(mergeTemplateWithOverrides(locked(['name']), { name: 'child' }).ok).toBe(true)
+  })
+
+  it('a metadata lock keeps author, tags and version, not the template creation time', () => {
+    const template = locked(['metadata'], { metadata: { ...base.metadata, author: 'owner', created_at: '2000-01-01T00:00:00.000Z', updated_at: '2000-01-01T00:00:00.000Z' } })
+    const result = mergeTemplateWithOverrides(template, {})
+    expect(result.ok && result.options.metadata).toEqual({ author: 'owner', tags: base.metadata.tags, version: base.metadata.version })
+  })
+
+  it('a target beside a locked one is added, not taken for it', () => {
+    const lockedTarget = { scope: 'agent' as const, filter: { source: 'telegram' }, locked: true }
+    const template = locked([], { triggers: { ...base.triggers, on_inbox: { enabled: true, targets: [lockedTarget] } } } as Partial<AgentConfig>)
+    const result = mergeTemplateWithOverrides(template, { triggers: { on_inbox: { enabled: true, targets: [{ scope: 'agent' }] } } } as never)
+    expect(result.ok && result.options.triggers.on_inbox?.targets).toEqual([lockedTarget, { scope: 'agent' }])
+  })
+
+  it('a lock naming an inherited property matches nothing and does not throw', () => {
+    for (const lock of ['toString', 'model.hasOwnProperty']) {
+      const result = mergeTemplateWithOverrides(locked([lock]), {})
+      expect(result.ok, lock).toBe(true)
+    }
   })
 })
