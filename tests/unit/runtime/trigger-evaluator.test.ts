@@ -4,7 +4,6 @@ import type { AgentConfig, TimerSchedule, TriggerConfig, TriggerTarget } from '.
 import type { AdfEventDispatch, AdfBatchDispatch } from '../../../src/shared/types/adf-event.types'
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
 import { withSource } from '../../../src/main/runtime/execution-context'
-import { runDispatchDropCompensation } from '../../../src/main/runtime/system-dispatch-limits'
 
 // ===========================================================================
 // Helpers
@@ -957,7 +956,7 @@ describe('TriggerEvaluator', () => {
     }>) {
       return {
         getDueTimers: vi.fn(() => expired),
-        expireTimers: vi.fn(),
+        claimTimer: vi.fn(() => true),
         advanceTimer: vi.fn(),
         insertLog: vi.fn(),
         getInbox: vi.fn(() => []),
@@ -988,7 +987,7 @@ describe('TriggerEvaluator', () => {
       vi.advanceTimersByTime(5000)
 
       expect(ws.getDueTimers).toHaveBeenCalled()
-      expect(ws.expireTimers).toHaveBeenCalledWith([1], expect.any(Number))
+      expect(ws.claimTimer).toHaveBeenCalledWith(1, undefined, 0, null, expect.any(Number))
       expect(events.length).toBe(1)
       const d = events[0] as AdfEventDispatch
       expect(d.event.type).toBe('timer')
@@ -998,73 +997,47 @@ describe('TriggerEvaluator', () => {
       evaluator.dispose()
     })
 
-    // A5 (correctness F1): a `once` agent-scope timer targeting a side loop is
-    // settled (expired) BEFORE its dispatch is emitted. The real drop site for
-    // agent-scope dispatches is assembleAgent's onEvaluatorTrigger, which — when
-    // the target loop is gone/disabled — now runs the drop-compensation the
-    // evaluator registered. This test drives that compensation directly and
-    // asserts the timer is rewound (un-expired), so it fires when the loop is
-    // re-enabled instead of being silently consumed. The pre-existing tests only
-    // drove the system-scope path (compensated by SystemDispatchQueue).
-    it('rewinds a dropped once agent-scope timer targeting a side loop', () => {
+    // With a receiver (assembleAgent's), an agent-scope timer is received at
+    // the tick: the claim and the loop write are the receiver's one
+    // transaction. A target that cannot receive (a missing or disabled loop,
+    // an executor that refuses) holds the whole row: no claim, nothing runs,
+    // so there is nothing to rewind.
+    it('holds an agent-scope timer whose target loop cannot receive, and delivers it once it can', () => {
       const config = makeConfig({
         on_timer: makeTriggerConfig([makeTarget('agent')])
       })
       const evaluator = new TriggerEvaluator(config)
       evaluator.setDisplayState('active')
       const events = collectEvents(evaluator)
-
       const wakeAt = Date.now() - 1000
-      const timer = {
+      const ws = makeWorkspaceMock([{
         id: 7,
         schedule: { mode: 'once' as const, at: wakeAt },
         payload: 'wake reflector',
-        scope: ['agent'] as ('system' | 'agent')[],
+        scope: ['agent'],
         lambda: null,
         warm: false,
         run_count: 0,
         created_at: Date.now() - 5000,
-        next_wake_at: wakeAt,
-        last_fired_at: null,
-        locked: false,
         loop: 'reflector',
-      }
-      const ws = {
-        getDueTimers: vi.fn(() => [timer]),
-        expireTimers: vi.fn(),
-        advanceTimer: vi.fn(),
-        updateTimer: vi.fn(),
-        insertLog: vi.fn(),
-        getInbox: vi.fn(() => []),
-        getUnreadCount: vi.fn(() => 0),
-      } as any
+      } as never])
+      let ready = false
+      const deliver = vi.fn(() => true)
+      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, deliver })
 
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
+      expect(deliver).not.toHaveBeenCalled()
+      expect(ws.claimTimer).not.toHaveBeenCalled()
+      expect(events.length).toBe(0)
 
-      // The once timer was settled (expired) and a loop-targeted dispatch emitted.
-      expect(ws.expireTimers).toHaveBeenCalledWith([7], expect.any(Number))
-      expect(events.length).toBe(1)
-      const dispatch = events[0] as AdfEventDispatch
-      expect(dispatch.scope).toBe('agent')
-      expect(dispatch.loop).toBe('reflector')
-      // Nothing rewound yet — the dispatch has not been dropped.
-      expect(ws.updateTimer).not.toHaveBeenCalled()
-
-      // Simulate onEvaluatorTrigger's drop branch (target loop gone/disabled).
-      runDispatchDropCompensation(dispatch)
-
-      // The compensation un-expired the timer: updateTimer restores its schedule
-      // + wake time, advanceTimer restores run_count. It will fire again.
-      expect(ws.updateTimer).toHaveBeenCalledWith(
-        7, timer.schedule, wakeAt, 'wake reflector', ['agent'], null, false, false
-      )
-      expect(ws.advanceTimer).toHaveBeenCalledWith(7, wakeAt, 0, expect.any(Number))
-
-      // The compensation is one-shot: a second drop of the same dispatch is a no-op.
-      ws.updateTimer.mockClear()
-      runDispatchDropCompensation(dispatch)
-      expect(ws.updateTimer).not.toHaveBeenCalled()
+      ready = true
+      vi.advanceTimersByTime(5000)
+      expect(deliver).toHaveBeenCalledTimes(1)
+      expect(deliver).toHaveBeenCalledWith(expect.objectContaining({ id: 7 }), null, expect.any(Number), expect.objectContaining({ type: 'timer' }))
+      // the receiver claims; the evaluator emits no dispatch of its own
+      expect(ws.claimTimer).not.toHaveBeenCalled()
+      expect(events.length).toBe(0)
 
       evaluator.dispose()
     })
@@ -1151,8 +1124,8 @@ describe('TriggerEvaluator', () => {
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
 
-      // Timer is still expired even when disabled
-      expect(ws.expireTimers).toHaveBeenCalledWith([4], expect.any(Number))
+      // Timer is still settled even when disabled
+      expect(ws.claimTimer).toHaveBeenCalledWith(4, undefined, 0, null, expect.any(Number))
       expect(events.length).toBe(0)
 
       evaluator.dispose()
@@ -1182,8 +1155,7 @@ describe('TriggerEvaluator', () => {
 
       expect(events.length).toBe(0)
       // Held, not settled: it fires once the agent leaves suspended.
-      expect(ws.expireTimers).not.toHaveBeenCalled()
-      expect(ws.advanceTimer).not.toHaveBeenCalled()
+      expect(ws.claimTimer).not.toHaveBeenCalled()
 
       evaluator.dispose()
     })
@@ -1202,12 +1174,15 @@ describe('TriggerEvaluator', () => {
       vi.advanceTimersByTime(5000)
 
       expect(events.length).toBe(0)
-      expect(ws.expireTimers).not.toHaveBeenCalled()
+      expect(ws.claimTimer).not.toHaveBeenCalled()
 
       evaluator.dispose()
     })
 
-    it('does not throw from the polling interval when expiring completed timers fails', () => {
+    it.each([
+      ['a completed', { mode: 'once' as const, at: Date.now() - 100 }],
+      ['a recurring', { mode: 'interval' as const, every_ms: 1000 }],
+    ])('does not throw from the polling interval when settling %s timer fails, and fires nothing', (_label, schedule) => {
       const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
       const config = makeConfig({
         on_timer: makeTriggerConfig([makeTarget('agent')])
@@ -1218,7 +1193,7 @@ describe('TriggerEvaluator', () => {
 
       const ws = makeWorkspaceMock([{
         id: 6,
-        schedule: { mode: 'once' as const, at: Date.now() - 100 },
+        schedule,
         payload: 'disk trouble',
         scope: ['agent'],
         lambda: null,
@@ -1226,58 +1201,19 @@ describe('TriggerEvaluator', () => {
         run_count: 0,
         created_at: Date.now() - 1000,
       }])
-      ws.expireTimers.mockImplementation(() => {
+      ws.claimTimer.mockImplementation(() => {
         throw new Error('disk I/O error')
       })
 
       evaluator.startTimerPolling(ws)
       expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
-      expect(ws.expireTimers).toHaveBeenCalledWith([6], expect.any(Number))
-      expect(ws.insertLog).toHaveBeenCalledWith(
-        'error', 'timer', 'expire_completed_failed', null,
-        'Failed to expire completed timers: disk I/O error',
-        { timer_count: 1, timer_ids: [6] }
-      )
-      expect(events.length).toBe(0)
-
-      evaluator.dispose()
-      consoleSpy.mockRestore()
-    })
-
-    it('does not throw from the polling interval when renewing a recurring timer fails', () => {
-      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
-      const config = makeConfig({
-        on_timer: makeTriggerConfig([makeTarget('agent')])
-      })
-      const evaluator = new TriggerEvaluator(config)
-      evaluator.setDisplayState('active')
-      const events = collectEvents(evaluator)
-
-      const ws = makeWorkspaceMock([{
-        id: 7,
-        schedule: { mode: 'interval' as const, every_ms: 1000 },
-        payload: 'tick',
-        scope: ['agent'],
-        lambda: null,
-        warm: false,
-        run_count: 0,
-        created_at: Date.now() - 1000,
-      }])
-      ws.advanceTimer.mockImplementation(() => {
-        throw new Error('disk I/O error')
-      })
-
-      evaluator.startTimerPolling(ws)
-      expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
-      // Recurring timer is advanced in place, not expired
-      expect(ws.expireTimers).toHaveBeenCalledWith([], expect.any(Number))
-      expect(ws.advanceTimer).toHaveBeenCalled()
+      expect(ws.claimTimer).toHaveBeenCalled()
       expect(ws.insertLog).toHaveBeenCalledWith(
         'error', 'timer', 'renew_failed', null,
-        'Failed to renew timer #7: disk I/O error',
-        { timer_id: 7 }
+        'Failed to settle timer #6: disk I/O error',
+        { timer_id: 6 }
       )
-      // Firing is skipped so the retry next tick can't double-fire
+      // The row stays due; firing is skipped so the retry next tick can't double-fire
       expect(events.length).toBe(0)
 
       evaluator.dispose()

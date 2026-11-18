@@ -89,13 +89,13 @@ async function until(cond: () => boolean, timeoutMs = 3000) {
 describe('a timer due while the agent is in error', { timeout: 20_000 }, () => {
   beforeEach(() => clearAllUmbilicalBuses())
 
-  it('a once timer that comes due while the agent is in error reaches the model after the backoff retry recovers it', async () => {
+  it('a once timer that comes due while the agent is in error with recovery budget is the recovery attempt: delivered and settled at the tick', async () => {
     const { filePath, workspace } = makeWorkspace('heldonce')
     const provider = new FailOnceProvider()
     const config = workspace.getAgentConfig()
     const agent = await new AgentRuntimeBuilder().build({
       workspace, filePath, provider,
-      config: { ...config, recovery: { auto_retry: true, max_attempts: 5, base_delay_ms: 400, max_delay_ms: 400 } },
+      config: { ...config, recovery: { auto_retry: true, max_attempts: 5, base_delay_ms: 60_000, max_delay_ms: 60_000 } },
     })
     await (agent as unknown as { start?: () => Promise<void> }).start?.()
     agent.triggerEvaluator.stopTimerPolling() // ticks are driven by hand below
@@ -105,25 +105,21 @@ describe('a timer due while the agent is in error', { timeout: 20_000 }, () => {
       expect(agent.executor.getState()).toBe('error')
       const due = Date.now() - 1000
       const t = workspace.addTimer({ mode: 'once', at: due } as never, due, 'REMIND-HELD', ['agent'])
-      tick() // in error: held
+      tick() // in error, within budget: this tick is the recovery attempt
       const row = () => workspace.getTimers().find(r => r.id === t) as { expired?: boolean; run_count: number }
-      expect(row().expired === true).toBe(false)
-      expect(row().run_count).toBe(0)
-      await until(() => agent.executor.getState() === 'idle') // backoff retry succeeded
-      expect(provider.seenTexts.some(x => x.includes('REMIND-HELD'))).toBe(false)
-      tick() // first tick after recovery
-      await until(() => provider.seenTexts.some(x => x.includes('REMIND-HELD')))
       expect(row().expired).toBe(true)
       expect(row().run_count).toBe(1)
+      await until(() => provider.seenTexts.some(x => x.includes('REMIND-HELD')))
+      await until(() => agent.executor.getState() === 'idle')
     } finally {
       await agent.disposeAsync()
     }
   })
-  it('known loss: a held timer released into a recovery retry that fails is not delivered', async () => {
-    // Pins current behaviour. The hold releases on the executor's gate state,
-    // and a recovery retry starts by setting idle, so the retry turn releases
-    // the timer; when that turn ends in error, its queue is discarded with
-    // the row already settled. A settle-on-consumption fix should flip this.
+  it('a timer that comes due while a recovery retry runs is received into that turn; when the retry fails it still reaches the model once', async () => {
+    // A recovery retry leaves `error` for a work state, so the agent can
+    // receive: the row is written at the tick and injected into the running
+    // turn. The retry fails before a model boundary drains it; the timer-typed
+    // kick (or the next attempt) delivers it.
     const { filePath, workspace } = makeWorkspace('heldretryfail')
     const provider = new FailingRetryProvider()
     const config = workspace.getAgentConfig()
@@ -137,25 +133,19 @@ describe('a timer due while the agent is in error', { timeout: 20_000 }, () => {
     try {
       await agent.executor.executeTurn(chatDispatch())
       expect(agent.executor.getState()).toBe('error')
-      const due = Date.now() - 1000
-      const t = workspace.addTimer({ mode: 'once', at: due } as never, due, 'REMIND-LOST', ['agent'])
-      const row = () => workspace.getTimers().find(r => r.id === t) as { expired?: boolean; run_count: number }
-      tick() // in error: held
-      expect(row().expired === true).toBe(false)
-      expect(row().run_count).toBe(0)
-
       await until(() => provider.calls === 2) // first recovery retry is in flight
-      tick() // released into the retry turn and settled
+      const due = Date.now() - 1000
+      const t = workspace.addTimer({ mode: 'once', at: due } as never, due, 'REMIND-RETRY', ['agent'])
+      const row = () => workspace.getTimers().find(r => r.id === t) as { expired?: boolean; run_count: number }
+      tick() // received: written into the loop while the retry runs
       expect(row().expired).toBe(true)
       expect(row().run_count).toBe(1)
 
       provider.release() // the retry fails
-      await until(() => agent.executor.getState() === 'idle', 5000) // a later retry succeeds
-      tick(); tick()
-      await new Promise(r => setTimeout(r, 300))
-      expect(provider.seenTexts.some(x => x.includes('REMIND-LOST'))).toBe(false)
+      await until(() => provider.seenTexts.some(x => x.includes('REMIND-RETRY')), 5000)
       expect(row().expired).toBe(true)
       expect(row().run_count).toBe(1)
+      expect(workspace.getLoop().filter(e => JSON.stringify(e.content_json).includes('REMIND-RETRY'))).toHaveLength(1)
     } finally {
       await agent.disposeAsync()
     }
@@ -296,7 +286,7 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
     expect(row.run_count).toBe(1)
   })
 
-  it('known loss: a mixed system+agent once timer due during error fires only system and is settled', () => {
+  it('a mixed system+agent once timer due during error is held whole, lambda included, then fires both parts once', () => {
     const { workspace, evaluator, fired, tick } = evaluatorOn('mixed-lambda')
     const due = Date.now() - 1000
     const t = workspace.addTimer({ mode: 'once', at: due } as never, due, 'MIXED', ['system', 'agent'], 'lib/job.js:main')
@@ -304,17 +294,18 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
 
     evaluator.setDisplayState('error')
     tick()
-    expect(fired.map(d => d.scope)).toEqual(['system'])
-    expect(row().expired).toBe(true)
-    expect(row().run_count).toBe(1)
+    expect(fired.length).toBe(0)
+    expect(row().expired ?? false).toBe(false)
+    expect(row().run_count).toBe(0)
 
     evaluator.setDisplayState('idle')
     tick(); tick()
-    expect(fired.map(d => d.scope)).toEqual(['system'])
+    expect(fired.map(d => d.scope)).toEqual(['system', 'agent'])
+    expect(row().expired).toBe(true)
     expect(row().run_count).toBe(1)
   })
 
-  it('known loss: a mixed system+agent once timer with no lambda due during error is settled with nothing run', () => {
+  it('a mixed system+agent once timer with no lambda due during error is held, then delivered to the agent', () => {
     const { workspace, evaluator, fired, tick } = evaluatorOn('mixed-nolambda')
     const due = Date.now() - 1000
     const t = workspace.addTimer({ mode: 'once', at: due } as never, due, 'MIXED-NOLAMBDA', ['system', 'agent'])
@@ -323,12 +314,12 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
     evaluator.setDisplayState('error')
     tick()
     expect(fired.length).toBe(0)
-    expect(row().expired).toBe(true)
-    expect(row().run_count).toBe(1)
+    expect(row().expired ?? false).toBe(false)
+    expect(row().run_count).toBe(0)
 
     evaluator.setDisplayState('idle')
     tick(); tick()
-    expect(fired.length).toBe(0)
+    expect(fired.map(d => d.scope)).toEqual(['agent'])
     expect(row().run_count).toBe(1)
   })
 })

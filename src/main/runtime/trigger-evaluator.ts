@@ -25,7 +25,7 @@ import { currentSourceOrUnknown } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { onDispatchDropped } from './system-dispatch-limits'
-import { EXECUTOR_WORK_STATES, gateStateOf, scopeFires } from '../../shared/utils/trigger-gate'
+import { EXECUTOR_WORK_STATES, admittedTimerScopes, gateStateOf, scopeFires } from '../../shared/utils/trigger-gate'
 
 const TIMER_POLL_INTERVAL_MS = 5000
 
@@ -124,6 +124,20 @@ function computeUnifiedDiff(filePath: string, before: string, after: string): st
 type DisplayState = 'active' | 'idle' | 'hibernate' | 'suspended' | 'off'
 
 /**
+ * Where a due timer's agent part goes. Given by assembleAgent, which owns the
+ * loop pool and the workspace transaction.
+ */
+export interface TimerReceiver {
+  /** Whether the timer's target loop can receive now, beyond main's gate
+   *  facts: it exists, is enabled, and its executor is not refusing. */
+  canReceive(loop: string): boolean
+  /** Claim this occurrence and write its trigger row into the target loop's
+   *  stream in one transaction, then wake the target. False when the claim
+   *  lost (another runtime took this occurrence). */
+  deliver(timer: Timer, nextWake: number | null, firedAt: number, event: AdfEvent<'timer'>): boolean
+}
+
+/**
  * Watches for trigger conditions and emits "trigger" events
  * when the agent should execute a turn.
  *
@@ -142,6 +156,10 @@ export class TriggerEvaluator extends EventEmitter {
 
   // State gating
   private displayState: DisplayState = 'idle'
+  // In `error`: the recovery fact main's executor publishes with state_changed
+  // (`recovery_at`), the same fact the UI reads. null = parked.
+  private recoveryAt: number | null = null
+  private timerReceiver: TimerReceiver | null = null
 
   // Hibernate nudge: fires after configured interval since the last trigger while in hibernate
   private lastTriggerAt: number = Date.now()
@@ -185,11 +203,17 @@ export class TriggerEvaluator extends EventEmitter {
     return this.displayState
   }
 
-  setDisplayState(state: string): void {
+  /** Route timer agent parts through the host (see TimerReceiver). */
+  setTimerReceiver(receiver: TimerReceiver | null): void {
+    this.timerReceiver = receiver
+  }
+
+  setDisplayState(state: string, recoveryAt?: number | null): void {
     const prev = this.displayState
     // Stored as reported (getDisplayState is read by diagnostics and Studio).
     // Gating maps work states to `active` — see gateState.
     this.displayState = state as DisplayState
+    this.recoveryAt = state === 'error' ? recoveryAt ?? null : null
     // Reset nudge timer when leaving hibernate
     if (prev === 'hibernate' && state !== 'hibernate') {
       this.lastHibernateNudge = null
@@ -226,9 +250,17 @@ export class TriggerEvaluator extends EventEmitter {
     return gateStateOf(this.displayState)
   }
 
-  /** Whether a trigger of this scope and type fires now (the shared gate rule). */
-  private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3): boolean {
-    return scopeFires(scope, triggerType, this.gateState())
+  /** Whether a trigger of this scope and type, for this loop, fires now: the
+   *  shared gate rule over the same facts the UI reads. */
+  private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3, loop?: string | null): boolean {
+    return scopeFires(scope, triggerType, { state: this.gateState(), recoveryAt: this.recoveryAt }, loop)
+  }
+
+  /** Whether a timer's agent part can be received now: main's gate admits it
+   *  for this loop, and the target loop can take it (TimerReceiver). */
+  private canReceive(timer: Timer): boolean {
+    const loop = timer.loop ?? 'main'
+    return this.shouldFire('agent', 'on_timer', loop) && (this.timerReceiver?.canReceive(loop) ?? true)
   }
 
   // ===========================================================================
@@ -426,7 +458,7 @@ export class TriggerEvaluator extends EventEmitter {
       const isFileChange = triggerType === 'on_file_change'
       if (skipSystemScope && target.scope === 'system') continue
       if (skipAgentScope && target.scope === 'agent') continue
-      if (!this.shouldFire(target.scope, triggerType)) continue
+      if (!this.shouldFire(target.scope, triggerType, target.loop)) continue
       // The agent's own activity never wakes it while it is working: the wake
       // would follow the very turn that caused it, endlessly.
       if (target.scope === 'agent' && EXECUTOR_WORK_STATES.has(this.displayState) && this.observesOwnActivity(triggerType, event)) continue
@@ -808,151 +840,112 @@ export class TriggerEvaluator extends EventEmitter {
     }
     if (due.length === 0) return
 
-    // on_timer trigger config is a gate, not a router: the timer owns what
-    // runs, the trigger decides which of its scopes may. A timer that config
-    // admits but the state gate blocks in every admitted scope is not settled:
-    // it stays due and fires on the first tick the gate lets it through,
-    // coalesced like any missed timer.
+    // One ordered pass, earliest due first.
     const timerCfg = this.getTriggerConfig('on_timer')
-    const scopesToFire = new Map<number, TriggerScopeV3[]>()
-    due = due.filter(timer => {
-      const admitted = timerCfg?.enabled
-        ? timer.scope.filter(scope => (timerCfg.targets ?? []).some(t => t.scope === scope))
-        : []
-      const scopes = admitted.filter(scope => this.shouldFire(scope, 'on_timer'))
-      if (admitted.length > 0 && scopes.length === 0) return false
-      scopesToFire.set(timer.id, scopes)
-      return true
-    })
-    if (due.length === 0) return
-
     const now = Date.now()
+    for (const timer of due) this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now)
+  }
 
-    // Settle all due timers BEFORE firing: one-shot/exhausted timers are
-    // flagged expired (kept as history, never refire), recurring ones advanced
-    // in place to their next wake. Doing this first means a crash mid-fire
-    // can't refire the batch next tick, and a concurrent runtime polling the
-    // same file sees settled rows instead of renewing ones this one already
-    // renewed.
-    const toExpire: number[] = []
-    const toAdvance: Array<{ timer: Timer; nextWake: number }> = []
-    for (const timer of due) {
-      const nextWake = this.nextRenewal(timer, now)
-      if (nextWake === null) toExpire.push(timer.id)
-      else toAdvance.push({ timer, nextWake })
-    }
+  /**
+   * Fire one due timer, or hold it.
+   *
+   * on_timer trigger config is a gate, not a router: the timer owns what runs,
+   * the trigger decides which of its scopes may. A held timer is not settled:
+   * it stays due and fires on the first tick it may, once, coalesced like any
+   * missed timer (nextRenewal reads `now`).
+   *
+   * A timer whose agent part on_timer admits is done only once the agent
+   * receives it, that is, once its payload is written into the target loop's
+   * stream. It fires only when that target can receive now (canReceive), and
+   * then the claim and the write are one transaction (TimerReceiver.deliver).
+   * Otherwise the WHOLE row is held, its lambda included. A system-only timer
+   * settles through the same conditional claim before its lambda is
+   * dispatched, so of two runtimes polling one file only one runs it, and a
+   * crash mid-fire cannot refire it.
+   */
+  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number): void {
+    const agentPart = admitted.includes('agent')
+    const scopes = agentPart ? admitted : admitted.filter(scope => this.shouldFire(scope, 'on_timer'))
+    if (agentPart ? !this.canReceive(timer) : admitted.length > 0 && scopes.length === 0) return
 
+    const nextWake = this.nextRenewal(timer, now)
+    const event = createEvent({
+      type: 'timer' as const,
+      source: `agent:${this.config.name ?? 'unknown'}`,
+      data: { timer: { ...timer, run_count: timer.run_count + 1, last_fired_at: now } },
+    })
     try {
-      this.workspace.expireTimers(toExpire, now)
+      const claimed = agentPart && this.timerReceiver
+        ? this.timerReceiver.deliver(timer, nextWake, now, event)
+        : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
+      if (!claimed) return
     } catch (error) {
-      console.error('[TriggerEvaluator] Failed to expire completed timers:', error)
+      // The row stays due and is retried next tick.
+      console.error(`[TriggerEvaluator] Failed to settle timer #${timer.id}:`, error)
       try {
-        this.workspace.insertLog(
-          'error', 'timer', 'expire_completed_failed', null,
-          `Failed to expire completed timers: ${error instanceof Error ? error.message : String(error)}`,
-          // Cap the id list — logging the full array once bloated a workspace
-          // by ~220KB per entry when a large backlog kept failing
-          { timer_count: toExpire.length, timer_ids: toExpire.slice(0, 20) }
+        this.workspace?.insertLog(
+          'error', 'timer', 'renew_failed', null,
+          `Failed to settle timer #${timer.id}: ${error instanceof Error ? error.message : String(error)}`,
+          { timer_id: timer.id }
         )
       } catch { /* database may be unavailable */ }
       return
     }
 
-    // Exhausted rows, kept apart from `settled`: only these need rewinding if
-    // their dispatch is dropped — an advanced timer already has its next run.
-    const expired = new Set<number>(toExpire)
-    const settled = new Set<number>(toExpire)
-    for (const { timer, nextWake } of toAdvance) {
-      try {
-        this.workspace.advanceTimer(timer.id, nextWake, timer.run_count + 1, now)
-        settled.add(timer.id)
-      } catch (error) {
-        // Timer stays due and is retried next tick — skip firing it now
-        // so the retry doesn't double-fire.
-        console.error(`[TriggerEvaluator] Failed to renew timer #${timer.id}:`, error)
-        try {
-          this.workspace.insertLog(
-            'error', 'timer', 'renew_failed', null,
-            `Failed to renew timer #${timer.id}: ${error instanceof Error ? error.message : String(error)}`,
-            { timer_id: timer.id }
-          )
-        } catch { /* database may be unavailable */ }
-      }
-    }
-
     const timerAgentId = this.config.id
-    for (const timer of due) {
-      if (!settled.has(timer.id)) continue
-      const scopes = scopesToFire.get(timer.id) ?? []
-      if (scopes.length === 0) continue
-
-      // Create one event per timer, dispatch per scope
-      const timerWithUpdatedCount = { ...timer, run_count: timer.run_count + 1, last_fired_at: now }
-      const event = createEvent({
-        type: 'timer' as const,
-        source: `agent:${this.config.name ?? 'unknown'}`,
-        data: { timer: timerWithUpdatedCount },
-      })
-
-      for (const scope of scopes) {
-        withSource('system:timer', timerAgentId, () => {
-          emitUmbilicalEvent({
-            event_type: 'timer.fired',
-            ...(timer.loop ? { loop: timer.loop } : {}),
-            payload: {
-              timer_id: timer.id,
-              scope,
-              run_count: timer.run_count + 1,
-              scheduled_at: timer.next_wake_at,
-            }
-          })
-          if (scope === 'system') {
-            // System scope: execute lambda if present, log to adf_logs
-            if (timer.lambda) {
-              this.lastTriggerAt = now
-              try {
-                this.workspace?.insertLog(
-                  'info', 'timer', 'on_timer', timer.lambda,
-                  `System timer #${timer.id} fired → lambda ${timer.lambda}`,
-                  { timer_id: timer.id, payload: timer.payload, run_count: timer.run_count + 1 }
-                )
-              } catch { /* best-effort logging */ }
-              const timerDispatch = createDispatch(event, {
-                scope: 'system',
-                lambda: timer.lambda,
-                command: undefined,
-                warm: timer.warm,
-              })
-              // The row above was settled before this emit (see the comment on
-              // the settle loop), so a dispatch that backpressure discards would
-              // consume a `once` timer that never ran. Undo that if it happens.
-              onDispatchDropped(timerDispatch, () => this.rewindTimer(timer, expired.has(timer.id)))
-              this.emit('trigger', timerDispatch)
-            } else {
-              // No lambda to call — log skip
-              try {
-                this.workspace?.insertLog(
-                  'info', 'timer', 'on_timer', null,
-                  `System timer #${timer.id} fired but no lambda — skipped`,
-                  { timer_id: timer.id, payload: timer.payload }
-                )
-              } catch { /* best-effort logging */ }
-            }
-          } else {
-            // Agent scope: wake the LLM loop — the one the timer was set on.
-            // The timer owns its target loop (adf_timers.loop); the router in
-            // front of dispatch drops it if that loop is gone rather than
-            // running its schedule under main's authority (review B2/B3).
-            this.lastTriggerAt = now
-            const timerDispatch = createDispatch(event, { scope: 'agent', loop: timer.loop })
-            // Same rewind as the system-scope path: the row was settled before
-            // this emit, so a backpressure-dropped dispatch would consume a
-            // `once` timer that never ran.
-            onDispatchDropped(timerDispatch, () => this.rewindTimer(timer, expired.has(timer.id)))
-            this.emit('trigger', timerDispatch)
+    for (const scope of scopes) {
+      withSource('system:timer', timerAgentId, () => {
+        emitUmbilicalEvent({
+          event_type: 'timer.fired',
+          ...(timer.loop ? { loop: timer.loop } : {}),
+          payload: {
+            timer_id: timer.id,
+            scope,
+            run_count: timer.run_count + 1,
+            scheduled_at: timer.next_wake_at,
           }
         })
-      }
+        if (scope === 'system') {
+          // System scope: execute lambda if present, log to adf_logs
+          if (timer.lambda) {
+            this.lastTriggerAt = now
+            try {
+              this.workspace?.insertLog(
+                'info', 'timer', 'on_timer', timer.lambda,
+                `System timer #${timer.id} fired → lambda ${timer.lambda}`,
+                { timer_id: timer.id, payload: timer.payload, run_count: timer.run_count + 1 }
+              )
+            } catch { /* best-effort logging */ }
+            const timerDispatch = createDispatch(event, {
+              scope: 'system',
+              lambda: timer.lambda,
+              command: undefined,
+              warm: timer.warm,
+            })
+            // The row was settled before this emit, so a dispatch that
+            // backpressure discards would consume a `once` timer that never
+            // ran. Undo that if it happens, unless the row's agent part was
+            // already delivered (rewinding would deliver it again).
+            if (!agentPart) onDispatchDropped(timerDispatch, () => this.rewindTimer(timer, nextWake === null))
+            this.emit('trigger', timerDispatch)
+          } else {
+            // No lambda to call — log skip
+            try {
+              this.workspace?.insertLog(
+                'info', 'timer', 'on_timer', null,
+                `System timer #${timer.id} fired but no lambda — skipped`,
+                { timer_id: timer.id, payload: timer.payload }
+              )
+            } catch { /* best-effort logging */ }
+          }
+        } else {
+          // Agent scope: delivered above into the loop the timer was set on.
+          // An evaluator with no receiver (no assembled host) emits the
+          // dispatch instead.
+          this.lastTriggerAt = now
+          if (!this.timerReceiver) this.emit('trigger', createDispatch(event, { scope: 'agent', loop: timer.loop }))
+        }
+      })
     }
   }
 

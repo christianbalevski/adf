@@ -359,6 +359,15 @@ export type ExecutorErrorReason = 'auth' | 'tool_mismatch' | 'turn_error'
  */
 export const ERROR_RECOVERY_COOLDOWN_MS = 30 * 60 * 1000
 
+/** The trigger message a timer delivers. The tick appends exactly this as the
+ *  timer's row, and a timer dispatch inlined into a session carries it too. */
+export function timerTriggerText(timer: { payload?: string | null }): string {
+  const parts = ['A scheduled timer has fired.']
+  if (timer.payload) parts.push(`Payload: ${timer.payload}`)
+  if (parts.length === 1) parts.push('Check your mind for context on what to do next.')
+  return parts.join('\n')
+}
+
 export function isTransientProviderError(error: unknown, message: string): boolean {
   const msg = message.toLowerCase()
 
@@ -693,6 +702,9 @@ export class AgentExecutor extends EventEmitter {
   // per tick — the exact loop spam the cooldown exists to prevent. Cleared
   // whenever the executor leaves `error` (see setState).
   private _recoverySuppressedLogged = false
+  // The recovery fact last published with state_changed (statePayload), so a
+  // change in error re-publishes it once and an unchanged one does not.
+  private _publishedRecoveryAt: number | null = null
   // True once the give-up notice for the current outage has been written, so
   // repeated failing triggers during a dead-provider stretch don't spam the
   // loop with one notice per turn. Cleared on the next provider success.
@@ -1348,6 +1360,8 @@ export class AgentExecutor extends EventEmitter {
     // Turning recovery off applies to an already-armed retry, not just the
     // next failure — the toggle means "stop retrying", now.
     if (config.recovery?.auto_retry === false) this.cancelScheduledRecovery('disabled')
+    // A new max_attempts can open or close the recovery budget.
+    this.publishRecoveryFact()
   }
 
   updateProvider(provider: LLMProvider): void {
@@ -1980,8 +1994,15 @@ export class AgentExecutor extends EventEmitter {
     // that only awaits the returned promise can never observe isTurnActive()
     // as false for a turn it has already started.
     this.activeTurnCount++
-    if (dispatch.scope !== 'system') this.activeAgentTurnCount++
+    if (dispatch.scope !== 'system') this.claimAgentSlot()
     return this.runClaimedTurn(dispatch, opts)
+  }
+
+  /** Claim an agent-scope turn slot. While a turn holds the agent, an agent
+   *  in error offers no recovery attempt (recoveryAt), so the gate is told. */
+  private claimAgentSlot(): void {
+    this.activeAgentTurnCount++
+    this.publishRecoveryFact()
   }
 
   /** Run a turn whose activeTurnCount slot is ALREADY claimed, releasing it
@@ -2005,6 +2026,9 @@ export class AgentExecutor extends EventEmitter {
       this.activeTurnCount--
       if (dispatch.scope !== 'system') {
         this.activeAgentTurnCount--
+        // The agent may have been left in error: once no turn holds it, the
+        // gate may offer it a recovery attempt.
+        if (this.activeAgentTurnCount === 0) this.publishRecoveryFact()
       } else if (this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         // A system-scope turn returns before the agent-turn finally block that
         // normally drains the queue. Anything an agent dispatch queued behind
@@ -2045,7 +2069,7 @@ export class AgentExecutor extends EventEmitter {
     opts?: TurnOptions,
   ): void {
     this.activeTurnCount++
-    if (dispatch.scope !== 'system') this.activeAgentTurnCount++
+    if (dispatch.scope !== 'system') this.claimAgentSlot()
     process.nextTick(() => {
       // Re-entrant turns bypass the lifecycle dispatch() choke point and so
       // miss its rehydrate. Cheap no-op unless the session really is empty.
@@ -2116,7 +2140,7 @@ export class AgentExecutor extends EventEmitter {
     // interrupt path (replayed below), the idle sweep leaves the session
     // alone, and a second compactNow is refused above.
     this.activeTurnCount++
-    this.activeAgentTurnCount++
+    this.claimAgentSlot()
     this.manualCompactionActive = true
     // The summarizer call is passed this.abortController's signal. No turn is
     // active, so it is normally already null; null it explicitly so a chat
@@ -2151,6 +2175,7 @@ export class AgentExecutor extends EventEmitter {
       const replayed = this.getState() !== 'stopped' && this.replayQueuedChats()
       this.activeTurnCount--
       this.activeAgentTurnCount--
+      if (this.activeAgentTurnCount === 0) this.publishRecoveryFact()
       if (!replayed && this.activeAgentTurnCount === 0 && this.betweenTurns()) {
         this.drainPendingTriggers()
       }
@@ -2307,53 +2332,18 @@ export class AgentExecutor extends EventEmitter {
         this.queuePendingTrigger(dispatch, eventType)
         return
       }
-      // activeAgentTurnCount is claimed before executeTurnImpl, so > 1 means a
-      // recovery turn is already in flight — don't stack a second one.
-      if (!recoverable || (!opts?.nested && this.activeAgentTurnCount > 1)) return
-
-      // Bounded: a trigger may spend itself as a recovery attempt while the
-      // attempt budget holds, or — once the budget is gone — at most once per
-      // cooldown. The cooldown is what keeps a permanent fault from flapping
-      // the agent on every timer tick without re-creating the 23-hour brick:
-      // the agent goes quiet, but never permanently deaf.
-      const maxAttempts = this.config.recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
-      const withinCap = this._recoveryAttempts < maxAttempts
-      const sinceLastAttempt = this._lastRecoveryAttemptAt === null
-        ? null
-        : Date.now() - this._lastRecoveryAttemptAt
-      const cooledDown = sinceLastAttempt !== null && sinceLastAttempt >= ERROR_RECOVERY_COOLDOWN_MS
-      if (!withinCap && !cooledDown) {
-        // Say why the agent is sitting still — once per episode, not per tick.
-        if (!this._recoverySuppressedLogged) {
-          this._recoverySuppressedLogged = true
-          try {
-            this.session.getWorkspace().insertLog(
-              'warn', 'executor', 'recovery_suppressed', eventType ?? null,
-              `Recovery attempts exhausted (${this._recoveryAttempts}/${maxAttempts}); dropping agent-scope triggers until a chat message arrives or ` +
-              `${Math.round(ERROR_RECOVERY_COOLDOWN_MS / 60_000)} minutes have passed since the last attempt`
-            )
-          } catch { /* non-fatal */ }
-          this.emitRuntimeEvent('error.recovery_suppressed', {
-            reason: this._errorReason, trigger: eventType ?? null,
-            attempts: this._recoveryAttempts, max_attempts: maxAttempts,
-          })
-        }
+      // Bounded by the same fact the trigger gate reads (recoveryAt): never
+      // after an auth error, never while another turn holds the agent (this
+      // dispatch holds one slot of its own; a nested retry runs inside its
+      // caller's), and only within the budget: max_attempts, then one attempt
+      // per cooldown. The gate asked with the published fact; this asks again
+      // with the live one, since a backoff retry may have spent it since.
+      const at = this.recoveryAt(opts?.nested ? this.activeAgentTurnCount : 1)
+      if (at === null || at > Date.now()) {
+        this.keepPreAppendedRow(dispatch)
         return
       }
-
-      const afterCooldown = !withinCap
-      this._lastRecoveryAttemptAt = Date.now()
-      try {
-        this.session.getWorkspace().insertLog(
-          'warn', 'executor', 'error_recovery_trigger', eventType ?? null,
-          `Agent was in error state (${this._errorReason}); running this ${eventType ?? 'trigger'} as a recovery attempt` +
-          (afterCooldown ? ' after cooldown' : '')
-        )
-      } catch { /* non-fatal */ }
-      this.emitRuntimeEvent('error.recovery_trigger', {
-        reason: this._errorReason, trigger: eventType ?? null, after_cooldown: afterCooldown,
-      })
-      this.setState('idle')
+      this.beginRecoveryAttempt(eventType)
     }
 
     // Another turn is in flight when EITHER the state machine says so OR a
@@ -4074,10 +4064,10 @@ export class AgentExecutor extends EventEmitter {
       // clears pendingTriggers; we must not override that here.
       if (this.getState() !== 'stopped') {
         if (this.state === 'error') {
-          // Stay in error state so the UI reflects the failure. Discard
-          // queued triggers (API is likely broken), but replay queued owner
-          // chats — a user message is what pulls the agent out of error.
-          this.pendingTriggers = []
+          // Stay in error state so the UI reflects the failure. Queued
+          // triggers stay queued and drain once the agent recovers (their
+          // own entry check bounds them). Replay queued owner chats — a user
+          // message is what pulls the agent out of error.
           this.replayQueuedChats()
         } else if (this._lastTargetState === 'off') {
           // Deferred sys_set_state('off') from a lambda or HIL approval that
@@ -4508,6 +4498,8 @@ export class AgentExecutor extends EventEmitter {
     // clock — otherwise a capped-out agent whose retries were all superseded
     // would have a null anchor and never cool down.
     this._lastRecoveryAttemptAt = Date.now()
+    // The budget changed: an agent in error re-publishes what the gate reads.
+    this.publishRecoveryFact()
     const base = recovery?.base_delay_ms ?? RECOVERY_DEFAULTS.base_delay_ms
     const cap = recovery?.max_delay_ms ?? RECOVERY_DEFAULTS.max_delay_ms
     const backoff = Math.min(base * 2 ** (attempt - 1), cap)
@@ -5430,9 +5422,123 @@ export class AgentExecutor extends EventEmitter {
     this.state = state
     this.emitEvent({
       type: 'state_changed',
-      payload: { state },
+      payload: this.statePayload(state),
       timestamp: Date.now()
     })
+    if (state === 'error') this.announceRecoverySuppressed()
+  }
+
+  /** A state_changed payload. In `error` it carries the recovery fact the
+   *  trigger gate reads (`recovery_at`, see recoveryAt): the runtime's
+   *  evaluator and the UI both read it from this event. */
+  private statePayload(state: string): { state: string; recovery_at?: number | null } {
+    if (state !== 'error') return { state }
+    this._publishedRecoveryAt = this.recoveryAt()
+    return { state, recovery_at: this._publishedRecoveryAt }
+  }
+
+  /**
+   * The recovery fact the trigger gate reads in `error`: the earliest time an
+   * agent-scope trigger may run as a recovery attempt. 0 (now) while the
+   * budget has attempts left, the end of the cooldown once it is spent, or
+   * null while it may not run at all: an auth error, an error with no reason,
+   * or a turn still holding the agent (`heldSlots` are the caller's own).
+   */
+  private recoveryAt(heldSlots = 0): number | null {
+    if (this._errorReason === null || this._errorReason === 'auth') return null
+    if (this.activeAgentTurnCount > heldSlots) return null
+    if (this._recoveryAttempts < this.recoveryMaxAttempts()) return 0
+    return this._lastRecoveryAttemptAt === null ? null : this._lastRecoveryAttemptAt + ERROR_RECOVERY_COOLDOWN_MS
+  }
+
+  /**
+   * Whether this executor takes a delivery now: not stopped, and in `error`
+   * only when a recovery attempt may start now. Asked synchronously at the
+   * timer tick for an inner loop's target (main's comes from the published
+   * fact the evaluator holds).
+   */
+  canReceive(now: number = Date.now()): boolean {
+    if (this.state === 'stopped') return false
+    if (this.state !== 'error') return true
+    const at = this.recoveryAt()
+    return at !== null && at <= now
+  }
+
+  /**
+   * Leave `error` for a trigger the entry check admitted. Every turn that
+   * leaves error spends the budget once: a backoff retry is counted when it is
+   * armed (scheduleProviderRecovery), and a trigger that runs instead of an
+   * armed retry takes that retry's place (the turn supersedes it). Past the
+   * cap the count stays at max_attempts: an attempt after the cooldown only
+   * restarts the cooldown.
+   */
+  private beginRecoveryAttempt(eventType: string | undefined): void {
+    const afterCooldown = this._recoveryAttempts >= this.recoveryMaxAttempts()
+    if (!this._recoveryTimer && !afterCooldown) this._recoveryAttempts++
+    this._lastRecoveryAttemptAt = Date.now()
+    try {
+      this.session.getWorkspace().insertLog(
+        'warn', 'executor', 'error_recovery_trigger', eventType ?? null,
+        `Agent was in error state (${this._errorReason}); running this ${eventType ?? 'trigger'} as a recovery attempt` +
+        (afterCooldown ? ' after cooldown' : '')
+      )
+    } catch { /* non-fatal */ }
+    this.emitRuntimeEvent('error.recovery_trigger', {
+      reason: this._errorReason, trigger: eventType ?? null, after_cooldown: afterCooldown,
+    })
+    this.setState('idle')
+  }
+
+  /**
+   * A declined dispatch whose row is already in this loop's stream (a timer
+   * the tick appended, a loop_send wake): a live session never re-reads the
+   * stream, so queue the row as context for the next turn rather than leave it
+   * invisible. A pending injection of that row loses its `wake` mark: no
+   * kick will run for it, and the idle sweep may release it (the row replays).
+   */
+  private keepPreAppendedRow(dispatch: AdfEventDispatch | AdfBatchDispatch): void {
+    const seq = preAppendedLoopSeq(dispatch)
+    if (seq === undefined) return
+    if (this.session.unmarkWakeInjection(seq) || this.session.getMessages().some(m => m.seq === seq)) return
+    const text = this.contentBlocksToText(this.buildTriggerContent(dispatch))
+    const event = 'event' in dispatch ? dispatch.event : dispatch.events[0]
+    this.session.queueContextInjection({ role: 'user', text, category: 'loop', origin: event?.source ?? 'trigger', seq })
+  }
+
+  private recoveryMaxAttempts(): number {
+    return this.config.recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
+  }
+
+  /** Re-publish the recovery fact when it changes while the agent stays in error. */
+  private publishRecoveryFact(): void {
+    if (this.state !== 'error' || this.recoveryAt() === this._publishedRecoveryAt) return
+    this.emitEvent({ type: 'state_changed', payload: this.statePayload('error'), timestamp: Date.now() })
+    this.announceRecoverySuppressed()
+  }
+
+  /** Say why the agent is sitting still once its budget is spent: once per
+   *  error episode, not per trigger (held triggers never reach the executor). */
+  private announceRecoverySuppressed(): void {
+    const at = this.recoveryAt()
+    if (this._recoverySuppressedLogged || at === null || at <= Date.now()) return
+    this._recoverySuppressedLogged = true
+    const maxAttempts = this.recoveryMaxAttempts()
+    try {
+      this.session.getWorkspace().insertLog(
+        'warn', 'executor', 'recovery_suppressed', null,
+        `Recovery attempts exhausted (${this._recoveryAttempts}/${maxAttempts}); timers stay due and agent-scope triggers wait until a chat message arrives or ` +
+        `${Math.round(ERROR_RECOVERY_COOLDOWN_MS / 60_000)} minutes have passed since the last attempt`
+      )
+    } catch { /* non-fatal */ }
+    this.emitRuntimeEvent('error.recovery_suppressed', {
+      reason: this._errorReason, trigger: null,
+      attempts: this._recoveryAttempts, max_attempts: maxAttempts,
+    })
+  }
+
+  /** The recovery fact last published with `error` (null when parked or not in error), for a start/re-attach snapshot. */
+  getRecoveryAt(): number | null {
+    return this.state === 'error' ? this._publishedRecoveryAt : null
   }
 
   /**
@@ -5834,7 +5940,12 @@ export class AgentExecutor extends EventEmitter {
     const loopAudited = this.config.context?.audit?.loop || this.config.audit?.loop || false
     const marker = loopAudited ? '[Loop Compacted, audited]' : '[Loop Compacted]'
     const summaryContent = [{ type: 'text' as const, text: `${marker} ${summaryWithFooter}` }]
-    const preservedSeqs = preservedMessages.map(pm => pm.seq)
+    // Rows appended from outside the turn whose injection has not drained yet
+    // (a timer, a loop_send) are in the stream but not in the session: keep
+    // them, or compaction deletes an occurrence the agent never read.
+    const pendingRowSeqs = this.session.peekPendingContextInjections()
+      .flatMap(i => typeof i.seq === 'number' && workspace.hasLoopSeq(i.seq) ? [i.seq] : [])
+    const preservedSeqs = [...preservedMessages.map(pm => pm.seq), ...pendingRowSeqs]
     const allSeqsKnown = preservedSeqs.every((s): s is number => typeof s === 'number')
 
     // The newest row this summary was built from. If it is gone by the time
@@ -5914,10 +6025,13 @@ export class AgentExecutor extends EventEmitter {
     const workspace = this.session.getWorkspace()
     const undelivered = this.session.peekPendingContextInjections().slice()
     this.session.reset()
+    // Re-queued BEFORE the restore, so restoreMessages applies its rules to
+    // them: keyed rows coalesce, and one whose row the stream restores is not
+    // delivered twice.
+    for (const injection of undelivered) this.session.queueContextInjection(injection)
     const loopEntries = workspace.getLoop()
     const llmMessages = loopEntries.map(e => ({ role: e.role, content: e.content_json, created_at: e.created_at, seq: e.seq }))
     this.session.restoreMessages(llmMessages)
-    for (const injection of undelivered) this.session.queueContextInjection(injection)
 
     // Reset context dedup so context blocks are re-injected after loop wipe,
     // then measure the rebuilt session and persist it as the loop's context
@@ -6761,11 +6875,7 @@ export class AgentExecutor extends EventEmitter {
         return `You received a message from agent "${d.message.from}": ${this.applyContentLimit(d.message.content)}`
       }
       case 'timer': {
-        const d = event.data as TimerEventData
-        const parts = [`A scheduled timer has fired.`]
-        if (d.timer.payload) parts.push(`Payload: ${d.timer.payload}`)
-        if (parts.length === 1) parts.push('Check your mind for context on what to do next.')
-        return parts.join('\n')
+        return timerTriggerText((event.data as TimerEventData).timer)
       }
       case 'startup':
         return 'Agent started. Review your mind for context and take any startup actions.'

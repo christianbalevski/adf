@@ -138,9 +138,9 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
 
     switch (event.type) {
       case 'state_changed': {
-        const payload = event.payload as { state: string }
+        const payload = event.payload as { state: string; recovery_at?: number | null }
         const displayState = toDisplayState(payload.state)
-        agentStore.setState(payload.state, loop)
+        agentStore.setState(payload.state, loop, payload.recovery_at)
 
         // The executor stopped waiting on its ask (answered, stop, interrupt):
         // a drained ask sends no ask_response, so the form goes with the state.

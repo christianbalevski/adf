@@ -232,7 +232,7 @@ describe('LoopPool — C3: one boundary drains the whole kick queue', () => {
 })
 
 describe('LoopPool — C2: an undelivered wake survives mid-turn compaction', () => {
-  it('keeps the queued injection across the session reset compaction performs', async () => {
+  it('keeps the row through the compaction and delivers it once', async () => {
     await pool.createLoop(loop())
     const runtime = pool.getRuntime('reflector')!
     // Compaction summarizes the session and rebuilds it from the stream, so the
@@ -249,20 +249,18 @@ describe('LoopPool — C2: an undelivered wake survives mid-turn compaction', ()
     await pool.sendToLoop('main', 'reflector', 'CARRY-ME', true)
     expect(runtime.session.hasPendingWakeInjection()).toBe(true)
 
-    // Compaction lands mid-turn: it clears the stream (taking the send-time row
-    // with it) and resets the session, so the queued injection is the ONLY copy
-    // of this message left anywhere.
+    // Compaction lands mid-turn. The send-time row is undrained, so compaction
+    // keeps it in the stream (H3), and the session rebuilt from the stream
+    // holds it; the queued injection of the same row is dropped so it is not
+    // delivered twice (H2).
     respond = replyOnce('summary of the conversation so far')
     await (runtime.executor as unknown as {
       forceCompact: (reason: string) => Promise<number>
     }).forceCompact('test')
 
-    // Still owed, so the boundary still knows a kick is needed.
-    expect(runtime.session.hasPendingWakeInjection()).toBe(true)
-    expect(runtime.session.peekPendingContextInjections()
-      .some(injection => injection.text.includes('CARRY-ME'))).toBe(true)
-
-    // ...and the next model boundary actually delivers it.
+    expect(rowsMentioning('reflector', 'CARRY-ME')).toBe(1)
+    expect(occurrencesInSession(runtime.session, 'CARRY-ME')).toBe(1)
+    // ...and the next model boundary does not add a second copy.
     runtime.session.drainContextInjections()
     expect(occurrencesInSession(runtime.session, 'CARRY-ME')).toBe(1)
 

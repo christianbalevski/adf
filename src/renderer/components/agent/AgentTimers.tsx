@@ -11,6 +11,7 @@ import { TimersBlockedNotice } from './config-panel-parts'
 import { openConfigSection } from '../../utils/open-config-section'
 import { openApi } from '../../utils/runtime-api'
 import { timerCountdown } from './overview/agent-overview-model'
+import { useGateFacts, useTimerContext } from '../../hooks/useTimerContext'
 
 interface Timer {
   id: number
@@ -611,7 +612,8 @@ export function AgentTimers() {
   const [showExpired, setShowExpired] = useState(false)
   // The on_timer trigger gates every timer (trigger-evaluator): off, none fire.
   const blocked = useAgentStore((s) => timersBlocked(s.config))
-  const gate = useAgentStore((s) => s.gate)
+  const gate = useGateFacts()
+  const timerCtx = useTimerContext()
 
   const rootRef = useRef<HTMLDivElement>(null)
 
@@ -712,7 +714,7 @@ export function AgentTimers() {
                     {new Date(timer.next_wake_at).toLocaleString()}
                   </div>
                   {/* No countdown when it will not fire on schedule (a Stopped agent), same rule as the overview. */}
-                  <Countdown text={timerCountdown(timer, gate, formatRelative)} />
+                  <Countdown text={timerCountdown(timer, gate, formatRelative, timerCtx)} />
                   {timer.payload && (
                     <div className="text-xs text-neutral-600 dark:text-neutral-400 mt-1.5 truncate" title={timer.payload}>
                       {timer.payload}

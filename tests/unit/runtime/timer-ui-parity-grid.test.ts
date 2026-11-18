@@ -159,13 +159,14 @@ async function runCells(label: string, agent: Agent, workspace: AdfWorkspace, ou
       const id = workspace.addTimer({ mode: 'interval', every_ms: 3_600_000 } as never, due, payload, [...scopes], 'lib/job.js:main', undefined, undefined, loop === 'main' ? undefined : loop)
       const row = workspace.getTimers().find(t => t.id === id)!
       const up = readUpcoming(q as never).find(u => u.id === id)!
-      const s = useAgentStore.getState() as unknown as { gateFacts: unknown; config: unknown; loopGateFacts?: unknown }
+      const s = useAgentStore.getState() as unknown as { gate: string; recoveryAt?: number | null; config: unknown; loopGateFacts?: unknown }
+      const facts = { state: s.gate, recoveryAt: s.recoveryAt } // as useGateFacts reads the store
       const ctx = m.timerContext?.(s.config, s.loopGateFacts ?? {})
       const now = Date.now()
-      const tabAt = m.timerCountdown(row, s.gateFacts, (at: number) => String(at), ctx) as string | null
+      const tabAt = m.timerCountdown(row, facts, (at: number) => String(at), ctx) as string | null
       const tab = tabAt !== null && Number(tabAt) <= now
-      const upcoming = m.wakeCountdown(up, s.gateFacts, now, ctx) === 'due'
-      const nextAt = m.nextFiringWake([row], s.gateFacts, ctx) as number | undefined
+      const upcoming = m.wakeCountdown(up, facts, now, ctx) === 'due'
+      const nextAt = m.nextFiringWake([row], facts, ctx) as number | undefined
       const next = nextAt !== undefined && nextAt <= now
       tick()
       await flush()

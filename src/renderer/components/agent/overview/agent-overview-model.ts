@@ -9,7 +9,8 @@ import type { AgentState } from '../../../../shared/types/ipc.types'
 import { POWER_LEVEL_MAX } from '../../../../shared/utils/agent-stats'
 import { NOT_AUTOSTART_TEXT } from '../../../../shared/constants/autostart-text'
 import { summarizeAsk, type AskQuestion } from '../../../../shared/utils/ask-form'
-import { timerFires, wakeFires } from '../../../../shared/utils/trigger-gate'
+import { timerFireTime, wakeFireTime, type GateFacts, type TimerContext } from '../../../../shared/utils/trigger-gate'
+import type { AgentConfig } from '../../../../shared/types/adf-v02.types'
 import { MEMORY_STRATA_DAYS } from '../../../../shared/types/agent-vitals.types'
 import type { ActivityDay, AgentContents, ExperienceStat, MemoryFileSize, PowerStat, SkillSize, StatFactor, TableSize, UpcomingWake } from '../../../../shared/types/agent-vitals.types'
 
@@ -481,22 +482,56 @@ export function formatUntil(at: number, now: number): string {
   return `in ${Math.round(ms / 86_400_000)} days`
 }
 
+/** What a timer prediction reads besides main's gate facts: the agent's config and each inner loop's published facts (store `loopGateFacts`). Undefined until the config is loaded. */
+export function timerContext(config: Pick<AgentConfig, 'triggers' | 'loops'> | null, loopFacts: Readonly<Record<string, GateFacts>>): TimerContext | undefined {
+  return config ? { onTimer: config.triggers?.on_timer, loops: config.loops ?? [], loopFacts } : undefined
+}
+
+type TimerRowLike = { next_wake_at: number; scope: readonly string[]; loop?: string | null; expired?: boolean | number }
+
 /** The next wake across all timers, independent of the three-row Upcoming preview. */
-export function nextFiringWake(timers: readonly { next_wake_at: number; scope: readonly string[]; expired?: boolean | number }[] | undefined, gate: string): number | undefined {
+export function nextFiringWake(timers: readonly TimerRowLike[] | undefined, gate: GateFacts, ctx?: TimerContext): number | undefined {
   return timers?.reduce<number | undefined>((next, timer) => {
-    if (timer.expired || !timerFires(timer.scope, gate)) return next
-    return next === undefined ? timer.next_wake_at : Math.min(next, timer.next_wake_at)
+    const at = timer.expired ? undefined : timerFireTime(timer.scope, gate, timer.next_wake_at, timer.loop, ctx)
+    if (at === undefined) return next
+    return next === undefined ? at : Math.min(next, at)
   }, undefined)
 }
 
-/** An Upcoming row's countdown, or null when the row will not fire in this gate. */
-export function wakeCountdown(t: UpcomingWake, gate: string, now: number): string | null {
-  return wakeFires(t, gate) ? formatUntil(t.at, now) : null
+/**
+ * The Overview's next wake. `upcoming` is the 3-row preview (earliest due
+ * first); `timers` is the full list, read only when `needsTimers` says the
+ * preview cannot answer: it is full and its earliest fire time is not before
+ * its last row's due time, so a row outside it may fire earlier (in error, a
+ * system row fires when due while agent rows wait for the cooldown).
+ */
+export function overviewNextWake(
+  upcoming: readonly UpcomingWake[] | undefined,
+  timers: readonly TimerRowLike[] | undefined,
+  gate: GateFacts,
+  ctx?: TimerContext,
+): { at: number | undefined; needsTimers: boolean } {
+  const preview = upcoming?.reduce<number | undefined>((next, t) => {
+    const at = wakeFireTime(t, gate, ctx)
+    return at === undefined || (next !== undefined && next <= at) ? next : at
+  }, undefined)
+  const full = nextFiringWake(timers, gate, ctx)
+  const at = preview === undefined ? full : full === undefined ? preview : Math.min(preview, full)
+  const last = upcoming?.length === 3 ? upcoming[2].at : undefined
+  const needsTimers = gate.state !== 'off' && last !== undefined && (preview === undefined || preview > last)
+  return { at, needsTimers }
+}
+
+/** An Upcoming row's countdown to when it fires in this gate, or null when it will not fire. */
+export function wakeCountdown(t: UpcomingWake, gate: GateFacts, now: number, ctx?: TimerContext): string | null {
+  const at = wakeFireTime(t, gate, ctx)
+  return at === undefined ? null : formatUntil(at, now)
 }
 
 /** A Timers tab row's countdown, or null when the timer will not fire in this gate (same rule as the overview). */
-export function timerCountdown(timer: { scope: readonly string[]; next_wake_at: number }, gate: string, format: (at: number) => string): string | null {
-  return timerFires(timer.scope, gate) ? format(timer.next_wake_at) : null
+export function timerCountdown(timer: { scope: readonly string[]; next_wake_at: number; loop?: string | null }, gate: GateFacts, format: (at: number) => string, ctx?: TimerContext): string | null {
+  const at = timerFireTime(timer.scope, gate, timer.next_wake_at, timer.loop, ctx)
+  return at === undefined ? null : format(at)
 }
 
 const MAIN_LOOP_NAME = 'main'

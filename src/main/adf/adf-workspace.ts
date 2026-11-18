@@ -2057,10 +2057,11 @@ export class AdfWorkspace {
     return this.db.getDueTimers()
   }
 
-  /** Flag completed timers as expired history instead of deleting them. */
-  expireTimers(ids: number[], firedAt?: number): number {
-    return this.db.expireTimers(ids, firedAt)
+  /** Settle a due occurrence; true for exactly one claim per occurrence (AdfDatabase.claimTimer). */
+  claimTimer(id: number, expectedNextWakeAt: number, expectedRunCount: number, nextWakeAt: number | null, firedAt: number): boolean {
+    return this.db.claimTimer(id, expectedNextWakeAt, expectedRunCount, nextWakeAt, firedAt)
   }
+
 
   // ===========================================================================
   // File Operations

@@ -3,7 +3,7 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP } from '../../../src/renderer
 import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 import { stoppedNotice } from '../../../src/renderer/components/agent/overview/agent-overview-model'
-import { timerFires, wakeFires } from '../../../src/shared/utils/trigger-gate'
+import { timerFireTime, wakeFireTime } from '../../../src/shared/utils/trigger-gate'
 
 /**
  * Per-loop display state — what the loop tab strip's status dot reads.
@@ -98,8 +98,8 @@ describe('trigger gate beside the display state', () => {
     const { gate } = useAgentStore.getState()
     return {
       notice: stoppedNotice({ gate, autostart: false, waitingTimers: 1, serving: false, starting: false }),
-      rowCountdown: wakeFires({ scope: 'system', scopes: ['system'] }, gate),
-      timersTabCountdown: timerFires(['system'], gate),
+      rowCountdown: wakeFireTime({ at: 0, scope: 'system', scopes: ['system'] }, { state: gate }) !== undefined,
+      timersTabCountdown: timerFireTime(['system'], { state: gate }, 0) !== undefined,
     }
   }
 

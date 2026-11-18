@@ -87,7 +87,7 @@ import {
   foldStep,
   hasActivity,
   levelBarParts,
-  nextFiringWake,
+  overviewNextWake,
   overviewFacts,
   stoppedNotice,
   parseStoredLevels,
@@ -103,7 +103,7 @@ import {
 import { servesHttp } from '../../../../shared/utils/serving'
 import { openApi, openAgentKey, useOpenAgentKey } from '../../../utils/runtime-api'
 import { captureAgentView, isCurrentAgentView } from '../../../utils/agent-view'
-import { wakeFires } from '../../../../shared/utils/trigger-gate'
+import { useGateFacts, useTimerContext } from '../../../hooks/useTimerContext'
 import { startForegroundAgent } from '../../../utils/start-agent'
 import { Button } from '../../ui'
 
@@ -272,14 +272,14 @@ export function AgentOverview() {
   const config = useAgentStore((s) => s.config)
   const seed = useOpenAgentOrbitalSeed()
   const state = useAgentStore((s) => s.state)
-  const gate = useAgentStore((s) => s.gate)
+  const gateFacts = useGateFacts()
+  const gate = gateFacts.state
+  const timerCtx = useTimerContext()
   const vitals = useOverviewRead(filePath, state, config, readVitals)
   const activity = useOverviewRead(filePath, state, config, readActivity)
   const openKey = useOpenAgentKey()
-  const previewWake = activity?.upcoming.find((timer) => wakeFires(timer, gate))?.at
-  // Only a full preview with no eligible timer can hide a later runnable one.
-  // Avoid polling retained timer history when the small preview answers it.
-  const needsTimers = gate !== 'off' && previewWake === undefined && activity?.upcoming.length === 3
+  // The Upcoming preview answers the next wake unless a timer outside it can fire sooner.
+  const { needsTimers } = overviewNextWake(activity?.upcoming, undefined, gateFacts, timerCtx)
   const timers = useOverviewRead(needsTimers ? openKey : null, state, config, readOverviewTimers)
   const rootRef = useRef<HTMLDivElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
@@ -293,7 +293,7 @@ export function AgentOverview() {
   const chartFolded = folded.chart
   const [now, setNow] = useState(() => Date.now())
   // Upcoming is only a preview; the next eligible timer may be outside its three rows.
-  const nextWakeAt = previewWake ?? nextFiringWake(timers?.timers, gate)
+  const nextWakeAt = overviewNextWake(activity?.upcoming, timers?.timers, gateFacts, timerCtx).at
   // The store tracks starts in flight for every path (title bar, sidebar, here, reattach).
   const starting = useAppStore((s) => (openKey ? s.startingFilePaths.has(openKey) : false))
   const live = useLiveActivity(nextWakeAt, now, starting)

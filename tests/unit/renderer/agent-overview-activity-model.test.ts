@@ -331,21 +331,25 @@ describe('wake displays follow the gate', () => {
       { next_wake_at: 5 * MIN, scope: ['system', 'agent'] },
       { next_wake_at: 0, scope: ['system'], expired: 1 },
     ]
-    expect(nextFiringWake(timers, 'off')).toBeUndefined()
-    expect(nextFiringWake(timers, 'idle')).toBe(MIN)
-    expect(nextFiringWake(timers, 'suspended')).toBe(5 * MIN)
-    expect(nextFiringWake(timers, 'error')).toBe(5 * MIN)
-    expect(nextFiringWake(undefined, 'idle')).toBeUndefined()
+    expect(nextFiringWake(timers, { state: 'off' })).toBeUndefined()
+    expect(nextFiringWake(timers, { state: 'idle' })).toBe(MIN)
+    // a row with an agent part waits whole while that part is held
+    expect(nextFiringWake(timers, { state: 'suspended' })).toBe(9 * MIN)
+    expect(nextFiringWake(timers, { state: 'error', recoveryAt: null })).toBe(9 * MIN)
+    expect(nextFiringWake(timers, { state: 'error', recoveryAt: 0 })).toBe(MIN)
+    expect(nextFiringWake(timers, { state: 'error', recoveryAt: 4 * MIN })).toBe(4 * MIN)
+    expect(nextFiringWake(undefined, { state: 'idle' })).toBeUndefined()
   })
 
   it('an Upcoming row has a countdown only when it fires', () => {
-    expect(wakeCountdown(agentWake, 'off', 0)).toBeNull()
-    expect(wakeCountdown(agentWake, 'idle', 0)).toBe('in 5 min')
+    expect(wakeCountdown(agentWake, { state: 'off' }, 0)).toBeNull()
+    expect(wakeCountdown(agentWake, { state: 'idle' }, 0)).toBe('in 5 min')
+    expect(wakeCountdown(agentWake, { state: 'error', recoveryAt: 30 * MIN }, 0)).toBe('in 30 min')
   })
 
   it('a Timers tab row has a countdown only when it fires', () => {
     const fmt = (at: number) => `at ${at}`
-    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, 'off', fmt)).toBeNull()
-    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, 'idle', fmt)).toBe(`at ${5 * MIN}`)
+    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, { state: 'off' }, fmt)).toBeNull()
+    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, { state: 'idle' }, fmt)).toBe(`at ${5 * MIN}`)
   })
 })
