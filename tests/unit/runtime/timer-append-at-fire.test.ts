@@ -875,3 +875,28 @@ describe('round 9/10: F3 a render that throws during a busy delivery', { timeout
     }
   })
 })
+
+// ===========================================================================
+// Round 11 (break-it recoveryb-r11): mixed rows sharing a lambda in one tick
+// ===========================================================================
+
+describe('round 11: F1 more same-lambda mixed rows due in one tick than the lane has room for', { timeout: 30_000 }, () => {
+  it.each([70, 100])('%i rows: rows beyond room stay due, and every lambda runs over the ticks', async (n) => {
+    const { filePath, open } = makeFile(`r11-lane-${n}`)
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    const runs = countLambdas(agent)
+    try {
+      const ids = Array.from({ length: n }, (_, i) => addDue(workspace, `R11-${n}-${i}`, { scope: ['system', 'agent'], lambda: 'lib/x.ts:run' }))
+      const due = () => ids.filter(id => !row(workspace, id).expired).length
+      tick(agent); await settled(agent); await sleep(50)
+      expect(due()).toBeGreaterThan(0) // held whole, not settled with a dropped lambda
+      expect(runs.n).toBe(n - due())
+      for (let i = 0; i < 5 && due() > 0; i++) { tick(agent); await settled(agent); await sleep(50) }
+      expect(due()).toBe(0)
+      expect(runs.n).toBe(n)
+      for (const id of ids) expect(row(workspace, id)).toMatchObject({ expired: true, run_count: 1 })
+    } finally { await agent.disposeAsync() }
+  })
+})
