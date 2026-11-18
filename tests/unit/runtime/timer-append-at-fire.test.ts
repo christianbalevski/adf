@@ -1,0 +1,513 @@
+/**
+ * Append at fire (DESIGN-B v2). A timer occurrence counts as done only once
+ * the agent receives it: its payload is written into the target loop's
+ * stream. At the tick, a due timer whose target can receive now is claimed
+ * and appended in one transaction; a timer whose target cannot receive is
+ * held whole and stays due.
+ *
+ * Every test runs the real AgentRuntimeBuilder (assembleAgent, the
+ * TriggerEvaluator, the LoopPool and the executors) with timer polling
+ * stopped and ticks driven by hand. Harness adapted from the old branch's
+ * timer-delivery.test.ts.
+ */
+import { describe, expect, it, beforeEach, afterEach, vi } from 'vitest'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
+import { ERROR_RECOVERY_COOLDOWN_MS } from '../../../src/main/runtime/agent-executor'
+import { AgentRuntimeBuilder } from '../../../src/main/runtime/agent-runtime-builder'
+import { createHeadlessAgent, MockLLMProvider } from '../../../src/main/runtime/headless'
+import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
+import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
+import type { AdfEventDispatch, AdfBatchDispatch } from '../../../src/shared/types/adf-event.types'
+import type { CreateMessageOptions, LLMProvider } from '../../../src/main/providers/provider.interface'
+import type { LLMResponse } from '../../../src/shared/types/provider.types'
+
+type Mode = 'fail' | 'auth' | 'ok'
+
+/** A provider whose next answer is set by the test, with an optional barrier. */
+class ScriptedProvider implements LLMProvider {
+  readonly name = 'scripted-provider'
+  readonly modelId = 'scripted-model-v1'
+  calls = 0
+  seen: string[] = []
+  private barrier: { promise: Promise<void>; release: () => void } | null = null
+  constructor(public mode: Mode = 'ok') {}
+  /** The next call waits until release() and then answers in the current mode. */
+  blockNext(): void {
+    let release!: () => void
+    const promise = new Promise<void>(r => { release = r })
+    this.barrier = { promise, release }
+  }
+  release(): void { const b = this.barrier; this.barrier = null; b?.release() }
+  get blocked(): boolean { return this.barrier !== null }
+  async createMessage(opts: CreateMessageOptions): Promise<LLMResponse> {
+    this.calls++
+    this.seen.push(JSON.stringify(opts.messages))
+    if (this.barrier) await this.barrier.promise
+    if (this.mode === 'auth') throw Object.assign(new Error('401 Unauthorized: invalid api key'), { status: 401 })
+    if (this.mode === 'fail') throw new Error('unrecognized executor fault')
+    return { id: `r${this.calls}`, content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+  }
+  async validateConfig() { return { valid: true } }
+}
+
+const opened: Array<{ dir: string; workspaces: AdfWorkspace[] }> = []
+afterEach(() => {
+  vi.useRealTimers()
+  for (const { dir, workspaces } of opened.splice(0)) {
+    for (const w of workspaces) { try { w.close() } catch { /* closed by its agent */ } }
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+function makeFile(name: string) {
+  const dir = mkdtempSync(join(tmpdir(), `adf-delivery-${name}-`))
+  const filePath = join(dir, `${name}.adf`)
+  createHeadlessAgent({ filePath, name, provider: new MockLLMProvider() }).dispose()
+  const entry = { dir, workspaces: [] as AdfWorkspace[] }
+  opened.push(entry)
+  const open = () => { const w = AdfWorkspace.open(filePath); entry.workspaces.push(w); return w }
+  return { filePath, open }
+}
+
+type Agent = Awaited<ReturnType<AgentRuntimeBuilder['build']>>
+
+interface BuildOpts {
+  maxAttempts?: number
+  autoRetry?: boolean
+  delayMs?: number
+  triggers?: Record<string, unknown>
+  loops?: unknown[]
+}
+
+async function build(filePath: string, workspace: AdfWorkspace, provider: LLMProvider, o: BuildOpts = {}) {
+  const config = workspace.getAgentConfig()
+  config.triggers = { ...config.triggers, ...(o.triggers ?? {}) } as typeof config.triggers
+  if (o.loops) (config as unknown as { loops: unknown[] }).loops = o.loops
+  workspace.setAgentConfig(config)
+  const delay = o.delayMs ?? 60_000
+  const agent = await new AgentRuntimeBuilder().build({
+    workspace, filePath, provider,
+    config: { ...config, recovery: { auto_retry: o.autoRetry ?? true, max_attempts: o.maxAttempts ?? 5, base_delay_ms: delay, max_delay_ms: delay } },
+  })
+  await (agent as unknown as { start?: () => Promise<void> }).start?.()
+  agent.triggerEvaluator.stopTimerPolling()
+  return agent
+}
+
+/** Count system-scope lambda runs instead of running a sandbox. */
+function countLambdas(agent: Agent) {
+  const runs = { n: 0 }
+  agent.executor.setSystemScopeHandler({
+    execute: async () => { runs.n++ },
+    executeBatch: async () => { runs.n++ },
+  } as never)
+  return runs
+}
+
+const tick = (agent: Agent) => (agent.triggerEvaluator as unknown as { checkTimers: () => void }).checkTimers()
+const sleep = (ms: number) => new Promise(r => setTimeout(r, ms))
+
+async function until(cond: () => boolean, timeoutMs = 4000, what = 'condition') {
+  const start = Date.now()
+  while (!cond()) {
+    if (Date.now() - start > timeoutMs) throw new Error(`timed out waiting for ${what}`)
+    await sleep(10)
+  }
+}
+
+/** Every agent turn has finished and nothing is queued to run. */
+async function settled(agent: Agent, timeoutMs = 4000) {
+  let quiet = 0
+  await until(() => {
+    quiet = agent.executor.isTurnActive() || agent.hasInFlightDispatch() ? 0 : quiet + 1
+    return quiet >= 5
+  }, timeoutMs, 'the agent to settle')
+}
+
+function chat(text = 'hello') {
+  return createDispatch(createEvent({ type: 'chat', source: 'test', data: { message: { seq: 0, role: 'user', content_json: [{ type: 'text', text }], created_at: Date.now() } } }), { scope: 'agent' })
+}
+
+function addDue(workspace: AdfWorkspace, payload: string, opts: { scope?: string[]; lambda?: string; loop?: string; every?: number } = {}) {
+  const due = Date.now() - 1000
+  const schedule = opts.every ? { mode: 'interval', every_ms: opts.every } : { mode: 'once', at: due }
+  return workspace.addTimer(schedule as never, due, payload, opts.scope ?? ['agent'], opts.lambda, undefined, undefined, opts.loop)
+}
+
+function row(workspace: AdfWorkspace, id: number) {
+  const r = workspace.getTimers().find(t => t.id === id)
+  return { expired: r?.expired === true, run_count: r?.run_count ?? -1, next_wake_at: r?.next_wake_at ?? -1, exists: !!r }
+}
+
+/** adf_loop rows (any loop) whose content carries `payload`. */
+function loopRows(workspace: AdfWorkspace, payload: string, loop?: string) {
+  const w = loop ? workspace.forLoop(loop) : workspace
+  return w.getLoop().filter(e => JSON.stringify(e.content_json).includes(payload)).length
+}
+
+function deliverInbox(agent: Agent, workspace: AdfWorkspace, text: string) {
+  const messageId = workspace.addToInbox({ from: 'did:key:peer', content: text, source: 'mesh', received_at: Date.now(), status: 'unread' } as never)
+  agent.triggerEvaluator.onInbox('did:key:peer', text, { source: 'mesh', messageId })
+}
+
+/** Move Date only, past the recovery cooldown, while `fn` and its dispatches settle. */
+async function afterCooldown(fn: () => void, extraMs = 60_000) {
+  vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + ERROR_RECOVERY_COOLDOWN_MS + extraMs })
+  try { fn(); await sleep(500) } finally { vi.useRealTimers() }
+}
+
+async function erroredAgent(name: string, o: BuildOpts & { failure?: 'fail' | 'auth' } = {}) {
+  const { filePath, open } = makeFile(name)
+  const workspace = open()
+  const provider = new ScriptedProvider(o.failure ?? 'fail')
+  const agent = await build(filePath, workspace, provider, o)
+  await agent.executor.executeTurn(chat())
+  expect(agent.executor.getState()).toBe('error')
+  return { agent, workspace, provider, filePath, open }
+}
+
+/** Drive the provider healthy and every due timer through, then let it settle.
+ *  An agent still in error after the ticks (nothing due left to try) is
+ *  healed the way an owner does it: a chat message. */
+async function heal(agent: Agent, provider: ScriptedProvider, ticks = 4) {
+  provider.mode = 'ok'
+  for (let i = 0; i < ticks; i++) { tick(agent); await sleep(50); await settled(agent) }
+  if (agent.executor.getState() === 'error') {
+    await agent.executor.executeTurn(chat('owner: try again'))
+    await settled(agent)
+    for (let i = 0; i < 2; i++) { tick(agent); await sleep(50); await settled(agent) }
+  }
+}
+
+beforeEach(() => clearAllUmbilicalBuses())
+
+// ===========================================================================
+// 1. Same-tick burst in recoverable error
+// ===========================================================================
+
+const sessionCopies = (agent: Agent, needle: string) =>
+  agent.session.getMessages().filter(m => JSON.stringify(m.content).includes(needle)).length
+const sawOnce = (p: ScriptedProvider, needle: string) => p.seen.some(s => s.includes(needle))
+const SIDE = { name: 'research', goal: 'Research.', enabled: true, autostart: false, tools: [] }
+const OFF = { name: 'parked', goal: 'Off.', enabled: false, autostart: false, tools: [] }
+const sidePool = (agent: Agent) => (agent as unknown as { loopPool: { getRuntime: (n: string) => { executor: Agent['executor']; session: Agent['session']; dispatch: (d: unknown) => Promise<void> } | undefined } }).loopPool
+
+describe('idle and busy targets', { timeout: 30_000 }, () => {
+  it('idle: one row, the timer settled at the tick, one turn that sees it', async () => {
+    const { filePath, open } = makeFile('idle')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    try {
+      const t = addDue(workspace, 'IDLE-ONCE')
+      tick(agent)
+      expect(loopRows(workspace, 'IDLE-ONCE')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      await settled(agent)
+      expect(provider.calls).toBe(1)
+      expect(sawOnce(provider, 'IDLE-ONCE')).toBe(true)
+      expect(sessionCopies(agent, 'IDLE-ONCE')).toBe(1)
+      tick(agent); await settled(agent)
+      expect(loopRows(workspace, 'IDLE-ONCE')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('busy: the row is written at the tick and read at the next model boundary, once, with no successor turn of its own', async () => {
+    const { filePath, open } = makeFile('busy')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    try {
+      provider.blockNext()
+      const turn = agent.executor.executeTurn(chat('long work'))
+      await until(() => provider.blocked && provider.calls === 1)
+      const t = addDue(workspace, 'BUSY-ONCE')
+      tick(agent)
+      expect(loopRows(workspace, 'BUSY-ONCE')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      tick(agent)
+      provider.release()
+      await turn
+      await settled(agent)
+      expect(loopRows(workspace, 'BUSY-ONCE')).toBe(1)
+      expect(sawOnce(provider, 'BUSY-ONCE')).toBe(true)
+      expect(sessionCopies(agent, 'BUSY-ONCE')).toBe(1)
+      // the turn ended before a boundary drained it, so exactly one kick turn read it
+      expect(provider.calls).toBe(2)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('busy, then the turn fails with auth: the kick is a timer and stays parked (no further provider call)', async () => {
+    const { filePath, open } = makeFile('busy-auth')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    try {
+      provider.blockNext()
+      const turn = agent.executor.executeTurn(chat('long work'))
+      await until(() => provider.blocked && provider.calls === 1)
+      addDue(workspace, 'BUSY-AUTH')
+      tick(agent)
+      provider.mode = 'auth'
+      provider.release()
+      await turn
+      await settled(agent); await sleep(100); await settled(agent)
+      expect(agent.executor.getState()).toBe('error')
+      expect(provider.calls).toBe(1)
+      expect(loopRows(workspace, 'BUSY-AUTH')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('a recurring [system, agent] timer keeps its lambda cadence while the agent is busy', async () => {
+    const { filePath, open } = makeFile('mixed-busy')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    const runs = countLambdas(agent)
+    try {
+      provider.blockNext()
+      const turn = agent.executor.executeTurn(chat('long work'))
+      await until(() => provider.blocked && provider.calls === 1)
+      const t = addDue(workspace, 'MIXED-BUSY', { scope: ['system', 'agent'], lambda: 'lib/job.js:main', every: 60_000 })
+      tick(agent); await sleep(20)
+      expect(runs.n).toBe(1)
+      // the next occurrence comes due while the same turn still runs
+      workspace.advanceTimer(t, Date.now() - 1000, row(workspace, t).run_count, Date.now())
+      tick(agent); await sleep(20)
+      expect(runs.n).toBe(2)
+      expect(loopRows(workspace, 'MIXED-BUSY')).toBe(2)
+      expect(row(workspace, t).run_count).toBe(2)
+      provider.release()
+      await turn
+      await settled(agent)
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+describe('error and recovery', { timeout: 30_000 }, () => {
+  it('error with budget: the tick appends and the turn it starts is the recovery attempt', async () => {
+    const { agent, workspace, provider } = await erroredAgent('err-budget')
+    try {
+      provider.mode = 'ok'
+      const t = addDue(workspace, 'ERR-BUDGET')
+      tick(agent)
+      expect(loopRows(workspace, 'ERR-BUDGET')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      await settled(agent)
+      expect(agent.executor.getState()).toBe('idle')
+      expect(sawOnce(provider, 'ERR-BUDGET')).toBe(true)
+      expect(sessionCopies(agent, 'ERR-BUDGET')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('error in cooldown: the timer is held whole (no row, not settled) until the cooldown ends, then fires once', async () => {
+    const { agent, workspace, provider } = await erroredAgent('err-cooldown', { autoRetry: false, maxAttempts: 1 })
+    try {
+      addDue(workspace, 'SPEND')
+      tick(agent); await settled(agent) // the one attempt in budget, still failing
+      expect(agent.executor.getState()).toBe('error')
+      const callsAfterAttempt = provider.calls
+      const t = addDue(workspace, 'COOLDOWN')
+      tick(agent); tick(agent); await settled(agent)
+      expect(loopRows(workspace, 'COOLDOWN')).toBe(0)
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      expect(provider.calls).toBe(callsAfterAttempt)
+      provider.mode = 'ok'
+      await afterCooldown(() => tick(agent))
+      await settled(agent)
+      expect(loopRows(workspace, 'COOLDOWN')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      expect(sawOnce(provider, 'COOLDOWN')).toBe(true)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('auth: held whole, no provider call; after the credentials are fixed it fires once', async () => {
+    const { agent, workspace, provider } = await erroredAgent('err-auth', { failure: 'auth' })
+    try {
+      const calls = provider.calls
+      const t = addDue(workspace, 'AUTH-HELD')
+      tick(agent); tick(agent); await settled(agent)
+      expect(provider.calls).toBe(calls)
+      expect(loopRows(workspace, 'AUTH-HELD')).toBe(0)
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      provider.mode = 'ok'
+      expect(agent.executor.recoverFromAuthError('fixed')).toBe(true)
+      tick(agent); await settled(agent)
+      expect(loopRows(workspace, 'AUTH-HELD')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      expect(sawOnce(provider, 'AUTH-HELD')).toBe(true)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('a recurring timer missed while parked is caught up once, rescheduled from then', async () => {
+    const { agent, workspace, provider } = await erroredAgent('err-recurring', { failure: 'auth' })
+    try {
+      const t = workspace.addTimer({ mode: 'interval', every_ms: 60_000 } as never, Date.now() - 5 * 60_000, 'EVERY-MIN', ['agent'])
+      for (let i = 0; i < 3; i++) tick(agent)
+      expect(loopRows(workspace, 'EVERY-MIN')).toBe(0)
+      provider.mode = 'ok'
+      agent.executor.recoverFromAuthError('fixed')
+      tick(agent); tick(agent); await settled(agent)
+      expect(loopRows(workspace, 'EVERY-MIN')).toBe(1)
+      expect(row(workspace, t).run_count).toBe(1)
+      expect(row(workspace, t).next_wake_at).toBeGreaterThan(Date.now())
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('auth error landing between the tick and turn entry: the declined row is queued into the live session, releasable by the sweep', async () => {
+    const { filePath, open } = makeFile('decline-race')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    try {
+      await agent.executor.executeTurn(chat('warm up'))
+      // the tick sees an idle, healthy agent; the dispatch then reaches an executor in auth error
+      const exec = agent.executor as unknown as { state: string; _errorReason: string | null }
+      const real = agent.executor.executeTurn.bind(agent.executor)
+      ;(agent.executor as unknown as { executeTurn: typeof real }).executeTurn = (d, o) => { exec.state = 'error'; exec._errorReason = 'auth'; return real(d, o) }
+      addDue(workspace, 'RACE')
+      tick(agent); await settled(agent)
+      expect(provider.calls).toBe(1)
+      expect(loopRows(workspace, 'RACE')).toBe(1)
+      const pending = agent.session.peekPendingContextInjections().filter(i => i.text.includes('RACE'))
+      expect(pending).toHaveLength(1)
+      expect(pending[0]).toMatchObject({ category: 'loop' })
+      expect(pending[0].wake).not.toBe(true)
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+describe('inner loops and missing or disabled targets', { timeout: 30_000 }, () => {
+  it('an inner loop that is auth-parked holds the timer; once fixed it is delivered into that loop once', async () => {
+    const { filePath, open } = makeFile('inner-auth')
+    const workspace = open()
+    const provider = new ScriptedProvider('auth')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE] })
+    try {
+      const side = sidePool(agent).getRuntime('research')!
+      await side.dispatch(chat('inner fails'))
+      expect(side.executor.getState()).toBe('error')
+      expect(agent.executor.getState()).toBe('idle')
+      const calls = provider.calls
+      const t = addDue(workspace, 'INNER-AUTH', { loop: 'research' })
+      tick(agent); tick(agent); await settled(agent); await sleep(50)
+      expect(provider.calls).toBe(calls)
+      expect(loopRows(workspace, 'INNER-AUTH', 'research')).toBe(0)
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      provider.mode = 'ok'
+      side.executor.recoverFromAuthError('fixed')
+      tick(agent); await sleep(200)
+      expect(loopRows(workspace, 'INNER-AUTH', 'research')).toBe(1)
+      expect(loopRows(workspace, 'INNER-AUTH')).toBe(0)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('an inner loop in error with budget: the tick is its recovery attempt', async () => {
+    const { filePath, open } = makeFile('inner-budget')
+    const workspace = open()
+    const provider = new ScriptedProvider('fail')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE] })
+    try {
+      const side = sidePool(agent).getRuntime('research')!
+      await side.dispatch(chat('inner fails'))
+      expect(side.executor.getState()).toBe('error')
+      provider.mode = 'ok'
+      const t = addDue(workspace, 'INNER-BUDGET', { loop: 'research' })
+      tick(agent)
+      await until(() => side.executor.getState() === 'idle' && !side.executor.isTurnActive())
+      expect(loopRows(workspace, 'INNER-BUDGET', 'research')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      expect(sawOnce(provider, 'INNER-BUDGET')).toBe(true)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('a missing loop and a disabled loop hold the timer: nothing appended anywhere, not settled', async () => {
+    const { filePath, open } = makeFile('missing')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider, { loops: [OFF] })
+    try {
+      const ghost = addDue(workspace, 'GHOST', { loop: 'ghost', every: 3_600_000 })
+      const parked = addDue(workspace, 'PARKED', { loop: 'parked', every: 3_600_000 })
+      tick(agent); tick(agent); await settled(agent)
+      for (const [id, p, l] of [[ghost, 'GHOST', 'ghost'], [parked, 'PARKED', 'parked']] as const) {
+        expect(row(workspace, id)).toMatchObject({ expired: false, run_count: 0 })
+        expect(loopRows(workspace, p)).toBe(0)
+        expect(loopRows(workspace, p, l)).toBe(0)
+      }
+      expect(provider.calls).toBe(0)
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+describe('two runtimes on one file', { timeout: 30_000 }, () => {
+  it('both read the same due row before either claims: one row, one run', async () => {
+    const { filePath, open } = makeFile('two-runtimes')
+    const wa = open()
+    const wb = open()
+    const pa = new ScriptedProvider('ok')
+    const pb = new ScriptedProvider('ok')
+    const a = await build(filePath, wa, pa)
+    const b = await build(filePath, wb, pb)
+    try {
+      addDue(wa, 'TWO-RUNTIMES', { every: 3_600_000 })
+      const stale = wb.getDueTimers()
+      expect(stale).toHaveLength(1)
+      tick(a)
+      ;(wb as unknown as { getDueTimers: () => unknown[] }).getDueTimers = () => stale
+      tick(b)
+      await settled(a); await settled(b)
+      expect(loopRows(wa, 'TWO-RUNTIMES')).toBe(1)
+      expect([pa, pb].filter(p => sawOnce(p, 'TWO-RUNTIMES'))).toHaveLength(1)
+    } finally {
+      await a.disposeAsync()
+      await b.disposeAsync()
+    }
+  })
+
+  it('a system-only timer read by both runs its lambda once', async () => {
+    const { filePath, open } = makeFile('two-runtimes-sys')
+    const wa = open()
+    const wb = open()
+    const a = await build(filePath, wa, new ScriptedProvider('ok'))
+    const b = await build(filePath, wb, new ScriptedProvider('ok'))
+    const ra = countLambdas(a)
+    const rb = countLambdas(b)
+    try {
+      addDue(wa, 'TWO-SYS', { scope: ['system'], lambda: 'lib/job.js:main', every: 3_600_000 })
+      const stale = wb.getDueTimers()
+      tick(a)
+      ;(wb as unknown as { getDueTimers: () => unknown[] }).getDueTimers = () => stale
+      tick(b)
+      await sleep(50)
+      expect(ra.n + rb.n).toBe(1)
+    } finally {
+      await a.disposeAsync()
+      await b.disposeAsync()
+    }
+  })
+})
+
+describe('a mixed [system, agent] row while its agent part is held', { timeout: 30_000 }, () => {
+  it('auth-parked: the lambda waits with the row, then both run once', async () => {
+    const { agent, workspace, provider } = await erroredAgent('mixed-held', { failure: 'auth' })
+    const runs = countLambdas(agent)
+    try {
+      const t = addDue(workspace, 'MIXED-HELD', { scope: ['system', 'agent'], lambda: 'lib/job.js:main' })
+      tick(agent); tick(agent); await sleep(20)
+      expect(runs.n).toBe(0)
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      provider.mode = 'ok'
+      agent.executor.recoverFromAuthError('fixed')
+      tick(agent); tick(agent); await settled(agent)
+      expect(runs.n).toBe(1)
+      expect(loopRows(workspace, 'MIXED-HELD')).toBe(1)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+    } finally { await agent.disposeAsync() }
+  })
+})
