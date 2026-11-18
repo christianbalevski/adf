@@ -124,8 +124,9 @@ export interface LoopSlice {
   state: AgentState
   /** The state the runtime gates triggers on (gateStateOf): differs from
    *  `state` while a turn waits on an approval or ask (shown as suspended,
-   *  gated as active). Read for main only: the runtime gates timers on
-   *  main's state, so a side loop's `gate` is kept but not read. */
+   *  gated as active). Read for main here; a side loop's facts are read
+   *  through `loopGateFacts` (timer prediction), and its slice field is kept
+   *  for display. */
   gate: string
   /** In `error`: the recovery fact the executor publishes with state_changed
    *  (`recovery_at`), which the trigger gate reads with `gate`. null when

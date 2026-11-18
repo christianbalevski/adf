@@ -884,16 +884,20 @@ export class TriggerEvaluator extends EventEmitter {
    * it stays due and fires on the first tick it may, once, coalesced like any
    * missed timer (nextRenewal reads `now`).
    *
-   * A timer whose agent part on_timer admits is done only once the agent
-   * receives it, that is, once its payload is written into the target loop's
-   * stream. It fires only when that target can receive now (canReceive), and
-   * then the claim and the write are one transaction (TimerReceiver.deliver).
-   * Otherwise the WHOLE row is held, its lambda included. A system-only timer
-   * settles through the same conditional claim before its lambda is
-   * dispatched, so of two runtimes polling one file only one runs it, and a
-   * crash mid-fire cannot refire it.
+   * The plan (timerFire, the rule the UI shares) decides when the row fires,
+   * which scopes run, whether a deleted loop drops the agent part, and
+   * whether the delivery is a recovery attempt. The receiver adds only
+   * liveness, one attempt per tick and lane room. A timer whose agent part
+   * on_timer admits is done only once the agent receives it, that is, once
+   * its payload is written into the target loop's stream: the claim and the
+   * write are one transaction (TimerReceiver.deliver). Otherwise the WHOLE row
+   * is held, its lambda included. A system-only timer settles through the
+   * same conditional claim before its lambda is dispatched, so of two
+   * runtimes polling one file only one runs it, and a crash mid-fire cannot
+   * refire it.
+   *
+   * Returns the settle error, if the row could not be settled (it stays due).
    */
-  /** Returns the settle error, if the row could not be settled (it stays due). */
   private fireTimer(timer: Timer, now: number, attempted: Set<string>, reserved: Map<string, number>): unknown {
     const loop = timer.loop ?? 'main'
     // The shared rule the UI reads, over the same facts. A loop that is not
