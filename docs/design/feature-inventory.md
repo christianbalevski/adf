@@ -997,7 +997,7 @@ Grouped by area, then category.
 - **OAuth login, no API key** — flat monthly billing via ChatGPT Plus/Pro, Responses API backend.
 - **App-wide session sharing** — all Studio agents share one sign-in; daemon keeps a fully separate session.
 - **Reasoning trace stripping** — codex-backend "experimental" headline-only summaries stripped of empty `<!-- -->` placeholders.
-- **Fixed model catalog** — gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.4(+mini), gpt-5.3-codex(+spark).
+- **Fixed model catalog** — gpt-6.2-sol/astra, gpt-6.1-sol/terra, gpt-6-sol/astra/luna, gpt-5.6-sol/terra/luna.
 - **Rate-limit telemetry** — `sys_get_config({section:"provider_status"})` exposes primary (5h) and secondary (7d) window usage percentages, reset timers, plan type, credits balance.
 - **No-retry limit errors** — usage-limit errors surface immediately with the reset time, no automatic retry.
 

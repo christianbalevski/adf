@@ -261,9 +261,10 @@ export function createChatGPTSubscriptionProvider(authManager: {
     // 2026-09-28 gpt-6-sol/luna at 0.153.0 returned "not supported when using
     // Codex with a ChatGPT account"; 0.155.0 completes successfully. On 2026-09-29
     // gpt-6.1-sol failed the same way through 0.158.0 (despite /models listing
-    // minimal_client_version 0.153.0) and succeeded at 0.159.1.
+    // minimal_client_version 0.153.0) and succeeded at 0.159.1. On 2026-11-18 the current
+    // Codex CLI (0.169.0) lists gpt-6.2-sol, gpt-6.2-astra and gpt-6.1-terra.
     headers.set('originator', 'codex_cli_rs')
-    headers.set('version', '0.159.1')
+    headers.set('version', '0.169.0')
 
     // Patch the request body (see patchCodexRequestBody for the rules,
     // including system-prompt dedupe between `instructions` and `input`).
@@ -418,12 +419,14 @@ export const CHATGPT_SUBSCRIPTION_MEDIA = IMAGE_ONLY_MEDIA
 
 /** Known subscription models — returned by the hardcoded model list. */
 export const CHATGPT_SUBSCRIPTION_MODELS = [
+  'gpt-6.2-sol',
+  'gpt-6.2-astra',
+  'gpt-6.1-terra',
   'gpt-6.1-sol',
   'gpt-6-astra',
   'gpt-6-sol',
   'gpt-6-luna',
   'gpt-5.6-sol',
   'gpt-5.6-terra',
-  'gpt-5.6-luna',
-  'gpt-5.5'
+  'gpt-5.6-luna'
 ]
