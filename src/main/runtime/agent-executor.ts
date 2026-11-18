@@ -5461,19 +5461,6 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /**
-   * Whether this executor takes a delivery now: not stopped, and in `error`
-   * only when a recovery attempt may start now. Asked synchronously at the
-   * timer tick for an inner loop's target (main's comes from the published
-   * fact the evaluator holds).
-   */
-  canReceive(now: number = Date.now()): boolean {
-    if (this.state === 'stopped') return false
-    if (this.state !== 'error') return true
-    const at = this.recoveryAt()
-    return at !== null && at <= now
-  }
-
-  /**
    * Leave `error` for a trigger the entry check admitted. Every turn that
    * leaves error spends the budget once: a backoff retry is counted when it is
    * armed (scheduleProviderRecovery), and a trigger that runs instead of an

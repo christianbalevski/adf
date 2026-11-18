@@ -25,7 +25,7 @@ import { currentSourceOrUnknown } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { onDispatchDropped } from './system-dispatch-limits'
-import { EXECUTOR_WORK_STATES, admittedTimerScopes, gateStateOf, scopeFires } from '../../shared/utils/trigger-gate'
+import { EXECUTOR_WORK_STATES, admittedTimerScopes, gateStateOf, scopeFires, timerFireTime, type GateFacts } from '../../shared/utils/trigger-gate'
 
 const TIMER_POLL_INTERVAL_MS = 5000
 
@@ -128,15 +128,15 @@ type DisplayState = 'active' | 'idle' | 'hibernate' | 'suspended' | 'off'
  * loop pool and the workspace transaction.
  */
 export interface TimerReceiver {
-  /** Whether the timer's target loop can receive now, beyond main's gate
-   *  facts: it exists, is enabled, and its executor is not refusing. */
+  /** Liveness only, beyond the shared rule (timerFireTime): the target loop's
+   *  runtime exists, is enabled, and is not stopping. */
   canReceive(loop: string): boolean
   /** Whether a loop of this name is declared (main always is). A disabled
    *  loop is declared; a deleted one is not. */
   hasLoop(loop: string): boolean
-  /** Whether the target loop is in `error`, so a delivery to it is its
-   *  recovery attempt (it takes one per tick). */
-  inError(loop: string): boolean
+  /** An inner loop's own published facts (state, recovery_at): the same ones
+   *  the UI's store holds. */
+  loopFacts?(loop: string): GateFacts
   /** Whether the lane this system dispatch runs in has room now. A mixed
    *  row is held whole while its lambda could not run. */
   systemLaneHasRoom(dispatch: AdfEventDispatch, reserved: number): boolean
@@ -263,14 +263,6 @@ export class TriggerEvaluator extends EventEmitter {
    *  shared gate rule over the same facts the UI reads. */
   private shouldFire(scope: TriggerScopeV3, triggerType: TriggerTypeV3, loop?: string | null): boolean {
     return scopeFires(scope, triggerType, { state: this.gateState(), recoveryAt: this.recoveryAt }, loop)
-  }
-
-  /** Whether a timer's agent part can be received now: main's gate admits it
-   *  for this loop, and the target loop can take it (TimerReceiver). With no
-   *  receiver nothing can receive, and the row is held. */
-  private canReceive(timer: Timer, attempted: ReadonlySet<string>): boolean {
-    const loop = timer.loop ?? 'main'
-    return !attempted.has(loop) && this.shouldFire('agent', 'on_timer', loop) && !!this.timerReceiver?.canReceive(loop)
   }
 
   // ===========================================================================
@@ -913,7 +905,12 @@ export class TriggerEvaluator extends EventEmitter {
     const orphaned = admitted.includes('agent') && !!this.timerReceiver && !this.timerReceiver.hasLoop(loop)
     if (orphaned) admitted = admitted.filter(scope => scope !== 'agent')
     const agentPart = admitted.includes('agent')
-    const scopes = agentPart ? admitted : admitted.filter(scope => this.shouldFire(scope, 'on_timer'))
+    const scopes = admitted
+    // The shared rule the UI reads (timerFireTime), over the same facts.
+    const loopFacts = loop !== 'main' && this.timerReceiver?.loopFacts ? { [loop]: this.timerReceiver.loopFacts(loop) } : {}
+    const ctx = { onTimer: this.getTriggerConfig('on_timer'), loops: this.timerReceiver?.hasLoop(loop) ? [{ name: loop }] : [], loopFacts }
+    const at = timerFireTime(timer.scope, { state: this.gateState(), recoveryAt: this.recoveryAt }, now, timer.loop, ctx)
+    if (at === undefined || at > now) return
     const event = createEvent({
       type: 'timer' as const,
       source: `agent:${this.config.name ?? 'unknown'}`,
@@ -923,13 +920,15 @@ export class TriggerEvaluator extends EventEmitter {
       ? createDispatch(event, { scope: 'system', lambda: timer.lambda, command: undefined, warm: timer.warm })
       : null
     if (agentPart) {
-      if (!this.canReceive(timer, attempted)) return
+      // Runtime-only, on top of the shared rule: one attempt per tick; the
+      // loop's runtime is up and not stopping (liveness); lane room.
+      if (attempted.has(loop) || !this.timerReceiver?.canReceive(loop)) return
       if (lambdaDispatch && !this.timerReceiver!.systemLaneHasRoom(lambdaDispatch, reserved.get(timer.lambda!) ?? 0)) return
-    } else if (admitted.length > 0 && scopes.length === 0) return
+    }
 
     const nextWake = this.nextRenewal(timer, now)
     try {
-      const inError = agentPart && this.timerReceiver!.inError(loop)
+      const inError = agentPart && (loop === 'main' ? this.gateState() : loopFacts[loop]?.state) === 'error'
       const claimed = agentPart
         ? this.timerReceiver!.deliver(timer, nextWake, now, event)
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)

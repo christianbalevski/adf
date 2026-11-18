@@ -787,7 +787,7 @@ export function assembleAgent<P extends AgentProfileName>(
   triggerEvaluator.setTimerReceiver({
     canReceive: (loop) => loopPool.canReceive(loop),
     hasLoop: (loop) => loopPool.hasLoop(loop),
-    inError: (loop) => (loop === MAIN_LOOP ? executor : loopPool.getRuntime(loop)?.executor)?.getState() === 'error',
+    loopFacts: (loop) => loopPool.loopFacts(loop),
     systemLaneHasRoom: (dispatchValue, reserved) => executor.systemLaneHasRoom(dispatchValue, reserved),
     deliver: (timer, nextWake, firedAt, event) => {
       const loop = timer.loop ?? MAIN_LOOP

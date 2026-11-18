@@ -660,16 +660,21 @@ export class LoopPool implements LoopPoolApi {
   }
 
   /**
-   * Whether an inner loop can receive a delivery now: declared, enabled,
-   * running, not being stopped, and its executor not refusing (auth-parked,
-   * or in error outside its recovery budget). Main always can as far as the
-   * pool knows: its own facts are the trigger gate's.
+   * Liveness only: an inner loop is running, enabled, not being stopped, and
+   * its executor is not stopped. Its error state and recovery_at are the
+   * shared rule's (timerFireTime over loopFacts). Main always can.
    */
   canReceive(name: string): boolean {
     if (name === MAIN_LOOP) return true
     if (this.stopping.has(name)) return false
     const runtime = this.runtimes.get(name)
-    return !!runtime && runtime.enabled && !runtime.condemned && runtime.executor.canReceive()
+    return !!runtime && runtime.enabled && !runtime.condemned && runtime.executor.getState() !== 'stopped'
+  }
+
+  /** An inner loop's published gate facts (the same ones the UI's store holds). */
+  loopFacts(name: string): { state: string; recoveryAt: number | null } {
+    const executor = this.runtimes.get(name)?.executor
+    return { state: executor?.getState() ?? 'idle', recoveryAt: executor?.getRecoveryAt() ?? null }
   }
 
   /** Each live inner loop's published recovery fact, for those in error that may recover (start/re-attach snapshot). */
