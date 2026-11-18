@@ -22,6 +22,14 @@ describe('shell preflight with duplicate tool declarations', () => {
     expect(blocked?.exit_code).toBe(EXIT.INTERCEPTED)
   })
 
+  it('treats a tool as restricted when only a disabled duplicate is restricted', () => {
+    const config: any = {
+      tools: [{ name: 'fs_read', enabled: true }, { name: 'fs_read', enabled: false, restricted: true }],
+      triggers: {},
+    }
+    expect(evaluateToolNames(['fs_read'], config).approvalRequired).toEqual(['fs_read'])
+  })
+
   it('still lets a single unrestricted declaration through', async () => {
     const config: any = { tools: [{ name: 'fs_read', enabled: true }], triggers: {} }
     const evalr = evaluateToolNames(['fs_read'], config)
