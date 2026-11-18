@@ -5535,7 +5535,7 @@ export class AgentExecutor extends EventEmitter {
       this.session.getWorkspace().insertLog(
         'warn', 'executor', 'recovery_suppressed', null,
         `Recovery attempts exhausted (${this._recoveryAttempts}/${maxAttempts}). ` +
-        'Recovery budget spent: timers and inbox messages wait for the cooldown or a chat message; other trigger events are dropped.'
+        'Recovery budget spent: timers stay due and inbox messages stay unread; the next trigger after the cooldown, or a chat message, is the recovery attempt. Other trigger events are dropped.'
       )
     } catch { /* non-fatal */ }
     this.emitRuntimeEvent('error.recovery_suppressed', {
