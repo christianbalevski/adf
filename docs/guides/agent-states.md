@@ -17,7 +17,7 @@ Every ADF agent exists in one of five primary states. Understanding these states
 | **Idle** | Default idle, responsive | Document edits, messages, direct chats, timers |
 | **Hibernate** | Deep idle | Timers only |
 | **Suspended** | Blocked by runtime | Owner approval only |
-| **Error** | Failed, waiting for recovery | User messages only |
+| **Error** | Failed, waiting for recovery | User messages; other triggers as bounded recovery attempts |
 | **Off** | Fully stopped | Nothing (manual restart required) |
 
 ### Active
@@ -40,7 +40,7 @@ A safety state set by the runtime when an agent hits its `limits.max_active_turn
 
 ### Error
 
-The agent encountered a **structural** failure — something wrong with the executor itself, such as a corrupt session, a bad code path, or a tool registry fault. The error state persists rather than silently recovering. **Agent-scope** triggers are held back while in error — only a direct user message wakes the LLM loop and recovers the agent back to active. **System-scope** triggers, however, keep firing: the scope gate blocks only agent scope, and system scope fires in every state except `off`. So lambdas, log handlers, and system timers continue to run in error state; only the expensive LLM loop is quiesced. An agent-scope timer that comes due in error is held; see [Missed Timers](timers.md#missed-timers). This keeps genuine failures visible without silently looping retries.
+The agent encountered a **structural** failure, something wrong with the executor itself, such as a corrupt session, a bad code path, or a tool registry fault. A direct user message always wakes the LLM loop and can recover the agent. Other **agent-scope** triggers (a timer, an inbox or channel message, a file change) wake it only as bounded recovery attempts: none after an auth error, none while a turn still holds the agent, none for an inner loop, and once `recovery.max_attempts` is used up (a trigger attempt counts like a backoff retry), at most one every 30 minutes. A successful turn returns the agent to idle. A timer that is not taken stays due and fires once when the agent can take it; a message that is not taken stays unread. Other trigger events that are not taken are dropped, as in any state that blocks them. An inner loop in `error` follows the same rule for its own timers. The Overview shows when the next attempt can happen. **System-scope** triggers keep firing: system scope fires in every state except `off`, so lambdas, log handlers, and system timers continue to run in error state. A timer with both scopes waits whole; see [Missed Timers](timers.md#missed-timers).
 
 **What does not trigger error state.** Transient external failures — provider rate limits (429), provider outages (5xx), network timeouts, connection resets — are treated as **operational**, not structural. The executor classifies these inside its turn-loop catch block and returns the agent to `idle` instead of `error`. The agent's timers and triggers keep firing, and the next attempt may succeed. A provider being unreachable for an hour leaves the agent idle, not destroyed.
 
