@@ -656,3 +656,50 @@ describe('round 2: F2 the first queued kick decides, and the budget applies to i
     } finally { await agent.disposeAsync() }
   })
 })
+
+// ===========================================================================
+// Round 4 (break-it recoveryb-r4): several agent timers delivered in one tick
+// ===========================================================================
+
+describe('round 4: F1/F3 several agent timers due in one tick', { timeout: 30_000 }, () => {
+  /** Every provider call ends with a user row: no call re-asks the model with nothing new. */
+  const lastRoles = (p: ScriptedProvider) => p.seen.map(s => (JSON.parse(s) as Array<{ role: string }>).at(-1)?.role)
+
+  it.each([2, 4])('%i missed agent timers on a freshly started agent: one turn reads them all, no empty kick turn', async (n) => {
+    const { filePath, open } = makeFile(`r4-fresh-${n}`)
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const payloads = Array.from({ length: n }, (_, i) => `R4-FRESH-${n}-${i}`)
+    for (const p of payloads) addDue(workspace, p)
+    const agent = await build(filePath, workspace, provider)
+    try {
+      tick(agent)
+      await settled(agent); await sleep(100); await settled(agent)
+      expect(provider.calls).toBe(1)
+      expect(lastRoles(provider)).toEqual(['user'])
+      for (const p of payloads) {
+        expect(loopRows(workspace, p)).toBe(1)
+        expect(sessionCopies(agent, p)).toBe(1)
+      }
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('two timers due in one tick after the idle sweep released the session: one turn reads both', async () => {
+    const { filePath, open } = makeFile('r4-released')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    try {
+      await agent.executor.executeTurn(chat('warm'))
+      await settled(agent)
+      agent.session.flushToLoop(); agent.session.reset() // what the idle sweep does
+      addDue(workspace, 'R4-REL-A'); addDue(workspace, 'R4-REL-B')
+      tick(agent)
+      await settled(agent); await sleep(100); await settled(agent)
+      expect(provider.calls).toBe(2) // the warm-up turn and one timer turn
+      expect(lastRoles(provider)).toEqual(['user', 'user'])
+      expect(sessionCopies(agent, 'R4-REL-A')).toBe(1)
+      expect(sessionCopies(agent, 'R4-REL-B')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+})
