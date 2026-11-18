@@ -121,6 +121,40 @@ describe('H3: compaction while an appended row is undrained', () => {
     rmSync(rootDir, { recursive: true, force: true })
   })
 
+  it('keeps a row appended while compactLoop is awaiting its I/O (round 6 F1)', async () => {
+    await pool.createLoop({ name: 'reflector', goal: 'g', enabled: true, tools: [] } as never)
+    const runtime = pool.getRuntime('reflector')!
+    for (const t of ['first thought', 'second thought']) runtime.session.addMessage({ role: 'user', content: text(t) })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(r => { release = r })
+    vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => firstTurn)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    // The preserved set is fixed before compactLoop's awaits (backup, brotli);
+    // a timer or loop_send row appended in that window must survive.
+    const view = runtime.session.getWorkspace()
+    const original = view.compactLoop.bind(view)
+    view.compactLoop = (async (...args: Parameters<typeof original>) => {
+      await new Promise(r => setTimeout(r, 0))
+      await pool.sendToLoop('main', 'reflector', 'DURING-COMPACT', true)
+      return original(...args)
+    }) as typeof original
+    respond = async () => ({ id: 'r', content: text('summary'), stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+    await (runtime.executor as unknown as { forceCompact: (r: string) => Promise<number> }).forceCompact('test')
+
+    const rows = ws.forLoop('reflector').getLoop()
+    expect(rows.filter(r => JSON.stringify(r.content_json).includes('DURING-COMPACT'))).toHaveLength(1)
+    // the summary still sorts before the kept row
+    const summaryAt = rows.findIndex(r => JSON.stringify(r.content_json).includes('[Loop Compacted]'))
+    const keptAt = rows.findIndex(r => JSON.stringify(r.content_json).includes('DURING-COMPACT'))
+    expect(summaryAt).toBeGreaterThanOrEqual(0)
+    expect(summaryAt).toBeLessThan(keptAt)
+    runtime.session.drainContextInjections()
+    expect(copies(runtime.session, 'DURING-COMPACT')).toBe(1)
+    release()
+    await firstTurn
+  })
+
   it('keeps the row in the stream and puts it in the session once', async () => {
     await pool.createLoop({ name: 'reflector', goal: 'g', enabled: true, tools: [] } as never)
     const runtime = pool.getRuntime('reflector')!

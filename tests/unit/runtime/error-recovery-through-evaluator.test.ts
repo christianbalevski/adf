@@ -31,6 +31,10 @@ import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
 import type { CreateMessageOptions, LLMProvider } from '../../../src/main/providers/provider.interface'
 import type { LLMResponse } from '../../../src/shared/types/provider.types'
+import { noticeFor } from '../../../src/main/tui/state/transcript'
+
+/** The clause of a recovery-suppressed text that is about messages (up to the next ';' or '.'). */
+const messageClause = (text: string) => { const i = text.search(/messages/); return i < 0 ? '' : text.slice(i).split(/[;.]/)[0] }
 
 /** Fails with an unclassified (structural) error until `heal()`, then answers. */
 class FlakyProvider implements LLMProvider {
@@ -238,9 +242,17 @@ describe('background triggers reach an agent in error through the evaluator', ()
       expect(timerRow(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
       // The person can see why: the suppression is announced once, not per trigger.
       expect(workspace.getLogs().filter(l => l.event === 'recovery_suppressed')).toHaveLength(1)
+      // Messages are not re-fired after the cooldown: the clause about them promises no time.
+      const log = workspace.getLogs().find(l => l.event === 'recovery_suppressed')!.message
+      expect(messageClause(log)).not.toMatch(/until|wait|cooldown|after/)
     } finally {
       await agent.disposeAsync()
     }
+  })
+
+  it('the TUI notice for recovery_suppressed promises no time for messages', () => {
+    const notice = noticeFor({ event_type: 'error.recovery_suppressed', payload: {} } as never)!
+    expect(messageClause(notice.text)).not.toMatch(/until|wait|cooldown|after/)
   })
 
   it('an inner-loop inbox target does not run while main is in error', async () => {
