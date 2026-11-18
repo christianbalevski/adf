@@ -84,7 +84,6 @@ export function lastRawInput(): string {
 
 /** Cmd / Super + ←/→ (Home / End of the line) sent as a legacy `CSI 1;<mods>C|D` with the super bit (kitty, iTerm2, WezTerm, Ghostty). */
 export function superArrow(raw: string = lastRaw): 'left' | 'right' | null {
-  // eslint-disable-next-line no-control-regex
   const m = /^\u001b\[1;(\d+)([CD])$/.exec(raw)
   if (!m || ((Number(m[1]) - 1) & 8) === 0) return null
   return m[2] === 'D' ? 'left' : 'right'
@@ -219,7 +218,6 @@ export interface MouseEvent {
 }
 
 // ink hands us the sequence with its leading ESC stripped: `[<64;10;5M`.
-// eslint-disable-next-line no-control-regex
 const SGR_MOUSE = /^\u001b?\[<(\d+);(\d+);(\d+)([Mm])$/
 
 /** Parse one SGR (1006) mouse report; null when `input` is not one. */
@@ -243,6 +241,5 @@ export function parseMouse(input: string): MouseEvent | null {
 
 /** Looks like the tail of a mouse report that lost its framing (never type it). */
 export function isMouseGarbage(input: string): boolean {
-  // eslint-disable-next-line no-control-regex
   return /^\u001b?\[<\d+;\d+;\d+[Mm]/.test(input)
 }

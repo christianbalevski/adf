@@ -11,7 +11,7 @@ import type { AgentConfig } from '@shared/types/adf-v02.types'
 import type { AdfEventDispatch } from '@shared/types/adf-event.types'
 import type {
   InboxEventData, TimerEventData, TaskCreateEventData, TaskCompleteEventData,
-  FileChangeEventData, ToolCallEventData, LlmCallEventData,
+  FileChangeEventData, LlmCallEventData,
 } from '@shared/types/adf-event.types'
 
 export class EnvironmentResolver {
@@ -59,7 +59,6 @@ export class EnvironmentResolver {
       this.eventVars.TASK_ID = d.task.id
       this.eventVars.TASK_STATUS = d.task.status
     } else if (event.type === 'tool_call' && event.data) {
-      const d = event.data as ToolCallEventData
       this.eventVars.TASK_ID = '' // tool_call has no task ID on ToolCallEventData
     } else if (event.type === 'file_change' && event.data) {
       const d = event.data as FileChangeEventData

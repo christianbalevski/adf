@@ -49,7 +49,6 @@ const SEQUENCE = '\\u001b[13;2u'
 
 /** The setup page: status, then the snippet for the detected terminal first. */
 export function terminalSetupLines(kind: TerminalKind, caps: TerminalCaps = terminalCaps()): Line[] {
-  const works = caps.kitty || caps.shiftEnterSeen || caps.shiftEnterForced
   const lines: Line[] = [heading(`Shift+Enter in ${TERMINAL_NAMES[kind]}`)]
   if (caps.kitty) lines.push(plain('  Works: the terminal speaks the kitty keyboard protocol and ADF turned it on.', 'success'))
   else if (caps.shiftEnterSeen) lines.push(plain('  Works: a Shift+Enter distinct from Enter arrived (a keybinding sends it).', 'success'))

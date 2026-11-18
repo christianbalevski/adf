@@ -180,7 +180,6 @@ function runInstallStep(cmd: string, args: string[]): Promise<{ ok: boolean; out
 
 /** Last non-empty output line, for an error message. */
 function lastLine(output: string): string {
-  // eslint-disable-next-line no-control-regex
   const plain = output.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
   return plain.trim().split('\n').map((l) => l.trim()).filter(Boolean).pop() ?? ''
 }

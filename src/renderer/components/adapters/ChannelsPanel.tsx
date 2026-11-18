@@ -4,7 +4,6 @@ import type { AdapterState, AdapterAgentStatus, AdapterCredentialFileInfo } from
 import { findAdapterRegistryEntry, withBuiltInAdapterRegistrations } from '../../../shared/constants/adapter-registry'
 import { loadTrackedAdfFiles, adfDisplayNameForPath, type TrackedAdfFile } from '../../utils/tracked-adf-files'
 import { BrandMark } from '../common/BrandMark'
-import { Tooltip } from '../common/Tooltip'
 import { Button } from '../ui'
 import { ChannelSetupModal } from './ChannelSetupModal'
 import { ChannelPicker } from './ChannelPicker'

@@ -77,7 +77,6 @@ export function ToolsOverlay({ overlay, close, width, height }: OverlayProps) {
       if (key.return) { setTyping(false); return true }
       if (key.downArrow || key.upArrow) { setTyping(false); return false }
       if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); setIndex(0); return true }
-      // eslint-disable-next-line no-control-regex
       if (input && !key.ctrl && !key.meta && !/[\u0000-\u001f\u007f]/.test(input)) { setQuery(q => q + input); setIndex(0); return true }
       return true
     }

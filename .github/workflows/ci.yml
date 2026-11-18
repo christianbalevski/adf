@@ -84,6 +84,11 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Patterns the code is moving away from (any, suppressions, back-compat
+      # comments, UI timers, useEffect) may only decrease. See the script.
+      - name: Anti-pattern ratchet
+        run: npm run check:ratchet
+
       # docs/cli/reference.md is generated from the CLI help, the terminal
       # app's command registry and its key lists. Stale = a command, flag or
       # key changed without `npm run docs:cli`.

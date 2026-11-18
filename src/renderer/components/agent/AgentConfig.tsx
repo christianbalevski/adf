@@ -10,8 +10,8 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useEditorTabsStore, registerPreSwitchFlush } from '../../stores/editor-tabs.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useRowKeys, useRowKeysGroup } from '../../hooks/useRowKeys'
-import { START_IN_STATES, TRIGGER_TYPES_V3, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, BUILT_IN_TOOLS, hasLoopGoal } from '../../../shared/types/adf-v02.types'
-import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpToolInfo, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, MiddlewareRef, WsConnectionConfig, UmbilicalTapConfig, LoggingConfig, LoggingRule, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
+import { START_IN_STATES, MESSAGING_MODES, VISIBILITY_VALUES, LOG_LEVELS, CODE_EXECUTION_DEFAULTS, META_PROTECTION_LEVELS, TABLE_PROTECTION_LEVELS, RECOVERY_DEFAULTS, BUILT_IN_TOOLS, hasLoopGoal } from '../../../shared/types/adf-v02.types'
+import type { AgentConfig as AgentConfigType, AdfProviderConfig, StartInState, ToolDeclaration, McpServerStatus, McpServerLogEntry, TriggerTypeV3, TriggerConfig, TriggerTarget, TriggerFilter, TriggersConfigV3, TriggerScopeV3, ServingApiRoute, WsConnectionConfig, UmbilicalTapConfig, CodeExecutionConfig, CodeExecutionPackage, MetaProtectionLevel, TableProtectionLevel, StreamBindingDeclaration, StreamBindTcpAllowRule, LoopConfig, ModelConfig } from '../../../shared/types/adf-v02.types'
 import type { ReasoningEffort } from '../../../shared/types/provider.types'
 import { buildMcpServerConfigFromRegistration } from '../../../shared/utils/mcp-config'
 import { agentServerPlacement, allowHostPatch, allowHostTip, serverSourceIdentity, type McpLocation, type RuntimeHostApproval } from '../../../shared/utils/mcp-host-placement'
@@ -106,9 +106,6 @@ const MESSAGING_TOOLS = new Set(['msg_send', 'agent_discover'])
 
 /** Tools that require inbox mode to be enabled. */
 const INBOX_TOOLS = new Set(['msg_list', 'msg_read', 'msg_update'])
-
-/** All categorized tool names (anything not in here is uncategorized). */
-const ALL_GROUPED_TOOLS = new Set(TOOL_GROUPS.flatMap(g => [...g.tools]))
 
 /** Trailing window that coalesces a burst of edits into one setAgentConfig. */
 const SAVE_DEBOUNCE_MS = 300
@@ -213,7 +210,6 @@ function parseTcpAllowlist(value: string): StreamBindTcpAllowRule[] {
 
 import type { ProviderConfig, McpServerRegistration, AdapterRegistration, SystemPromptParts } from '../../../shared/types/ipc.types'
 import type { AdapterInstanceConfig } from '../../../shared/types/channel-adapter.types'
-import { findRegistryEntry } from '../../../shared/constants/mcp-registry'
 import { findAdapterRegistryEntry } from '../../../shared/constants/adapter-registry'
 import { ChannelPicker } from '../adapters/ChannelPicker'
 import { BrandMark } from '../common/BrandMark'
@@ -707,11 +703,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
   const [preLlmHookErrors, setPreLlmHookErrors] = useState<string[]>([])
   const preLlmHookDraftOwnerRef = useRef<string | null>(null)
   const [mcpRegistrations, setMcpRegistrations] = useState<McpServerRegistration[]>([])
-  const [mcpProbing, setMcpProbing] = useState<Record<string, boolean>>({})
-  const [mcpProbeErrors, setMcpProbeErrors] = useState<Record<string, string>>({})
-  /** Set of MCP server names that have identity keys stored in this ADF */
-  const [mcpServersWithKeys, setMcpServersWithKeys] = useState<Set<string>>(new Set())
-  const [unregMcpCollapsed, setUnregMcpCollapsed] = useState(true)
   // Per-server tool lists are collapsed to an enabled/total count by default —
   // some servers expose dozens of tools.
   const [expandedMcpTools, setExpandedMcpTools] = useState<Record<string, boolean>>({})
@@ -809,7 +800,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   // Fetch custom providers from settings (cached per runtime — invalidated on settings save)
   useEffect(() => {
-    const t0 = performance.now()
     const caches = cachesOf(openRuntime)
     let live = true
     // Always fetch runtime host setting (it can change between Settings visits)
@@ -826,7 +816,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
       setProviders(caches.providers)
       setMcpRegistrations(caches.mcpRegistrations)
       setAdapterRegistrations(caches.adapterRegistrations)
-      // console.log(`[PERF:renderer] AgentConfig.getSettings: ${(performance.now() - t0).toFixed(1)}ms (cached)`)
     } else {
       openApi()?.getSettings().then((settings) => {
         caches.providers = (settings.providers as ProviderConfig[]) ?? []
@@ -838,7 +827,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
         setAdapterRegistrations(caches.adapterRegistrations)
         setRuntimeHostEnabled(settings.compute?.hostAccessEnabled ?? false)
         setExecutionTargets(settings.compute?.executionTargets ?? [])
-        // console.log(`[PERF:renderer] AgentConfig.getSettings: ${(performance.now() - t0).toFixed(1)}ms (fetched)`)
       })
     }
     return () => { live = false }
@@ -920,28 +908,6 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
     fetchKnown()
   }, [local?.id])
 
-  // Check which MCP servers have identity keys stored in this ADF
-  useEffect(() => {
-    if (template || !local?.mcp?.servers?.length) {
-      setMcpServersWithKeys(new Set())
-      return
-    }
-    openApi()?.listIdentityPurposes('mcp:').then((purposes) => {
-      const namesWithKeys = new Set<string>()
-      for (const srv of local.mcp!.servers) {
-        const regType = mcpRegistrations.find((r) => r.name === srv.name)?.type ?? (srv.npm_package ? 'npm' : srv.pypi_package ? 'uvx' : 'custom')
-        const pkg = srv.npm_package ?? srv.pypi_package
-        const prefix = (regType === 'npm' || regType === 'uvx') && pkg
-          ? `mcp:${pkg}:`
-          : `mcp:${srv.name}:`
-        if (purposes.some((p) => p.startsWith(prefix))) {
-          namesWithKeys.add(srv.name)
-        }
-      }
-      setMcpServersWithKeys(namesWithKeys)
-    })
-  }, [local?.mcp?.servers, mcpRegistrations])
-
   // Channel credentials stored in this ADF (`adapter:<type>:<KEY>`), by type.
   useEffect(() => {
     if (template) {
@@ -984,17 +950,14 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
 
   // Fetch tool definitions (cached per runtime — a runtime's tool registry doesn't change while it runs)
   useEffect(() => {
-    const t0 = performance.now()
     const caches = cachesOf(openRuntime)
     let live = true
     if (caches.toolDefs) {
       setToolDefs(caches.toolDefs)
-      // console.log(`[PERF:renderer] AgentConfig.getToolDefs: ${(performance.now() - t0).toFixed(1)}ms (cached)`)
     } else {
       openApi()?.getToolDescriptions().then((defs) => {
         caches.toolDefs = defs
         if (live) setToolDefs(defs)
-        // console.log(`[PERF:renderer] AgentConfig.getToolDefs: ${(performance.now() - t0).toFixed(1)}ms (fetched)`)
       })
     }
     return () => { live = false }

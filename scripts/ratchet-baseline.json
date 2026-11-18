@@ -1,0 +1,9 @@
+{
+  "eslint-disable": 48,
+  "ts-suppress": 0,
+  "any": 73,
+  "justification-comment": 13,
+  "todo": 5,
+  "renderer-timer": 97,
+  "renderer-useEffect": 377
+}

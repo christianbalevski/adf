@@ -339,7 +339,7 @@ export class MeshServer {
         const before = this.lanSnapshot?.listenable.join(',')
         this.lanSnapshot = snapshot
         const problems = await listeners.sync(snapshot.listenable)
-        for (const [address, problem] of problems) console.warn(`[MeshServer] ${problem}`)
+        for (const problem of problems.values()) console.warn(`[MeshServer] ${problem}`)
         if (before !== snapshot.listenable.join(',')) {
           const refused = snapshot.addresses.filter((a) => a.refusal).map((a) => `${a.address} (${a.iface})`)
           console.log(`[MeshServer] LAN addresses: ${listeners.addresses().join(', ') || 'none'}${refused.length ? `; on a network not allowed: ${refused.join(', ')}` : ''}`)

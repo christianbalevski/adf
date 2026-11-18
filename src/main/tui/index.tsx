@@ -8,7 +8,7 @@ import * as daemonUrlNs from '../cli/daemon-url'
 import { cjs } from './interop'
 import { defaultPrefsPath, loadPrefs, savePrefs } from './app/prefs'
 
-const { resolveDaemonUrl, DEFAULT_DAEMON_URL } = cjs(daemonUrlNs)
+const { DEFAULT_DAEMON_URL } = cjs(daemonUrlNs)
 
 /**
  * React and ink pick their build when first loaded: without NODE_ENV they

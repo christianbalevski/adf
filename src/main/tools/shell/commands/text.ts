@@ -23,12 +23,6 @@ function vfsPath(p: string): string {
   return p.replace(/^\.\//, '').replace(/^\//, '')
 }
 
-/** Extract just the file path from an fs_list entry like "path (1.2 KB) [no-delete]" */
-function extractPath(entry: string): string {
-  const match = entry.match(/^(.+?)\s+\(/)
-  return match ? match[1] : entry.trim()
-}
-
 /** Interpret common escape sequences in a string (e.g. \n → newline, \t → tab) */
 function interpretEscapes(s: string): string {
   return s

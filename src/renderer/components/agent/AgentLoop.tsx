@@ -5,7 +5,6 @@ import { useDocumentStore } from '../../stores/document.store'
 import { agentNameOf } from '../../stores/failure-notices.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
-import { toDisplayState } from '../../hooks/useAgent'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { pickOldestSeq } from '../../hooks/live-seq'
 import { rebindPendingRequests } from '../../hooks/approval-target'
@@ -57,7 +56,7 @@ import { OwnerCommandRow } from './OwnerCommandRow'
 import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
 import { AttachedImage, AttachmentList } from './ChatAttachments'
-import { adfFileUrl, type DisplayAttachment } from '../../../shared/utils/file-ref'
+import { type DisplayAttachment } from '../../../shared/utils/file-ref'
 import {
   TOOL_FAMILY_STYLES,
   ATTENTION_TOOL_STYLE,
@@ -77,14 +76,6 @@ import { openApi, providerSheetReaches, useOpenAgentKey, useOpenRuntime } from '
 const MAX_INPUT_ROWS = 10
 /** What an error row's Retry now sends: a message of the owner's, shown like any other. */
 const RETRY_MESSAGE = 'Try again.'
-// Model-facing text for attachment-only messages; also shown in the UI so the
-// optimistic entry matches what the loop table persists and restores.
-const DEFAULT_MEDIA_LIMITS = {
-  image: 5 * 1024 * 1024,
-  audio: 10 * 1024 * 1024,
-  video: 20 * 1024 * 1024,
-}
-
 type UploadKind = 'image' | 'audio' | 'video' | 'file'
 
 interface PendingAttachment {
@@ -168,12 +159,6 @@ function uploadKind(mimeType: string): UploadKind {
   if (mimeType.startsWith('audio/')) return 'audio'
   if (mimeType.startsWith('video/')) return 'video'
   return 'file'
-}
-
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`
 }
 
 /** Compact fallback for older tool calls that do not provide `_reason`. */
@@ -1519,7 +1504,6 @@ function LoopStream({ loop }: { loop: string }) {
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
 
   const setState = useAgentStore((s) => s.setState)
-  const setSessionId = useAgentStore((s) => s.setSessionId)
 
   // The connector's media narrowed by the toggles, asked of the runtime (no
   // copy of the connector table here). Re-asked when the config, the loop or
@@ -1537,13 +1521,7 @@ function LoopStream({ loop }: { loop: string }) {
     audio: config?.model.multimodal?.audio ?? false,
     video: config?.model.multimodal?.video ?? false,
   }), [config, loopMedia])
-  const mediaSupport = media.support
 
-  const mediaLimits = useMemo(() => ({
-    image: config?.limits?.max_image_size_bytes ?? DEFAULT_MEDIA_LIMITS.image,
-    audio: config?.limits?.max_audio_size_bytes ?? DEFAULT_MEDIA_LIMITS.audio,
-    video: config?.limits?.max_video_size_bytes ?? DEFAULT_MEDIA_LIMITS.video,
-  }), [config])
 
   // Side loops are addressed as `agent:loop` (e.g. "aom:reflection") so the
   // composer placeholder names who actually receives the message.

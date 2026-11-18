@@ -416,7 +416,6 @@ export function createRuntimeConnection(opts: RuntimeConnectionOptions): Runtime
     log,
   })
 
-  // eslint-disable-next-line prefer-const
   let bridge: EventBridge
   // The macOS menu bar's first refresh runs before the bridge exists: no agents yet.
   const runningAgents = () => (bridge ? bridge.runningAgents() : [])

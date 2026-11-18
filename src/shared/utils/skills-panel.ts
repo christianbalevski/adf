@@ -122,7 +122,6 @@ export function mergeDisabledList(
  * a row. (The main-side schemas reject the worst of it too; this is the second
  * layer, not the only one.)
  */
-// eslint-disable-next-line no-control-regex -- removing control characters is the point
 const UNSAFE_DISPLAY_CHARS = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g
 
 /** Render-safe single line: controls and bidi marks removed, whitespace collapsed. */

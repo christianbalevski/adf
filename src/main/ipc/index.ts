@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow, Notification, nativeImage } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, rmSync, type Dirent } from 'fs'
-import { join, dirname, basename, resolve, relative, sep } from 'path'
+import { join, dirname, basename, resolve, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
@@ -64,20 +64,12 @@ function resolveAskOn(executor: AgentExecutor, requestId: string, answers: unkno
 /**
  * Provider connection checks (services/provider-checks.ts): a per-session
  * result cache plus the `providerChecksEnabled` opt-out for checks Studio
- * starts on its own (dashboard, provider list, agent review). An explicit
- * Test click calls testProviderCredentialsForDashboard directly.
+ * starts on its own (dashboard, provider list, agent review).
  */
 const providerChecks = new ProviderChecks({ isEnabled: () => settings?.get('providerChecksEnabled') !== false })
 
 async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'offline' | 'unconfigured' | 'unchecked'> {
   return providerChecks.autoCheck(cfg)
-}
-
-async function testProviderCredentialsForDashboard(
-  cfg: ProviderConfig,
-  force = false
-): Promise<ProviderCheckResult> {
-  return providerChecks.test(cfg, force)
 }
 
 import chokidar, { type FSWatcher } from 'chokidar'
@@ -126,19 +118,18 @@ import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import { MenuBarController } from '../tray/menu-bar'
 import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../tray/menu-bar-model'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
+import type { AgentState, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { agentProviderKeySource, createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { providerSelectionChanged } from '../providers/provider-selection'
 import { ensureCoreToolDeclarations } from '../runtime/core-tool-declarations'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
+import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
 import { buildComputeCapabilities, liveComputeCapabilities, type ComputeCapabilityInputs } from '../tools/built-in/compute-capabilities'
 import { AdfCallHandler } from '../runtime/adf-call-handler'
 import { createUmbilicalResources } from '../runtime/umbilical-lifecycle'
-import type { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
@@ -199,11 +190,9 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { readArchivedChatPage } from '../adf/archived-loop-page'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
-import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
-import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
-import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
+import { createEvent, createDispatch } from '../../shared/types/adf-event.types'
+import type { MeshEvent, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
 import type { AgentConfig, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
-import type { AgentTemplate } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
@@ -211,7 +200,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
 import { readRecentToolsFromWorkspace } from '../services/recent-tools'
-import { ProviderChecks, type ProviderCheckResult } from '../services/provider-checks'
+import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
 import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword, convertOwnLegacyPassword } from '../services/envelope-actions'
@@ -234,9 +223,6 @@ let agentExecutor: AgentExecutor | null = null
 let triggerEvaluator: TriggerEvaluator | null = null
 let currentAssembledAgent: AssembledAgent<AgentProfileName> | null = null
 let currentHostAttachment: HostAttachment | null = null
-let currentTapManager: TapManager | null = null
-let currentStreamBindingManager: StreamBindingManager | null = null
-let currentUmbilicalAgentId: string | null = null
 let currentSession: AgentSession | null = null
 let toolRegistry: ToolRegistry
 let settings: SettingsService
@@ -247,7 +233,7 @@ let menuBar: MenuBarController | null = null
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
 let backgroundEventBatcher: BackgroundEventBatcher | null = null
-let codeSandboxService: CodeSandboxService = new CodeSandboxService()
+const codeSandboxService: CodeSandboxService = new CodeSandboxService()
 const sandboxStdlibService = new SandboxStdlibService()
 const sandboxPackagesService = new SandboxPackagesService()
 let meshServer: MeshServer | null = null
@@ -262,7 +248,6 @@ let currentMcpManager: McpClientManager | null = null
 // sys_update_config) without a full restart. Reassigned on each foreground
 // attach, nulled on teardown. See the fresh-construction attach in AGENT_START.
 let currentMcpReconcile: ((nextConfig: AgentConfig) => Promise<void>) | null = null
-let currentScratchDir: string | null = null
 let currentAdapterManager: ChannelAdapterManager | null = null
 let currentAdfCallHandler: AdfCallHandler | null = null
 let mcpRegistryFetchService: McpRegistryFetchService | null = null
@@ -664,7 +649,6 @@ function mcpLogCacheSet(name: string, logs: import('../../shared/types/adf-v02.t
     else break
   }
 }
-let extractedDisplayState: string | null = null
 // Set of filePaths with in-flight AGENT_START so cleanupCurrentFile doesn't close their workspaces
 const startingFilePaths = new Set<string>()
 
@@ -835,7 +819,7 @@ function handleMenuBarAction(action: MenuBarAction): void {
       openFileHook?.(action.filePath)
       return
     case 'show':
-      focusMainWindow() ?? showMainWindowHook?.()
+      if (!focusMainWindow()) showMainWindowHook?.()
       return
     case 'settings': {
       const win = focusMainWindow() ?? showMainWindowHook?.() ?? null
@@ -881,34 +865,6 @@ function createNativeNotifierPlatform(): NativeNotifierPlatform {
   }
 }
 
-/**
- * Map executor internal states to display states for trigger evaluation.
- * Executor uses: idle, thinking, tool_use, awaiting_approval, awaiting_ask, suspended, error, stopped
- * Display uses: active, idle, hibernate, suspended, off
- */
-function executorToDisplayState(executorState: string): string {
-  switch (executorState) {
-    case 'thinking':
-    case 'tool_use':
-      return 'active'
-    case 'idle':
-      return 'idle'
-    case 'awaiting_approval':
-    case 'awaiting_ask':
-    case 'suspended':
-      return 'suspended'
-    case 'error':
-    case 'stopped':
-      return 'off'
-    // Already a display state (from sys_set_state or start_in_state)
-    case 'active':
-    case 'hibernate':
-    case 'off':
-      return executorState
-    default:
-      return executorState
-  }
-}
 
 // --- Tracked directory watcher ---
 let dirWatcher: FSWatcher | null = null
@@ -1169,13 +1125,9 @@ function recoverAfterFileCreateCleanupFailure() {
       currentHostAttachment = null
       currentAssembledAgent = null
       currentDerivedKey = null
-      currentTapManager = null
-      currentUmbilicalAgentId = null
-      currentStreamBindingManager = null
       currentAdapterManager = null
       currentMcpManager = null
       currentMcpReconcile = null
-      currentScratchDir = null
       currentAgentToolRegistry = null
       currentAdfCallHandler = null
       agentExecutor = null
@@ -1199,14 +1151,11 @@ async function cleanupCurrentFile(): Promise<void> {
   currentAssembledAgent = null
 
   // Foreground globals are aliases only; the stable handle retains the tap.
-  currentTapManager = null
-  currentUmbilicalAgentId = null
 
   // Clear module-level refs immediately
   agentExecutor = null
   triggerEvaluator = null
   currentAgentToolRegistry = null
-  const adfHandler = currentAdfCallHandler
   currentAdfCallHandler = null
   // Cache the derived key so re-opening the same file doesn't re-prompt
   if (currentDerivedKey && filePath) {
@@ -1229,10 +1178,7 @@ async function cleanupCurrentFile(): Promise<void> {
     // The handle retains resource ownership; foreground globals are aliases only.
     currentMcpManager = null
     currentMcpReconcile = null
-    currentScratchDir = null
     currentAdapterManager = null
-    currentStreamBindingManager = null
-    currentTapManager = null
 
     const t1 = performance.now()
     await backgroundManager.transitionToBackground(
@@ -1271,11 +1217,8 @@ async function cleanupCurrentFile(): Promise<void> {
   if (assembledAgent) await assembledAgent.disposeAsync({ mode: 'immediate' })
   await processAgentLeases().reconcile()
   currentAdapterManager = null
-  currentStreamBindingManager = null
   currentMcpManager = null
   currentMcpReconcile = null
-  currentScratchDir = null
-  currentTapManager = null
   currentSession = null
 
   // Don't close the workspace if AGENT_START is in-flight for this file —
@@ -1328,9 +1271,6 @@ async function handleAgentOff(filePath: string): Promise<void> {
       currentMcpManager = null
       currentMcpReconcile = null
       currentAdapterManager = null
-      currentStreamBindingManager = null
-      currentTapManager = null
-      currentScratchDir = null
       currentSession = null
       currentAgentToolRegistry = null
       currentAdfCallHandler = null
@@ -2234,12 +2174,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           triggerEvaluator = extracted.triggerEvaluator
           currentAgentToolRegistry = extracted.toolRegistry
           currentMcpManager = extracted.mcpManager
-          currentScratchDir = extracted.scratchDir
           currentAdapterManager = extracted.adapterManager
           currentAdfCallHandler = extracted.adfCallHandler
-          currentStreamBindingManager = extracted.streamBindingManager
           currentAssembledAgent = extracted.assembledAgent
-          extractedDisplayState = extracted.displayState
           currentFilePath = filePath
           agentWasRunning = true
           perfLog(`[PERF] FILE_OPEN total (from background): ${(performance.now() - t0).toFixed(1)}ms`)
@@ -3841,7 +3778,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         triggerEvaluator = handle.triggerEvaluator
         currentSession = handle.session
         currentAgentToolRegistry = handle.registry
-        extractedDisplayState = null
 
         if (meshManager?.isEnabled()) {
           meshManager.registerAgent(
@@ -3898,10 +3834,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       triggerEvaluator = null
       currentMcpManager = null
       currentMcpReconcile = null
-      currentScratchDir = null
       currentAdapterManager = null
-      currentStreamBindingManager = null
-      currentTapManager = null
     }
 
     // Capture all context BEFORE any async operations so concurrent FILE_OPEN
@@ -4009,9 +3942,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Fresh construction begins with no prior lifecycle owner installed.
     agentExecutor = null
     triggerEvaluator = null
-    currentTapManager = null
-    currentUmbilicalAgentId = null
-    currentStreamBindingManager = null
     currentAdapterManager = null
 
     // Set up provider. A model that names no provider this install has is
@@ -5032,7 +4962,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const foregroundAttachment = assembled.attachHost(foregroundHost)
     currentAssembledAgent = assembled
     currentHostAttachment = foregroundAttachment
-    currentUmbilicalAgentId = config.id
     agentExecutor = newExecutor
     triggerEvaluator = newTriggerEvaluator
     currentSession = session
@@ -5042,12 +4971,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // then expose the reconcile to the module-level DOC_SET_AGENT_CONFIG handler.
     previousReconciledMcpConfig = finalConfig
     currentMcpReconcile = reconcileMcpServers
-    currentScratchDir = newScratchDir
     currentAdapterManager = newAdapterManager
-    currentStreamBindingManager = newStreamBindingManager
 
     // Taps register inside the umbilical lifecycle resource's start().
-    currentTapManager = assembled.tapManager
 
     // Wire sys_create_adf autostart + default-provider callbacks. Child trust
     // (review marking) is host-independent — see setChildTrustRegistrar.
@@ -5120,10 +5046,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     currentAdfCallHandler = null
     currentMcpManager = null
     currentMcpReconcile = null
-    currentScratchDir = null
     currentAdapterManager = null
-    currentStreamBindingManager = null
-    currentTapManager = null
     currentSession = null
     currentAgentToolRegistry = null
 
@@ -8437,9 +8360,6 @@ async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; fi
   currentMcpManager = null
   currentMcpReconcile = null
   currentAdapterManager = null
-  currentStreamBindingManager = null
-  currentTapManager = null
-  currentScratchDir = null
   currentAdfCallHandler = null
   try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: opts.disposeMode }) }
   catch (e) { console.error('[Teardown] foreground dispose error:', e) }

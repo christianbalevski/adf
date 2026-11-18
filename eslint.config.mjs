@@ -43,24 +43,27 @@ export default tseslint.config(
       'react-hooks': reactHooks,
     },
     rules: {
-      // Legacy-baseline exemptions. The rest of the JavaScript and TypeScript
-      // recommended correctness rules remain enforced repository-wide.
-      'no-control-regex': 'off',
+      // TypeScript resolves names; typescript-eslint recommends this off.
       'no-undef': 'off',
-      'no-unsafe-finally': 'off',
-      'no-useless-escape': 'off',
-      'no-unused-vars': 'off',
-      'prefer-const': 'off',
-      '@typescript-eslint/no-empty-object-type': 'off',
-      '@typescript-eslint/no-explicit-any': 'off',
+      // Control characters in regexes here are deliberate (stripping terminal
+      // escapes and C0 controls from names and paths).
+      'no-control-regex': 'off',
+      // Lazy require() is deliberate: guarded electron loads keep the npm
+      // bundle electron-free, and adapter packages install at runtime.
       '@typescript-eslint/no-require-imports': 'off',
-      '@typescript-eslint/no-this-alias': 'off',
-      '@typescript-eslint/no-unsafe-function-type': 'off',
-      '@typescript-eslint/no-unused-expressions': 'off',
-      '@typescript-eslint/no-unused-vars': 'off',
-      // Existing React code has a hooks backlog. Keep the plugin loaded so
-      // local suppressions are valid without pretending those rules are green.
+      // A closure may read a let before its one assignment (timers, callbacks).
+      'prefer-const': ['error', { ignoreReadBeforeAssign: true }],
+      // The TypeScript version below replaces it.
+      'no-unused-vars': 'off',
+      '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_', varsIgnorePattern: '^_', caughtErrors: 'none', ignoreRestSiblings: true, destructuredArrayIgnorePattern: '^_' }],
+      // Backlog, held by scripts/check-ratchet.mjs (the `any` count) until it
+      // reaches zero and this rule can turn on.
+      '@typescript-eslint/no-explicit-any': 'off',
+      // Backlog (about 150 effects). Fixing one can change when it runs, so it
+      // gets its own change. The plugin stays loaded so existing suppressions
+      // stay valid.
       'react-hooks/exhaustive-deps': 'off',
+      // On for React code below; main-process functions may be named use*.
       'react-hooks/rules-of-hooks': 'off',
     },
   },
@@ -97,6 +100,15 @@ export default tseslint.config(
         {
           selector: 'Literal[value=/your instructions/i], TemplateElement[value.raw=/your instructions/i], JSXText[value=/your instructions/i]',
           message: "Say \"agent instructions\". The owner configures many agents, so \"your\" is ambiguous between the owner and the agent.",
+        },
+        {
+          // Phrasings the owner has rejected in review (plain UI copy).
+          selector: [
+            'Literal[value=/where it runs|who can attach|setup needed|you and agents|priced per layer|unbriefed/i]',
+            'TemplateElement[value.raw=/where it runs|who can attach|setup needed|you and agents|priced per layer|unbriefed/i]',
+            'JSXText[value=/where it runs|who can attach|setup needed|you and agents|priced per layer|unbriefed/i]',
+          ].join(', '),
+          message: 'UI copy names the thing ("Location", "Agent access", "Prerequisite"); option labels are values ("Host" / "Container"). No conversational phrases, metaphors or coined terms.',
         },
       ],
     },
