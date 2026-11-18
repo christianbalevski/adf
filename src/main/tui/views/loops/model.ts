@@ -8,7 +8,6 @@ import { MAIN_LOOP } from '../../api/types'
 import type { AgentConfig, LoopConfig, LoopEntry, LoopPatch, Timer, TimerInput } from '../../api/types'
 import type {
   DEFAULT_NEW_LOOP_TOOLS as SharedDefaultTools,
-  LOOP_PROHIBITED_TOOLS as SharedProhibitedTools,
   TriggerConfig,
   TriggerTarget,
   TriggersConfigV3,
@@ -20,7 +19,6 @@ const { CronExpressionParser } = cjs(cronParserNs)
 // Mirrors of shared constants. The `typeof` annotations make tsc fail if the
 // shared tuples change, so these cannot drift silently.
 export const DEFAULT_NEW_LOOP_TOOLS: typeof SharedDefaultTools = ['loop_send', 'loop_list', 'sys_set_state']
-export const LOOP_PROHIBITED_TOOLS: typeof SharedProhibitedTools = ['sys_update_config', 'loop_manage', 'sys_create_adf']
 /** Same rule as adf-schema LOOP_NAME_PATTERN. */
 export const LOOP_NAME_PATTERN = /^[a-z0-9][a-z0-9_-]{0,31}$/
 export const LOOP_GOAL_MAX_CHARS = 4000
@@ -51,13 +49,12 @@ export function validateGoal(goal: string, autostart = false): string | null {
 
 // --- tools --------------------------------------------------------------------
 
-/** Tools the host could grant an inner loop (enabled, not restricted, not prohibited). Null when unknown. */
+/** Tools the host could grant an inner loop: every enabled one. Null when unknown. */
 export function hostLoopTools(config: AgentConfig | undefined): string[] | null {
   if (!config || !Array.isArray(config.tools)) return null
-  const prohibited = new Set<string>(LOOP_PROHIBITED_TOOLS)
   const out = new Set<string>()
   for (const decl of config.tools) {
-    if (decl.enabled && !decl.restricted && !prohibited.has(decl.name)) out.add(decl.name)
+    if (decl.enabled) out.add(decl.name)
   }
   return [...out].sort()
 }

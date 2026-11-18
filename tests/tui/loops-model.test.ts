@@ -38,7 +38,7 @@ describe('loop names', () => {
 })
 
 describe('tools', () => {
-  it('offers only enabled, unrestricted, non-prohibited host tools', () => {
+  it('offers every enabled host tool, restricted ones included', () => {
     const config = {
       tools: [
         { name: 'fs_read', enabled: true, visible: true },
@@ -48,7 +48,7 @@ describe('tools', () => {
         { name: 'loop_send', enabled: true, visible: true },
       ],
     } as unknown as AgentConfig
-    expect(hostLoopTools(config)).toEqual(['fs_read', 'loop_send'])
+    expect(hostLoopTools(config)).toEqual(['fs_read', 'loop_manage', 'loop_send', 'msg_send'])
     expect(hostLoopTools(undefined)).toBeNull()
     const options = toolOptions(['fs_read', 'loop_send'], ['sys_fetch'])
     expect(options).toEqual([{ name: 'fs_read', unavailable: false }, { name: 'loop_send', unavailable: false }, { name: 'sys_fetch', unavailable: true }])

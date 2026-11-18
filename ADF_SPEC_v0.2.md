@@ -1441,17 +1441,17 @@ A loop is a named conversation of the agent (§0.3). Every agent has the loop `m
 | `autonomous` | `false` | Turn behaviour (§6.3). Not inherited from `config.autonomous`. |
 | `model` | the agent's `model` | Model for this loop. |
 | `compact_threshold` | the agent's `context.compact_threshold` | Compaction threshold for this loop's transcript. |
-| `tools` | `[]` when absent | Tool allow-list, at most 64 names. MUST NOT contain `sys_update_config`, `loop_manage` or `sys_create_adf`. `loop_manage` gives a new loop `["loop_send", "loop_list", "sys_set_state"]` when the call names no tools. |
+| `tools` | `[]` when absent | Tool allow-list, at most 64 names. `loop_manage` gives a new loop `["loop_send", "loop_list", "sys_set_state"]` when the call names no tools. |
 
-*Effective tools.* A runtime MUST compute an inner loop's tools as the intersection of `tools` with the agent's enabled tool declarations, minus `sys_update_config`, `loop_manage` and `sys_create_adf`, minus every tool the agent declares `restricted`, minus the tools of every MCP server declared `restricted`. The runtime then adds `loop_compact` and `loop_clear` unless the agent has disabled or restricted them. An inner loop therefore never holds a tool that `main` lacks, and never holds a tool that needs owner approval.
+*Effective tools.* A runtime MUST compute an inner loop's tools as the intersection of `tools` with the agent's enabled tool declarations. The runtime then adds `loop_compact` and `loop_clear` unless the agent has disabled them. A granted tool keeps the agent's `restricted` and `locked` flags; a tool the loop is not granted MUST carry neither, so authorized code in the loop cannot call it (§5.11). An inner loop therefore never holds a tool that `main` lacks, and a restricted tool called by an inner loop's model needs owner approval in that loop.
 
-*Code execution.* Code run from an inner loop MUST NOT have a `code_execution` method the agent lacks. A method is enabled for an inner loop only if both the inner-loop profile and the agent's effective `code_execution` enable it; an absent agent field takes its default. The profile allows `model_invoke`, `sys_lambda`, `identity_status`, `loop_inject` and `emit_event`, and disables `get_identity`, `set_identity`, `task_resolve`, the `attestation_*` methods and `network`. `packages` is empty. `restricted_methods` is the union of the profile's list and the agent's list. The runtime re-derives each inner loop's profile when the agent config changes, so disabling a method on the agent also disables it in running loops.
+*Code execution.* Code run from an inner loop uses the agent's `code_execution`, `packages` included. The owner controls an inner loop's code by granting or withholding `sys_code` and `sys_lambda`. The runtime re-derives each inner loop when the agent config changes, so disabling a method on the agent also disables it in running loops.
 
 *Storage.* Each loop's transcript is the `adf_loop` rows with `loop = <name>`. `adf_timers`, `adf_tasks` and `adf_logs` rows carry the loop that created them in their `loop` column; NULL means `main`. Transcript snapshots use the `adf_audit` source `loop:<name>` (§13.3). Each loop is compacted separately (§13.2).
 
 *Routing.* A trigger target with `loop: "<name>"` wakes that loop; a target without `loop` wakes `main` (§7.2). An agent-scope timer wakes the loop in its `loop` column (§7.7). The model moves work between loops with `loop_send`. A runtime MUST drop, and log with `event="loop_dispatch_dropped"`, a dispatch addressed to a loop that does not exist or is disabled; it MUST NOT deliver it to `main` instead. A timer is handled by §7.7: for a loop that does not exist, its agent part is dropped and logged this way; for a disabled loop, it is held and stays due.
 
-*Management.* `loop_manage` is available only in `main`. Its actions are `create`, `get`, `update` and `delete`; `update` cannot rename a loop. A runtime MUST refuse to create a loop when the agent already has 16 inner loops, and MUST refuse `loop_manage` changes when `locked_fields` locks `loops`. Deleting a loop, through `loop_manage` or by removing it from config, stops it, writes its transcript to `adf_audit` as `loop:<name>` whatever `audit.loop` says, deletes its unlocked timers and keeps its locked timers.
+*Management.* `loop_manage` is available in `main` and in any inner loop granted it. The loops of an agent form one flat list: a loop created from an inner loop is its sibling. When an inner loop calls `loop_manage`, a runtime MUST refuse an `update` or `delete` of that loop itself, and MUST refuse a `create`, `update` or `delete` unless the resulting tools, and for `update` and `delete` the target's current tools, are all held by the calling loop. Its actions are `create`, `get`, `update` and `delete`; `update` cannot rename a loop. A runtime MUST refuse to create a loop when the agent already has 16 inner loops, and MUST refuse `loop_manage` changes when `locked_fields` locks `loops`. Deleting a loop, through `loop_manage` or by removing it from config, stops it, writes its transcript to `adf_audit` as `loop:<name>` whatever `audit.loop` says, deletes its unlocked timers and keeps its locked timers.
 
 ---
 
@@ -1733,7 +1733,7 @@ Tool access. `visible` affects only model calls:
 | true | true | false | Allowed | Allowed | Allowed |
 | true | true | true | Owner approval | Allowed | Off |
 
-A tool of an MCP server declared `restricted` (§5.11) is restricted. Inner loops never receive restricted tools (§6.4).
+A tool of an MCP server declared `restricted` (§5.11) is restricted. An inner loop granted such a tool keeps the restriction (§6.4).
 
 `code_execution.restricted_methods` applies the same rule to code methods (§9): only authorized code may call a listed method. When the field is absent, the list is `["attestation_issue"]`. An explicit list replaces it.
 
@@ -1866,7 +1866,7 @@ A reply with text and no tool call is the turn's response; §6.3 defines when it
 | `loop_clear` | Delete a slice of the calling loop's transcript; snapshots it first when `audit.loop` is enabled. |
 | `loop_send` | Append a message to another loop's transcript, optionally waking it (§6.4). |
 | `loop_list` | List the agent's loops with name, goal, enabled flag and running status. |
-| `loop_manage` | Create, get, update or delete an inner loop. `main` only (§6.4). |
+| `loop_manage` | Create, get, update or delete an inner loop. An inner loop cannot update or delete itself (§6.4). |
 
 `task_resolve` and `loop_inject` are code methods (§9), not tools.
 
@@ -2480,3 +2480,13 @@ Implementers of earlier drafts SHOULD check each item:
 20. *Pragmas.* Only the four pragmas in §3.1 are required; connection-tuning pragmas are permitted.
 
 Runtimes MUST NOT downgrade a newer schema. A runtime that cannot apply a migration MUST NOT modify the file (§3.5).
+
+### 17.3 Revision 2026-11
+
+Revision 2026-11 of format version 0.2 changes no table, column, config field or tool input schema. It relaxes the inner-loop rules of §6.4:
+
+1. *Tools.* `LoopConfig.tools` may name any tool, including `sys_update_config`, `loop_manage` and `sys_create_adf`. Restricted tools, and the tools of restricted MCP servers, are no longer subtracted; a granted tool keeps its `restricted` flag, and its approval is asked in that loop.
+2. *Code execution.* An inner loop uses the agent's `code_execution`, `packages` included. The inner-loop profile of revision 2026-10 (§17.2) is removed.
+3. *Management.* `loop_manage` may be granted to an inner loop, which may not update or delete itself, nor create, update or delete a loop with tools it does not hold itself.
+
+A runtime implementing revision 2026-10 rejects a file whose `loops[].tools` names one of the three tools above.

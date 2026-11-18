@@ -183,7 +183,7 @@ export const CHANNEL_MAP = {
 
   // --- Agent runtime ---------------------------------------------------------
   [IPC.AGENT_START]: proxied('invoke', ['POST /agents/:id/start', 'GET /agents/:id/status', 'GET /agents/:id/triggers', 'GET /approvals/interactions', 'GET /agents/:id/identity/password', 'POST /agents/:id/stop', 'GET /agents/:id/config'], {
-    note: 'The reuse path (agent already running) returns sessionId, the display state (GET /agents/:id/triggers), and main\'s pending approvals and asks (GET /approvals/interactions). A held document whose key is locked answers code credentials_locked without starting (design §6.1 row 27).',
+    note: 'The reuse path (agent already running) returns sessionId, the display state (GET /agents/:id/triggers), and every loop\'s pending approvals and asks (GET /approvals/interactions). A held document whose key is locked answers code credentials_locked without starting (design §6.1 row 27).',
   }),
   [IPC.AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
   [IPC.AGENT_STATUS]: proxied('invoke', ['GET /agents/:id/status']),

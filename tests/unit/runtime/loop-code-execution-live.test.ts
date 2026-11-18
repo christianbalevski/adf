@@ -55,6 +55,7 @@ beforeEach(async () => {
     workspace: ws,
     registry,
     getProvider: () => provider,
+    resolveHilTask: () => false,
     basePrompt: '',
     toolPrompts: {},
     adfCallHandler: handler,
@@ -101,7 +102,7 @@ describe('side-loop code_execution follows the agent live', () => {
 
     setHost(c => { c.code_execution = { ...c.code_execution!, model_invoke: true, network: true } })
     expect(runtime().derived.code_execution?.model_invoke).toBe(true)
-    // The fixed loop profile still applies on top of an agent grant.
-    expect(runtime().derived.code_execution?.network).toBe(false)
+    // The loop inherits the agent's settings as-is.
+    expect(runtime().derived.code_execution?.network).toBe(true)
   })
 })

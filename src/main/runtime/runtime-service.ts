@@ -98,6 +98,7 @@ import type { ContentBlock } from '../../shared/types/provider.types'
 import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 import { summarizeLoopUsage, type RuntimeAgentUsageByModel, type RuntimeUsageTotals } from './loop-usage'
 import { AskAnswerError, type AskQuestion } from '../../shared/utils/ask-form'
+import { approvalExecutors, findApprovalHolder, findAskHolder } from './approval-holder'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -1419,11 +1420,7 @@ export class RuntimeService extends EventEmitter {
     const recovered: RuntimeAuthRecovery[] = []
     const notice = `recovered after ${signInLabel} sign-in`
     for (const managed of this.agents.values()) {
-      const executors: Array<{ loop: string; executor: RuntimeAgent['executor'] }> = [
-        { loop: MAIN_LOOP, executor: managed.agent.executor },
-        ...managed.agent.loopPool.getRuntimes().map(runtime => ({ loop: runtime.name, executor: runtime.executor })),
-      ]
-      for (const { loop, executor } of executors) {
+      for (const { loop, executor } of approvalExecutors(managed.agent.executor, managed.agent.loopPool)) {
         if (executor.getErrorReason() !== 'auth') continue
         if (executor.getProvider()?.providerType !== providerType) continue
         const loopNotice = `${managed.config.name}${loop === MAIN_LOOP ? '' : ` (loop ${loop})`} ${notice}`
@@ -2559,13 +2556,10 @@ export class RuntimeService extends EventEmitter {
     const config = parsed.data as unknown as LoopConfig
     const requested = config.tools ?? []
     if (requested.length === 0) return { config, disabled: [] }
-    const { unknown, disabled, prohibited } = validateLoopToolList(host, requested)
-    if (unknown.length > 0 || prohibited.length > 0) {
-      const parts: string[] = []
-      if (unknown.length > 0) parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
-      if (prohibited.length > 0) parts.push(`never grantable to a loop: ${prohibited.join(', ')}`)
+    const { unknown, disabled } = validateLoopToolList(host, requested)
+    if (unknown.length > 0) {
       throw new RuntimeLoopError(
-        `Cannot grant those tools — ${parts.join('; ')}. Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`,
+        `Cannot grant those tools — no such tool on this agent: ${unknown.join(', ')}. Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`,
         400,
       )
     }
@@ -3024,15 +3018,6 @@ export class RuntimeService extends EventEmitter {
     return task ? { agentId: target.id, task: this.withApprovalAffordance(target.managed, target.config, task) } : null
   }
 
-  /**
-   * The executor (main or an inner loop) whose pending HIL map holds this
-   * request. Task ids are globally unique (`task_<nanoid>`), so the first hit
-   * is the only one.
-   */
-  private approvalHolder(managed: ManagedRuntimeAgent, taskId: string): { loop: string; executor: ManagedRuntimeAgent['agent']['executor'] } | undefined {
-    return this.askExecutors(managed).find(entry => entry.executor.getPendingApprovalMeta(taskId) !== undefined)
-  }
-
   /** pending_approval rows gain the live "Always approve" affordance
    *  (Studio's ApprovalControls) — derived from the executor holding the
    *  request, never persisted. A row no executor is waiting on (deferred
@@ -3040,7 +3025,7 @@ export class RuntimeService extends EventEmitter {
   private withApprovalAffordance(managed: ManagedRuntimeAgent | null, config: AgentConfig, task: TaskEntry): RuntimeTaskEntry {
     if (task.status !== 'pending_approval') return task
     // An open document runs no executor: nothing waits on the request.
-    const meta = managed ? this.approvalHolder(managed, task.id)?.executor.getPendingApprovalMeta(task.id) : undefined
+    const meta = managed ? findApprovalHolder(managed.agent.executor, managed.agent.loopPool, task.id)?.executor.getPendingApprovalMeta(task.id) : undefined
     if (!meta) return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: NO_LIVE_APPROVAL_REASON }
     const locked = config.tools?.find(t => t.name === task.tool)?.locked === true
     if (meta.canAlwaysApprove === false || locked) {
@@ -3072,7 +3057,7 @@ export class RuntimeService extends EventEmitter {
     if (task.status !== 'pending_approval') {
       throw new RuntimeLoopError(`Task "${taskId}" is in status "${task.status}" - only pending_approval tasks can be always-approved`, 409)
     }
-    const holder = this.approvalHolder(managed, taskId)
+    const holder = findApprovalHolder(managed.agent.executor, managed.agent.loopPool, taskId)
     const meta = holder?.executor.getPendingApprovalMeta(taskId)
     if (!holder || !meta) throw new RuntimeLoopError(`Task "${taskId}": ${NO_LIVE_APPROVAL_REASON}`, 409)
     const toolName = holder.executor.getPendingApprovals().find(a => a.requestId === taskId)?.name ?? task.tool
@@ -3100,7 +3085,7 @@ export class RuntimeService extends EventEmitter {
    */
   approveAllAgentTasks(agentId: string, loop?: string): { agentId: string; loop?: string; approved: number; skippedProtection: number } {
     const managed = this.requireAgent(agentId)
-    const executors = this.askExecutors(managed)
+    const executors = approvalExecutors(managed.agent.executor, managed.agent.loopPool)
     let targets = executors
     if (loop !== undefined) {
       const loopName = this.requireLoopName(managed, loop)
@@ -3131,27 +3116,10 @@ export class RuntimeService extends EventEmitter {
       modified_args: opts.modifiedArgs,
     }
 
-    // The main call handler's onHilApproved is bound to MAIN's executor, so a
-    // request parked by an inner loop's executor must be answered on that
-    // executor directly (same status writes as handleTaskResolve).
-    const holder = this.approvalHolder(managed, taskId)
+    // The call handler's onHilApproved finds whichever executor (main or an
+    // inner loop) holds the request, so one path serves every loop.
     let resolution: unknown
-    if (holder && holder.loop !== MAIN_LOOP) {
-      const workspace = managed.agent.workspace
-      if (opts.action === 'approve') {
-        workspace.updateTaskStatus(taskId, 'running')
-        holder.executor.resolveHilTask(taskId, true, opts.modifiedArgs)
-        resolution = { task_id: taskId, status: 'approved' }
-      } else if (opts.action === 'deny') {
-        const reason = opts.reason ?? 'Denied'
-        workspace.updateTaskStatus(taskId, 'denied', undefined, reason)
-        holder.executor.resolveHilTask(taskId, false, undefined, opts.reason)
-        resolution = { task_id: taskId, status: 'denied', reason }
-      } else {
-        workspace.updateTaskStatus(taskId, 'pending_approval')
-        resolution = { task_id: taskId, status: 'pending_approval' }
-      }
-    } else if (managed.agent.adfCallHandler) {
+    if (managed.agent.adfCallHandler) {
       const result = await managed.agent.adfCallHandler.resolveTask(input)
       if (result.error) throw new Error(result.error)
       resolution = parseMaybeJson(result.result)
@@ -3164,15 +3132,16 @@ export class RuntimeService extends EventEmitter {
       if (!task.executor_managed) {
         throw new Error(`Task "${taskId}" requires code execution support to resolve`)
       }
+      const executor = findApprovalHolder(managed.agent.executor, managed.agent.loopPool, taskId)?.executor ?? managed.agent.executor
       if (opts.action === 'approve') {
         managed.agent.workspace.updateTaskStatus(taskId, 'running')
-        managed.agent.executor.resolveHilTask(taskId, true, opts.modifiedArgs)
+        executor.resolveHilTask(taskId, true, opts.modifiedArgs)
         resolution = { task_id: taskId, status: 'approved' }
       } else if (opts.action === 'deny') {
         const reason = opts.reason ?? 'Denied'
         managed.agent.workspace.updateTaskStatus(taskId, 'denied', undefined, reason)
         // Reason rides along as feedback: the agent reads it in the tool error.
-        managed.agent.executor.resolveHilTask(taskId, false, undefined, opts.reason)
+        executor.resolveHilTask(taskId, false, undefined, opts.reason)
         resolution = { task_id: taskId, status: 'denied', reason }
       } else {
         managed.agent.workspace.updateTaskStatus(taskId, 'pending_approval')
@@ -3188,34 +3157,22 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  /** Main's executor plus every running inner loop's: asks can come from any loop. */
-  private askExecutors(managed: ManagedRuntimeAgent): Array<{ loop: string; executor: ManagedRuntimeAgent['agent']['executor'] }> {
-    const out: Array<{ loop: string; executor: ManagedRuntimeAgent['agent']['executor'] }> = [{ loop: MAIN_LOOP, executor: managed.agent.executor }]
-    for (const info of managed.agent.loopPool.listLoops()) {
-      if (info.name === MAIN_LOOP) continue
-      const runtime = managed.agent.loopPool.getRuntime(info.name)
-      if (runtime) out.push({ loop: info.name, executor: runtime.executor })
-    }
-    return out
-  }
-
   getAgentAsks(agentId: string): { agentId: string; asks: RuntimeAgentAsk[] } {
     const target = this.requireTarget(agentId)
     // An open document asks nothing: no executor runs.
     if (!target.managed) return { agentId: target.id, asks: [] }
     const managed = target.managed
-    const asks = this.askExecutors(managed).flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop })))
+    const asks = approvalExecutors(managed.agent.executor, managed.agent.loopPool).flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop })))
     return { agentId: managed.id, asks }
   }
 
   /**
    * `answers`: one per question (`null` = skipped); a payload that does not fit the form is a 400 and the ask stays pending.
-   * Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id.
+   * Request ids are unique across the agent; `loop`, when given, must name the asking loop.
    */
   answerAgentAsk(agentId: string, requestId: string, answers: unknown, loop?: string): { agentId: string; requestId: string; loop: string; answered: boolean } {
     const managed = this.requireAgent(agentId)
-    const holder = this.askExecutors(managed).find(entry =>
-      (loop === undefined || entry.loop === loop) && entry.executor.getPendingAsks().some(ask => ask.requestId === requestId))
+    const holder = findAskHolder(managed.agent.executor, managed.agent.loopPool, requestId, loop)
     if (!holder) throw new RuntimeLoopError(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''} (already answered, or never asked).`, 404, 'ask_not_found')
     try {
       holder.executor.resolveAsk(requestId, answers)

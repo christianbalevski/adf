@@ -30,6 +30,7 @@ import { RuntimeGate } from './runtime-gate'
 import { currentResourceWriter, fileRevisionKey, inApiWrite, observeRevision } from './resource-revisions'
 import { CreateAdfTool, ShellTool, SysUpdateConfigTool, LoopSendTool, LoopListTool, LoopManageTool } from '../tools/built-in'
 import { LoopPool, MAIN_LOOP, stripLoopNameMarker } from './loop-pool'
+import { findApprovalHolder } from './approval-holder'
 import { runDispatchDropCompensation } from './system-dispatch-limits'
 import { killHostExecsFor } from '../services/host-exec.service'
 import { buildEffectiveRuntime, recordEffectiveRuntime, type EffectiveRuntimeSources } from './effective-runtime'
@@ -706,6 +707,12 @@ export function assembleAgent<P extends AgentProfileName>(
   }
   executor.onTaskCreated = onTaskCreated
   executor.onTaskCompleted = onTaskCompleted
+  // Any executor of this agent (main or an inner loop) may hold a HIL task,
+  // and resolving on another one is a silent no-op.
+  const resolveAgentHilTask = (
+    taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string,
+  ): boolean => findApprovalHolder(executor, loopPool, taskId)?.executor
+    .resolveHilTask(taskId, approved, modifiedArgs, feedback) ?? false
   executor.onLlmCall = (data) => triggerEvaluator.onLlmCall(data)
 
   if (adfCallHandler) {
@@ -717,8 +724,8 @@ export function assembleAgent<P extends AgentProfileName>(
     adfCallHandler.onLambdaToolEndTurn = (tool, resultContent) => {
       applyStateTransitionSideEffect(executor, tool, 'completed', resultContent, { endTurn: true })
     }
-    adfCallHandler.onHilApproved = (taskId, approved, modifiedArgs, feedback) =>
-      executor.resolveHilTask(taskId, approved, modifiedArgs, feedback)
+    // A remote-approval lambda answers whichever loop raised the request.
+    adfCallHandler.onHilApproved = resolveAgentHilTask
     adfCallHandler.requestProtectionApproval = (method, args, protection) =>
       executor.requestProtectionApproval(method, args, protection)
     adfCallHandler.onLlmCall = (data) => triggerEvaluator.onLlmCall(data)
@@ -760,6 +767,8 @@ export function assembleAgent<P extends AgentProfileName>(
     onLoopAdfEvent: (event) => {
       for (const bindings of hostBindings()) bindings.onAdfEvent?.(event)
     },
+    onTaskCreated,
+    resolveHilTask: resolveAgentHilTask,
     main: {
       session,
       // Main's own busy-ness, deliberately: the agent is `idle` when MAIN is
@@ -823,8 +832,8 @@ export function assembleAgent<P extends AgentProfileName>(
    * (`tools.some(t => t.name === x)`): the DEFAULT_TOOLS backfill writes a
    * declaration for all three into every config, so a presence test is always
    * true. This is MAIN's registry only — a side loop gets these three solely
-   * through its derived allow-list (deriveLoopConfig), and `loop_manage` is
-   * never grantable to a loop at all (LOOP_PROHIBITED_TOOLS).
+   * through its derived allow-list (deriveLoopConfig), registered by the pool's
+   * `rebindBoundTools`.
    */
   const syncLoopToolRegistration = (forConfig: AgentConfig): void => {
     // Resolve duplicate declarations first-wins, exactly as the executor's

@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { approvalsBridge, useApprovalsStore } from '../stores/approvals.store'
 import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
+import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useMeshGraphStore, type PendingInteraction } from '../stores/mesh-graph.store'
 import { useJumpToAgent } from './useJumpToAgent'
 import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
@@ -37,7 +38,7 @@ export function toPendingInteractions(notifications: PendingNotification[]): Rec
     const key = agentKey({ runtimeId: n.runtimeId, filePath: n.filePath })
     if (byAgent[key]) continue
     // `questions` is optional only in the shared notification shape; every ask carries it.
-    byAgent[key] = n.kind === 'ask' ? { type: 'ask', requestId: n.requestId, questions: n.questions ?? [] } : {
+    byAgent[key] = n.kind === 'ask' ? { type: 'ask', requestId: n.requestId, questions: n.questions ?? [], loop: n.loop } : {
       type: 'approval',
       requestId: n.requestId,
       approvalId: n.id,
@@ -54,11 +55,12 @@ export function toPendingInteractions(notifications: PendingNotification[]): Rec
 
 /**
  * The requests of one snapshot that get an in-app toast here: new ones (`seen`
- * is updated, answered ids leave it), not for the agent this window shows
- * (its chat shows the request), and, with agent windows open, only those
- * main names for this window (`notify`, docs/design/agent-windows.md).
+ * is updated, answered ids leave it), not for the loop this window shows (its
+ * chat shows the request; another loop's tab of the open agent does not), and,
+ * with agent windows open, only those main names for this window (`notify`,
+ * docs/design/agent-windows.md).
  */
-export function arrivalsToAnnounce(snapshot: NotificationsSnapshot, seen: Set<string>, openFilePath: string | null): PendingNotification[] {
+export function arrivalsToAnnounce(snapshot: NotificationsSnapshot, seen: Set<string>, openFilePath: string | null, viewedLoop: string = MAIN_LOOP): PendingNotification[] {
   const mine = snapshot.notify ? new Set(snapshot.notify) : null
   const out: PendingNotification[] = []
   for (const n of snapshot.pending) {
@@ -67,7 +69,7 @@ export function arrivalsToAnnounce(snapshot: NotificationsSnapshot, seen: Set<st
     if (seen.has(key)) continue
     seen.add(key)
     // `openFilePath` is the open agent's key: its path on This computer.
-    if (agentKey({ runtimeId: n.runtimeId, filePath: n.filePath }) === openFilePath) continue
+    if (agentKey({ runtimeId: n.runtimeId, filePath: n.filePath }) === openFilePath && (n.loop ?? MAIN_LOOP) === viewedLoop) continue
     if (mine && !mine.has(key)) continue
     out.push(n)
   }
@@ -143,7 +145,7 @@ export function useApprovalEvents() {
     const apply = (snapshot: NotificationsSnapshot): void => {
       hasAppliedPush.current = true
       const store = useApprovalsStore.getState()
-      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useAppStore.getState().showHome ? null : openRefKey())) {
+      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useAppStore.getState().showHome ? null : openRefKey(), useAgentStore.getState().viewedLoop)) {
         const key = noticeKey(n.runtimeId, n.id)
         store.pushToast({
           id: key,
