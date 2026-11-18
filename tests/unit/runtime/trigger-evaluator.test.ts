@@ -1229,12 +1229,46 @@ describe('TriggerEvaluator', () => {
       expect(ws.claimTimer).toHaveBeenCalled()
       expect(ws.insertLog).toHaveBeenCalledWith(
         'error', 'timer', 'renew_failed', null,
-        'Failed to settle timer #6: disk I/O error',
-        { timer_id: 6 }
+        'Failed to settle 1 timer(s): disk I/O error',
+        { timer_count: 1, timer_ids: [6] }
       )
       // The row stays due; firing is skipped so the retry next tick can't double-fire
       expect(events.length).toBe(0)
 
+      evaluator.dispose()
+      consoleSpy.mockRestore()
+    })
+
+    // Round 9 F1: a failing backlog logs once per tick, ids capped at 20 (as
+    // base's expire_completed_failed did), whatever the scope or the cause.
+    it.each([
+      ['agent', 'settle'],
+      ['system', 'settle'],
+      ['agent', 'loop write'],
+    ] as const)('a failing backlog of 500 %s-scope rows (%s fails) writes one log row per tick', (scope, cause) => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const config = makeConfig({ on_timer: makeTriggerConfig([makeTarget(scope)]) })
+      const evaluator = new TriggerEvaluator(config)
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+      const rows = Array.from({ length: 500 }, (_, i) => ({
+        id: i + 1, schedule: { mode: 'once' as const, at: Date.now() - 100 }, payload: 'p',
+        scope: [scope], lambda: scope === 'system' ? 'lib/job.ts:run' : null, warm: false, run_count: 0, created_at: Date.now() - 1000,
+      }))
+      const ws = makeWorkspaceMock(rows)
+      if (cause === 'settle') ws.claimTimer.mockImplementation(() => { throw new Error('disk I/O error') })
+      const receiver = stubReceiver(ws, events)
+      if (cause === 'loop write') receiver.deliver = () => { throw new Error('adf_loop insert failed') }
+      evaluator.setTimerReceiver(receiver)
+      evaluator.startTimerPolling(ws)
+      vi.advanceTimersByTime(5000)
+      vi.advanceTimersByTime(5000)
+      const failures = ws.insertLog.mock.calls.filter((c: unknown[]) => c[2] === 'renew_failed')
+      expect(failures).toHaveLength(2) // one per tick
+      expect(failures[0][5]).toMatchObject({ timer_count: 500 })
+      expect(failures[0][5].timer_ids).toHaveLength(20)
+      expect(consoleSpy).toHaveBeenCalledTimes(2)
+      expect(events.length).toBe(0)
       evaluator.dispose()
       consoleSpy.mockRestore()
     })

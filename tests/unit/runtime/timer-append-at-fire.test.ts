@@ -781,3 +781,65 @@ describe('round 8: F1 a row appended during a failed preflight compaction gets a
     } finally { await agent.disposeAsync() }
   })
 })
+
+// ===========================================================================
+// Round 9 (break-it recoveryb-r9)
+// ===========================================================================
+
+describe('round 9: F2 a tick under another connection\'s write lock', { timeout: 30_000 }, () => {
+  it('ends at the first SQLITE_BUSY: it waits about one busy_timeout, not one per row, and every row stays due', async () => {
+    const { filePath, open } = makeFile('r9-locked')
+    const workspace = open()
+    const agent = await build(filePath, workspace, new ScriptedProvider('ok'))
+    const { default: Database } = await import('better-sqlite3')
+    const other = new Database(filePath)
+    try {
+      ;(workspace.getDatabase() as unknown as { db: { pragma: (s: string) => unknown } }).db.pragma('busy_timeout = 200')
+      const ids = Array.from({ length: 20 }, (_, i) => addDue(workspace, `R9-LOCKED-${i}`))
+      other.exec('BEGIN IMMEDIATE')
+      const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const started = Date.now()
+      tick(agent)
+      const blocked = Date.now() - started
+      other.exec('ROLLBACK')
+      errors.mockRestore()
+      expect(blocked).toBeLessThan(1500) // one BEGIN wait (+ its log attempt), not 20 × 2 × 200 ms
+      for (const id of ids) expect(row(workspace, id)).toMatchObject({ expired: false, run_count: 0 })
+    } finally {
+      try { other.close() } catch { /* closed */ }
+      await agent.disposeAsync()
+    }
+  })
+})
+
+describe('round 9: F3 a wake that throws after the commit', { timeout: 30_000 }, () => {
+  it('a busy mixed row: the claim and row stand, the lambda still runs, and the failure is not logged as a settle failure', async () => {
+    const { filePath, open } = makeFile('r9-wake-throws')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    const runs = countLambdas(agent)
+    agent.attachHost({
+      // the pool's render event for the timer row (injectWithoutWake) throws
+      onEvent: (e: { type: string; payload?: { origin?: string } }) => { if (e.type === 'context_injected' && e.payload?.origin?.startsWith('timer:')) throw new Error('renderer gone') },
+    } as never)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      provider.blockNext()
+      const turn = agent.executor.executeTurn(chat('long work'))
+      await until(() => provider.blocked && provider.calls === 1)
+      const t = addDue(workspace, 'R9-MIXED-WAKE', { scope: ['system', 'agent'], lambda: 'lib/job.js:main' })
+      tick(agent); await sleep(20)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      expect(loopRows(workspace, 'R9-MIXED-WAKE')).toBe(1)
+      expect(runs.n).toBe(1)
+      expect(workspace.getLogs().some(l => l.event === 'renew_failed')).toBe(false)
+      provider.release()
+      await turn
+      await settled(agent)
+    } finally {
+      errors.mockRestore()
+      await agent.disposeAsync()
+    }
+  })
+})
