@@ -164,13 +164,17 @@ const STOP_POLL_MS = 25
  *   was injected and drained or rehydrated with the stream (several timers
  *   firing into an empty session in one tick): kicking would call the model
  *   with no new input, its prompt ending in its own reply.
- * - A row the model has not seen gets one turn, whether its injection is still
- *   pending, was dropped because a reload restored the row (H2, a compaction
- *   with no model call after it), or it was never injected. The kick adds no
+ * - A row the model has not been sent gets one turn, whether its injection
+ *   was dropped because a reload restored the row (H2, a compaction with no
+ *   model call after it) or it was never injected. So does a row whose
+ *   injection is still pending, even below the mark. The kick adds no
  *   second copy: the executor skips a row already in the session or queued.
  */
-function pickKickRepresentative(entries: PendingWake[], seenSeq: number): PendingWake | null {
-  return entries.find(e => e.seq === undefined || e.seq > seenSeq) ?? null
+function pickKickRepresentative(entries: PendingWake[], seenSeq: number, session: AgentSession): PendingWake | null {
+  // A row can sit below the mark and still be unread: its injection is
+  // pending while a row written after it (a failed compaction's notice) was sent.
+  return entries.find(e => e.seq === undefined || e.seq > seenSeq)
+    ?? (session.hasPendingWakeInjection() ? entries[0] ?? null : null)
 }
 
 /** One side loop: its own mind, on the agent's body. */
@@ -767,7 +771,7 @@ export class LoopPool implements LoopPoolApi {
       // the drain delivers exactly once.
       const entries = runtime.takeAllPendingWakes()
       if (entries.length === 0) return
-      const rep = pickKickRepresentative(entries, runtime.executor.getModelSeenSeq())
+      const rep = pickKickRepresentative(entries, runtime.executor.getModelSeenSeq(), runtime.session)
       if (!rep) return   // every injection already drained mid-turn — nothing left to deliver
       // The router decides AFTER the take (the agent can be suspended between
       // the turn boundary and this tick), so a refusal must put the wake back —
@@ -804,7 +808,7 @@ export class LoopPool implements LoopPoolApi {
       // already drained mid-turn ⇒ no kick.
       const entries = this.mainPendingWakes.splice(0)
       if (entries.length === 0) return
-      const rep = pickKickRepresentative(entries, this.deps.main.modelSeenSeq())
+      const rep = pickKickRepresentative(entries, this.deps.main.modelSeenSeq(), this.deps.main.session)
       if (!rep) return
       const value = createDispatch(rep.event, { scope: 'agent', loop: MAIN_LOOP })
       void this.deps.main.dispatch(value).catch(error => {

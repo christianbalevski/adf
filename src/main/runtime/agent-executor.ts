@@ -2776,9 +2776,10 @@ export class AgentExecutor extends EventEmitter {
         const callSignal = this.abortController?.signal
         const inFlight = { text: '', thinking: '' }
         this.inFlightOutput = inFlight
-        // Every loop row in this request has now been put to the model
-        // (modelSeenSeq): a queued kick for one of them owes nothing.
-        const requestSeq = this.session.getMessages().reduce((max, m) => (typeof m.seq === 'number' && m.seq > max ? m.seq : max), 0)
+        // Every loop row in this request (after the pre-LLM hook) has now
+        // been put to the model (modelSeenSeq): a queued kick for one of
+        // them owes nothing.
+        const requestSeq = request.messages.reduce((max, m) => (typeof m.seq === 'number' && m.seq > max ? m.seq : max), 0)
         if (requestSeq > this.modelSeenSeq) this.modelSeenSeq = requestSeq
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
@@ -5550,10 +5551,10 @@ export class AgentExecutor extends EventEmitter {
     })
   }
 
-  /** The newest loop seq included in a model request for a turn. A
-   *  queued kick for a row at or below it owes nothing; a row above it is
-   *  unread, even if it is already in the session (a reload with no model
-   *  call after it, as compactNow does). */
+  /** The newest loop seq included in a model request for a turn. A row
+   *  above it is unread, even if it is already in the session (a reload with
+   *  no model call after it, as compactNow does). A row at or below it owes
+   *  no kick unless its injection is still pending (LoopPool). */
   getModelSeenSeq(): number {
     return this.modelSeenSeq
   }
