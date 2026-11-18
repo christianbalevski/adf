@@ -25,7 +25,7 @@ import { currentSourceOrUnknown } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { onDispatchDropped } from './system-dispatch-limits'
-import { EXECUTOR_WORK_STATES, admittedTimerScopes, gateStateOf, scopeFires, timerFireTime, type GateFacts } from '../../shared/utils/trigger-gate'
+import { EXECUTOR_WORK_STATES, gateStateOf, scopeFires, timerFire, type GateFacts } from '../../shared/utils/trigger-gate'
 
 const TIMER_POLL_INTERVAL_MS = 5000
 
@@ -842,10 +842,7 @@ export class TriggerEvaluator extends EventEmitter {
     }
     if (due.length === 0) return
 
-    // One ordered pass, earliest due first. Nothing settles while the agent
-    // is off: every scope is blocked then.
-    if (this.gateState() === 'off') return
-    const timerCfg = this.getTriggerConfig('on_timer')
+    // One ordered pass, earliest due first.
     const now = Date.now()
     // Loops in error that took a delivery this tick: that delivery is their
     // recovery attempt, and the executor publishes the outcome before the
@@ -861,7 +858,7 @@ export class TriggerEvaluator extends EventEmitter {
     let firstError: unknown
     let notTried = 0
     for (const [i, timer] of due.entries()) {
-      const error = this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted, reserved)
+      const error = this.fireTimer(timer, now, attempted, reserved)
       if (error === undefined) continue
       failed.push(timer.id)
       firstError ??= error
@@ -897,20 +894,18 @@ export class TriggerEvaluator extends EventEmitter {
    * crash mid-fire cannot refire it.
    */
   /** Returns the settle error, if the row could not be settled (it stays due). */
-  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>, reserved: Map<string, number>): unknown {
+  private fireTimer(timer: Timer, now: number, attempted: Set<string>, reserved: Map<string, number>): unknown {
     const loop = timer.loop ?? 'main'
-    // A loop that is not declared (deleted) can never receive: as on base, the
-    // agent part is dropped and logged, and the row fires as its other scopes
-    // do. A declared but disabled loop holds the row (it can be re-enabled).
-    const orphaned = admitted.includes('agent') && !!this.timerReceiver && !this.timerReceiver.hasLoop(loop)
-    if (orphaned) admitted = admitted.filter(scope => scope !== 'agent')
-    const agentPart = admitted.includes('agent')
-    const scopes = admitted
-    // The shared rule the UI reads (timerFireTime), over the same facts.
+    // The shared rule the UI reads, over the same facts. A loop that is not
+    // declared (deleted) drops the agent part; a disabled one holds the row.
     const loopFacts = loop !== 'main' && this.timerReceiver?.loopFacts ? { [loop]: this.timerReceiver.loopFacts(loop) } : {}
-    const ctx = { onTimer: this.getTriggerConfig('on_timer'), loops: this.timerReceiver?.hasLoop(loop) ? [{ name: loop }] : [], loopFacts }
-    const at = timerFireTime(timer.scope, { state: this.gateState(), recoveryAt: this.recoveryAt }, now, timer.loop, ctx)
-    if (at === undefined || at > now) return
+    // No receiver: the loop counts as declared, so the row is held (canReceive below), not dropped.
+    const ctx = { onTimer: this.getTriggerConfig('on_timer'), loops: !this.timerReceiver || this.timerReceiver.hasLoop(loop) ? [{ name: loop }] : [], loopFacts }
+    const plan = timerFire(timer.scope, { state: this.gateState(), recoveryAt: this.recoveryAt }, now, timer.loop, ctx)
+    if (!plan || plan.at > now) return
+    const scopes = plan.scopes
+    const agentPart = scopes.includes('agent')
+    const orphaned = plan.dropsAgent
     const event = createEvent({
       type: 'timer' as const,
       source: `agent:${this.config.name ?? 'unknown'}`,
@@ -928,12 +923,11 @@ export class TriggerEvaluator extends EventEmitter {
 
     const nextWake = this.nextRenewal(timer, now)
     try {
-      const inError = agentPart && (loop === 'main' ? this.gateState() : loopFacts[loop]?.state) === 'error'
       const claimed = agentPart
         ? this.timerReceiver!.deliver(timer, nextWake, now, event)
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
       if (!claimed) return
-      if (inError) attempted.add(loop)
+      if (plan.recovery) attempted.add(loop)
       if (lambdaDispatch) reserved.set(timer.lambda!, (reserved.get(timer.lambda!) ?? 0) + 1)
       if (orphaned) {
         try {

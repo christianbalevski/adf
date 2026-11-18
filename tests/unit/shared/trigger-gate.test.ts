@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { gateStateOf, scopeFires, timerFireTime, wakeFireTime } from '../../../src/shared/utils/trigger-gate'
+import { gateStateOf, scopeFires, timerFire, timerFireTime, wakeFireTime } from '../../../src/shared/utils/trigger-gate'
 
 /** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
 const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
@@ -88,5 +88,34 @@ describe('trigger gate', () => {
     expect(wakeFireTime(system, { state: 'suspended' }, CTX)).toBe(0)
     expect(wakeFireTime(system, { state: 'off' }, CTX)).toBeUndefined()
     expect(wakeFireTime({ ...agent, scopes: ['agent', 'system'] }, { state: 'suspended' }, CTX)).toBeUndefined()
+  })
+
+  describe('timerFire: the whole decision the runtime takes (round 14)', () => {
+    const ctx = (loopFacts = {}) => ({ ...CTX, loops: [{ name: 'side' }], loopFacts })
+
+    it('scopes: the admitted scopes that run; an agent-only on_timer drops system', () => {
+      expect(timerFire(['system', 'agent'], { state: 'idle' }, 10, null, CTX)?.scopes).toEqual(['system', 'agent'])
+      const agentOnly = { ...CTX, onTimer: { enabled: true, targets: [{ scope: 'agent' as const }] } }
+      expect(timerFire(['system', 'agent'], { state: 'idle' }, 10, null, agentOnly)?.scopes).toEqual(['agent'])
+    })
+
+    it('dropsAgent: only for an inner loop that is not declared; the row then runs its other scopes', () => {
+      const ghost = timerFire(['system', 'agent'], { state: 'idle' }, 10, 'ghost', ctx())
+      expect(ghost).toEqual({ at: 10, scopes: ['system'], dropsAgent: true, recovery: false })
+      expect(timerFire(['agent'], { state: 'idle' }, 10, 'side', ctx())?.dropsAgent).toBe(false)
+      expect(timerFire(['agent'], { state: 'idle' }, 10, null, ctx())?.dropsAgent).toBe(false)
+    })
+
+    it('recovery: the agent part goes to a target in error that may take an attempt now', () => {
+      expect(timerFire(['agent'], { state: 'error', recoveryAt: 0 }, 10, null, CTX)).toEqual({ at: 10, scopes: ['agent'], dropsAgent: false, recovery: true })
+      expect(timerFire(['agent'], { state: 'idle' }, 10, 'side', ctx({ side: { state: 'error', recoveryAt: 5 } }))).toMatchObject({ at: 10, recovery: true })
+      expect(timerFire(['agent'], { state: 'idle' }, 10, 'side', ctx())?.recovery).toBe(false)
+      // a system-only row is never a recovery attempt, even in error
+      expect(timerFire(['system'], { state: 'error', recoveryAt: null }, 10, null, CTX)?.recovery).toBe(false)
+    })
+
+    it('timerFireTime is its time', () => {
+      expect(timerFireTime(['system', 'agent'], { state: 'error', recoveryAt: 50 }, 10, null, CTX)).toBe(timerFire(['system', 'agent'], { state: 'error', recoveryAt: 50 }, 10, null, CTX)?.at)
+    })
   })
 })

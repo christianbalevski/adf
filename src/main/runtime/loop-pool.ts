@@ -136,7 +136,7 @@ export interface LoopPoolDeps {
  * (false in the rare empty-but-busy race). `event` carries `skip_loop_append`
  * and `loop_seq`, so the kick inlines an un-injected row without a second copy.
  */
-type PendingWake = { event: AdfEvent; seq?: number; injected: boolean }
+type PendingWake = { event: AdfEvent; seq: number; injected: boolean }
 
 /** Bound on queued kicks per target. A kick is owed per target, not per
  *  message, so anything past a handful is wake-spam (review C3/P2). */
@@ -171,7 +171,7 @@ const STOP_POLL_MS = 25
 function pickKickRepresentative(entries: PendingWake[], seenSeq: number, session: AgentSession): PendingWake | null {
   // A row can sit below the mark and still be unread: its injection is
   // pending while a row written after it (a failed compaction's notice) was sent.
-  return entries.find(e => e.seq === undefined || e.seq > seenSeq)
+  return entries.find(e => e.seq > seenSeq)
     ?? (session.hasPendingWakeInjection() ? entries[0] ?? null : null)
 }
 
@@ -284,7 +284,7 @@ export class LoopRuntime {
     return operation
   }
 
-  queueWake(event: AdfEvent, seq: number | undefined, injected: boolean): void {
+  queueWake(event: AdfEvent, seq: number, injected: boolean): void {
     enqueueKick(this.pendingWakes, { event, seq, injected })
   }
 

@@ -91,23 +91,28 @@ export interface TimerContext {
  * nothing is predicted before the config has loaded (`ctx` undefined).
  */
 export function timerFireTime(scopes: readonly string[], facts: GateFacts, dueAt: number, loop: string | null | undefined, ctx: TimerContext | undefined): number | undefined {
+  return timerFire(scopes, facts, dueAt, loop, ctx)?.at
+}
+
+/** timerFireTime's whole decision: when, which admitted scopes run, whether
+ *  the agent part is dropped (undeclared loop), and whether the agent part is
+ *  a recovery attempt (its target is in error). */
+export function timerFire(scopes: readonly string[], facts: GateFacts, dueAt: number, loop: string | null | undefined, ctx: TimerContext | undefined): { at: number; scopes: TriggerScopeV3[]; dropsAgent: boolean; recovery: boolean } | undefined {
   if (!ctx || facts.state === 'off') return undefined
   let admitted = admittedTimerScopes(ctx.onTimer, scopes as TriggerScopeV3[])
-  // A loop that is not declared (deleted): the agent part is dropped, and the
-  // row fires as its other scopes do.
-  if (loop && loop !== 'main' && !ctx.loops.some(l => l.name === loop)) admitted = admitted.filter(scope => scope !== 'agent')
+  const dropsAgent = admitted.includes('agent') && !!loop && loop !== 'main' && !ctx.loops.some(l => l.name === loop)
+  if (dropsAgent) admitted = admitted.filter(scope => scope !== 'agent')
   if (admitted.includes('agent')) {
     let at = fireTime('agent', 'on_timer', facts, dueAt, loop)
+    const own = loop && loop !== 'main' ? ctx.loopFacts[loop] : facts
     if (at !== undefined && loop && loop !== 'main') {
-      const declared = ctx.loops.find(l => l.name === loop)
-      const own = ctx.loopFacts[loop]
-      if (declared?.enabled === false) at = undefined
+      if (ctx.loops.find(l => l.name === loop)?.enabled === false) at = undefined
       else if (own?.state === 'error') at = fireTime('agent', 'on_timer', own, at)
     }
-    return at
+    return at === undefined ? undefined : { at, scopes: admitted, dropsAgent, recovery: own?.state === 'error' }
   }
-  if (admitted.includes('system')) return fireTime('system', 'on_timer', facts, dueAt)
-  return dueAt
+  const at = admitted.includes('system') ? fireTime('system', 'on_timer', facts, dueAt) : dueAt
+  return at === undefined ? undefined : { at, scopes: admitted, dropsAgent, recovery: false }
 }
 
 /** timerFireTime for an Upcoming row; a daemon from before `scopes` sends only `scope`. */
