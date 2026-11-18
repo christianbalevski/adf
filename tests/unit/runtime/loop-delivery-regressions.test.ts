@@ -36,6 +36,11 @@ import type { LLMResponse } from '../../../src/shared/types/provider.types'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 
+/** What a model request at this point records (AgentExecutor.getModelSeenSeq): the newest seq in the session. */
+const maxSeq = (session: { getMessages: () => Array<{ seq?: number }> }) => session.getMessages().reduce((m, x) => Math.max(m, x.seq ?? 0), 0)
+const markSeen = (executor: unknown, session: { getMessages: () => Array<{ seq?: number }> }) => { (executor as { modelSeenSeq: number }).modelSeenSeq = maxSeq(session) }
+
+
 let rootDir: string
 let ws: AdfWorkspace
 let pool: LoopPool
@@ -139,6 +144,7 @@ beforeEach(() => {
       isBusy: () => false,
       dispatch: async () => {},
       getState: () => 'idle',
+      modelSeenSeq: () => 0,
     },
   })
 })
@@ -214,6 +220,7 @@ describe('LoopPool — C3: one boundary drains the whole kick queue', () => {
     // The running turn reaches a model boundary and drains BOTH — one drain
     // takes the whole queue, which is exactly why one kick was ever owed.
     runtime.session.drainContextInjections()
+    markSeen(runtime.executor, runtime.session) // the model call after the drain
     expect(runtime.session.hasPendingWakeInjection()).toBe(false)
     expect(occurrencesInSession(runtime.session, 'ALPHA')).toBe(1)
     expect(occurrencesInSession(runtime.session, 'BRAVO')).toBe(1)

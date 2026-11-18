@@ -26,6 +26,11 @@ import type { LLMProvider } from '../../../src/main/providers/provider.interface
 import type { LLMResponse } from '../../../src/shared/types/provider.types'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 
+/** What a model request at this point records (AgentExecutor.getModelSeenSeq): the newest seq in the session. */
+const maxSeq = (session: { getMessages: () => Array<{ seq?: number }> }) => session.getMessages().reduce((m, x) => Math.max(m, x.seq ?? 0), 0)
+const markSeen = (executor: unknown, session: { getMessages: () => Array<{ seq?: number }> }) => { (executor as { modelSeenSeq: number }).modelSeenSeq = maxSeq(session) }
+
+
 let rootDir: string
 let filePath: string
 let ws: AdfWorkspace
@@ -128,6 +133,7 @@ function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
       isBusy: () => mainBusy,
       dispatch: async (value) => { mainDispatches.push(value) },
       getState: () => mainState,
+      modelSeenSeq: () => 0,
     },
   })
 }
@@ -459,7 +465,8 @@ describe('LoopPool — a refused wake is not a lost wake', () => {
     const turn = new Promise<void>(resolve => { release = resolve })
     const executeTurn = vi.spyOn(runtime.executor, 'executeTurn')
       .mockImplementationOnce(() => turn)
-      .mockResolvedValue(undefined)
+      // a later turn puts its session to the model, as a real turn does
+      .mockImplementation(async () => { markSeen(runtime.executor, runtime.session) })
 
     const running = runtime.dispatch(chatDispatch('e1'))
     await pool.sendToLoop('main', 'reflector', 'read me', true)

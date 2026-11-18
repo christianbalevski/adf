@@ -72,6 +72,7 @@ beforeEach(async () => {
       isBusy: () => false,
       dispatch: async () => {},
       getState: () => 'idle',
+      modelSeenSeq: () => 0,
     },
   })
   await pool.createLoop({ name: 'reflector', goal: 'reflect', enabled: true, tools: [] })

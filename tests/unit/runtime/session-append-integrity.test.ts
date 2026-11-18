@@ -110,7 +110,7 @@ describe('H3: compaction while an appended row is undrained', () => {
       getHostConfig: () => live,
       saveConfig: (next) => { ws.setAgentConfig(next); live = next; pool.reconcile(next) },
       onLoopEvent: () => {},
-      main: { session: new AgentSession(ws), isBusy: () => false, dispatch: async () => {}, getState: () => 'idle', canReceive: () => true },
+      main: { session: new AgentSession(ws), isBusy: () => false, dispatch: async () => {}, getState: () => 'idle', modelSeenSeq: () => 0 },
     } as never)
   })
   afterEach(() => {
@@ -176,6 +176,27 @@ describe('H3: compaction while an appended row is undrained', () => {
     expect(copies(runtime.session, 'OLDER-PENDING')).toBe(1)
     release()
     await firstTurn
+  })
+
+  it('a source message whose write was buffered is archived with its summary, not kept after it (round 7 F2)', async () => {
+    await pool.createLoop({ name: 'reflector', goal: 'g', enabled: true, tools: [] } as never)
+    const runtime = pool.getRuntime('reflector')!
+    runtime.session.addMessage({ role: 'user', content: text('first thought') })
+    // The next write fails once (DB busy) and falls back to the retry buffer.
+    const view = runtime.session.getWorkspace()
+    const append = view.appendToLoop.bind(view)
+    let failOnce = true
+    view.appendToLoop = ((...args: Parameters<typeof append>) => {
+      if (failOnce) { failOnce = false; throw new Error('SQLITE_BUSY') }
+      return append(...args)
+    }) as typeof append
+    runtime.session.addMessage({ role: 'user', content: text('BUFFERED-SOURCE') })
+    expect(runtime.session.hasPendingWrites()).toBe(true)
+    runtime.session.addMessage({ role: 'assistant', content: text('reply') })
+    respond = async () => ({ id: 'r', content: text('summary'), stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+    await (runtime.executor as unknown as { forceCompact: (r: string) => Promise<number> }).forceCompact('test')
+    const rows = ws.forLoop('reflector').getLoop()
+    expect(rows.filter(r => JSON.stringify(r.content_json).includes('BUFFERED-SOURCE'))).toHaveLength(0)
   })
 
   it('keeps the row in the stream and puts it in the session once', async () => {

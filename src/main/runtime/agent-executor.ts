@@ -705,6 +705,8 @@ export class AgentExecutor extends EventEmitter {
   // The recovery fact last published with state_changed (statePayload), so a
   // change in error re-publishes it once and an unchanged one does not.
   private _publishedRecoveryAt: number | null = null
+  // See getModelSeenSeq.
+  private modelSeenSeq = 0
   // True once the give-up notice for the current outage has been written, so
   // repeated failing triggers during a dead-provider stretch don't spam the
   // loop with one notice per turn. Cleared on the next provider success.
@@ -2774,6 +2776,10 @@ export class AgentExecutor extends EventEmitter {
         const callSignal = this.abortController?.signal
         const inFlight = { text: '', thinking: '' }
         this.inFlightOutput = inFlight
+        // Every loop row in this request has now been put to the model
+        // (modelSeenSeq): a queued kick for one of them owes nothing.
+        const requestSeq = this.session.getMessages().reduce((max, m) => (typeof m.seq === 'number' && m.seq > max ? m.seq : max), 0)
+        if (requestSeq > this.modelSeenSeq) this.modelSeenSeq = requestSeq
         const { response, metadata: llmMetadata } = await this.createMessageWithLlmCall('turn', {
           system: request.system,
           messages: files.messages,
@@ -5544,6 +5550,14 @@ export class AgentExecutor extends EventEmitter {
     })
   }
 
+  /** The newest loop seq included in a model request for a turn. A
+   *  queued kick for a row at or below it owes nothing; a row above it is
+   *  unread, even if it is already in the session (a reload with no model
+   *  call after it, as compactNow does). */
+  getModelSeenSeq(): number {
+    return this.modelSeenSeq
+  }
+
   /** The recovery fact last published with `error` (null when parked or not in error), for a start/re-attach snapshot. */
   getRecoveryAt(): number | null {
     return this.state === 'error' ? this._publishedRecoveryAt : null
@@ -5954,7 +5968,10 @@ export class AgentExecutor extends EventEmitter {
     const pendingRowSeqs = this.session.peekPendingContextInjections()
       .flatMap(i => typeof i.seq === 'number' && workspace.hasLoopSeq(i.seq) ? [i.seq] : [])
     const preservedSeqs = [...preservedMessages.map(pm => pm.seq), ...pendingRowSeqs]
-    const allSeqsKnown = preservedSeqs.every((s): s is number => typeof s === 'number')
+    // A write still buffered after the flush has no seq: the source range
+    // (sourceMaxSeq below) would not cover it, and compactLoop would keep it
+    // after the summary as well as summarize it. Use the legacy path then.
+    const allSeqsKnown = !this.session.hasPendingWrites() && preservedSeqs.every((s): s is number => typeof s === 'number')
 
     // The newest row this summary was built from. If it is gone by the time
     // the exclusive loop op runs, another compaction (or a clear) landed while

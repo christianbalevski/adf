@@ -767,6 +767,7 @@ export function assembleAgent<P extends AgentProfileName>(
       isBusy: () => executor.isTurnActive() || inFlight.size > 0,
       dispatch: (value) => dispatch(value),
       getState: () => executor.getState(),
+      modelSeenSeq: () => executor.getModelSeenSeq(),
     },
   })
 

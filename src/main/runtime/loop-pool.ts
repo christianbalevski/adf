@@ -125,6 +125,8 @@ export interface LoopPoolDeps {
      *  loop (§6.3): a suspended agent is a suspended organism, not a quiet
      *  face with minds still turning behind it. */
     getState: () => string
+    /** Main executor's getModelSeenSeq: the newest row the model has seen. */
+    modelSeenSeq: () => number
   }
 }
 
@@ -151,27 +153,24 @@ function enqueueKick(queue: PendingWake[], entry: PendingWake): void {
   queue.push(entry)
 }
 
-/**
- * Which queued kick, if any, must fire at a turn boundary.
- * - An un-injected entry must fire and must carry its own blocks.
- * - Otherwise fire iff a wake injection is still pending (the turn ended before
- *   draining it); the blocks are irrelevant — the kick adds nothing and the
- *   drain delivers (C1). Every injection already drained ⇒ no kick at all.
- */
 /** How long a stop waits for an aborted turn to settle before proceeding. */
 const STOP_SETTLE_TIMEOUT_MS = 30_000
 const STOP_POLL_MS = 25
 
-function pickKickRepresentative(entries: PendingWake[], session: AgentSession): PendingWake | null {
-  // An un-injected entry whose row the running turn already read (it
-  // rehydrated from a stream that held the row, as when several timers fire
-  // into an empty session in one tick) owes nothing: kicking would call the
-  // model again with no new input, its prompt ending in its own reply.
-  const held = new Set(session.getMessages().flatMap(m => (typeof m.seq === 'number' ? [m.seq] : [])))
-  const uninjected = entries.find(e => !e.injected && (e.seq === undefined || !held.has(e.seq)))
-  if (uninjected) return uninjected
-  if (session.hasPendingWakeInjection()) return entries[0] ?? null
-  return null
+/**
+ * Which queued kick, if any, must fire at a turn boundary: the first entry
+ * whose row the model has not seen (`seenSeq`, AgentExecutor.getModelSeenSeq).
+ * - A row the running turn already sent to the model owes nothing, whether it
+ *   was injected and drained or rehydrated with the stream (several timers
+ *   firing into an empty session in one tick): kicking would call the model
+ *   with no new input, its prompt ending in its own reply.
+ * - A row the model has not seen gets one turn, whether its injection is still
+ *   pending, was dropped because a reload restored the row (H2, a compaction
+ *   with no model call after it), or it was never injected. The kick adds no
+ *   second copy: the executor skips a row already in the session or queued.
+ */
+function pickKickRepresentative(entries: PendingWake[], seenSeq: number): PendingWake | null {
+  return entries.find(e => e.seq === undefined || e.seq > seenSeq) ?? null
 }
 
 /** One side loop: its own mind, on the agent's body. */
@@ -768,7 +767,7 @@ export class LoopPool implements LoopPoolApi {
       // the drain delivers exactly once.
       const entries = runtime.takeAllPendingWakes()
       if (entries.length === 0) return
-      const rep = pickKickRepresentative(entries, runtime.session)
+      const rep = pickKickRepresentative(entries, runtime.executor.getModelSeenSeq())
       if (!rep) return   // every injection already drained mid-turn — nothing left to deliver
       // The router decides AFTER the take (the agent can be suspended between
       // the turn boundary and this tick), so a refusal must put the wake back —
@@ -805,7 +804,7 @@ export class LoopPool implements LoopPoolApi {
       // already drained mid-turn ⇒ no kick.
       const entries = this.mainPendingWakes.splice(0)
       if (entries.length === 0) return
-      const rep = pickKickRepresentative(entries, this.deps.main.session)
+      const rep = pickKickRepresentative(entries, this.deps.main.modelSeenSeq())
       if (!rep) return
       const value = createDispatch(rep.event, { scope: 'agent', loop: MAIN_LOOP })
       void this.deps.main.dispatch(value).catch(error => {
