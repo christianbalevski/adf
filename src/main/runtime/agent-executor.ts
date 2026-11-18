@@ -5534,8 +5534,8 @@ export class AgentExecutor extends EventEmitter {
     try {
       this.session.getWorkspace().insertLog(
         'warn', 'executor', 'recovery_suppressed', null,
-        `Recovery attempts exhausted (${this._recoveryAttempts}/${maxAttempts}); timers stay due and agent-scope triggers wait until a chat message arrives or ` +
-        `${Math.round(ERROR_RECOVERY_COOLDOWN_MS / 60_000)} minutes have passed since the last attempt`
+        `Recovery attempts exhausted (${this._recoveryAttempts}/${maxAttempts}). ` +
+        'Recovery budget spent: timers wait for the cooldown; other agent-scope triggers are dropped until then (a chat message recovers now).'
       )
     } catch { /* non-fatal */ }
     this.emitRuntimeEvent('error.recovery_suppressed', {

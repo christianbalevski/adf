@@ -1449,7 +1449,7 @@ A loop is a named conversation of the agent (§0.3). Every agent has the loop `m
 
 *Storage.* Each loop's transcript is the `adf_loop` rows with `loop = <name>`. `adf_timers`, `adf_tasks` and `adf_logs` rows carry the loop that created them in their `loop` column; NULL means `main`. Transcript snapshots use the `adf_audit` source `loop:<name>` (§13.3). Each loop is compacted separately (§13.2).
 
-*Routing.* A trigger target with `loop: "<name>"` wakes that loop; a target without `loop` wakes `main` (§7.2). An agent-scope timer wakes the loop in its `loop` column (§7.7). The model moves work between loops with `loop_send`. A runtime MUST drop, and log with `event="loop_dispatch_dropped"`, a dispatch addressed to a loop that does not exist or is disabled; it MUST NOT deliver it to `main` instead. An agent-scope timer for such a loop is not dispatched: it is held and stays due (§7.7).
+*Routing.* A trigger target with `loop: "<name>"` wakes that loop; a target without `loop` wakes `main` (§7.2). An agent-scope timer wakes the loop in its `loop` column (§7.7). The model moves work between loops with `loop_send`. A runtime MUST drop, and log with `event="loop_dispatch_dropped"`, a dispatch addressed to a loop that does not exist or is disabled; it MUST NOT deliver it to `main` instead. A timer is handled by §7.7: for a loop that does not exist, its agent part is dropped and logged this way; for a disabled loop, it is held and stays due.
 
 *Management.* `loop_manage` is available only in `main`. Its actions are `create`, `get`, `update` and `delete`; `update` cannot rename a loop. A runtime MUST refuse to create a loop when the agent already has 16 inner loops, and MUST refuse `loop_manage` changes when `locked_fields` locks `loops`. Deleting a loop, through `loop_manage` or by removing it from config, stops it, writes its transcript to `adf_audit` as `loop:<name>` whatever `audit.loop` says, deletes its unlocked timers and keeps its locked timers.
 
@@ -1589,10 +1589,10 @@ A timer fires for a scope when both hold:
 A timer whose agent scope `on_timer` admits is **received** when its payload is written into the stream of its target loop: the loop in the timer's `loop` column (NULL means `main`). The runtime fires such a timer only when that loop can receive it, that is, when all hold:
 
 1. The state gate (§7.5) admits agent scope for that loop.
-2. The loop exists and is enabled.
+2. The loop is enabled.
 3. The loop is not in `error`, or it is in `error` and may start a recovery attempt now (§7.5).
 
-When it fires, the runtime settles the occurrence and writes the payload into the loop's stream in one transaction, and only if the timer is still on that occurrence. It then wakes the loop with a timer event that refers to the written row, so the row is not written twice. A loop that is running a turn reads the row at its next model boundary, and runs one more turn only if its turn ends before it has read the row. A timer whose target cannot receive is held (below), its lambda included.
+When it fires, the runtime settles the occurrence and writes the payload into the loop's stream in one transaction, and only if the timer is still on that occurrence. It then wakes the loop with a timer event that refers to the written row, so the row is not written twice. A loop that is running a turn reads the row at its next model boundary, and runs one more turn only if its turn ends before it has read the row. A timer whose target cannot receive is held (below), its lambda included. A timer whose `loop` names a loop that does not exist is not held: the runtime MUST drop its agent part, log it with `event="loop_dispatch_dropped"` and MUST NOT deliver it to `main`. The rest of the timer is handled as a timer with no admitted agent scope (below).
 
 A timer with no agent scope that `on_timer` admits is settled when it fires, before its lambda runs, and only if the timer is still on that occurrence. If the runtime cannot deliver such a `once` fire (backpressure), it clears `expired` so that the timer fires later. A timer that `on_timer` admits in no scope is settled with nothing run, except while the agent is `off`. While the agent is `off`, no timer is settled.
 

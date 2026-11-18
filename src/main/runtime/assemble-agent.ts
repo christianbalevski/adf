@@ -785,6 +785,7 @@ export function assembleAgent<P extends AgentProfileName>(
   // write it again and auth parking and the recovery budget still apply.
   triggerEvaluator.setTimerReceiver({
     canReceive: (loop) => loopPool.canReceive(loop),
+    hasLoop: (loop) => loopPool.hasLoop(loop),
     inError: (loop) => (loop === MAIN_LOOP ? executor : loopPool.getRuntime(loop)?.executor)?.getState() === 'error',
     systemLaneHasRoom: (dispatchValue) => executor.systemLaneHasRoom(dispatchValue),
     deliver: (timer, nextWake, firedAt, event) => {

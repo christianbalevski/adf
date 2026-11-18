@@ -518,7 +518,8 @@ export function overviewNextWake(
   const full = nextFiringWake(timers, gate, ctx)
   const at = preview === undefined ? full : full === undefined ? preview : Math.min(preview, full)
   const last = upcoming?.length === 3 ? upcoming[2].at : undefined
-  const needsTimers = gate.state !== 'off' && last !== undefined && (preview === undefined || preview > last)
+  // No context (config not loaded): nothing can be predicted from the full list either.
+  const needsTimers = ctx !== undefined && gate.state !== 'off' && last !== undefined && (preview === undefined || preview > last)
   return { at, needsTimers }
 }
 

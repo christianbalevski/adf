@@ -170,6 +170,7 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
     // transaction) and is recorded as the agent dispatch it would wake.
     evaluator.setTimerReceiver({
       canReceive: () => true,
+      hasLoop: () => true,
       inError: () => false,
       systemLaneHasRoom: () => true,
       deliver: (timer, nextWake, firedAt, event) => {

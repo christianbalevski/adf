@@ -84,20 +84,24 @@ export interface TimerContext {
  * runtime decides it from the same facts and config. Only the scopes on_timer
  * admits count; a row with none settles with nothing run. The agent part
  * decides a row that has one, because the whole row waits until its target
- * can receive: an inner-loop target must be declared and enabled and, in
- * error, offer a recovery attempt by its own published fact. A system-only row
- * fires unless the agent is off. Nothing fires while the agent is off, and
+ * can receive: an inner-loop target must be enabled and, in error, offer a
+ * recovery attempt by its own published fact. The agent part of a timer for
+ * a loop that is not declared is dropped. A system-only row fires unless the
+ * agent is off. Nothing fires while the agent is off, and
  * nothing is predicted before the config has loaded (`ctx` undefined).
  */
 export function timerFireTime(scopes: readonly string[], facts: GateFacts, dueAt: number, loop: string | null | undefined, ctx: TimerContext | undefined): number | undefined {
   if (!ctx || facts.state === 'off') return undefined
-  const admitted = admittedTimerScopes(ctx.onTimer, scopes as TriggerScopeV3[])
+  let admitted = admittedTimerScopes(ctx.onTimer, scopes as TriggerScopeV3[])
+  // A loop that is not declared (deleted): the agent part is dropped, and the
+  // row fires as its other scopes do.
+  if (loop && loop !== 'main' && !ctx.loops.some(l => l.name === loop)) admitted = admitted.filter(scope => scope !== 'agent')
   if (admitted.includes('agent')) {
     let at = fireTime('agent', 'on_timer', facts, dueAt, loop)
     if (at !== undefined && loop && loop !== 'main') {
       const declared = ctx.loops.find(l => l.name === loop)
       const own = ctx.loopFacts[loop]
-      if (!declared || declared.enabled === false) at = undefined
+      if (declared?.enabled === false) at = undefined
       else if (own?.state === 'error') at = fireTime('agent', 'on_timer', own, at)
     }
     return at

@@ -970,6 +970,7 @@ describe('TriggerEvaluator', () => {
     function stubReceiver(ws: { claimTimer: (...a: unknown[]) => boolean }, events: unknown[]) {
       return {
         canReceive: () => true,
+        hasLoop: () => true,
         inError: () => false,
         systemLaneHasRoom: () => true,
         deliver: (timer: { id: number; next_wake_at: number; run_count: number; loop?: string | null }, nextWake: number | null, firedAt: number, event: AdfEvent<'timer'>) => {
@@ -1040,7 +1041,7 @@ describe('TriggerEvaluator', () => {
       } as never])
       let ready = false
       const deliver = vi.fn(() => true)
-      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, inError: () => false, systemLaneHasRoom: () => true, deliver })
+      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, hasLoop: () => true, inError: () => false, systemLaneHasRoom: () => true, deliver })
 
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)

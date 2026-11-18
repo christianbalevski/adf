@@ -131,6 +131,9 @@ export interface TimerReceiver {
   /** Whether the timer's target loop can receive now, beyond main's gate
    *  facts: it exists, is enabled, and its executor is not refusing. */
   canReceive(loop: string): boolean
+  /** Whether a loop of this name is declared (main always is). A disabled
+   *  loop is declared; a deleted one is not. */
+  hasLoop(loop: string): boolean
   /** Whether the target loop is in `error`, so a delivery to it is its
    *  recovery attempt (it takes one per tick). */
   inError(loop: string): boolean
@@ -878,6 +881,12 @@ export class TriggerEvaluator extends EventEmitter {
    * crash mid-fire cannot refire it.
    */
   private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>): void {
+    const loop = timer.loop ?? 'main'
+    // A loop that is not declared (deleted) can never receive: as on base, the
+    // agent part is dropped and logged, and the row fires as its other scopes
+    // do. A declared but disabled loop holds the row (it can be re-enabled).
+    const orphaned = admitted.includes('agent') && !!this.timerReceiver && !this.timerReceiver.hasLoop(loop)
+    if (orphaned) admitted = admitted.filter(scope => scope !== 'agent')
     const agentPart = admitted.includes('agent')
     const scopes = agentPart ? admitted : admitted.filter(scope => this.shouldFire(scope, 'on_timer'))
     const event = createEvent({
@@ -894,7 +903,6 @@ export class TriggerEvaluator extends EventEmitter {
     } else if (admitted.length > 0 && scopes.length === 0) return
 
     const nextWake = this.nextRenewal(timer, now)
-    const loop = timer.loop ?? 'main'
     try {
       const inError = agentPart && this.timerReceiver!.inError(loop)
       const claimed = agentPart
@@ -902,6 +910,13 @@ export class TriggerEvaluator extends EventEmitter {
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
       if (!claimed) return
       if (inError) attempted.add(loop)
+      if (orphaned) {
+        try {
+          this.workspace?.insertLog('warn', 'runtime', 'loop_dispatch_dropped', loop,
+            `Dropped the agent part of timer #${timer.id}: no loop named "${loop}" on this agent. Orphaned targets are never re-pointed at main.`,
+            { timer_id: timer.id })
+        } catch { /* observability is never fatal */ }
+      }
     } catch (error) {
       // The row stays due and is retried next tick.
       console.error(`[TriggerEvaluator] Failed to settle timer #${timer.id}:`, error)
