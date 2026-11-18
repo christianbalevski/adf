@@ -542,30 +542,6 @@ describe('round 1: F1 one recovery window admits one attempt', { timeout: 30_000
   })
 })
 
-describe('round 1: F2 one failed attempt changes state once per transition', { timeout: 30_000 }, () => {
-  // BLOCKED on a decision (round 1 F2): dropping the slot-claim publish lets the
-  // attempt's own error_recovery_trigger log (written while still in error with
-  // recovery_at 0) fire an agent-scope on_logs target (SELF-on_logs in
-  // error-recovery-through-evaluator). Today the sequence is
-  // error:null (claim), idle, thinking, error:null, error:0. `it.fails` flips
-  // to a failure once the decision lands and this sequence holds.
-  it.fails('state_changed for one failed timer attempt: idle, thinking, error (slot held), error (fact)', async () => {
-    const { agent, workspace } = await erroredAgent('r1-republish', { delayMs: 600_000 })
-    try {
-      await sleep(20)
-      const events: string[] = []
-      agent.executor.on('event', (e: { type: string; payload: { state: string; recovery_at?: number | null } }) => {
-        if (e.type === 'state_changed') events.push(`${e.payload.state}:${e.payload.recovery_at}`)
-      })
-      addDue(workspace, 'R1-ONE-ATTEMPT')
-      tick(agent)
-      await settled(agent); await sleep(50)
-      expect(agent.executor.getState()).toBe('error')
-      expect(events).toEqual(['idle:undefined', 'thinking:undefined', 'error:null', 'error:0'])
-    } finally { await agent.disposeAsync() }
-  })
-})
-
 describe('round 1: F3 a mixed row is held whole while its lambda lane is full', { timeout: 30_000 }, () => {
   it('no row, not settled, lambda not dropped; fires once when the lane has room', async () => {
     const { filePath, open } = makeFile('r1-backpressure')

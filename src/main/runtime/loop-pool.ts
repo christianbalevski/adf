@@ -146,9 +146,7 @@ const PENDING_WAKE_CAP = 16
  *  un-injected entry — which carries blocks the kick must inline — always
  *  queues. Returns the (possibly unchanged) queue. */
 function enqueueKick(queue: PendingWake[], entry: PendingWake): void {
-  // Per event type: a timer kick must replay as a timer (auth parking and the
-  // recovery budget apply to it), a loop_send kick as the chat it is.
-  if (entry.injected && queue.some(e => e.event.type === entry.event.type)) return
+  if (entry.injected && queue.length > 0) return
   if (queue.length >= PENDING_WAKE_CAP) return
   queue.push(entry)
 }
@@ -167,7 +165,7 @@ const STOP_POLL_MS = 25
 function pickKickRepresentative(entries: PendingWake[], session: AgentSession): PendingWake | null {
   const uninjected = entries.find(e => !e.injected)
   if (uninjected) return uninjected
-  if (session.hasPendingWakeInjection()) return entries.find(e => e.event.type === 'chat') ?? entries[0] ?? null
+  if (session.hasPendingWakeInjection()) return entries[0] ?? null
   return null
 }
 

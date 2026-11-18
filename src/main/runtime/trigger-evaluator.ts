@@ -263,10 +263,11 @@ export class TriggerEvaluator extends EventEmitter {
   }
 
   /** Whether a timer's agent part can be received now: main's gate admits it
-   *  for this loop, and the target loop can take it (TimerReceiver). */
+   *  for this loop, and the target loop can take it (TimerReceiver). With no
+   *  receiver nothing can receive, and the row is held. */
   private canReceive(timer: Timer, attempted: ReadonlySet<string>): boolean {
     const loop = timer.loop ?? 'main'
-    return !attempted.has(loop) && this.shouldFire('agent', 'on_timer', loop) && (this.timerReceiver?.canReceive(loop) ?? true)
+    return !attempted.has(loop) && this.shouldFire('agent', 'on_timer', loop) && !!this.timerReceiver?.canReceive(loop)
   }
 
   // ===========================================================================
@@ -889,15 +890,15 @@ export class TriggerEvaluator extends EventEmitter {
       : null
     if (agentPart) {
       if (!this.canReceive(timer, attempted)) return
-      if (lambdaDispatch && this.timerReceiver && !this.timerReceiver.systemLaneHasRoom(lambdaDispatch)) return
+      if (lambdaDispatch && !this.timerReceiver!.systemLaneHasRoom(lambdaDispatch)) return
     } else if (admitted.length > 0 && scopes.length === 0) return
 
     const nextWake = this.nextRenewal(timer, now)
     const loop = timer.loop ?? 'main'
     try {
-      const inError = agentPart && !!this.timerReceiver?.inError(loop)
-      const claimed = agentPart && this.timerReceiver
-        ? this.timerReceiver.deliver(timer, nextWake, now, event)
+      const inError = agentPart && this.timerReceiver!.inError(loop)
+      const claimed = agentPart
+        ? this.timerReceiver!.deliver(timer, nextWake, now, event)
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
       if (!claimed) return
       if (inError) attempted.add(loop)
@@ -958,10 +959,7 @@ export class TriggerEvaluator extends EventEmitter {
           }
         } else {
           // Agent scope: delivered above into the loop the timer was set on.
-          // An evaluator with no receiver (no assembled host) emits the
-          // dispatch instead.
           this.lastTriggerAt = now
-          if (!this.timerReceiver) this.emit('trigger', createDispatch(event, { scope: 'agent', loop: timer.loop }))
         }
       })
     }

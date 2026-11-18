@@ -490,7 +490,7 @@ export function timerContext(config: Pick<AgentConfig, 'triggers' | 'loops'> | n
 type TimerRowLike = { next_wake_at: number; scope: readonly string[]; loop?: string | null; expired?: boolean | number }
 
 /** The next wake across all timers, independent of the three-row Upcoming preview. */
-export function nextFiringWake(timers: readonly TimerRowLike[] | undefined, gate: GateFacts, ctx?: TimerContext): number | undefined {
+export function nextFiringWake(timers: readonly TimerRowLike[] | undefined, gate: GateFacts, ctx: TimerContext | undefined): number | undefined {
   return timers?.reduce<number | undefined>((next, timer) => {
     const at = timer.expired ? undefined : timerFireTime(timer.scope, gate, timer.next_wake_at, timer.loop, ctx)
     if (at === undefined) return next
@@ -509,7 +509,7 @@ export function overviewNextWake(
   upcoming: readonly UpcomingWake[] | undefined,
   timers: readonly TimerRowLike[] | undefined,
   gate: GateFacts,
-  ctx?: TimerContext,
+  ctx: TimerContext | undefined,
 ): { at: number | undefined; needsTimers: boolean } {
   const preview = upcoming?.reduce<number | undefined>((next, t) => {
     const at = wakeFireTime(t, gate, ctx)
@@ -523,13 +523,13 @@ export function overviewNextWake(
 }
 
 /** An Upcoming row's countdown to when it fires in this gate, or null when it will not fire. */
-export function wakeCountdown(t: UpcomingWake, gate: GateFacts, now: number, ctx?: TimerContext): string | null {
+export function wakeCountdown(t: UpcomingWake, gate: GateFacts, now: number, ctx: TimerContext | undefined): string | null {
   const at = wakeFireTime(t, gate, ctx)
   return at === undefined ? null : formatUntil(at, now)
 }
 
 /** A Timers tab row's countdown, or null when the timer will not fire in this gate (same rule as the overview). */
-export function timerCountdown(timer: { scope: readonly string[]; next_wake_at: number; loop?: string | null }, gate: GateFacts, format: (at: number) => string, ctx?: TimerContext): string | null {
+export function timerCountdown(timer: { scope: readonly string[]; next_wake_at: number; loop?: string | null }, gate: GateFacts, format: (at: number) => string, ctx: TimerContext | undefined): string | null {
   const at = timerFireTime(timer.scope, gate, timer.next_wake_at, timer.loop, ctx)
   return at === undefined ? null : format(at)
 }

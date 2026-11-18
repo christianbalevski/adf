@@ -1592,7 +1592,7 @@ A timer whose agent scope `on_timer` admits is **received** when its payload is 
 2. The loop exists and is enabled.
 3. The loop is not in `error`, or it is in `error` and may start a recovery attempt now (§7.5).
 
-When it fires, the runtime settles the occurrence and writes the payload into the loop's stream in one transaction, and only if the timer is still on that occurrence. It then wakes the loop with a timer event that refers to the written row, so the row is not written twice. A loop that is running a turn reads the row at its next model boundary, and runs one more turn only if its turn ends before it has read the row. A timer whose target cannot receive is held whole: the runtime MUST NOT settle it or run its lambda, and it fires once, as a missed timer, on the first check after the target can receive it.
+When it fires, the runtime settles the occurrence and writes the payload into the loop's stream in one transaction, and only if the timer is still on that occurrence. It then wakes the loop with a timer event that refers to the written row, so the row is not written twice. A loop that is running a turn reads the row at its next model boundary, and runs one more turn only if its turn ends before it has read the row. A timer whose target cannot receive is held (below), its lambda included.
 
 A timer with no agent scope that `on_timer` admits is settled when it fires, before its lambda runs, and only if the timer is still on that occurrence. If the runtime cannot deliver such a `once` fire (backpressure), it clears `expired` so that the timer fires later. A timer that `on_timer` admits in no scope is settled with nothing run, except while the agent is `off`. While the agent is `off`, no timer is settled.
 
@@ -1607,7 +1607,7 @@ A runtime MUST NOT delete expired timers as part of firing; they remain as histo
 
 After downtime, a runtime fires each missed timer once on load and then schedules its next occurrence. A runtime MUST NOT fire every missed occurrence.
 
-A timer that `on_timer` admits in at least one of its scopes is not settled while it is held: while its agent part cannot be received, or, for a timer with no admitted agent scope, while the state gate (§7.5) blocks every admitted scope. A runtime MUST NOT set `expired`, advance `next_wake_at`, increment `run_count` or set `last_fired_at` for a held timer; it stays due and fires once, as a missed timer, on the first check after it may fire.
+A timer that `on_timer` admits in at least one of its scopes is not settled while it is held: while its agent part cannot be received, or, for a timer with no admitted agent scope, while the state gate (§7.5) blocks every admitted scope. A runtime MUST NOT run a held timer's lambda, set `expired`, advance `next_wake_at`, increment `run_count` or set `last_fired_at` for it; it stays due and fires once, as a missed timer, on the first check after it may fire.
 
 When a loop is deleted, the runtime deletes its unlocked timers and logs `loop_timers_dropped`; locked timers are kept.
 

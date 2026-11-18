@@ -165,6 +165,19 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
     evaluator.setWorkspace(workspace)
     const fired: (AdfEventDispatch | AdfBatchDispatch)[] = []
     evaluator.on('trigger', (d: AdfEventDispatch | AdfBatchDispatch) => fired.push(d))
+    // A stub of assembleAgent's receiver: every target can receive; a
+    // delivery claims the occurrence (as the real one does, in its
+    // transaction) and is recorded as the agent dispatch it would wake.
+    evaluator.setTimerReceiver({
+      canReceive: () => true,
+      inError: () => false,
+      systemLaneHasRoom: () => true,
+      deliver: (timer, nextWake, firedAt, event) => {
+        if (!workspace.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, firedAt)) return false
+        fired.push(createDispatch(event, { scope: 'agent', loop: timer.loop }))
+        return true
+      },
+    })
     const tick = () => (evaluator as unknown as { checkTimers: () => void }).checkTimers()
     const payloadsFired = () => fired.map(d => ('event' in d ? (d.event.data as { timer: { payload?: string } }).timer.payload : null))
     return { workspace, evaluator, fired, tick, payloadsFired }
@@ -300,7 +313,7 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
 
     evaluator.setDisplayState('idle')
     tick(); tick()
-    expect(fired.map(d => d.scope)).toEqual(['system', 'agent'])
+    expect(fired.map(d => d.scope)).toEqual(['agent', 'system'])
     expect(row().expired).toBe(true)
     expect(row().run_count).toBe(1)
   })

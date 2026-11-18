@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { TriggerEvaluator } from '../../../src/main/runtime/trigger-evaluator'
 import type { AgentConfig, TimerSchedule, TriggerConfig, TriggerTarget } from '../../../src/shared/types/adf-v02.types'
-import type { AdfEventDispatch, AdfBatchDispatch } from '../../../src/shared/types/adf-event.types'
+import { createDispatch, type AdfEvent, type AdfEventDispatch, type AdfBatchDispatch } from '../../../src/shared/types/adf-event.types'
 import { clearAllUmbilicalBuses, ensureUmbilicalBus } from '../../../src/main/runtime/umbilical-bus'
 import { withSource } from '../../../src/main/runtime/execution-context'
 
@@ -964,6 +964,22 @@ describe('TriggerEvaluator', () => {
       } as any
     }
 
+    /** A stub of assembleAgent's receiver: every target can receive; a
+     *  delivery claims through the workspace and is recorded as the agent
+     *  dispatch it would wake. */
+    function stubReceiver(ws: { claimTimer: (...a: unknown[]) => boolean }, events: unknown[]) {
+      return {
+        canReceive: () => true,
+        inError: () => false,
+        systemLaneHasRoom: () => true,
+        deliver: (timer: { id: number; next_wake_at: number; run_count: number; loop?: string | null }, nextWake: number | null, firedAt: number, event: AdfEvent<'timer'>) => {
+          if (!ws.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, firedAt)) return false
+          events.push(createDispatch(event, { scope: 'agent', loop: timer.loop ?? undefined }))
+          return true
+        },
+      }
+    }
+
     it('fires expired timer with agent scope', () => {
       const config = makeConfig({
         on_timer: makeTriggerConfig([makeTarget('agent')])
@@ -983,6 +999,7 @@ describe('TriggerEvaluator', () => {
         created_at: Date.now() - 5000,
       }])
 
+      evaluator.setTimerReceiver(stubReceiver(ws, events))
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
 
@@ -1205,6 +1222,7 @@ describe('TriggerEvaluator', () => {
         throw new Error('disk I/O error')
       })
 
+      evaluator.setTimerReceiver(stubReceiver(ws, events))
       evaluator.startTimerPolling(ws)
       expect(() => vi.advanceTimersByTime(5000)).not.toThrow()
       expect(ws.claimTimer).toHaveBeenCalled()

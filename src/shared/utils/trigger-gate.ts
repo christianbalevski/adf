@@ -80,19 +80,21 @@ export interface TimerContext {
 }
 
 /**
- * When a timer with these scopes, due at `dueAt`, fires (is settled): the
- * agent part decides a row that has one, because the whole row waits until
- * its target can receive. A system-only row fires unless the agent is off.
- * Nothing fires while the agent is off. With a context: only admitted scopes
- * count (a row with none settles with nothing run, as the runtime does), and an inner-loop target must be
- * declared and enabled and, in error, offer a recovery attempt by its own
- * published fact.
+ * When a timer with these scopes, due at `dueAt`, fires (is settled), as the
+ * runtime decides it from the same facts and config. Only the scopes on_timer
+ * admits count; a row with none settles with nothing run. The agent part
+ * decides a row that has one, because the whole row waits until its target
+ * can receive: an inner-loop target must be declared and enabled and, in
+ * error, offer a recovery attempt by its own published fact. A system-only row
+ * fires unless the agent is off. Nothing fires while the agent is off, and
+ * nothing is predicted before the config has loaded (`ctx` undefined).
  */
-export function timerFireTime(scopes: readonly string[], facts: GateFacts, dueAt: number, loop?: string | null, ctx?: TimerContext): number | undefined {
-  const admitted: readonly string[] = ctx ? admittedTimerScopes(ctx.onTimer, scopes as TriggerScopeV3[]) : scopes
+export function timerFireTime(scopes: readonly string[], facts: GateFacts, dueAt: number, loop: string | null | undefined, ctx: TimerContext | undefined): number | undefined {
+  if (!ctx || facts.state === 'off') return undefined
+  const admitted = admittedTimerScopes(ctx.onTimer, scopes as TriggerScopeV3[])
   if (admitted.includes('agent')) {
     let at = fireTime('agent', 'on_timer', facts, dueAt, loop)
-    if (at !== undefined && ctx && loop && loop !== 'main') {
+    if (at !== undefined && loop && loop !== 'main') {
       const declared = ctx.loops.find(l => l.name === loop)
       const own = ctx.loopFacts[loop]
       if (!declared || declared.enabled === false) at = undefined
@@ -101,10 +103,10 @@ export function timerFireTime(scopes: readonly string[], facts: GateFacts, dueAt
     return at
   }
   if (admitted.includes('system')) return fireTime('system', 'on_timer', facts, dueAt)
-  return ctx && facts.state !== 'off' ? dueAt : undefined
+  return dueAt
 }
 
 /** timerFireTime for an Upcoming row; a daemon from before `scopes` sends only `scope`. */
-export function wakeFireTime(t: { at: number; scope: string; scopes?: readonly string[]; loop?: string | null }, facts: GateFacts, ctx?: TimerContext): number | undefined {
+export function wakeFireTime(t: { at: number; scope: string; scopes?: readonly string[]; loop?: string | null }, facts: GateFacts, ctx: TimerContext | undefined): number | undefined {
   return timerFireTime(t.scopes ?? [t.scope], facts, t.at, t.loop, ctx)
 }
