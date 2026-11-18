@@ -1036,18 +1036,6 @@ export function hasLoopGoal(loop: { goal?: string }): boolean {
 }
 
 /**
- * Never grantable to a side loop, at any layer.
- *
- * `sys_update_config` would let a loop rewrite the very config that attenuates
- * it; `loop_manage` is main-only (no nested loops); `sys_create_adf` mints a
- * whole new agent. Enforced twice: rejected by the Zod schema when it appears
- * in `LoopConfig.tools`, and subtracted again by `deriveLoopConfig` — which
- * additionally drops every tool the host marked `restricted`, because a HIL
- * approval can never be routed to a side-loop executor (MVP).
- */
-export const LOOP_PROHIBITED_TOOLS = ['sys_update_config', 'loop_manage', 'sys_create_adf'] as const
-
-/**
  * Read-time backfill for `AgentConfig.loops`.
  *
  * Deliberately non-persisting: unlike the tool backfill in
@@ -1631,17 +1619,15 @@ export const DEFAULT_TOOLS: ToolDeclaration[] = [
   // prompt that default-on loop_manage already voids.
   { name: 'loop_send', enabled: true, visible: true },
   { name: 'loop_list', enabled: true, visible: true },
-  // Main-only: creates/updates/tears down this agent's own inner loops.
-  // On and ungated by default, because a loop is a strict ATTENUATION of
-  // authority main already holds: deriveLoopConfig intersects the loop's
-  // allow-list with the host's enabled tools, drops every `restricted` name,
-  // and clamps code_execution — so loop_manage cannot expand the agent's
-  // capability surface, only subdivide it. Creating a loop is therefore not an
-  // escalation, and an approval gate would buy no authority the agent did not
-  // already have. Still main-only (LOOP_PROHIBITED_TOOLS keeps it off every
-  // loop) and still the owner's to re-gate with `restricted: true`. It honours
-  // `locked_fields` (a locked `loops` path refuses) and delete archives the
-  // stream and preserves locked timers, so it is recoverable.
+  // Creates/updates/tears down this agent's own inner loops (a flat roster).
+  // On and ungated by default, because a loop never holds more than the agent
+  // already does: deriveLoopConfig intersects the loop's allow-list with the
+  // host's enabled tools and carries each granted tool's `restricted` flag, so
+  // loop_manage cannot expand the agent's capability surface, only subdivide
+  // it. Creating a loop is therefore not an escalation. Still the owner's to
+  // re-gate with `restricted: true`. It honours `locked_fields` (a locked
+  // `loops` path refuses) and delete archives the stream and preserves locked
+  // timers, so it is recoverable.
   { name: 'loop_manage', enabled: true, visible: true },
   { name: 'msg_delete', enabled: false, visible: false },
   { name: 'say', enabled: true, visible: true },

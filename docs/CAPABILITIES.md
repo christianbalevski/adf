@@ -276,7 +276,7 @@ This part is for anyone building on ADF, operating it at scale, or evaluating it
 - **Compaction mechanics** — token estimate against `compact_threshold` (default 100k) triggers a memory-flush nudge, then a dedicated summary call, an optional audit snapshot, deletion, and a summary entry ordered before the preserved tail; a revision counter aborts a compaction racing a concurrent mutation.
 - **Context blocks** — system prompt and per-turn dynamic instructions are stored as deduplicated loop rows, so what the model saw is always reconstructible.
 - **Named inner loops** — up to 16 side loops per agent, each with its own goal, tool allowlist, optional model override, and compaction threshold, sharing the file, identity, and memory.
-- **Attenuate, never escalate** — a loop's effective tools are the intersection of its allowlist and the host's enabled set; `sys_update_config`, `loop_manage`, `sys_create_adf`, and every restricted tool are prohibited for side loops.
+- **Subset, never escalate** — a loop's effective tools are the intersection of its allowlist and the host's enabled set; a restricted tool stays restricted in the loop and asks for approval in that loop's tab.
 - **Loop messaging** — `loop_send` with optional wake delivers at the next model boundary; `loop_list` shows the roster; deleting a loop archives its stream to audit.
 - **Turn tools** — `respond` ends the turn in interactive mode and continues in autonomous; `say` never ends the turn; `ask` blocks for a human.
 - **Context breakdown** — per-file, per-tool-schema, and per-source token accounting, recomputed only when the cache rebuilds.

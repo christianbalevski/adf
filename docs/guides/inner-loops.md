@@ -18,9 +18,9 @@ All loops live in the same file and share everything in [spec §1.3](../../ADF_S
 
 ## Main and inner loops
 
-The governing rule is: **a loop inherits the whole agent and overrides a small delta.** An inner loop gets no identity, credentials, or config of its own, and it cannot alter the agent's. It shares main's `.adf` body, memory tables, and files. What it overrides is small: its instructions (its `goal`), its tool set (a minimal allow-list), optionally its model, optionally its compaction point, and which events wake it.
+The governing rule is: **a loop inherits the whole agent and overrides a small delta.** An inner loop has no identity of its own: it shares the agent's identity, credentials, config, `.adf` body, memory tables, and files with main. What it overrides is small: its instructions (its `goal`), its tool set (any subset of the agent's enabled tools), optionally its model, optionally its compaction point, and which events wake it.
 
-`main` is special: it always exists, is never deletable, and is the fallback target for anything not addressed to a specific loop. The standing preamble of an inner loop tells the model which loop it is, that it shares the agent's body, that `main` owns the outside world, how to reach the rest of itself, and when to stop.
+`main` is special: it always exists, is never deletable, and is the fallback target for anything not addressed to a specific loop. The standing preamble of an inner loop tells the model which loop it is, that it shares the agent's body, that `main` faces the outside world, how to reach the rest of itself, and when to stop.
 
 ## When to reach for an inner loop
 
@@ -31,7 +31,7 @@ Reach for a loop when a piece of thinking should run on its own stream rather th
 - **Review.** A loop that reviews a draft, plan, or decision before main acts, and sends back what it found — a second opinion that lives on its own stream. Main consults it before sending anything important.
 - **Background / reflective mind.** A default-mode loop that runs while nothing external is happening, so the agent keeps thinking instead of idling — the difference between a tool and something that feels alive.
 
-Keep each loop's tool set minimal. Anything that must touch the outside world comes back to main as a request, not an action the loop takes itself.
+Give each loop the tools its goal needs and no more. A review loop needs `fs_read` and `loop_send`: it reads the draft and sends main what it found, and main decides what goes out. A loop that answers a channel needs `msg_send` as well. If `msg_send` is restricted on the agent, each send from that loop asks for approval in the loop's tab.
 
 ## Creating and managing loops
 
@@ -50,7 +50,9 @@ The menu has no Rename: a loop's stream is stored under its name, so a renamed l
 
 To change a loop, double-click its tab: the agent config opens on the **Loops** panel with that loop's card expanded. `+ Add loop` in the same panel adds the same blank loop. `main` is a fixed, uneditable row; each loop's card has its **name**, an **enabled** toggle, an optional **goal**, an optional **model override**, a **compaction threshold**, and a **tool checklist** (drawn from the agent's own enabled tools, with **Select all** and **Select none**). The compaction threshold is shown whether or not you override the model, and defaults to the agent's own. The panel summary reads `main + N inner`.
 
-**From the agent itself (`loop_manage`).** The agent's `main` loop can create, inspect, update, and delete its own loops at runtime — the self-curating organism. **As of this release `loop_manage` is enabled and ungated by default.** The reason is attenuation, not convenience: a loop is a *strict attenuation of authority `main` already holds* — its tool list is intersected with the agent's own enabled tools, every human-approval-gated tool is subtracted, and its code profile is clamped — so `loop_manage` **cannot expand the agent's capability surface, only subdivide it**. Creating a loop is therefore not an escalation, and gating it would buy no authority the agent did not already have. It remains the owner's to re-gate (set `restricted: true` on the tool to re-add human approval), and it is `main`-only — loops cannot create loops.
+**From the agent itself (`loop_manage`).** The agent can create, inspect, update, and delete its own loops at runtime — the self-curating organism. `loop_manage` is enabled and ungated on `main` by default: a loop's tools are intersected with the agent's own enabled tools, and a restricted tool stays restricted inside the loop, so `loop_manage` **cannot expand the agent's capability surface, only subdivide it**. The owner can re-gate it with `restricted: true`.
+
+An inner loop holds `loop_manage` only when its own `tools` list names it. The roster is flat: a loop that creates a loop adds a sibling, never a child. A loop cannot update or delete itself, because either would stop the turn making the call; it asks main or another loop with `loop_send`. A loop manages only loops whose tools it holds itself: it cannot create, update or delete a loop with a tool missing from its own list. Main can manage any loop.
 
 `loop_manage` also respects the owner's locks. If you lock the `loops` config path with `locked_fields`, `create`, `update`, and `delete` all refuse with the same `'loops' is locked.` sentence [`sys_update_config`](tools.md#sys_update_config) uses — the agent cannot edit its own loop roster while the lock stands.
 
@@ -58,12 +60,12 @@ To change a loop, double-click its tab: the agent config opens on the **Loops** 
 
 | Action | Effect |
 |--------|--------|
-| `create` | Define a new inner loop and start it. `config.autostart` defaults to `true`: `main` immediately sends it a kickoff message with `wake: true`, so it runs its first turn on its goal right away, and it gets the same kickoff every time the agent starts. Pass `autostart: false` for a loop that should only run when a trigger, timer, or `loop_send` targets it. The goal is optional, but autostart needs one: a create with no goal must pass `autostart: false`, or it fails with `add a goal or turn autostart off`. |
+| `create` | Define a new inner loop and start it. `config.autostart` defaults to `true`: the calling loop immediately sends it a kickoff message with `wake: true`, so it runs its first turn on its goal right away, and it gets the same kickoff every time the agent starts. Pass `autostart: false` for a loop that should only run when a trigger, timer, or `loop_send` targets it. The goal is optional, but autostart needs one: a create with no goal must pass `autostart: false`, or it fails with `add a goal or turn autostart off`. |
 | `get` | Return one loop's full definition. (Use `loop_list` to enumerate them.) |
 | `update` | Patch a loop's fields; the loop is re-derived and restarted. Loops cannot be renamed — the name binds the executor to its stream. `enabled: false` stops the loop **now**: an in-flight turn is aborted, not finished first. |
 | `delete` | **Stop** the loop (mid-turn included), **archive** its stream to the audit log (under `loop:<name>`), then remove it. The history is retained in the audit log rather than dropped, so a deletion is auditable after the fact. Timers stamped to the deleted loop go with it — **except `locked` ones**, which are preserved and logged (see below). |
 
-**`main` has full authority over its loops.** A stop — by `delete`, by `enabled: false`, or by editing the loop out of the config — is never refused because the loop is busy. The runtime is condemned the moment the decision is made (no new turn can start on it), its in-flight turn is aborted, and the pool waits for that turn to settle before touching the stream. Nothing the loop wrote is lost: the stream is write-through on every step, and the settled turn flushes its retry buffer before any archive reads the rows. The tool's reply says when a turn was interrupted.
+**A stop is never refused because the loop is busy.** A stop — by `delete`, by `enabled: false`, or by editing the loop out of the config — is never refused because the loop is busy. The runtime is condemned the moment the decision is made (no new turn can start on it), its in-flight turn is aborted, and the pool waits for that turn to settle before touching the stream. Nothing the loop wrote is lost: the stream is write-through on every step, and the settled turn flushes its retry buffer before any archive reads the rows. The tool's reply says when a turn was interrupted.
 
 **Every teardown is archived.** Whether a loop is removed by `loop_manage delete` or by a config edit (Studio, a hand edit, `sys_update_config`), its stream is written to `adf_audit` under `loop:<name>` and then cleared, and an `adf_logs` entry (`loop_torn_down`) records how many entries went. This happens regardless of the `audit.loop` setting — that flag governs recoverable clears and compactions; a removed loop has no future to reconstruct its history from. Disabling a loop is not a teardown: its stream stays where it is, waiting for re-enablement. With the agent running, the loop pool does the archive after stopping the loop; with the agent stopped, Studio's config save does it (and drops the loop's timers, keeping locked ones), so a loop later added under the same name always starts empty. A hand edit of the file outside Studio is not covered. A loop's name can be edited on its config card only while the loop has no history; after that the name is fixed, because a rename would be a removal of the old name plus a new, empty loop under the new one. Create a new loop instead. A hand edit or `sys_update_config` that changes a name is still read that way, and the old name's stream is archived.
 
@@ -75,13 +77,13 @@ An agent may declare up to **16** inner loops (`MAX_SIDE_LOOPS`) — a structura
 
 | Tool | Who holds it | What it does |
 |------|--------------|--------------|
-| `loop_manage` | `main` only | Create / get / update / delete inner loops (see above). On and ungated by default; honours `locked_fields` on the `loops` path. |
+| `loop_manage` | `main`, and any loop that lists it | Create / get / update / delete inner loops (see above). On and ungated on `main` by default; honours `locked_fields` on the `loops` path. A loop cannot update or delete itself. |
 | `loop_send` | any loop that lists it | Send a message, insight, or request from one loop to another (or to `main`) by name. The content is appended to the target's stream stamped `[from loop:<sender>]`. `wake` controls *when it is read* — see [Delivery: what `wake` actually does](#delivery-what-wake-actually-does). Peer-to-peer — any loop may address any other; `main` is not a bus. Interior signalling only; it never leaves the agent. |
 | `loop_list` | any loop that lists it | Read-only roster of the agent's loops — name, goal, whether each is enabled, and whether it is running right now. Marks which loop you are. Discovery for `loop_send`. |
 | `loop_compact` | every loop (default-on) | Compact this loop's own history. |
 | `loop_clear` | every loop (default-on) | Clear this loop's own history. |
 
-**The default-on exception.** `loop_compact` and `loop_clear` are the two tools a loop gets *without* naming them in its allow-list — every loop has them unless the host explicitly turned them off. The exception exists because history destruction is owner intent, not loop taste. In practice both ship **disabled** on the agent (`DEFAULT_TOOLS`), so no loop has them until you enable them on the agent itself; a host `restricted` flag on either also keeps them off every loop, since a loop has no channel to ask a human. Everything else is explicit — nothing else reaches a loop that its own allow-list did not name.
+**The default-on exception.** `loop_compact` and `loop_clear` are the two tools a loop gets *without* naming them in its allow-list — every loop has them unless the host explicitly turned them off. The exception exists because history destruction is owner intent, not loop taste. In practice both ship **disabled** on the agent (`DEFAULT_TOOLS`), so no loop has them until you enable them on the agent itself; a host `restricted` flag on either carries into every loop, which then asks for approval before using it. Everything else is explicit — nothing else reaches a loop that its own allow-list did not name.
 
 `loop_send` and `loop_list` are ordinary config-declared tools: they ship enabled and visible, you can turn them off in the Tools panel like any other, and the runtime registers them into `main` **whenever their declaration is enabled** — exactly like every other capability tool. There is no loop-count gate. A loop-less agent's model *does* see them, and they answer sensibly: `loop_list` returns just `main`, and `loop_send` errors on any target it names (there is nowhere to send). To be granted to a *specific* loop, a tool must appear in that loop's own allow-list. A new loop created with no explicit tool list is seeded with `loop_send`, `loop_list` and `sys_set_state` (`DEFAULT_NEW_LOOP_TOOLS`) so it can talk back to main and end its own turn; pass an explicit `[]` for a mute loop that only thinks.
 
@@ -108,7 +110,7 @@ A `LoopConfig` has these fields:
 - **`enabled`** — whether the loop runs. A disabled loop still exists and can receive `loop_send` messages, but it will not run and will not read them until re-enabled.
 - **`autostart`** *(optional, default `false` in the file and in Studio; `loop_manage create` defaults it to `true`)* — the loop-level counterpart of the agent's `autostart`. An autostart loop runs a first turn on its goal without waiting to be addressed: `main` sends it a kickoff message with `wake: true` at create time and again every time the agent starts (only when the agent starts active — a hibernating agent keeps its loops quiet). The kickoff is an ordinary stream row, audited like any other interior message. Ignored while `enabled: false`. Without it, a loop only runs when a trigger, timer, or `loop_send` targets it. Requires a goal: the schema rejects autostart with no goal, and if a config without one reaches the runtime anyway, the kickoff is skipped and a `loop_autostart_refused` warning is logged.
 - **`autonomous`** *(optional, default `false`)* — the loop-level counterpart of the agent's `autonomous`, and **not inherited** from it. An autonomous loop keeps turning after a text-only response until it calls `sys_set_state` (or the narration breaker forces it idle after four tool-less replies). Grant `sys_set_state` alongside it; the default new-loop seed includes it.
-- **`tools`** — an **absolute allow-list** of tool names, intersected with the agent's own enabled tools at derive time (up to 64 names). `loop_send`/`loop_list` are granted only if named here; the sole implicit grants are the default-on pair `loop_compact`/`loop_clear` described above, which every loop gets unless the host disabled or restricted them. Naming a tool the agent has merely disabled is not an error: the loop carries the name ungranted and picks it up automatically if the tool is later enabled. Naming an unknown tool, or one never grantable to a loop, fails.
+- **`tools`** — an **absolute allow-list** of tool names, intersected with the agent's own enabled tools at derive time (up to 64 names). `loop_send`/`loop_list` are granted only if named here; the sole implicit grants are the default-on pair `loop_compact`/`loop_clear` described above, which every loop gets unless the host disabled them. Any enabled tool can be named, restricted ones included; a granted restricted tool asks for approval in the loop's tab. Naming a tool the agent has merely disabled is not an error: the loop carries the name ungranted and picks it up automatically if the tool is later enabled. Naming an unknown tool fails.
 - **`model`** *(optional)* — a model override for this loop only. It may name any configured provider; the loop is built with that provider's own credentials. An override whose provider cannot be built fails the loop start rather than falling back to the agent's provider. Overrides also require code execution (`sys_code`/`sys_lambda`) to be enabled on the agent; without it the override is ignored and the loop runs on the agent model.
 - **`compact_threshold`** *(optional)* — the token count at which this loop auto-compacts its own history. Absent = inherit the agent's threshold. Worth setting mainly alongside a model override, whose context window may differ from the agent model's.
 
@@ -122,15 +124,29 @@ For example, an `on_timer` trigger whose target sets `loop: "gardener"` wakes th
 
 See [triggers.md](triggers.md) and [timers.md](timers.md) for the full target syntax.
 
-## What an inner loop cannot do
+## What a loop holds, and what stays with main
 
-The security model is **attenuate, don't prohibit**: a loop is the same agent with a narrowed delta, enforced where its config is derived. Concretely, an inner loop:
+A loop holds the subset of the agent's enabled tools that main or the owner gave it, and nothing else. Two loops on the same agent:
 
-- **Has no identity or credentials of its own** and cannot alter the agent's. It shares main's.
-- **Runs a strict subset of the agent's tools** — an absolute allow-list, intersected with what the host has enabled, minus a few names that are never grantable to a loop (`sys_update_config`, `loop_manage`, `sys_create_adf`) and minus every tool the host marked `restricted` (HIL-gated) — because a human approval prompt cannot be routed to a loop's stream.
-- **Runs code under an attenuated profile.** Loop code can process the body, invoke models, and signal sibling loops, but has no sandbox packages and no `network`, `get_identity`/`set_identity`, or `task_resolve` — the same trust level as an existing code-without-identity escape hatch. Loops also cannot create system-scope lambda timers (those run under main's authority) or `locked` timers of any kind — they ask main with `loop_send`; system-scope trigger targets naming an inner loop are stripped.
-- **Cannot create other loops** — `loop_manage` is main-only, and loops do not nest.
-- **Cannot act on the outside world directly.** Anything outward — sending a message, reaching the network — is a *request to main*, not an instruction to it. Main weighs it with its normal judgement and its normal HIL approval.
+```json
+[
+  { "name": "gardener", "goal": "Consolidate mind.md every 30 minutes.", "enabled": true,
+    "tools": ["fs_read", "fs_write", "loop_send", "sys_set_state"] },
+  { "name": "triage", "goal": "Answer routine questions on the support channel.", "enabled": true,
+    "tools": ["msg_send", "loop_send", "sys_set_state"] }
+]
+```
+
+`gardener` cannot send anything outside the agent; it tells main with `loop_send`. `triage` can send. If `msg_send` is restricted on the agent, each send from `triage` asks for approval in the `triage` tab.
+
+Code in a loop runs under the agent's own `code_execution` settings, packages included. Grant `sys_code` or `sys_lambda` only to loops that should run code.
+
+What stays with main, whatever a loop's tools:
+
+- **Identity.** A loop has no DID or credentials of its own; it uses the agent's.
+- **System-scope timers and targets.** They run under main's authority, so a loop cannot create one, and a system-scope trigger target naming a loop is stripped.
+- **Locked timers.** A loop cannot set one; locks are the owner's.
+- **Nesting.** Loops do not nest. A loop holding `loop_manage` manages its siblings and cannot update or delete itself.
 
 **Provenance caveat.** The `[from loop:<name>]` stamp records only where a message *entered* the stream. It is spoofable inside the message content and is **not** a prompt-injection defense. Main treats an inbound loop message as an interior suggestion to weigh, and lets anything it asks for pass exactly the judgement and approval it would apply to any other request.
 

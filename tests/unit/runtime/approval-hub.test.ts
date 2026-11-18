@@ -139,7 +139,7 @@ describe('ApprovalHub registration', () => {
     expect(approvalHub.snapshot()).toHaveLength(0)
   })
 
-  it('keys asks per agent+loop — `ask_1` is not globally unique', async () => {
+  it('keys asks per agent+loop', async () => {
     const a = makeExecutor({ filePath: '/agents/a.adf', name: 'a' })
     const b = makeExecutor({ filePath: '/agents/b.adf', name: 'b' })
     const loop = makeExecutor({ filePath: '/agents/a.adf', name: 'a', loop: 'reflector' })
@@ -148,8 +148,6 @@ describe('ApprovalHub registration', () => {
     const pb = raiseAsk(b.executor, 'B?')
     const pl = raiseAsk(loop.executor, 'L?')
 
-    // All three are `ask_1`; a naive requestId key would have collapsed them.
-    expect(approvalHub.snapshot().map((e) => e.requestId)).toEqual(['ask_1', 'ask_1', 'ask_1'])
     expect(approvalHub.snapshot()).toHaveLength(3)
     expect(new Set(approvalHub.snapshot().map((e) => e.id)).size).toBe(3)
 

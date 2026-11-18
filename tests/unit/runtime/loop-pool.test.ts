@@ -107,6 +107,10 @@ function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
       pool.reconcile(next)
     },
     onLoopEvent: (event) => { events.push(event) },
+    // The agent-level resolver, minus main: whichever loop holds the request.
+    resolveHilTask: (taskId, approved, modifiedArgs, feedback) =>
+      pool.getRuntimes().find(r => r.executor.getPendingApprovalMeta(taskId) !== undefined)
+        ?.executor.resolveHilTask(taskId, approved, modifiedArgs, feedback) ?? false,
     main: {
       session: mainSession,
       isBusy: () => mainBusy,
@@ -212,9 +216,10 @@ describe('LoopPool — createLoop', () => {
     expect(pool.getRuntime('reflector')).toBeUndefined()
   })
 
-  it('rejects a restricted host tool — a loop has no channel to answer HIL', async () => {
-    await expect(pool.createLoop(loop({ tools: ['db_execute'] })))
-      .rejects.toThrow(/never grantable/)
+  it('accepts a restricted host tool and keeps it restricted in the loop', async () => {
+    await expect(pool.createLoop(loop({ tools: ['db_execute'] }))).resolves.toBeDefined()
+    const decl = pool.getRuntime('reflector')!.derived.tools.find(t => t.name === 'db_execute')
+    expect(decl).toMatchObject({ enabled: true, restricted: true })
   })
 
   it('rejects a duplicate itself, whatever the caller checked first', async () => {
@@ -581,8 +586,8 @@ describe('LoopPool — updateLoop', () => {
     expect(ws.getAgentConfig().loops?.[0].goal).toBe('a new charter')
   })
 
-  it('rejects an ungrantable tool without touching the stored loop', async () => {
-    await expect(pool.updateLoop('reflector', { tools: ['db_execute'] })).rejects.toThrow(/never grantable/)
+  it('rejects an unknown tool without touching the stored loop', async () => {
+    await expect(pool.updateLoop('reflector', { tools: ['not_a_tool'] })).rejects.toThrow(/no such tool/)
     expect(ws.getAgentConfig().loops?.[0].tools).toEqual([])
   })
 })
@@ -751,13 +756,13 @@ function chatToLoop(text: string, loopName: string) {
   )
 }
 
-// A4 (security F2): a protection denial inside a SIDE loop must fail closed —
-// an auto-deny with a clear error — never park a hub approval nobody can answer.
-describe('LoopPool — A4 side-loop protection auto-deny', () => {
+// A protection denial inside a SIDE loop parks an override approval on that
+// loop's own executor, keyed with the loop, exactly as main's does — and
+// whoever answers it (hub, task_resolve, Studio card) resumes the LOOP.
+describe('LoopPool — side-loop approvals', () => {
   beforeEach(() => {
-    // fs_delete must be NON-restricted so it reaches the PROTECTION path (a
-    // restricted tool is refused earlier by its own side-loop guard); enabling
-    // it on the host lets deriveLoopConfig include it in the loop's toolset.
+    // fs_delete must be NON-restricted so it reaches the PROTECTION path;
+    // enabling it on the host lets deriveLoopConfig include it in the loop.
     pool.dispose()
     pool = buildPool((config) => {
       const del = config.tools.find(t => t.name === 'fs_delete')
@@ -766,14 +771,12 @@ describe('LoopPool — A4 side-loop protection auto-deny', () => {
     approvalHub.clear()
   })
 
-  it('auto-denies a protection-blocked tool in a side loop and never parks a hub approval', async () => {
+  /** Start a reflector turn that deletes mind.md (seeded no_delete) and wait for its approval to park. */
+  async function parkOverride(): Promise<{ turn: Promise<void>; calls: () => number }> {
     await pool.createLoop(loop({ tools: ['fs_delete'] }))
     const runtime = pool.getRuntime('reflector')!
-    // Precondition: this executor really is a side loop.
     expect(runtime.executor.getConfig().metadata?.loop_name).toBe('reflector')
-    // mind.md is seeded no_delete on create — a genuine protection target.
     expect(ws.getFileProtection('mind.md')).toBe('no_delete')
-
     let calls = 0
     respond = async () => {
       calls++
@@ -787,16 +790,93 @@ describe('LoopPool — A4 side-loop protection auto-deny', () => {
       }
       return { id: 'r2', content: [{ type: 'text', text: 'understood' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
     }
+    const turn = runtime.executor.executeTurn(chatToLoop('delete the mind', 'reflector'))
+    await vi.waitFor(() => expect(approvalHub.snapshot()).toHaveLength(1))
+    return { turn, calls: () => calls }
+  }
 
-    await runtime.executor.executeTurn(chatToLoop('delete the mind', 'reflector'))
+  it('parks a protection override under the loop, and the hub resumes the loop executor', async () => {
+    const { turn, calls } = await parkOverride()
+    const [entry] = approvalHub.snapshot()
+    expect(entry).toMatchObject({ kind: 'approval', loop: 'reflector', filePath: ws.getFilePath(), toolName: 'fs_delete', reason: 'protection' })
+    const runtime = pool.getRuntime('reflector')!
+    expect(runtime.executor.getPendingApprovalMeta(entry.requestId)).toBeDefined()
+    // The request is the loop's: its event carries the loop, so the card lands in that tab.
+    expect(events.some(e => e.type === 'tool_approval_request' && e.loop === 'reflector')).toBe(true)
 
-    // Never parked: no hub entry anywhere, so nothing hung on a phantom approval.
+    expect(approvalHub.resolve(ws.getFilePath(), entry.id, true)).toEqual({ success: true })
+    await turn
+
+    expect(calls()).toBe(2)
+    expect(ws.fileExists('mind.md')).toBe(false)
     expect(approvalHub.snapshot()).toHaveLength(0)
-    // The model got the auto-deny as the tool result and ended the turn (call 2).
-    expect(calls).toBe(2)
-    const streamText = JSON.stringify(ws.forLoop('reflector').getLoop().map(r => r.content_json))
-    expect(streamText).toMatch(/inner loop cannot ask a human for an override/i)
-    // The file was NOT deleted — fail closed.
+    expect(events.some(e => e.type === 'tool_approval_resolved' && e.loop === 'reflector')).toBe(true)
+  })
+
+  it.each([
+    ['delete', () => pool.deleteLoop('reflector')],
+    ['disable', () => pool.updateLoop('reflector', { enabled: false })],
+  ])('%s cancels the loop\'s pending approval', async (_label, end) => {
+    const { turn } = await parkOverride()
+    const [entry] = approvalHub.snapshot()
+    await end()
+    await turn
+    expect(approvalHub.snapshot()).toHaveLength(0)
+    expect(events).toContainEqual(expect.objectContaining({
+      type: 'tool_approval_resolved',
+      loop: 'reflector',
+      payload: expect.objectContaining({ requestId: entry.requestId, approved: false }),
+    }))
+    expect(ws.fileExists('mind.md')).toBe(true)
+  })
+
+  it('the loop\'s shell asks through the loop\'s executor', async () => {
+    pool.dispose()
+    pool = buildPool((config) => {
+      const shell = config.tools.find(t => t.name === 'adf_shell')
+      if (shell) shell.enabled = true
+      else config.tools.push({ name: 'adf_shell', enabled: true, visible: true })
+    })
+    await pool.createLoop(loop({ tools: ['adf_shell'] }))
+    const runtime = pool.getRuntime('reflector')!
+    const shell = runtime.registry.get('adf_shell') as unknown as {
+      onApprovalRequired?: (toolName: string, command: string) => Promise<boolean>
+    }
+    expect(shell.onApprovalRequired).toBeTypeOf('function')
+    const decision = shell.onApprovalRequired!('fs_write', 'fs_write a.md')
+    const [entry] = approvalHub.snapshot()
+    expect(entry).toMatchObject({ loop: 'reflector', toolName: 'fs_write' })
+    expect(runtime.executor.getPendingApprovalMeta(entry.requestId)).toBeDefined()
+    approvalHub.resolve(ws.getFilePath(), entry.id, true)
+    await expect(decision).resolves.toBeTruthy()
+  })
+
+  it('a stopped loop\'s shell, still mid-command, is denied instead of parking an approval', async () => {
+    pool.dispose()
+    pool = buildPool((config) => {
+      const shell = config.tools.find(t => t.name === 'adf_shell')
+      if (shell) shell.enabled = true
+      else config.tools.push({ name: 'adf_shell', enabled: true, visible: true })
+    })
+    await pool.createLoop(loop({ tools: ['adf_shell'] }))
+    // A running command holds the callbacks it started with.
+    const shell = pool.getRuntime('reflector')!.registry.get('adf_shell') as unknown as {
+      onApprovalRequired: (toolName: string, command: string) => Promise<boolean>
+      onProtectionBlocked: (toolName: string, input: unknown, protection: unknown) => Promise<{ approved: boolean }>
+    }
+    const { onApprovalRequired, onProtectionBlocked } = shell
+    await pool.deleteLoop('reflector')
+    await expect(onApprovalRequired('fs_write', 'fs_write b.md')).resolves.toBe(false)
+    await expect(onProtectionBlocked('fs_write', { path: 'b.md' }, { kind: 'file', target: 'b.md', level: 'read_only' }))
+      .resolves.toMatchObject({ approved: false })
+    expect(approvalHub.snapshot()).toHaveLength(0)
+  })
+
+  it('agent teardown (pool dispose) cancels a side loop\'s pending approval', async () => {
+    const { turn } = await parkOverride()
+    pool.dispose()
+    await turn
+    expect(approvalHub.snapshot()).toHaveLength(0)
     expect(ws.fileExists('mind.md')).toBe(true)
   })
 })

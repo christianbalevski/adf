@@ -768,6 +768,9 @@ export class AdfDatabase {
    */
   static async backupBeforeDestructive(db: Database.Database, filePath: string): Promise<string> {
     const backupPath = filePath + '.bak'
+    // An in-memory database has no file to protect; backing it up would write
+    // `:memory:.bak` into the process's working directory.
+    if (filePath === ':memory:') return backupPath
     try { await fsp.rename(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
     await db.backup(backupPath)
     return backupPath

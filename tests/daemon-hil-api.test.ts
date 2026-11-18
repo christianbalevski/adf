@@ -216,8 +216,7 @@ describe('daemon HIL approval API (Studio parity)', () => {
     const loopExecutor = managed().agent.loopPool.getRuntime('researcher')?.executor
     expect(loopExecutor).toBeTruthy()
 
-    // Side loops fail closed on restricted tools in practice; park one directly
-    // to prove the owner API still reaches the right executor if one exists.
+    // Park one directly: the owner API must reach the loop's executor.
     const denied = park(loopExecutor!, 'fs_write')
     const deny = await server.inject({ method: 'POST', url: `/agents/${ref.id}/tasks/${denied.taskId}/resolve`, payload: { action: 'deny', reason: 'not from a side loop' } })
     expect(deny.statusCode).toBe(200)

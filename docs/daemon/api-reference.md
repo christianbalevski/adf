@@ -2774,7 +2774,7 @@ Example 200 (`application/json`):
 
 **Create an inner loop**
 
-Goes through the agent's loop pool, the same path as the loop_manage tool: same validation, tool attenuation and owner locks (`locked_fields: ["loops"]`). Defaults: enabled and autostart true; tools loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off at once through loop_send (`kickoff`). `excludedTools`: requested tools the host has disabled, carried by name and granted once enabled. 400 invalid declaration (bad name, unknown or never-grantable tool); 409 for `main`, a duplicate name, the loop cap, or `loops` locked by the owner.
+Goes through the agent's loop pool, the same path as the loop_manage tool: same validation and owner locks (`locked_fields: ["loops"]`). Defaults: enabled and autostart true; tools loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off at once through loop_send (`kickoff`). `excludedTools`: requested tools the host has disabled, carried by name and granted once enabled. 400 invalid declaration (bad name, unknown tool); 409 for `main`, a duplicate name, the loop cap, or `loops` locked by the owner.
 
 Operation `createAgentLoop` · bearer token
 
@@ -9152,7 +9152,7 @@ Example 200 (`application/json`):
 
 **Answer an ask request**
 
-Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
+Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are unique across the agent's loops, so the loop holding the id is answered. `loop`, when given, must name that loop. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
 
 Operation `answerAgentAsk` · bearer token
 
@@ -9398,7 +9398,7 @@ Example 200 (`application/json`):
 
 **Pending asks and approvals per agent**
 
-Main-loop requests only, per agent asks then approvals, with the raw tool input.
+Every loop's requests, per agent asks then approvals, with the raw tool input. `loop` names the loop that raised each one.
 
 Operation `getPendingInteractions` · bearer token
 
@@ -9419,6 +9419,7 @@ Example 200 (`application/json`):
     "handle": "string",
     "type": "ask",
     "requestId": "string",
+    "loop": "string",
     "question": "string",
     "toolName": "string",
     "input": null,
@@ -22548,6 +22549,7 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | `handle` | string | yes |  |
 | `type` | `"ask"` \| `"approval"` | yes |  |
 | `requestId` | string | yes |  |
+| `loop` | string |  | The loop that raised the request (`main` or an inner loop). |
 | `question` | string |  |  |
 | `toolName` | string |  |  |
 | `input` | any |  |  |

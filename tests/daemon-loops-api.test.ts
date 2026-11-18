@@ -92,7 +92,7 @@ describe('daemon loop API', () => {
     expect(duplicate.statusCode).toBe(409)
     const badName = await server.inject({ method: 'POST', url: base, payload: { name: 'Not Valid', goal: 'x' } })
     expect(badName.statusCode).toBe(400)
-    const badTool = await server.inject({ method: 'POST', url: base, payload: { name: 'researcher', goal: 'x', tools: ['sys_update_config'] } })
+    const badTool = await server.inject({ method: 'POST', url: base, payload: { name: 'researcher', goal: 'x', tools: ['no_such_tool'] } })
     expect(badTool.statusCode).toBe(400)
 
     const disabled = await server.inject({ method: 'PATCH', url: `${base}/consolidator`, payload: { enabled: false } })

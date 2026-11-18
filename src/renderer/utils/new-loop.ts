@@ -1,6 +1,5 @@
 import {
   DEFAULT_NEW_LOOP_TOOLS,
-  LOOP_PROHIBITED_TOOLS,
   MAX_SIDE_LOOPS,
   isKnownToolName,
   type LoopConfig,
@@ -20,15 +19,14 @@ export function nextLoopName(taken: Iterable<string>): string {
 }
 
 /**
- * What a side loop can be granted from this host: enabled, not restricted
- * (HIL approval can't be routed to a side-loop executor), not one of the
- * never-grantable names, and a tool this build runs (the Tools section hides
- * unknown declarations, so the Loops card must too). Sorted, so the Loops
- * card lists it stably.
+ * What a side loop can be granted from this host: every enabled tool this
+ * build runs (the Tools section hides unknown declarations, so the Loops card
+ * must too). Restricted ones included; granted, they ask for approval in the
+ * loop's tab. Sorted, so the Loops card lists it stably.
  */
 export function grantableLoopTools(tools: readonly ToolDeclaration[]): string[] {
   return tools
-    .filter((t) => t.enabled && !t.restricted && isKnownToolName(t.name) && !(LOOP_PROHIBITED_TOOLS as readonly string[]).includes(t.name))
+    .filter((t) => t.enabled && isKnownToolName(t.name))
     .map((t) => t.name)
     .sort((a, b) => a.localeCompare(b))
 }

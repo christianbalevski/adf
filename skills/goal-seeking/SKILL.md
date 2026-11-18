@@ -51,7 +51,7 @@ Rank candidates by expected user value, information gained, cost, reversibility 
 
 ## 4. Use loops for bounded parallel work
 
-When available, inspect `loop_list` and reuse an appropriate idle loop. Only main uses `loop_manage`. Give each worker one bounded question or deliverable, context and exact inputs, permitted tools, exclusive write scope, budget, deadline, acceptance test and stop rule. Use `autostart:false` for one-off loops when appropriate so agent restarts do not blindly restart completed work; explicitly wake the assignment with `loop_send`.
+When available, inspect `loop_list` and reuse an appropriate idle loop. Main creates and retires loops with `loop_manage`. Give each worker one bounded question or deliverable, context and exact inputs, permitted tools, exclusive write scope, budget, deadline, acceptance test and stop rule. Use `autostart:false` for one-off loops when appropriate so agent restarts do not blindly restart completed work; explicitly wake the assignment with `loop_send`.
 
 Use parallel loops for independent approaches, implementation versus critique, or evidence audits—not duplicate busywork. Reserve main for integration, review and delivery. Prefer tools sufficient for the task rather than full shared authority. Loops share the agent's files and identity; they are not a privacy boundary or sealed evaluator.
 

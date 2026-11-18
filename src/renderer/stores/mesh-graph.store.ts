@@ -27,7 +27,8 @@ export interface NodeActivity {
 }
 
 export type PendingInteraction =
-  | { type: 'ask'; requestId: string; questions: AskQuestion[] }
+  /** `loop`: the asking loop — ask ids are per loop. */
+  | { type: 'ask'; requestId: string; questions: AskQuestion[]; loop?: string }
   | PendingApprovalInteraction
 
 interface PendingApprovalInteraction {

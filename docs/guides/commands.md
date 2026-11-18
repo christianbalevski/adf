@@ -71,7 +71,7 @@ export async function loops({ args }) {
 }
 ```
 
-Register `loops` with lambda `lib/commands.ts:loops`. The owner runs `/loops reflection` from the main composer to inspect an existing loop named `reflection`. Inner-loop commands use their selected loop's tools: `loop_manage`, `sys_update_config` and `sys_create_adf` are unavailable there, including on authorized runs. `say` and `ask` are unavailable to lambdas; `loop_compact` and `loop_clear` are refused. Return the command's answer instead.
+Register `loops` with lambda `lib/commands.ts:loops`. The owner runs `/loops reflection` from the main composer to inspect an existing loop named `reflection`. Inner-loop commands use their selected loop's tools: a tool the loop was not granted is unavailable there, including on authorized runs. `say` and `ask` are unavailable to lambdas; `loop_compact` and `loop_clear` are refused. Return the command's answer instead.
 
 ## Registration rules
 

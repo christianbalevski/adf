@@ -207,10 +207,11 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     return { success: true, approved, skippedProtection }
   }),
 
+  // Ask ids are unique across the agent's loops, so the daemon finds the asking loop.
   [IPC.AGENT_ASK_RESPOND]: async (ctx, _event, args: { requestId: string; answers: unknown }) =>
     onRunningOpenAgent(ctx, async (client, agentId) => {
       try {
-        await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answers: args.answers, loop: 'main' } })
+        await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answers: args.answers } })
       } catch (err) {
         if (invalidAnswers(err)) return { success: false, error: errorMessage(err) }
         if (!staleRequest(err)) throw err
@@ -314,7 +315,7 @@ export const AGENT_HANDLERS: DaemonHandlerTable = {
     if (!agentId) return BACKGROUND_NOT_FOUND
     const client = await ctx.ready()
     try {
-      await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answers: args.answers, loop: 'main' } })
+      await client.request('POST', `/agents/${enc(agentId)}/asks/${enc(args.requestId)}/respond`, { body: { answers: args.answers } })
     } catch (err) {
       if (isAgentGone(err, agentId) || daemonCode(err) === 'agent_not_running') return BACKGROUND_NOT_FOUND
       if (invalidAnswers(err)) return { success: false, error: errorMessage(err) }
