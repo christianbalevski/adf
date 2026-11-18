@@ -145,12 +145,35 @@ describe('H3: compaction while an appended row is undrained', () => {
     const rows = ws.forLoop('reflector').getLoop()
     expect(rows.filter(r => JSON.stringify(r.content_json).includes('DURING-COMPACT'))).toHaveLength(1)
     // the summary still sorts before the kept row
-    const summaryAt = rows.findIndex(r => JSON.stringify(r.content_json).includes('[Loop Compacted]'))
+    const summaryAt = rows.findIndex(r => JSON.stringify(r.content_json).includes('Loop Compacted'))
     const keptAt = rows.findIndex(r => JSON.stringify(r.content_json).includes('DURING-COMPACT'))
     expect(summaryAt).toBeGreaterThanOrEqual(0)
     expect(summaryAt).toBeLessThan(keptAt)
     runtime.session.drainContextInjections()
     expect(copies(runtime.session, 'DURING-COMPACT')).toBe(1)
+    release()
+    await firstTurn
+  })
+
+  it('keeps an undrained row older than the summarized range: the turn wrote more rows after it (round 6)', async () => {
+    await pool.createLoop({ name: 'reflector', goal: 'g', enabled: true, tools: [] } as never)
+    const runtime = pool.getRuntime('reflector')!
+    for (const t of ['first thought', 'second thought']) runtime.session.addMessage({ role: 'user', content: text(t) })
+    let release: () => void = () => {}
+    const firstTurn = new Promise<void>(r => { release = r })
+    vi.spyOn(runtime.executor, 'executeTurn').mockImplementationOnce(() => firstTurn)
+    void runtime.dispatch({ event: { id: 'e', type: 'chat', source: 'test', time: '', data: {} as never }, scope: 'agent' })
+
+    // Appended mid-call and queued for the next boundary...
+    await pool.sendToLoop('main', 'reflector', 'OLDER-PENDING', true)
+    // ...then the turn writes its reply, so the summary's range ends after the row.
+    runtime.session.addMessage({ role: 'assistant', content: text('reply after the row') })
+    respond = async () => ({ id: 'r', content: text('summary'), stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } })
+    await (runtime.executor as unknown as { forceCompact: (r: string) => Promise<number> }).forceCompact('test')
+
+    expect(ws.forLoop('reflector').getLoop().filter(r => JSON.stringify(r.content_json).includes('OLDER-PENDING'))).toHaveLength(1)
+    runtime.session.drainContextInjections()
+    expect(copies(runtime.session, 'OLDER-PENDING')).toBe(1)
     release()
     await firstTurn
   })
