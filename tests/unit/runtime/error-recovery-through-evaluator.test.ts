@@ -413,6 +413,10 @@ describe('background triggers reach an agent in error through the evaluator', ()
       provider.heal()
       await afterCooldown(() => { tick(agent) })
       await sleep(500)
+      // One recovery attempt per tick (round 1 F1): the first held timer is the
+      // probe; once it succeeds the agent is idle and the next tick delivers the other.
+      tick(agent)
+      await sleep(500)
       const r = outcome(agent, workspace, provider, 'HELD-ONE')
       const later = provider.seen.slice(1).join('\n')
       const seen = {

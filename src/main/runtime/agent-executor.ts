@@ -51,7 +51,7 @@ import { emitUmbilicalEvent } from './emit-umbilical'
 import { RuntimeGate } from './runtime-gate'
 import { ToolRepetitionMonitor } from './tool-repetition-monitor'
 import { currentResourceWriter, documentRevision } from './resource-revisions'
-import { SystemDispatchQueue, SystemDispatchDroppedError } from './system-dispatch-limits'
+import { SystemDispatchQueue, SystemDispatchDroppedError, MAX_QUEUE_DEPTH } from './system-dispatch-limits'
 import { isTextMime, isVisionMime, isAudioInputMime, isVideoInputMime, formatSize, mimeToExt } from '../tools/built-in/mime-utils'
 import { McpTool } from '../tools/mcp-tool'
 import { AskInputSchema } from '../tools/built-in/ask.tool'
@@ -1999,7 +1999,9 @@ export class AgentExecutor extends EventEmitter {
   }
 
   /** Claim an agent-scope turn slot. While a turn holds the agent, an agent
-   *  in error offers no recovery attempt (recoveryAt), so the gate is told. */
+   *  in error offers no recovery attempt (recoveryAt), so the gate is told:
+   *  the attempt's own activity (its error_recovery_trigger log) must not
+   *  wake it again before it leaves error. */
   private claimAgentSlot(): void {
     this.activeAgentTurnCount++
     this.publishRecoveryFact()
@@ -5507,6 +5509,12 @@ export class AgentExecutor extends EventEmitter {
 
   private recoveryMaxAttempts(): number {
     return this.config.recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
+  }
+
+  /** Whether the system-scope lane this dispatch runs in has room now (a
+   *  free slot or queue space), so it would not be dropped by backpressure. */
+  systemLaneHasRoom(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
+    return this.systemDispatchQueue.pendingFor(dispatch) < MAX_QUEUE_DEPTH
   }
 
   /** Re-publish the recovery fact when it changes while the agent stays in error. */

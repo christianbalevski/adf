@@ -621,15 +621,20 @@ export class LoopPool implements LoopPoolApi {
    * boundary) and queue a kick for the case where the turn ends first. Idle:
    * dispatch, or inject if the router refuses.
    */
-  deliverAppended(toLoop: string, event: AdfEvent, blocks: ContentBlock[], seq: number, origin: string): { woke: boolean; reason?: string } {
+  deliverAppended(
+    toLoop: string, event: AdfEvent, blocks: ContentBlock[], seq: number, origin: string,
+    onError?: (error: unknown, dispatch: AdfEventDispatch) => void,
+  ): { woke: boolean; reason?: string } {
     if (toLoop === MAIN_LOOP) {
       if (this.deps.main.isBusy()) {
         const injected = this.injectWithoutWake(MAIN_LOOP, origin, blocks, seq, true)
         enqueueKick(this.mainPendingWakes, { event, seq, injected })
         return { woke: false, reason: 'main is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first' }
       }
-      void this.deps.main.dispatch(createDispatch(event, { scope: 'agent', loop: MAIN_LOOP })).catch(error => {
+      const value = createDispatch(event, { scope: 'agent', loop: MAIN_LOOP })
+      void this.deps.main.dispatch(value).catch(error => {
         console.error('[LoopPool] Wake turn on main failed:', error)
+        onError?.(error, value)
       })
       return { woke: true }
     }
@@ -642,8 +647,11 @@ export class LoopPool implements LoopPoolApi {
       runtime.queueWake(event, seq, injected)
       return { woke: false, reason: 'that loop is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first' }
     }
-    const woken = this.wakeWith(runtime, event)
-    if (!woken.woke) this.injectWithoutWake(toLoop, origin, blocks, seq)
+    const woken = this.wakeWith(runtime, event, onError)
+    if (!woken.woke) {
+      this.logLoop('warn', 'loop_dispatch_dropped', toLoop, `Wake for an appended row (${origin}) was refused: ${woken.reason}. The row is in the stream and queued as context.`)
+      this.injectWithoutWake(toLoop, origin, blocks, seq)
+    }
     return woken
   }
 
@@ -729,11 +737,12 @@ export class LoopPool implements LoopPoolApi {
   /** Dispatch a turn carrying a row that is ALREADY in the target's stream.
    *  Returns false when the router refused (disabled loop, suspended agent) —
    *  the row is already durable either way. */
-  private wakeWith(runtime: LoopRuntime, event: AdfEvent): { woke: boolean; reason?: string } {
+  private wakeWith(runtime: LoopRuntime, event: AdfEvent, onError?: (error: unknown, dispatch: AdfEventDispatch) => void): { woke: boolean; reason?: string } {
     const value = createDispatch(event, { scope: 'agent', loop: runtime.name })
     const routed = this.dispatchToLoop(runtime.name, value)
     if (!routed.ok) return { woke: false, reason: routed.reason }
     void routed.done.catch(error => {
+      onError?.(error, value)
       console.error(`[LoopPool] Wake turn on loop "${runtime.name}" failed:`, error)
       this.logLoop('error', 'loop_wake_failed', runtime.name, `Wake turn failed: ${error instanceof Error ? error.message : String(error)}`)
     })

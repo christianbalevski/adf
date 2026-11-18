@@ -785,6 +785,8 @@ export function assembleAgent<P extends AgentProfileName>(
   // write it again and auth parking and the recovery budget still apply.
   triggerEvaluator.setTimerReceiver({
     canReceive: (loop) => loopPool.canReceive(loop),
+    inError: (loop) => (loop === MAIN_LOOP ? executor : loopPool.getRuntime(loop)?.executor)?.getState() === 'error',
+    systemLaneHasRoom: (dispatchValue) => executor.systemLaneHasRoom(dispatchValue),
     deliver: (timer, nextWake, firedAt, event) => {
       const loop = timer.loop ?? MAIN_LOOP
       const blocks = [{ type: 'text' as const, text: timerTriggerText(timer) }]
@@ -794,7 +796,11 @@ export function assembleAgent<P extends AgentProfileName>(
           : null)
       if (seq === null) return false
       const wake = { ...event, data: { ...event.data, skip_loop_append: true, loop_seq: seq } }
-      loopPool.deliverAppended(loop, wake, blocks, seq, `timer:${timer.id}`)
+      // A turn rejected at dispatch reaches the host's error path, as every
+      // other trigger's does (onEvaluatorTrigger).
+      loopPool.deliverAppended(loop, wake, blocks, seq, `timer:${timer.id}`, (error, dispatchValue) => {
+        for (const bindings of hostBindings()) bindings.onTriggerError?.(error, dispatchValue)
+      })
       return true
     },
   })

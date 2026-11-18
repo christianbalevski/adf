@@ -400,7 +400,7 @@ System scope fires in every state except `off` — including `error` and `suspen
 
 An agent-scope timer that fires while the agent is active is not queued: its payload is written into the loop and read at the next model step ([Timer Lifecycle](timers.md#timer-lifecycle)).
 
-An agent-scope trigger that arrives while a turn is running (a task completing, a message, a timer) is queued and runs as the next turn once the current one ends. The agent's own activity never wakes it this way: while it is working, `on_llm_call`, `on_tool_call`, `on_logs`, `on_outbox`, `on_task_create` and its own file writes do not fire agent scope.
+An agent-scope trigger that arrives while a turn is running (a task completing, a message) is queued and runs as the next turn once the current one ends. The agent's own activity never wakes it this way: while it is working, `on_llm_call`, `on_tool_call`, `on_logs`, `on_outbox`, `on_task_create` and its own file writes do not fire agent scope.
 
 ### Firing Order
 

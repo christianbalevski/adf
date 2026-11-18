@@ -625,6 +625,13 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         const injectedLoopSend = parseLoopSendStamp(payload.content)
         // loop_inject sends its row text, marker and all: read it as reload does.
         const stamped = injectedLoopSend || isOwnerCommandRow(payload.content) || payload.content.startsWith('[Context: ') ? classifyInjectedText(payload.content) : null
+        // A trigger row injected mid-turn (a timer that fired during the turn)
+        // renders as the trigger it is, as on reload (detectTriggerType).
+        const injectedTrigger = stamped ? null : detectTriggerType(payload.content)
+        if (injectedTrigger && injectedTrigger !== 'manual_invoke') {
+          agentStore.addLogEntry({ id: nanoid(), type: 'trigger', content: payload.content, timestamp: event.timestamp, metadata: { ...seqMeta(payload), triggerType: injectedTrigger } }, loop)
+          break
+        }
         const injectedEntry: AgentLogEntry = {
           id: nanoid(),
           type: 'context',

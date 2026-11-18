@@ -167,7 +167,7 @@ mixed `[thinking, text, thinking]` stays three ordered events.
 
 | Event | Payload |
 |---|---|
-| `agent.state.changed` | `{ filePath, state }` |
+| `agent.state.changed` | `{ filePath, state, recovery_at? }` |
 | `agent.error` | `{ filePath, event }` |
 | `agent.loaded` | `{ filePath, name, handle, autostart }` |
 | `agent.unloaded` | `{ filePath }` |
@@ -349,6 +349,13 @@ budget is spent and the cooldown has not elapsed; `trigger` is `null`. Until a
 chat message arrives or the cooldown passes, agent-scope triggers do not run:
 a timer stays due and fires on the first tick after the cooldown, a message
 stays unread, and other trigger events are dropped.
+
+In `error`, `agent.state.changed` carries `recovery_at`: the earliest time
+(epoch ms) a trigger may run as a recovery attempt, `0` when one may start now,
+or `null` while none may (an auth error, or a turn still holds the agent). The
+event repeats with the same `state` when only `recovery_at` changes: when a turn
+takes the agent while it is in `error` (`null`), and when the turn that failed
+lets go of it (the new value).
 
 ## `timer.*` — stable
 

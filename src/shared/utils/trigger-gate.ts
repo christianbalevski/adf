@@ -83,8 +83,8 @@ export interface TimerContext {
  * When a timer with these scopes, due at `dueAt`, fires (is settled): the
  * agent part decides a row that has one, because the whole row waits until
  * its target can receive. A system-only row fires unless the agent is off.
- * With a context: only admitted scopes count (a row with none settles with
- * nothing run, as the runtime does), and an inner-loop target must be
+ * Nothing fires while the agent is off. With a context: only admitted scopes
+ * count (a row with none settles with nothing run, as the runtime does), and an inner-loop target must be
  * declared and enabled and, in error, offer a recovery attempt by its own
  * published fact.
  */
@@ -101,7 +101,7 @@ export function timerFireTime(scopes: readonly string[], facts: GateFacts, dueAt
     return at
   }
   if (admitted.includes('system')) return fireTime('system', 'on_timer', facts, dueAt)
-  return ctx ? dueAt : undefined
+  return ctx && facts.state !== 'off' ? dueAt : undefined
 }
 
 /** timerFireTime for an Upcoming row; a daemon from before `scopes` sends only `scope`. */

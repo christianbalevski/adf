@@ -131,6 +131,12 @@ export interface TimerReceiver {
   /** Whether the timer's target loop can receive now, beyond main's gate
    *  facts: it exists, is enabled, and its executor is not refusing. */
   canReceive(loop: string): boolean
+  /** Whether the target loop is in `error`, so a delivery to it is its
+   *  recovery attempt (it takes one per tick). */
+  inError(loop: string): boolean
+  /** Whether the lane this system dispatch runs in has room now. A mixed
+   *  row is held whole while its lambda could not run. */
+  systemLaneHasRoom(dispatch: AdfEventDispatch): boolean
   /** Claim this occurrence and write its trigger row into the target loop's
    *  stream in one transaction, then wake the target. False when the claim
    *  lost (another runtime took this occurrence). */
@@ -258,9 +264,9 @@ export class TriggerEvaluator extends EventEmitter {
 
   /** Whether a timer's agent part can be received now: main's gate admits it
    *  for this loop, and the target loop can take it (TimerReceiver). */
-  private canReceive(timer: Timer): boolean {
+  private canReceive(timer: Timer, attempted: ReadonlySet<string>): boolean {
     const loop = timer.loop ?? 'main'
-    return this.shouldFire('agent', 'on_timer', loop) && (this.timerReceiver?.canReceive(loop) ?? true)
+    return !attempted.has(loop) && this.shouldFire('agent', 'on_timer', loop) && (this.timerReceiver?.canReceive(loop) ?? true)
   }
 
   // ===========================================================================
@@ -840,10 +846,17 @@ export class TriggerEvaluator extends EventEmitter {
     }
     if (due.length === 0) return
 
-    // One ordered pass, earliest due first.
+    // One ordered pass, earliest due first. Nothing settles while the agent
+    // is off: every scope is blocked then.
+    if (this.gateState() === 'off') return
     const timerCfg = this.getTriggerConfig('on_timer')
     const now = Date.now()
-    for (const timer of due) this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now)
+    // Loops in error that took a delivery this tick: that delivery is their
+    // recovery attempt, and the executor publishes the outcome before the
+    // next tick. Without this, one recovery window would admit every due
+    // timer while only the first runs.
+    const attempted = new Set<string>()
+    for (const timer of due) this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted)
   }
 
   /**
@@ -863,22 +876,31 @@ export class TriggerEvaluator extends EventEmitter {
    * dispatched, so of two runtimes polling one file only one runs it, and a
    * crash mid-fire cannot refire it.
    */
-  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number): void {
+  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>): void {
     const agentPart = admitted.includes('agent')
     const scopes = agentPart ? admitted : admitted.filter(scope => this.shouldFire(scope, 'on_timer'))
-    if (agentPart ? !this.canReceive(timer) : admitted.length > 0 && scopes.length === 0) return
-
-    const nextWake = this.nextRenewal(timer, now)
     const event = createEvent({
       type: 'timer' as const,
       source: `agent:${this.config.name ?? 'unknown'}`,
       data: { timer: { ...timer, run_count: timer.run_count + 1, last_fired_at: now } },
     })
+    const lambdaDispatch = scopes.includes('system') && timer.lambda
+      ? createDispatch(event, { scope: 'system', lambda: timer.lambda, command: undefined, warm: timer.warm })
+      : null
+    if (agentPart) {
+      if (!this.canReceive(timer, attempted)) return
+      if (lambdaDispatch && this.timerReceiver && !this.timerReceiver.systemLaneHasRoom(lambdaDispatch)) return
+    } else if (admitted.length > 0 && scopes.length === 0) return
+
+    const nextWake = this.nextRenewal(timer, now)
+    const loop = timer.loop ?? 'main'
     try {
+      const inError = agentPart && !!this.timerReceiver?.inError(loop)
       const claimed = agentPart && this.timerReceiver
         ? this.timerReceiver.deliver(timer, nextWake, now, event)
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
       if (!claimed) return
+      if (inError) attempted.add(loop)
     } catch (error) {
       // The row stays due and is retried next tick.
       console.error(`[TriggerEvaluator] Failed to settle timer #${timer.id}:`, error)
@@ -916,16 +938,12 @@ export class TriggerEvaluator extends EventEmitter {
                 { timer_id: timer.id, payload: timer.payload, run_count: timer.run_count + 1 }
               )
             } catch { /* best-effort logging */ }
-            const timerDispatch = createDispatch(event, {
-              scope: 'system',
-              lambda: timer.lambda,
-              command: undefined,
-              warm: timer.warm,
-            })
+            const timerDispatch = lambdaDispatch!
             // The row was settled before this emit, so a dispatch that
             // backpressure discards would consume a `once` timer that never
-            // ran. Undo that if it happens, unless the row's agent part was
-            // already delivered (rewinding would deliver it again).
+            // ran. Undo that if it happens. A mixed row is not rewound (its
+            // agent part is already delivered); it was held instead while its
+            // lane had no room.
             if (!agentPart) onDispatchDropped(timerDispatch, () => this.rewindTimer(timer, nextWake === null))
             this.emit('trigger', timerDispatch)
           } else {

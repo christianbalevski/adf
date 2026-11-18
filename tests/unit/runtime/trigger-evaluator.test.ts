@@ -1023,7 +1023,7 @@ describe('TriggerEvaluator', () => {
       } as never])
       let ready = false
       const deliver = vi.fn(() => true)
-      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, deliver })
+      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, inError: () => false, systemLaneHasRoom: () => true, deliver })
 
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
