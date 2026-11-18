@@ -10,6 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
+import { z } from 'zod'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -28,6 +29,7 @@ import type { AgentExecutor } from '../../../src/main/runtime/agent-executor'
 let dir: string
 let workspace: AdfWorkspace
 let agent: AssembledAgent<'headlessLive'>
+let registry: ToolRegistry
 
 /** Park an ask form on `executor` (`requestAsk` is private: only the ask tool path reaches it). */
 function parkAsk(executor: AgentExecutor, question: string) {
@@ -47,7 +49,7 @@ beforeEach(async () => {
   dir = mkdtempSync(join(tmpdir(), 'adf-side-loop-approvals-'))
   workspace = AdfWorkspace.create(join(dir, 'agent.adf'), { name: 'approvals', start_in_state: 'idle' })
   const config = workspace.getAgentConfig()
-  const registry = new ToolRegistry()
+  registry = new ToolRegistry()
   registerBuiltInTools(registry)
   const provider = new MockLLMProvider()
   agent = assembleAgent({
@@ -131,5 +133,46 @@ describe('side-loop approvals on the assembled agent', () => {
     expect(findAskHolder(agent.executor, agent.loopPool, mainAsk.requestId)?.loop).toBe('main')
     // A named loop that does not hold the id finds nothing.
     expect(findAskHolder(agent.executor, agent.loopPool, mainAsk.requestId, 'reflector')).toBeUndefined()
+  })
+})
+
+describe('a stopped turn raises no new approval', () => {
+  /** Run `fn` inside a tool call whose turn signal is `signal`, as a shell pipeline or sandboxed code would. */
+  async function inCall<T>(signal: AbortSignal, fn: () => Promise<T>): Promise<T> {
+    let out!: T
+    registry.register({
+      name: 'probe', description: 'probe', category: 'general', inputSchema: z.object({}),
+      async execute() { out = await fn(); return { content: 'ok', isError: false } },
+      toProviderFormat: () => ({ name: 'probe', description: 'probe', input_schema: { type: 'object', properties: {} } }),
+    })
+    await registry.executeTool('probe', {}, workspace, { signal })
+    return out
+  }
+
+  it('refuses a shell gate and a protection override once the turn is stopped, without parking', async () => {
+    const turn = new AbortController()
+    turn.abort()
+    expect(await inCall(turn.signal, () => agent.executor.requestApproval('fs_write', { command: 'fs_write a.md' }))).toBe(false)
+    const protection = { kind: 'file', path: 'a.md', reason: 'locked' } as never
+    expect(await inCall(turn.signal, () => agent.executor.requestProtectionApproval('fs_write', { path: 'a.md' }, protection, { timeoutMs: null })))
+      .toEqual(expect.objectContaining({ approved: false }))
+    expect(agent.executor.getPendingApprovals()).toHaveLength(0)
+    expect(workspace.getAllTasks()).toHaveLength(0)
+  })
+
+  it('still parks while the turn runs', async () => {
+    const turn = new AbortController()
+    const decided = inCall(turn.signal, () => agent.executor.requestApproval('fs_write', { command: 'fs_write a.md' }))
+    await vi.waitFor(() => expect(agent.executor.getPendingApprovals()).toHaveLength(1))
+    agent.executor.abort()
+    await expect(decided).resolves.toBe(false)
+  })
+
+  it('the shell stops on the turn signal and runs nothing after it', async () => {
+    const turn = new AbortController()
+    turn.abort()
+    const result = await registry.executeTool('adf_shell', { command: 'echo hi > out.txt' }, workspace, { signal: turn.signal })
+    expect(JSON.parse(result.content as string)).toEqual(expect.objectContaining({ exit_code: 130 }))
+    expect(workspace.readFile('out.txt')).toBeNull()
   })
 })

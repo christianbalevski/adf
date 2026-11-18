@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 import { createHash } from 'node:crypto'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
-import { stripInternalToolFlags } from '../tools/tool-registry'
+import { currentToolSignal, stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
@@ -575,6 +575,8 @@ interface TurnOptions {
    *  must not queue this turn behind the very turn that is awaiting it. */
   nested?: boolean
 }
+
+const STOPPED_CALL_DENIAL = { approved: false, feedback: 'The turn was stopped.' } as const
 
 export class AgentExecutor extends EventEmitter {
   private state: AgentState = 'idle'
@@ -1613,6 +1615,12 @@ export class AgentExecutor extends EventEmitter {
     })
   }
 
+  // requestApproval and requestProtectionApproval are reached from inside a
+  // running tool call (a shell pipeline, sandboxed code). Once that call's
+  // turn is stopped, interrupted or killed, abort() has already drained the
+  // pending approvals; a request raised after it is refused, never parked, so
+  // nothing approves work from a stopped turn.
+
   /** Default auto-deny timeout for protection approvals requested by sandboxed code. */
   private static readonly PROTECTION_APPROVAL_TIMEOUT_MS = 1_200_000
 
@@ -1629,6 +1637,7 @@ export class AgentExecutor extends EventEmitter {
     protection: ProtectionDenial,
     opts?: { timeoutMs?: number | null }
   ): Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+    if (currentToolSignal()?.aborted) return STOPPED_CALL_DENIAL
     const meta = this.buildApprovalMeta(name, protection)
     const priorState = this.state
     const raisedInTurn = this.currentAgentTurn()
@@ -1688,6 +1697,7 @@ export class AgentExecutor extends EventEmitter {
     input: unknown,
     opts?: { canAlwaysApprove?: boolean; restoreState?: boolean }
   ): Promise<boolean> {
+    if (currentToolSignal()?.aborted) return false
     const priorState = this.state
     const restoreState = opts?.restoreState === true
     const ownsState = !restoreState || !this.isTurnActive()
