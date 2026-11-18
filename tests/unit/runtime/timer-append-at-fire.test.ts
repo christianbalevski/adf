@@ -900,3 +900,23 @@ describe('round 11: F1 more same-lambda mixed rows due in one tick than the lane
     } finally { await agent.disposeAsync() }
   })
 })
+
+describe('round 11: system-only rows on the same lambda count against the lane too', { timeout: 30_000 }, () => {
+  it('70 system-only rows then a mixed row, one tick: the mixed row is held whole, then fires with its lambda', async () => {
+    const { filePath, open } = makeFile('r11-sys-then-mixed')
+    const workspace = open()
+    const agent = await build(filePath, workspace, new ScriptedProvider('ok'))
+    const runs = countLambdas(agent)
+    try {
+      for (let i = 0; i < 70; i++) addDue(workspace, `R11-SYS-${i}`, { scope: ['system'], lambda: 'lib/x.ts:run' })
+      const mixed = addDue(workspace, 'R11-MIXED-LAST', { scope: ['system', 'agent'], lambda: 'lib/x.ts:run' })
+      tick(agent); await settled(agent); await sleep(50)
+      expect(row(workspace, mixed)).toMatchObject({ expired: false, run_count: 0 })
+      expect(loopRows(workspace, 'R11-MIXED-LAST')).toBe(0)
+      for (let i = 0; i < 5 && !row(workspace, mixed).expired; i++) { tick(agent); await settled(agent); await sleep(50) }
+      expect(row(workspace, mixed)).toMatchObject({ expired: true, run_count: 1 })
+      expect(loopRows(workspace, 'R11-MIXED-LAST')).toBe(1)
+      expect(runs.n).toBe(71)
+    } finally { await agent.disposeAsync() }
+  })
+})
