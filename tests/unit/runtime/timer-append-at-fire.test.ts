@@ -703,3 +703,36 @@ describe('round 4: F1/F3 several agent timers due in one tick', { timeout: 30_00
     } finally { await agent.disposeAsync() }
   })
 })
+
+// ===========================================================================
+// Round 7 (break-it recoveryb-r7): a kick is owed for every row the model has not seen
+// ===========================================================================
+
+describe('round 7: F1 a timer during a manual compaction gets exactly one turn that sees it', { timeout: 30_000 }, () => {
+  it('compactNow with the summarizer blocked, a timer due meanwhile: one turn afterwards reads it', async () => {
+    const { filePath, open } = makeFile('r7-compact-now')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    try {
+      await agent.executor.executeTurn(chat('first'))
+      await settled(agent)
+      const before = provider.calls
+      provider.blockNext()
+      const compaction = (agent.executor as unknown as { compactNow: (r: string) => Promise<{ success: boolean }> }).compactNow('manual')
+      await until(() => provider.blocked)
+      const t = addDue(workspace, 'R7-DURING-COMPACT')
+      tick(agent) // the agent is busy: written into the loop, kick queued
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      provider.release()
+      expect(await compaction).toMatchObject({ success: true })
+      await settled(agent); await sleep(300); await settled(agent)
+      // calls after the summarizer's: exactly one, and it saw the timer
+      const after = provider.seen.slice(before + 1)
+      expect(after).toHaveLength(1)
+      expect(after[0]).toContain('R7-DURING-COMPACT')
+      expect(loopRows(workspace, 'R7-DURING-COMPACT')).toBe(1)
+      expect(sessionCopies(agent, 'R7-DURING-COMPACT')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+})
