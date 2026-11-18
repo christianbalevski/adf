@@ -935,7 +935,7 @@ export class TriggerEvaluator extends EventEmitter {
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
       if (!claimed) return
       if (inError) attempted.add(loop)
-      if (agentPart && lambdaDispatch) reserved.set(timer.lambda!, (reserved.get(timer.lambda!) ?? 0) + 1)
+      if (lambdaDispatch) reserved.set(timer.lambda!, (reserved.get(timer.lambda!) ?? 0) + 1)
       if (orphaned) {
         try {
           this.workspace?.insertLog('warn', 'runtime', 'loop_dispatch_dropped', loop,
