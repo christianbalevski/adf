@@ -407,20 +407,43 @@ describe('inner loops and missing or disabled targets', { timeout: 30_000 }, () 
     } finally { await agent.disposeAsync() }
   })
 
-  it('a missing loop and a disabled loop hold the timer: nothing appended anywhere, not settled', async () => {
-    const { filePath, open } = makeFile('missing')
+  it('a disabled loop holds the timer whole (the reviewer\'s probe): no row, not settled, lambda not run, no log', async () => {
+    const { filePath, open } = makeFile('disabled-probe')
     const workspace = open()
     const provider = new ScriptedProvider('ok')
     const agent = await build(filePath, workspace, provider, { loops: [OFF] })
+    const runs = countLambdas(agent)
     try {
-      const ghost = addDue(workspace, 'GHOST', { loop: 'ghost', every: 3_600_000 })
-      const parked = addDue(workspace, 'PARKED', { loop: 'parked', every: 3_600_000 })
-      tick(agent); tick(agent); await settled(agent)
-      for (const [id, p, l] of [[ghost, 'GHOST', 'ghost'], [parked, 'PARKED', 'parked']] as const) {
-        expect(row(workspace, id)).toMatchObject({ expired: false, run_count: 0 })
+      const t = addDue(workspace, 'PARKED-MIXED', { loop: 'parked', scope: ['system', 'agent'], lambda: 'lib/job.js:main', every: 3_600_000 })
+      for (let i = 0; i < 5; i++) tick(agent)
+      await settled(agent)
+      expect(runs.n).toBe(0)
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      expect(loopRows(workspace, 'PARKED-MIXED', 'parked')).toBe(0)
+      expect(workspace.getLogs().some(l => l.event === 'loop_dispatch_dropped')).toBe(false)
+      expect(provider.calls).toBe(0)
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('a loop that is not declared (deleted): base behaviour, the row settles, the agent part is dropped and logged, a mixed row runs its lambda', async () => {
+    const { filePath, open } = makeFile('missing')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    const runs = countLambdas(agent)
+    try {
+      const mixed = addDue(workspace, 'GHOST-MIXED', { loop: 'ghost', scope: ['system', 'agent'], lambda: 'lib/job.js:main', every: 3_600_000 })
+      const agentOnly = addDue(workspace, 'GHOST-AGENT', { loop: 'ghost' })
+      tick(agent); tick(agent); await settled(agent); await sleep(20)
+      expect(runs.n).toBe(1)
+      expect(row(workspace, mixed)).toMatchObject({ expired: false, run_count: 1 })
+      expect(row(workspace, agentOnly)).toMatchObject({ expired: true, run_count: 1 })
+      for (const p of ['GHOST-MIXED', 'GHOST-AGENT']) {
         expect(loopRows(workspace, p)).toBe(0)
-        expect(loopRows(workspace, p, l)).toBe(0)
+        expect(loopRows(workspace, p, 'ghost')).toBe(0)
       }
+      const drops = workspace.getLogs().filter(l => l.event === 'loop_dispatch_dropped' && l.target === 'ghost')
+      expect(drops).toHaveLength(2)
       expect(provider.calls).toBe(0)
     } finally { await agent.disposeAsync() }
   })

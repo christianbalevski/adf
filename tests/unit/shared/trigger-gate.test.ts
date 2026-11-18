@@ -54,7 +54,12 @@ describe('trigger gate', () => {
     const ctx = (loopFacts = {}) => ({ onTimer, loops: [{ name: 'side' }, { name: 'off', enabled: false }], loopFacts })
     expect(timerFireTime(['agent'], { state: 'idle' }, 10, 'side', ctx())).toBe(10)
     expect(timerFireTime(['agent'], { state: 'idle' }, 10, 'off', ctx())).toBeUndefined()
-    expect(timerFireTime(['agent'], { state: 'idle' }, 10, 'ghost', ctx())).toBeUndefined()
+    // an undeclared (deleted) loop: the agent part is dropped, so the row fires as its other scopes do (round 3 F2)
+    expect(timerFireTime(['agent'], { state: 'idle' }, 10, 'ghost', ctx())).toBe(10)
+    expect(timerFireTime(['agent', 'system'], { state: 'suspended' }, 10, 'ghost', ctx())).toBe(10)
+    expect(timerFireTime(['agent'], { state: 'off' }, 10, 'ghost', ctx())).toBeUndefined()
+    // a disabled loop holds the row, lambda included
+    expect(timerFireTime(['agent', 'system'], { state: 'idle' }, 10, 'off', ctx())).toBeUndefined()
     expect(timerFireTime(['agent'], { state: 'idle' }, 10, 'side', ctx({ side: { state: 'error', recoveryAt: null } }))).toBeUndefined()
     expect(timerFireTime(['agent'], { state: 'idle' }, 10, 'side', ctx({ side: { state: 'error', recoveryAt: 50 } }))).toBe(50)
     // on_timer admits only system: the agent part does not hold the row

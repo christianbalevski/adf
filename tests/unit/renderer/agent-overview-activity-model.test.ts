@@ -9,6 +9,7 @@ import {
   formatUntil,
   hasActivity,
   nextFiringWake,
+  overviewNextWake,
   rowsLabel,
   sparkFact,
   sparkHeights,
@@ -343,6 +344,12 @@ describe('wake displays follow the gate', () => {
     expect(nextFiringWake(timers, { state: 'error', recoveryAt: 0 }, CTX)).toBe(MIN)
     expect(nextFiringWake(timers, { state: 'error', recoveryAt: 4 * MIN }, CTX)).toBe(4 * MIN)
     expect(nextFiringWake(undefined, { state: 'idle' }, CTX)).toBeUndefined()
+  })
+
+  it('before the config loads, a full preview does not ask for the full timer list (round 3 F1)', () => {
+    const full: UpcomingWake[] = [1, 2, 3].map(id => ({ id, at: id * MIN, scope: 'agent', scopes: ['agent'] }))
+    expect(overviewNextWake(full, undefined, { state: 'suspended' }, undefined)).toEqual({ at: undefined, needsTimers: false })
+    expect(overviewNextWake(full, undefined, { state: 'suspended' }, CTX).needsTimers).toBe(true)
   })
 
   it('an Upcoming row has a countdown only when it fires', () => {
