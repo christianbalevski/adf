@@ -2,7 +2,7 @@
 
 These are the goals for the four subconscious loops. Copy them into each loop's `goal` when main creates it. A loop wakes up with nothing but its goal and the shared memory index, so the goal has to say everything the loop needs.
 
-Every goal is the shared block plus the block for that loop. The runtime limits a goal to 4,000 characters, so the two blocks together must fit. The longest pair is shared plus replay, at 3,985 characters (measured with `wc -m` on the shared block, a blank line and the replay block).
+Every goal is the shared block plus the block for that loop. The runtime limits a goal to 4,000 characters, so the two blocks together must fit. The longest pair is shared plus replay, at 3,992 characters (measured with `wc -m` on the shared block, a blank line and the replay block).
 
 ## Shared block (goes first in every goal)
 
@@ -40,7 +40,7 @@ Skip what is already recorded and routine turns that taught nothing.
 
 Part 2, tend. Keep memory lean, each piece where the agent reads it when it needs it.
 - mind.md is the index. It loads every turn, so it holds only every-turn rules and one line per page.
-- A page in mind/ holds the detail for one subject, as current belief. It is read only when needed.
+- A page in mind/ holds one subject's detail, as current belief. It is read only when needed.
 - mind/log.md holds what happened, by date. mind-archive/ holds text nobody needs day to day.
 
 Each run, reread up to three pages or index sections, longest-unread first. Keep that list in local_loop_state. For each ask: still true, still needed, in the right place?
@@ -52,7 +52,7 @@ Each run, reread up to three pages or index sections, longest-unread first. Keep
 - A page item needed on every turn, or an `## Always` line that looks finished, duplicated or longer than its rule: write a `misplaced` trace saying what should move where.
 - Something old and unfinished that still matters, or matters again: write a `resurfaced` trace saying what it is, how long it has sat, and where it is recorded.
 
-To move text: write it in the new place, read it back, then remove the old. Over about 1 KB, do not move it yourself (a retyped copy is not exact). Add it to the `pending_moves` list in local_loop_state (what, from, to), keeping existing entries; main moves it by code. Edit specific text; never rewrite a whole file. After each run write mind.md's size in bytes to local_loop_state as `index_bytes`. If all is in order, change nothing.
+To move text: write it in the new place, read it back, then remove the old. Over about 1 KB, do not move it yourself (a retyped copy is not exact). Add it to `pending_moves` in local_loop_state (what, from, to) unless already listed, keeping existing entries; main moves it by code. Edit specific text; never rewrite a whole file. After each run write mind.md's size in bytes to local_loop_state as `index_bytes`. If all is in order, change nothing.
 ```
 
 ## expectation
@@ -60,9 +60,9 @@ To move text: write it in the new place, read it back, then remove the old. Over
 ```
 Operation: predict what should happen next, then check whether it did.
 
-Part 1, predict. Read what is new since your cursor. Wherever something was started, asked, promised, sent or scheduled, write a trace of kind `expectation` with status `open`: what should happen, by when (`due_at`), and the source. Also hold standing expectations that come from the agent's own files: how its output should sound (soul.md), what its rules say it does (mind.md `## Always`).
+Part 1, predict. Read what is new since your cursor. Wherever something was started, asked, promised, sent or scheduled, write a trace of kind `expectation` with status `open`: what should happen, by when (`due_at`), and the source. Always set due_at; if no date was given, use your best guess. Standing expectations come from the agent's own files: how its output should sound (soul.md), what its rules say it does (mind.md `## Always`). They are not rows; re-read them each run.
 
-Part 2, check. Read every open expectation whose due_at has passed, and compare recent output against the standing ones. If it happened, set status `met`. Main's stream gets compacted, so before you decide something did not happen, also check mind/log.md and the memory pages. If it did not, or it happened differently, write a trace of kind `surprise`: what was expected, what happened instead, and both sources. Then set the expectation's status to `missed`.
+Part 2, check. Read every open expectation whose due_at has passed, and compare recent output against the standing ones. If it happened, set status `met`. Main's stream gets compacted, so before you decide something did not happen, also check mind/log.md and the memory pages. If it did not, or it happened differently, write a trace of kind `surprise`: what was expected, what happened instead, and both sources. Then set the expectation's status to `missed`. Set `met` or `missed` only on `open` rows; a deviation from a standing expectation is just a `surprise` trace.
 
 Do not decide whether a surprise matters. That is the weighing loop's work. Do not hunt for any one type of mismatch; take whatever the predictions produce.
 ```
@@ -91,9 +91,9 @@ For each new trace ask: would main do or say something different, soon, if it kn
 - Yes: add one line to the block, 30 words or fewer, plain words, with the date and trace id: `- [Nov 10, t412] ...`. Set status `surfaced` and set expires_at three days out.
 - No: set status `dropped` with a short reason in `note`.
 
-The block holds five lines at most. To add a sixth, remove the weakest. Remove any line past its expires_at and set that trace `expired`. Edit only between the two markers. Never touch the rest of mind.md.
+The block holds five lines at most. To add a sixth, remove the weakest line and set its trace `dropped` with note `bumped`. Any `surfaced` trace past its expires_at: remove its line if it is still there and set it `expired`. Edit only between the two markers. Never touch the rest of mind.md.
 
-You may use loop_send to main with wake only when something is due within a few hours and would be lost by waiting for main's next turn. At most once a day.
+You may use loop_send to main with wake only when something is due within a few hours and would be lost by waiting for main's next turn. At most once a day. Still add the line and set the trace `surfaced` as usual.
 ```
 
 ## Shared storage
