@@ -860,7 +860,26 @@ export class TriggerEvaluator extends EventEmitter {
     // next tick. Without this, one recovery window would admit every due
     // timer while only the first runs.
     const attempted = new Set<string>()
-    for (const timer of due) this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted)
+    // Settle failures are logged once per tick (ids capped), and a busy or
+    // locked file ends the tick: every remaining row stays due.
+    const failed: number[] = []
+    let firstError: unknown
+    for (const timer of due) {
+      const error = this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted)
+      if (error === undefined) continue
+      failed.push(timer.id)
+      firstError ??= error
+      const code = (error as { code?: string }).code
+      if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') break
+    }
+    if (failed.length === 0) return
+    const message = firstError instanceof Error ? firstError.message : String(firstError)
+    console.error(`[TriggerEvaluator] Failed to settle ${failed.length} timer(s):`, firstError)
+    try {
+      this.workspace?.insertLog('error', 'timer', 'renew_failed', null,
+        `Failed to settle ${failed.length} timer(s): ${message}`,
+        { timer_count: failed.length, timer_ids: failed.slice(0, 20) })
+    } catch { /* database may be unavailable */ }
   }
 
   /**
@@ -880,7 +899,8 @@ export class TriggerEvaluator extends EventEmitter {
    * dispatched, so of two runtimes polling one file only one runs it, and a
    * crash mid-fire cannot refire it.
    */
-  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>): void {
+  /** Returns the settle error, if the row could not be settled (it stays due). */
+  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>): unknown {
     const loop = timer.loop ?? 'main'
     // A loop that is not declared (deleted) can never receive: as on base, the
     // agent part is dropped and logged, and the row fires as its other scopes
@@ -918,16 +938,8 @@ export class TriggerEvaluator extends EventEmitter {
         } catch { /* observability is never fatal */ }
       }
     } catch (error) {
-      // The row stays due and is retried next tick.
-      console.error(`[TriggerEvaluator] Failed to settle timer #${timer.id}:`, error)
-      try {
-        this.workspace?.insertLog(
-          'error', 'timer', 'renew_failed', null,
-          `Failed to settle timer #${timer.id}: ${error instanceof Error ? error.message : String(error)}`,
-          { timer_id: timer.id }
-        )
-      } catch { /* database may be unavailable */ }
-      return
+      // The row stays due and is retried next tick (checkTimers logs it).
+      return error ?? new Error('settle failed')
     }
 
     const timerAgentId = this.config.id
