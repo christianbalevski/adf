@@ -32,6 +32,8 @@ class ScriptedProvider implements LLMProvider {
   readonly modelId = 'scripted-model-v1'
   calls = 0
   seen: string[] = []
+  /** The next call fails (structural) once. */
+  failOnce = false
   private barrier: { promise: Promise<void>; release: () => void } | null = null
   constructor(public mode: Mode = 'ok') {}
   /** The next call waits until release() and then answers in the current mode. */
@@ -46,6 +48,7 @@ class ScriptedProvider implements LLMProvider {
     this.calls++
     this.seen.push(JSON.stringify(opts.messages))
     if (this.barrier) await this.barrier.promise
+    if (this.failOnce) { this.failOnce = false; throw new Error('unrecognized executor fault') }
     if (this.mode === 'auth') throw Object.assign(new Error('401 Unauthorized: invalid api key'), { status: 401 })
     if (this.mode === 'fail') throw new Error('unrecognized executor fault')
     return { id: `r${this.calls}`, content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
@@ -733,6 +736,48 @@ describe('round 7: F1 a timer during a manual compaction gets exactly one turn t
       expect(after[0]).toContain('R7-DURING-COMPACT')
       expect(loopRows(workspace, 'R7-DURING-COMPACT')).toBe(1)
       expect(sessionCopies(agent, 'R7-DURING-COMPACT')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+// ===========================================================================
+// Round 8 (break-it recoveryb-r8): a row still pending injection below the mark
+// ===========================================================================
+
+describe('round 8: F1 a row appended during a failed preflight compaction gets a turn that sees it', { timeout: 30_000 }, () => {
+  it.each(['timer', 'loop_send'] as const)('%s: the failure notice is written above the row, the row stays pending, one turn reads it', async (kind) => {
+    const { filePath, open } = makeFile(`r8-preflight-${kind}`)
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE] })
+    const pool = (agent as unknown as { loopPool: { sendToLoop: (f: string, t: string, c: string, w: boolean) => Promise<unknown> } }).loopPool
+    const payload = `R8-DURING-PREFLIGHT-${kind}`
+    try {
+      await agent.executor.executeTurn(chat('first'))
+      await settled(agent)
+      // Force the preflight compaction on the next turn.
+      const ex = agent.executor as unknown as { estimatePreflightTokens: (...a: unknown[]) => number }
+      const orig = ex.estimatePreflightTokens.bind(ex)
+      let once = true
+      ex.estimatePreflightTokens = (...a: unknown[]) => { if (once) { once = false; return 1e9 } return orig(...a) }
+      provider.blockNext() // the next call is the summarizer: block it, then make it fail
+      const turn = agent.executor.executeTurn(chat('second'))
+      await until(() => provider.blocked && provider.calls >= 2)
+      const before = provider.calls
+      if (kind === 'timer') {
+        const t = addDue(workspace, payload)
+        tick(agent)
+        expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      } else {
+        await pool.sendToLoop('research', 'main', payload, true)
+      }
+      provider.failOnce = true
+      provider.release()
+      await turn
+      await settled(agent); await sleep(300); await settled(agent)
+      expect(provider.seen.slice(before).some(s => s.includes(payload))).toBe(true)
+      expect(sessionCopies(agent, payload)).toBe(1)
+      expect(loopRows(workspace, payload)).toBe(1)
     } finally { await agent.disposeAsync() }
   })
 })
