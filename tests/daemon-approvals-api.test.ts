@@ -113,12 +113,13 @@ describe('approvals hub routes', () => {
     expect(bad.json()).toEqual({ success: false, error: 'filePath and approvalId are required' })
   })
 
-  it('GET /approvals/interactions lists main-loop asks then approvals per agent, with input', async () => {
+  it('GET /approvals/interactions lists every loop\'s asks then approvals per agent, with input and loop', async () => {
     const server = setup()
     const a1 = approval(FILE_1, 'task-1', 'main', () => {})
     approvalHub.register(a1)
     approvalHub.register(approval(FILE_1, 'task-2', 'critic', () => {}))
     approvalHub.register(ask(FILE_1, 'ask_1'))
+    approvalHub.register({ ...ask(FILE_1, 'ask_1'), id: notificationKey(FILE_1, 'critic', 'ask_1'), loop: 'critic' })
 
     const res = await server.inject({ method: 'GET', url: '/approvals/interactions' })
     expect(res.json()).toEqual([
@@ -126,6 +127,16 @@ describe('approvals hub routes', () => {
         filePath: FILE_1,
         handle: 'agent-1',
         type: 'ask',
+        loop: 'main',
+        requestId: 'ask_1',
+        question: 'Which folder? (+1 more)',
+        questions: [{ question: 'Which folder?', options: [{ label: 'src' }, { label: 'docs' }] }, { question: 'Overwrite?' }],
+      },
+      {
+        filePath: FILE_1,
+        handle: 'agent-1',
+        type: 'ask',
+        loop: 'critic',
         requestId: 'ask_1',
         question: 'Which folder? (+1 more)',
         questions: [{ question: 'Which folder?', options: [{ label: 'src' }, { label: 'docs' }] }, { question: 'Overwrite?' }],
@@ -134,7 +145,19 @@ describe('approvals hub routes', () => {
         filePath: FILE_1,
         handle: 'agent-1',
         type: 'approval',
+        loop: 'main',
         requestId: 'task-1',
+        toolName: 'fs_write',
+        input: { path: 'a.txt', content: 'hello' },
+        reason: 'restricted',
+        canAlwaysApprove: true,
+      },
+      {
+        filePath: FILE_1,
+        handle: 'agent-1',
+        type: 'approval',
+        loop: 'critic',
+        requestId: 'task-2',
         toolName: 'fs_write',
         input: { path: 'a.txt', content: 'hello' },
         reason: 'restricted',

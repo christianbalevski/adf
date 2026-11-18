@@ -9,7 +9,7 @@
  */
 
 import { z } from 'zod'
-import type { Tool, ToolCategory } from '../tool.interface'
+import type { Tool, ToolCallContext, ToolCategory } from '../tool.interface'
 import type { ToolResult, ToolProviderFormat } from '@shared/types/tool.types'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolRegistry } from '../tool-registry'
@@ -116,7 +116,7 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
     this.getConfig = () => config
   }
 
-  async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
+  async execute(input: unknown, workspace: AdfWorkspace, call?: ToolCallContext): Promise<ToolResult> {
     const { command } = input as z.infer<typeof InputSchema>
     const startTime = Date.now()
 
@@ -142,6 +142,12 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
       const timeoutMs = clampTimerDelay(config.limits?.execution_timeout_ms ?? 60_000)
       const ac = new AbortController()
       let timer = setTimeout(() => ac.abort(), timeoutMs)
+      // Stop, interrupt or Kill of the calling turn ends the pipeline too:
+      // stages check ctx.signal, so no command after it runs.
+      const stopped = call?.signal
+      const onStopped = () => { clearTimeout(timer); ac.abort() }
+      if (stopped?.aborted) onStopped()
+      else stopped?.addEventListener('abort', onStopped, { once: true })
 
       // Pause the shell timeout while a human decision is pending — otherwise
       // the 60s timer fires mid-approval and the pipeline dies with exit 124
@@ -152,7 +158,7 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
           try {
             return await fn(...args)
           } finally {
-            timer = setTimeout(() => ac.abort(), timeoutMs)
+            if (!ac.signal.aborted) timer = setTimeout(() => ac.abort(), timeoutMs)
           }
         }
 
@@ -200,6 +206,7 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
         ])
       } finally {
         clearTimeout(timer)
+        stopped?.removeEventListener('abort', onStopped)
       }
 
       // 4. Log to adf_logs
@@ -234,6 +241,12 @@ Full guide: ${DOCS_GUIDES_URL}/tools.md`
             stdout: '',
             stderr: `parse error: ${error.message}`,
           }),
+          isError: false,
+        }
+      }
+      if (error instanceof ShellTimeoutError && call?.signal?.aborted) {
+        return {
+          content: JSON.stringify({ exit_code: 130, stdout: '', stderr: 'shell: stopped' }),
           isError: false,
         }
       }

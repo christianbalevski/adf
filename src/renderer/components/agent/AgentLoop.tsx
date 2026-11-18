@@ -7,6 +7,7 @@ import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppStat
 import { toDisplayState } from '../../hooks/useAgent'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { pickOldestSeq } from '../../hooks/live-seq'
+import { rebindPendingRequests } from '../../hooks/approval-target'
 import { captureAgentView, isCurrentAgentView } from '../../utils/agent-view'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
 import { sendComposerMessage, type SendRoute } from '../../utils/composer-send'
@@ -1404,7 +1405,11 @@ function LoopStream({ loop }: { loop: string }) {
         if (cancelled) return
         const history = result?.chatHistory
         if (history?.uiLog?.length) {
+          // An approval or ask this loop raised before its tab first opened is
+          // bound to an entry the history replaces: carry it over.
+          const before = selectLoopSlice(useAgentStore.getState(), loop)
           setLog(history.uiLog as AgentLogEntry[], history.earlierCount ?? 0, loop)
+          rebindPendingRequests(before, loop)
         }
       })
       .catch(() => { /* stream unavailable — the tab just starts empty */ })
@@ -2793,6 +2798,11 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, onOpenMenu, disa
   // (which IS the agent state, §6.3) and a side loop to its own slice, which
   // `useAgent` fills the moment that loop's executor emits `state_changed`.
   const loopState = useAgentStore((s) => selectLoopSlice(s, name).state)
+  // An inner loop's approvals and questions show only in its own tab, so the
+  // tab says they are waiting. Main's are already shown wherever the agent is
+  // listed (the sidebar's waiting ring counts both).
+  const pendingApprovalCount = useAgentStore((s) => name === MAIN_LOOP ? 0 : selectLoopSlice(s, name).pendingApprovals.size)
+  const pendingAskCount = useAgentStore((s) => name === MAIN_LOOP ? 0 : selectLoopSlice(s, name).pendingAsks.size)
   // A side loop that has never emitted reads the default slice ('idle'), and a
   // stopped agent holds no runtime for it — painting that green would claim a
   // mind is alive behind the tab when the pool has none. Read main's state for
@@ -2862,7 +2872,29 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, onOpenMenu, disa
         )}
       </span>
       <span className="max-w-[9rem] truncate">{label}</span>
+      <LoopPendingBadge approvals={pendingApprovalCount} asks={pendingAskCount} />
     </button>
+  )
+}
+
+/** A loop tab's count of pending approvals and questions, styled as the approvals bell's. Nothing at zero. */
+export function LoopPendingBadge({ approvals, asks }: { approvals: number; asks: number }) {
+  const count = approvals + asks
+  if (count <= 0) return null
+  const label = [
+    approvals > 0 ? `${approvals} pending approval${approvals === 1 ? '' : 's'}` : null,
+    asks > 0 ? `${asks} pending question${asks === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(', ')
+  return (
+    <span
+      data-loop-pending-approvals=""
+      role="img"
+      aria-label={label}
+      title={label}
+      className="min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full bg-[var(--status-draft-bg)] text-[var(--status-draft)] text-[9px] font-semibold leading-none tabular-nums"
+    >
+      {count}
+    </span>
   )
 }
 

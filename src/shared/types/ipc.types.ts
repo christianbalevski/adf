@@ -744,6 +744,8 @@ export interface FleetPendingInteraction extends Partial<ApprovalMeta> {
   questions?: AskQuestion[]
   toolName?: string
   input?: unknown
+  /** The loop that raised it (main or an inner loop). */
+  loop?: string
 }
 
 export type MeshEvent =

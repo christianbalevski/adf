@@ -9,6 +9,7 @@ import type { TriggerEvaluator } from './trigger-evaluator'
 import { assembleAgent, type AssembledAgent, type HostAttachment, type LifecycleResource } from './assemble-agent'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { AdfWorkspace } from '../adf/adf-workspace'
+import { findApprovalHolder } from './approval-holder'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
 import { unlockWorkspaceEnvelopes } from './identity-provisioner'
 import { AdfDatabase } from '../adf/adf-database'
@@ -398,9 +399,11 @@ export class BackgroundAgentManager extends EventEmitter {
     filePath = this.canonicalPath(filePath)
     const managed = this.agents.get(filePath)
     if (!managed) return { success: false, error: 'Background agent not found' }
+    // The request may be main's or any inner loop's.
+    const holder = findApprovalHolder(managed.executor, managed.assembledAgent.loopPool, requestId)
     // Refused when the declaration is locked or the approval is a protection
     // override — the UI disables the option, but the backend is the authority.
-    const meta = managed.executor.getPendingApprovalMeta(requestId)
+    const meta = holder?.executor.getPendingApprovalMeta(requestId)
     const lockedDecl = managed.config.tools?.find((t) => t.name === toolName)?.locked === true
     if (meta?.canAlwaysApprove === false || lockedDecl) {
       return { success: false, error: meta?.alwaysApproveBlockedReason ?? 'Tool declaration is locked' }
@@ -412,11 +415,10 @@ export class BackgroundAgentManager extends EventEmitter {
     const updated: AgentConfig = { ...managed.config, tools }
     managed.config = updated
     managed.workspace.setAgentConfig(updated)
-    managed.executor.updateConfig(updated)
-    managed.triggerEvaluator.updateConfig(updated)
-    managed.adfCallHandler?.updateConfig(updated)
+    // Through the choke point, so inner loops re-derive the un-gated tool too.
+    managed.assembledAgent.applyConfigChange(updated, { notifyHost: false })
     this.onAgentConfigChanged?.(filePath, updated)
-    managed.executor.resolveApproval(requestId, true)
+    holder?.executor.resolveHilTask(requestId, true)
     return { success: true }
   }
 

@@ -16,7 +16,7 @@ import { AdfCallHandler } from '../../../src/main/runtime/adf-call-handler'
 import { withAuthorization } from '../../../src/main/runtime/authorization-context'
 import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
 
-function makeHandler() {
+function makeHandler(loopName?: string) {
   const executed: Array<{ tool: string; args: Record<string, unknown> }> = []
   const toolRegistry = {
     get: (name: string) => (name === 'fs_delete' ? { name } : null),
@@ -44,6 +44,7 @@ function makeHandler() {
     id: 'test-agent',
     tools: [{ name: 'fs_delete', enabled: true, visible: true, restricted: false }],
     code_execution: {} as AgentConfig['code_execution'],
+    ...(loopName ? { metadata: { loop_name: loopName } } : {}),
   } as unknown as AgentConfig
 
   const handler = new AdfCallHandler({
@@ -73,6 +74,15 @@ describe('AdfCallHandler protection HIL', () => {
     expect(result.errorCode).toBe('PROTECTION_DENIED')
     expect(result.error).toContain('not that file')
     expect(executed.some(e => e.args?._protection_override === true)).toBe(false)
+  })
+
+  it('an inner loop\'s handler asks through its own approval callback, as main\'s does', async () => {
+    const { handler, executed } = makeHandler('reflector')
+    handler.requestProtectionApproval = vi.fn(async () => ({ approved: true }))
+    const result = await handler.handleCall('fs_delete', { path: 'mind.md' })
+    expect(result.error).toBeUndefined()
+    expect(handler.requestProtectionApproval).toHaveBeenCalledOnce()
+    expect(executed.some(e => e.args?._protection_override === true)).toBe(true)
   })
 
   it('no callback → plain TOOL_ERROR (current behavior preserved)', async () => {

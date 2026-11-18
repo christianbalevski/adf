@@ -126,6 +126,7 @@ beforeEach(() => {
     workspace: ws,
     registry,
     getProvider: () => provider,
+    resolveHilTask: () => false,
     basePrompt: '',
     toolPrompts: {},
     adfCallHandler: null,

@@ -68,7 +68,7 @@ describe('side-loop preamble', () => {
     const text = buildLoopPreamble('reflector', 'lyra', ['loop_send', 'loop_list'])
     expect(text).toContain('You are the "reflector" loop')
     expect(text).toContain('inside agent "lyra"')
-    expect(text).toContain('"main" owns the outside world')
+    expect(text).toContain('"main" faces the outside world')
     expect(text).toContain('[from loop:reflector]')
     expect(text).toContain('loop_send')
     expect(text).toContain('loop_list')
@@ -191,6 +191,18 @@ describe('system prompt assembly', () => {
       })
     )
     expect(prompt).toContain('`loop_manage` is yours')
+  })
+
+  it('a side loop granted loop_manage is not told it is main', () => {
+    const derived = deriveLoopConfig(host({ loops: [loop()] }), loop())
+    // Granted directly, independent of how derive treats the grant.
+    derived.tools = [...derived.tools.filter(t => t.name !== 'loop_manage'), { name: 'loop_manage', enabled: true, visible: true }]
+    const prompt = systemPrompt(derived)
+    expect(prompt).not.toContain('## Inner Loops')
+    expect(prompt).not.toContain('You are "main"')
+    expect(prompt).toContain('You are the "reflector" loop')
+    // Main with the same grant and no loops does get the invitation.
+    expect(systemPrompt(host({ tools: [{ name: 'loop_manage', enabled: true, visible: true }] }))).toContain('## Inner Loops')
   })
 
   it('a derived side-loop config carries no loops section (loops do not nest)', () => {

@@ -593,10 +593,10 @@ function LoopCard({
               </span>
               {grantableTools.length > 0 && (
                 <span className="flex items-center gap-2">
-                  {/* "All" is every tool this host can grant a loop — never a
-                      prohibited or restricted one. Names already on the list
-                      that the host has since disabled are kept, as a single
-                      tick would keep them. */}
+                  {/* "All" is every tool this host has enabled, restricted
+                      ones included. Names already on the list that the host
+                      has since disabled are kept, as a single tick would
+                      keep them. */}
                   <button
                     type="button"
                     disabled={allSelected}
@@ -2482,12 +2482,13 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
           </div>
         </Section>
 
-        {/* Loops — `main` is implicit and uneditable; side loops are attenuated
-            children that run concurrently against the same .adf body. */}
+        {/* Loops — `main` is implicit and uneditable; side loops hold a subset
+            of the agent's enabled tools and run concurrently against the same
+            .adf body. */}
         <Section
           docs={DOCS.loops}
           title="Loops"
-          hint="Inner loops share this agent's file and identity, with their own history, model and tool allow-list. Each loop has a tab in the loop panel; right-click the tab to enable, disable or delete it."
+          hint="Inner loops share this agent's file and identity, with their own history, model and tool allow-list. A restricted tool granted to a loop asks for approval in that loop's tab. Each loop has a tab in the loop panel; right-click the tab to enable, disable or delete it."
           locked={isSectionLocked('loops')}
           onToggleLock={() => toggleSectionLock('loops')}
           summary={`main + ${(local.loops ?? []).length} inner`}

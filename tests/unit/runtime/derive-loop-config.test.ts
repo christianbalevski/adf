@@ -4,7 +4,6 @@ import {
   listAvailableLoopTools,
   validateLoopToolList,
   LOOP_DEFAULT_ON_TOOLS,
-  SIDE_LOOP_CODE_EXECUTION,
   MAIN_LOOP,
   buildLoopPreamble,
 } from '../../../src/main/adf/derive-loop-config'
@@ -106,18 +105,47 @@ describe('deriveLoopConfig — tool allow-list', () => {
     expect(declFor(derived, 'msg_send')?.visible).toBe(false)
   })
 
-  it('never carries `restricted` (or `locked`) into a derived declaration', () => {
-    // LOAD-BEARING: adf-call-handler computes authorizedBypass from
-    // `restricted && authorized`, so a carried flag would let a side loop's
-    // authorized code call the tool with the disabled/HIL checks bypassed.
+  it('carries `restricted` and `locked` on a granted tool, as main has them', () => {
+    // Granted + restricted behaves as on main: an LLM call asks the human, the
+    // loop's authorized code bypasses.
     const derived = deriveLoopConfig(
       host({ tools: [tool('fs_read', { restricted: true, locked: true }), tool('msg_send')] }),
-      loop({ tools: [] }),
+      loop({ tools: ['fs_read'] }),
     )
-    for (const decl of derived.tools) {
-      expect(decl).not.toHaveProperty('restricted')
-      expect(decl).not.toHaveProperty('locked')
-    }
+    expect(declFor(derived, 'fs_read')).toEqual({
+      name: 'fs_read', enabled: true, visible: true, restricted: true, locked: true,
+    })
+  })
+
+  it('never carries `restricted` (or `locked`) on a tool the loop was NOT granted', () => {
+    // LOAD-BEARING: adf-call-handler computes authorizedBypass from
+    // `restricted && authorized` and skips the enabled check on it, so a flag
+    // on a non-granted tool would let the loop's authorized code call it.
+    const derived = deriveLoopConfig(
+      host({ tools: [tool('fs_read', { restricted: true, locked: true }), tool('msg_send')] }),
+      loop({ tools: ['msg_send'] }),
+    )
+    expect(declFor(derived, 'fs_read')).toEqual({ name: 'fs_read', enabled: false, visible: false })
+  })
+
+  it('grants a tool whose MCP server is restricted; the cloned mcp config keeps the gate', () => {
+    const parent = host({
+      tools: [tool('mcp_notion_search')],
+      mcp: { servers: [{ name: 'notion', transport: 'stdio', restricted: true }] },
+    } as unknown as Partial<AgentConfig>)
+    const derived = deriveLoopConfig(parent, loop({ tools: ['mcp_notion_search'] }))
+    expect(declFor(derived, 'mcp_notion_search')?.enabled).toBe(true)
+    expect(derived.mcp?.servers?.[0]?.restricted).toBe(true)
+  })
+
+  it('can grant sys_update_config, loop_manage and sys_create_adf', () => {
+    const parent = host({ tools: [tool('sys_update_config'), tool('loop_manage'), tool('sys_create_adf')] })
+    const derived = deriveLoopConfig(parent, loop({ tools: ['sys_update_config', 'loop_manage', 'sys_create_adf'] }))
+    expect(grantedNames(derived)).toEqual(
+      expect.arrayContaining(['loop_manage', 'sys_create_adf', 'sys_update_config']),
+    )
+    // Still flat: a loop holding loop_manage has no roster of its own.
+    expect(derived.loops).toEqual([])
   })
 
   describe('default-on tools', () => {
@@ -129,9 +157,8 @@ describe('deriveLoopConfig — tool allow-list', () => {
       { label: 'undeclared on the host', decl: null, granted: true },
       { label: 'declared and enabled', decl: tool('loop_clear'), granted: true },
       { label: 'explicitly disabled by the host', decl: tool('loop_clear', { enabled: false }), granted: false },
-      // The finding: a restricted default-on name used to skip the prohibition
-      // check entirely, so a side loop got un-gated what main HIL-gates.
-      { label: 'restricted by the host', decl: tool('loop_clear', { restricted: true }), granted: false },
+      // Granted, and still gated: the restricted flag rides along.
+      { label: 'restricted by the host', decl: tool('loop_clear', { restricted: true }), granted: true },
       { label: 'restricted AND disabled', decl: tool('loop_clear', { enabled: false, restricted: true }), granted: false },
     ]
 
@@ -147,19 +174,16 @@ describe('deriveLoopConfig — tool allow-list', () => {
       expect([...LOOP_DEFAULT_ON_TOOLS]).toEqual(['loop_compact', 'loop_clear'])
     })
 
-    it('does not grant a default-on tool restricted by its MCP server', () => {
-      const parent = host({
-        tools: [tool('mcp_notion_search')],
-        mcp: { servers: [{ name: 'notion', transport: 'stdio', restricted: true }] },
-      } as unknown as Partial<AgentConfig>)
-      const derived = deriveLoopConfig(parent, loop({ tools: ['mcp_notion_search'] }))
-      expect(declFor(derived, 'mcp_notion_search')?.enabled).toBe(false)
+    it('a restricted default-on tool keeps its restricted flag', () => {
+      const parent = host({ tools: [tool('fs_read'), tool('loop_clear', { restricted: true })] })
+      const derived = deriveLoopConfig(parent, loop({ tools: [] }))
+      expect(declFor(derived, 'loop_clear')?.restricted).toBe(true)
     })
   })
 
   describe('duplicate declarations resolve exactly as the executor resolves them', () => {
     // dedupeToolDeclarations: first-wins, `restricted`/`locked` sticky-true. A
-    // derive that used a raw first-wins `.find()` would call the tool
+    // derive that used a raw first-wins `.find()` would carry the tool
     // unrestricted whenever the restricted copy came second, and hand the side
     // loop an un-gated tool while main is still HIL-gated.
     const orders: Array<{ label: string; tools: ToolDeclaration[] }> = [
@@ -174,12 +198,12 @@ describe('deriveLoopConfig — tool allow-list', () => {
     ]
 
     for (const { label, tools } of orders) {
-      it(`${label} → prohibited`, () => {
+      it(`${label} → granted, restricted`, () => {
         const parent = host({ tools })
-        expect(validateLoopToolList(parent, ['fs_read']).prohibited).toEqual(['fs_read'])
-        expect(listAvailableLoopTools(parent)).not.toContain('fs_read')
+        expect(validateLoopToolList(parent, ['fs_read']).ok).toEqual(['fs_read'])
+        expect(listAvailableLoopTools(parent)).toContain('fs_read')
         const derived = deriveLoopConfig(parent, loop({ tools: ['fs_read'] }))
-        expect(declFor(derived, 'fs_read')?.enabled).toBe(false)
+        expect(declFor(derived, 'fs_read')).toMatchObject({ enabled: true, restricted: true })
       })
     }
 
@@ -215,16 +239,16 @@ describe('deriveLoopConfig — tool allow-list', () => {
       ],
     })
 
-    const cases: Array<{ name: string; bucket: 'ok' | 'unknown' | 'disabled' | 'prohibited' }> = [
+    const cases: Array<{ name: string; bucket: 'ok' | 'unknown' | 'disabled' }> = [
       { name: 'fs_read', bucket: 'ok' },
       // Its own bucket now: an owner's "off for now" is not a typo, and the
       // caller proceeds without it rather than failing the whole create.
       { name: 'msg_send', bucket: 'disabled' },
       { name: 'never_heard_of_it', bucket: 'unknown' },
-      { name: 'shell_exec', bucket: 'prohibited' }, // restricted → no HIL channel
-      { name: 'sys_update_config', bucket: 'prohibited' },
-      { name: 'loop_manage', bucket: 'prohibited' },
-      { name: 'sys_create_adf', bucket: 'prohibited' },
+      { name: 'shell_exec', bucket: 'ok' }, // restricted: approval in the loop's tab
+      { name: 'sys_update_config', bucket: 'ok' },
+      // Not declared on this host fixture.
+      { name: 'loop_manage', bucket: 'unknown' },
     ]
 
     for (const { name, bucket } of cases) {
@@ -234,12 +258,11 @@ describe('deriveLoopConfig — tool allow-list', () => {
       })
     }
 
-    it('reports a disabled-AND-restricted name as prohibited, not disabled', () => {
-      // Enabling it would not help — the refusal is the security one.
+    it('reports a disabled-AND-restricted name as disabled', () => {
       const p = host({ tools: [tool('mcp_x', { enabled: false, restricted: true })] })
       const result = validateLoopToolList(p, ['mcp_x'])
-      expect(result.prohibited).toEqual(['mcp_x'])
-      expect(result.disabled).toEqual([])
+      expect(result.disabled).toEqual(['mcp_x'])
+      expect(result).not.toHaveProperty('prohibited')
     })
   })
 })
@@ -305,103 +328,21 @@ describe('deriveLoopConfig — compaction threshold', () => {
   })
 })
 
-describe('deriveLoopConfig — code_execution attenuation', () => {
-  it('pins every CodeExecutionConfig key the defaults declare', () => {
-    // A key added to CodeExecutionConfig without a decision here would silently
-    // inherit the host's value — this is the test that forces the decision.
-    const derived = deriveLoopConfig(host(), loop())
-    for (const key of Object.keys(CODE_EXECUTION_DEFAULTS)) {
-      expect(derived.code_execution).toHaveProperty(key)
-    }
-    for (const key of Object.keys(SIDE_LOOP_CODE_EXECUTION)) {
-      expect(derived.code_execution).toHaveProperty(key)
-    }
-    expect(Object.keys(derived.code_execution ?? {}).sort())
-      .toEqual([...new Set([...Object.keys(CODE_EXECUTION_DEFAULTS), 'packages'])].sort())
-  })
-
-  it('denies identity, task_resolve, attestations and network whatever the host allows', () => {
-    const derived = deriveLoopConfig(host(), loop())
-    expect(derived.code_execution).toMatchObject({
-      get_identity: false,
-      set_identity: false,
-      task_resolve: false,
-      attestation_list: false,
-      attestation_add: false,
-      attestation_issue: false,
-      network: false,
-      model_invoke: true,
-      sys_lambda: true,
-      identity_status: true,
-      loop_inject: true,
-      emit_event: true,
-    })
-  })
-
-  it('inherits NO sandbox packages (pure-JS packages get an unrestricted require)', () => {
+describe('deriveLoopConfig — code_execution', () => {
+  it('inherits the host code_execution as-is, packages included', () => {
     const parent = host({
       code_execution: {
         ...CODE_EXECUTION_DEFAULTS,
+        network: true,
+        get_identity: true,
+        restricted_methods: ['model_invoke'],
         packages: [{ name: 'lodash', version: '4.0.0', enabled: true }],
       },
     } as unknown as Partial<AgentConfig>)
     const derived = deriveLoopConfig(parent, loop())
-    expect(derived.code_execution?.packages).toEqual([])
-    // and the parent is untouched
-    expect(parent.code_execution?.packages).toHaveLength(1)
-  })
-
-  it('accumulates the host restricted_methods on top of the profile', () => {
-    const parent = host({
-      code_execution: { ...CODE_EXECUTION_DEFAULTS, restricted_methods: ['model_invoke'] },
-    } as unknown as Partial<AgentConfig>)
-    const derived = deriveLoopConfig(parent, loop())
-    expect((derived.code_execution?.restricted_methods ?? []).sort())
-      .toEqual(['attestation_issue', 'model_invoke'])
-  })
-
-  it('never grants a method the agent itself has disabled (model_invoke off → loop off)', () => {
-    const parent = host({
-      code_execution: { ...CODE_EXECUTION_DEFAULTS, model_invoke: false },
-    } as unknown as Partial<AgentConfig>)
-    expect(deriveLoopConfig(parent, loop()).code_execution?.model_invoke).toBe(false)
-  })
-
-  it('intersects every profile flag with the agent (each host-off flag stays off)', () => {
-    for (const [key, value] of Object.entries(SIDE_LOOP_CODE_EXECUTION)) {
-      if (typeof value !== 'boolean') continue
-      const parent = host({
-        code_execution: { ...CODE_EXECUTION_DEFAULTS, [key]: false },
-      } as unknown as Partial<AgentConfig>)
-      const derived = deriveLoopConfig(parent, loop()).code_execution as unknown as Record<string, unknown>
-      expect(derived[key], key).toBe(false)
-    }
-  })
-
-  it('agent enabling a method does not lift the fixed loop profile', () => {
-    const parent = host({
-      code_execution: {
-        ...CODE_EXECUTION_DEFAULTS,
-        model_invoke: true,
-        network: true,
-        get_identity: true,
-        task_resolve: true,
-      },
-    } as unknown as Partial<AgentConfig>)
-    expect(deriveLoopConfig(parent, loop()).code_execution).toMatchObject({
-      model_invoke: true,
-      network: false,
-      get_identity: false,
-      task_resolve: false,
-    })
-  })
-
-  it('reads absent host keys as the defaults (partial or missing code_execution)', () => {
-    const missing = deriveLoopConfig(host({ code_execution: undefined } as unknown as Partial<AgentConfig>), loop())
-    expect(missing.code_execution).toMatchObject({ model_invoke: true, emit_event: true, network: false })
-    const partial = deriveLoopConfig(
-      host({ code_execution: { emit_event: false } } as unknown as Partial<AgentConfig>), loop())
-    expect(partial.code_execution).toMatchObject({ model_invoke: true, emit_event: false })
+    expect(derived.code_execution).toEqual(parent.code_execution)
+    // a copy, not the parent's object
+    expect(derived.code_execution).not.toBe(parent.code_execution)
   })
 
   it('a later host revocation shows up on the next derive (no cached grant)', () => {

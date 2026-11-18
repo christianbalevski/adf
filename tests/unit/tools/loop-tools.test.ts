@@ -367,9 +367,9 @@ describe('LoopConfigSchema', () => {
     expect(parse({ tools: Array.from({ length: LOOP_TOOLS_MAX + 1 }, (_, i) => `t_${i}`) }).success).toBe(false)
   })
 
-  it('rejects the hard-prohibited tool names', () => {
+  it('accepts any tool name, including the formerly main-only ones', () => {
     for (const name of ['sys_update_config', 'loop_manage', 'sys_create_adf']) {
-      expect(parse({ tools: [name] }).success).toBe(false)
+      expect(parse({ tools: [name] }).success).toBe(true)
     }
   })
 
@@ -425,14 +425,77 @@ describe('loop_manage', () => {
     return new LoopManageTool(() => pool)
   }
 
-  it('refuses any caller that is not main', async () => {
-    const pool = fakePool()
-    const result = await make(pool).execute(
-      { action: 'get', name: 'reflector' },
-      fakeWorkspace({ loop: 'reflector' }),
-    )
-    expect(result.isError).toBe(true)
-    expect(result.content).toMatch(/main loop only/)
+  describe('called from a side loop', () => {
+    it('manages a sibling: get, update and delete reach the pool', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector'), sideLoop('critic')] })
+      const tool = make(pool)
+      const ws = fakeWorkspace({ loop: 'reflector' })
+      expect((await tool.execute({ action: 'get', name: 'critic' }, ws)).isError).toBe(false)
+      expect((await tool.execute({ action: 'update', name: 'critic', config: { goal: 'sharper' } }, ws)).isError).toBe(false)
+      expect((await tool.execute({ action: 'delete', name: 'critic' }, ws)).isError).toBe(false)
+      expect(pool.calls.update).toEqual([['critic', { goal: 'sharper' }]])
+      expect(pool.calls.del).toEqual(['critic'])
+    })
+
+    it('creates a sibling and kicks it off as itself', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector')] })
+      const result = await make(pool).execute(
+        { action: 'create', config: { name: 'critic', goal: 'g', tools: [] } },
+        fakeWorkspace({ loop: 'reflector' }),
+      )
+      expect(result.isError).toBe(false)
+      expect(pool.calls.create).toHaveLength(1)
+      expect(pool.calls.send).toEqual([['reflector', 'critic', LOOP_AUTOSTART_MESSAGE, true]])
+    })
+
+    const selfCases: Array<{ label: string; input: Record<string, unknown> }> = [
+      { label: 'delete', input: { action: 'delete', name: 'reflector' } },
+      { label: 'update', input: { action: 'update', name: 'reflector', config: { goal: 'new' } } },
+      { label: 'disable', input: { action: 'update', name: 'reflector', config: { enabled: false } } },
+    ]
+    for (const { label, input } of selfCases) {
+      it(`refuses to ${label} itself`, async () => {
+        const pool = fakePool({ loops: [sideLoop('reflector')] })
+        const result = await make(pool).execute(input, fakeWorkspace({ loop: 'reflector' }))
+        expect(result.isError).toBe(true)
+        expect(result.content).toMatch(/cannot (update|delete) itself/)
+        expect(pool.calls.update).toHaveLength(0)
+        expect(pool.calls.del).toHaveLength(0)
+      })
+    }
+
+    it('gives a sibling only tools it holds itself', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector', { tools: ['loop_manage', 'fs_read'] })] })
+      const ws = fakeWorkspace({ loop: 'reflector' })
+      const refused = await make(pool).execute({ action: 'create', config: { name: 'critic', goal: 'g', tools: ['fs_read', 'msg_send'] } }, ws)
+      expect(refused.isError).toBe(true)
+      expect(refused.content).toContain('does not hold msg_send')
+      expect(pool.calls.create).toHaveLength(0)
+      const allowed = await make(pool).execute({ action: 'create', config: { name: 'critic', goal: 'g', tools: ['fs_read'] } }, ws)
+      expect(allowed.isError).toBe(false)
+    })
+
+    it('cannot delete a sibling that holds more than it does', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector', { tools: ['loop_manage'] }), sideLoop('critic', { tools: ['msg_send'] })] })
+      const result = await make(pool).execute({ action: 'delete', name: 'critic' }, fakeWorkspace({ loop: 'reflector' }))
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('does not hold msg_send')
+      expect(pool.calls.del).toHaveLength(0)
+    })
+
+    it('holds the default-on pair without listing it', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector', { tools: ['loop_manage'] }), sideLoop('critic', { tools: ['loop_compact'] })] })
+      const result = await make(pool).execute({ action: 'delete', name: 'critic' }, fakeWorkspace({ loop: 'reflector' }))
+      expect(result.isError).toBe(false)
+    })
+
+    it('cannot update a sibling that holds more than it does', async () => {
+      const pool = fakePool({ loops: [sideLoop('reflector', { tools: ['loop_manage'] }), sideLoop('critic', { tools: ['msg_send'] })] })
+      const result = await make(pool).execute({ action: 'update', name: 'critic', config: { goal: 'do my bidding' } }, fakeWorkspace({ loop: 'reflector' }))
+      expect(result.isError).toBe(true)
+      expect(result.content).toContain('does not hold msg_send')
+      expect(pool.calls.update).toHaveLength(0)
+    })
   })
 
   it('degrades to a clear error when the pool is absent', async () => {
@@ -447,9 +510,7 @@ describe('loop_manage', () => {
       { label: 'name with a colon', config: { name: 'loop:main', goal: 'g' }, match: /Invalid loop config/ },
       { label: 'missing goal with autostart on (the default)', config: { name: 'reflector' }, match: /add a goal or turn autostart off/ },
       { label: 'over-long goal', config: { name: 'reflector', goal: 'x'.repeat(LOOP_GOAL_MAX_CHARS + 1) }, match: /Invalid loop config/ },
-      { label: 'prohibited tool', config: { name: 'reflector', goal: 'g', tools: ['sys_update_config'] }, match: /prohibited tool/ },
       { label: 'unknown tool', config: { name: 'reflector', goal: 'g', tools: ['no_such_tool'] }, match: /no such tool on this agent/ },
-      { label: 'restricted host tool', config: { name: 'reflector', goal: 'g', tools: ['shell_exec'] }, match: /never grantable to a loop/ },
     ]
 
     for (const { label, config, match } of cases) {
@@ -468,10 +529,8 @@ describe('loop_manage', () => {
         { action: 'create', config: { name: 'reflector', goal: 'g', tools: ['nope'] } },
         fakeWorkspace(),
       )
-      expect(result.content).toMatch(/Available: fs_read, msg_send/)
-      // never advertises the restricted or prohibited ones
-      expect(result.content).not.toMatch(/shell_exec/)
-      expect(result.content).not.toMatch(/Available:[^.]*loop_manage/)
+      // Every enabled host tool, restricted ones included.
+      expect(result.content).toMatch(/Available: fs_read, msg_send, shell_exec, loop_manage\./)
     })
 
     it('rejects creating a loop that already exists', async () => {
@@ -767,11 +826,11 @@ describe('loop_manage', () => {
     it('validates the MERGED loop, not the patch alone', async () => {
       const pool = fakePool({ loops: [sideLoop('reflector')] })
       const result = await make(pool).execute(
-        { action: 'update', name: 'reflector', config: { tools: ['shell_exec'] } },
+        { action: 'update', name: 'reflector', config: { tools: ['no_such_tool'] } },
         fakeWorkspace(),
       )
       expect(result.isError).toBe(true)
-      expect(result.content).toMatch(/never grantable to a loop/)
+      expect(result.content).toMatch(/no such tool on this agent/)
       expect(pool.calls.update).toHaveLength(0)
     })
 

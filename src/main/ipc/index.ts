@@ -88,7 +88,8 @@ import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace, isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
 import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
-import { stripLoopNameMarker } from '../runtime/loop-pool'
+import { approvalExecutors, findApprovalHolder, findAskHolder } from '../runtime/approval-holder'
+import { stripLoopNameMarker, type LoopPool } from '../runtime/loop-pool'
 import { runOwnerCommand, OwnerCommandRefusedError, type OwnerCommandRequest } from '../runtime/owner-command'
 import { interruptLoopTurn } from '../runtime/interrupt-turn'
 import { setWorkspaceIdentityHooks, unlockWorkspaceEnvelopes } from '../runtime/identity-provisioner'
@@ -3861,8 +3862,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           agentState: displayState,
           // Side loops keep running across a switch; the view starts from their real states.
           loopStates: handle.loopPool.sideLoopStates(),
-          pendingApprovals: handle.executor.getPendingApprovals(),
-          pendingAsks: handle.executor.getPendingAsks(),
+          // Every loop's: a side loop's card restores into that loop's tab.
+          pendingApprovals: approvalExecutors(handle.executor, handle.loopPool)
+            .flatMap(({ loop, executor }) => executor.getPendingApprovals().map(approval => ({ ...approval, loop }))),
+          pendingAsks: approvalExecutors(handle.executor, handle.loopPool)
+            .flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop }))),
         }
       }
       throw new Error('Running foreground executor is missing its assembled lifecycle handle')
@@ -5186,7 +5190,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    agentExecutor.resolveApproval(args.requestId, args.approved, args.feedback)
+    // The request may be main's or any inner loop's.
+    const holder = findApprovalHolder(agentExecutor, currentAssembledAgent?.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This approval is no longer pending' }
+    holder.executor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 
@@ -5195,10 +5202,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // server-side when the declaration is locked or the approval is a protection
   // override — the UI disables the option, but the backend is the authority.
   ipcMain.handle(IPC.AGENT_TOOL_ALWAYS_APPROVE, async (_event, args: { requestId: string; toolName: string }) => {
-    if (!agentExecutor || !currentWorkspace) {
+    if (!agentExecutor || !currentWorkspace || !currentAssembledAgent) {
       return { success: false, error: 'Agent not running' }
     }
-    const meta = agentExecutor.getPendingApprovalMeta(args.requestId)
+    const holder = findApprovalHolder(agentExecutor, currentAssembledAgent?.loopPool, args.requestId)
+    const meta = holder?.executor.getPendingApprovalMeta(args.requestId)
     const config = currentWorkspace.getAgentConfig()
     const decl = config.tools?.find((t) => t.name === args.toolName)
     if (meta?.canAlwaysApprove === false || decl?.locked === true) {
@@ -5210,15 +5218,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     else tools.push({ name: args.toolName, enabled: true, visible: true, restricted: false })
     const updated: AgentConfig = { ...config, tools }
     currentWorkspace.setAgentConfig(updated)
-    agentExecutor.updateConfig(updated)
-    triggerEvaluator?.updateConfig(updated)
-    currentAdfCallHandler?.updateConfig(updated)
+    // Through the choke point, so inner loops re-derive the un-gated tool too.
+    currentAssembledAgent.applyConfigChange(updated, { notifyHost: false })
     if (meshManager && currentFilePath) {
       meshManager.updateAgentConfig(currentFilePath, updated)
     }
     // The window sent no config: it needs the new one and its revision, or its next panel save is refused as stale.
     if (currentFilePath) notifyRendererConfigChanged(currentFilePath, updated)
-    agentExecutor.resolveHilTask(args.requestId, true)
+    holder?.executor.resolveHilTask(args.requestId, true)
     return { success: true }
   })
 
@@ -5273,7 +5280,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    return resolveAskOn(agentExecutor, args.requestId, args.answers)
+    // The ask may be main's or any inner loop's.
+    const holder = findAskHolder(agentExecutor, currentAssembledAgent?.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This question is no longer pending' }
+    return resolveAskOn(holder.executor, args.requestId, args.answers)
   })
 
   // Background agent ask/approval responses
@@ -5285,7 +5295,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    return resolveAskOn(executor, args.requestId, args.answers)
+    const holder = findAskHolder(executor, backgroundAgentManager.getAgent(args.filePath)?.assembledAgent.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This question is no longer pending' }
+    return resolveAskOn(holder.executor, args.requestId, args.answers)
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean; feedback?: string }) => {
@@ -5296,7 +5308,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    executor.resolveApproval(args.requestId, args.approved, args.feedback)
+    // The request may be main's or any inner loop's.
+    const holder = findApprovalHolder(executor, backgroundAgentManager.getAgent(args.filePath)?.assembledAgent.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This approval is no longer pending' }
+    holder.executor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 

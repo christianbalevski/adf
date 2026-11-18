@@ -2,7 +2,7 @@ import { EventEmitter } from 'events'
 import { createHash } from 'node:crypto'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
-import { stripInternalToolFlags } from '../tools/tool-registry'
+import { currentToolSignal, stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
@@ -576,6 +576,8 @@ interface TurnOptions {
   nested?: boolean
 }
 
+const STOPPED_CALL_DENIAL = { approved: false, feedback: 'The turn was stopped.' } as const
+
 export class AgentExecutor extends EventEmitter {
   private state: AgentState = 'idle'
   private provider: LLMProvider | null
@@ -723,7 +725,6 @@ export class AgentExecutor extends EventEmitter {
 
   // Ask tool: pause loop and wait for human answer
   private pendingAsks = new Map<string, { resolve: (answers: AskAnswer[]) => void; questions: AskQuestion[] }>()
-  private askCounter = 0
 
   // Suspend flow: pause loop and wait for owner decision
   private pendingSuspend: { resolve: (resume: boolean) => void } | null = null
@@ -1330,13 +1331,6 @@ export class AgentExecutor extends EventEmitter {
     return this.config
   }
 
-  /** True when this executor runs a side loop (derived-config marker set by
-   *  deriveLoopConfig; a stored .adf never carries it). */
-  private isSideLoop(): boolean {
-    const name = this.config.metadata?.loop_name
-    return typeof name === 'string' && name.length > 0 && name !== 'main'
-  }
-
   updateConfig(config: AgentConfig): void {
     this.config = config
     this.toolObservationEpoch++
@@ -1621,6 +1615,12 @@ export class AgentExecutor extends EventEmitter {
     })
   }
 
+  // requestApproval and requestProtectionApproval are reached from inside a
+  // running tool call (a shell pipeline, sandboxed code). Once that call's
+  // turn is stopped, interrupted or killed, abort() has already drained the
+  // pending approvals; a request raised after it is refused, never parked, so
+  // nothing approves work from a stopped turn.
+
   /** Default auto-deny timeout for protection approvals requested by sandboxed code. */
   private static readonly PROTECTION_APPROVAL_TIMEOUT_MS = 1_200_000
 
@@ -1637,6 +1637,7 @@ export class AgentExecutor extends EventEmitter {
     protection: ProtectionDenial,
     opts?: { timeoutMs?: number | null }
   ): Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+    if (currentToolSignal()?.aborted) return STOPPED_CALL_DENIAL
     const meta = this.buildApprovalMeta(name, protection)
     const priorState = this.state
     const raisedInTurn = this.currentAgentTurn()
@@ -1696,6 +1697,7 @@ export class AgentExecutor extends EventEmitter {
     input: unknown,
     opts?: { canAlwaysApprove?: boolean; restoreState?: boolean }
   ): Promise<boolean> {
+    if (currentToolSignal()?.aborted) return false
     const priorState = this.state
     const restoreState = opts?.restoreState === true
     const ownsState = !restoreState || !this.isTurnActive()
@@ -1869,7 +1871,7 @@ export class AgentExecutor extends EventEmitter {
    * event and pauses the executor until the user responds via `resolveAsk`.
    */
   private requestAsk(questions: AskQuestion[]): { requestId: string; answers: Promise<AskAnswer[]> } {
-    const requestId = `ask_${++this.askCounter}`
+    const requestId = `ask_${nanoid(12)}`
     const question = summarizeAsk(questions)
     this.setState('awaiting_ask')
     this.emitEvent({
@@ -3062,34 +3064,6 @@ export class AgentExecutor extends EventEmitter {
               }
             }
 
-            // Side loops have no approval channel (HIL routing is filePath/
-            // singleton keyed, MVP), so a restricted call here would park an
-            // approval nobody can answer and block the loop until the auto-deny
-            // timeout. deriveLoopConfig already keeps every statically
-            // restricted tool out of a loop's toolset; this closes the DYNAMIC
-            // escape above (sys_lambda targeting an authorized file) and any
-            // MCP server restricted after the derive. Fail closed, and say why.
-            if (isRestricted && this.isSideLoop()) {
-              const refusal =
-                `"${toolBlock.name}" needs human approval, and an inner loop has no channel to ask for one. ` +
-                'Ask main to run this (loop_send), or do it a way that needs no approval.'
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolBlock.id,
-                content: refusal,
-                is_error: true
-              })
-              this.emitEvent({
-                type: 'tool_call_result',
-                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: refusal, isError: true } },
-                timestamp: Date.now()
-              })
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
-                content: refusal, isError: true
-              })
-              continue
-            }
-
             // _async check BEFORE HIL — async restricted tools create a pending_approval task
             // and return immediately instead of blocking the loop
             const toolInput = toolBlock.input as Record<string, unknown> | undefined
@@ -3310,20 +3284,6 @@ export class AgentExecutor extends EventEmitter {
             // on deny the denial is final for this turn (dedupe by tool+target).
             if (rawResult.isError && rawResult.protection) {
               const p = rawResult.protection
-              // A4 (security F2): a side loop has no HIL approval channel (routing
-              // is filePath/singleton-keyed, MVP), so parking an override request
-              // here would hang the call until the auto-deny timeout with nothing
-              // on screen to answer it — AND turn a protection denial in an inner
-              // loop into a working override channel via the hub. Fail closed,
-              // mirroring adf-call-handler.ts:401. Dedupe-mark it so a retry this
-              // turn is short-circuited too.
-              if (this.isSideLoop()) {
-                this.deniedProtectionKeys.add(`${toolBlock.name}|${p.kind}|${p.target}`)
-                rawResult = {
-                  content: `"${toolBlock.name}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
-                  isError: true
-                }
-              } else {
               const dedupeKey = `${toolBlock.name}|${p.kind}|${p.target}`
               if (this.deniedProtectionKeys.has(dedupeKey)) {
                 rawResult = {
@@ -3380,7 +3340,6 @@ export class AgentExecutor extends EventEmitter {
                   }
                   if (this.getState() !== 'stopped') this.setState('tool_use')
                 }
-              }
               }
             }
 
@@ -4724,16 +4683,6 @@ export class AgentExecutor extends EventEmitter {
       // reference; approval re-runs the call with a one-time bypass.
       if (rawResult.isError && rawResult.protection) {
         const p = rawResult.protection
-        // A4 (security F2): a side loop has no HIL approval channel, so parking
-        // a pending_approval task here would leave an override request no one
-        // can see or answer — and would make protection denials in inner loops
-        // a working override channel via the hub. Fail closed (auto-deny),
-        // mirroring the sync path and adf-call-handler.ts:401.
-        if (this.isSideLoop()) {
-          const msg = `"${toolName}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`
-          if (workspace.updateTaskStatus(taskId, 'denied', undefined, msg)) this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, msg)
-          return null
-        }
         const meta = this.buildApprovalMeta(toolName, rawResult.protection)
         // The row now asks for a protection override, not the original
         // restricted-tool approval: rewrite its durable metadata (and require
@@ -6356,12 +6305,14 @@ export class AgentExecutor extends EventEmitter {
       if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
       runtimeBlocks.push(`## Your Identity\n\n${identityLines.join(' ')}`)
 
-      // Inner loops — main only. A side loop's derived config carries
-      // `loops: []` (loops do not nest) and gets its own preamble through
-      // `instructions` instead, so this never doubles up. Null (nothing
-      // added) only for an agent with no loops AND loop_manage off — the
-      // opt-out that keeps its prompt byte-identical to the pre-loops one.
-      const loopsSection = buildMainLoopsSection(this.config.loops, {
+      // Inner loops — main only. A side loop gets its own preamble through
+      // `instructions`, and its derived config carries `loops: []`: with
+      // loop_manage granted, this section would tell it that it is main with
+      // no loops yet. Null (nothing added) for main only with no loops AND
+      // loop_manage off — the opt-out that keeps its prompt byte-identical to
+      // the pre-loops one.
+      const isSideLoop = this.approvalLoopName() !== MAIN_LOOP
+      const loopsSection = isSideLoop ? null : buildMainLoopsSection(this.config.loops, {
         loopManageEnabled: enabledTools.has('loop_manage'),
         loopSendEnabled: enabledTools.has('loop_send'),
         loopListEnabled: enabledTools.has('loop_list')
