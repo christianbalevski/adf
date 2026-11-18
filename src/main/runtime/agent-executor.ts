@@ -4680,7 +4680,6 @@ export class AgentExecutor extends EventEmitter {
       // instead of failing. Non-blocking: the loop already returned the task
       // reference; approval re-runs the call with a one-time bypass.
       if (rawResult.isError && rawResult.protection) {
-        const p = rawResult.protection
         const meta = this.buildApprovalMeta(toolName, rawResult.protection)
         // The row now asks for a protection override, not the original
         // restricted-tool approval: rewrite its durable metadata (and require
