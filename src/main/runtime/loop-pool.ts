@@ -133,9 +133,8 @@ export interface LoopPoolDeps {
 /**
  * A kick queued at send time for a wake:true delivery that arrived mid-turn.
  * `injected` records whether the mid-turn context injection was actually made
- * (false in the rare empty-but-busy race); `blocks` only matter for an
- * un-injected entry, whose row is in neither the session nor the injection
- * queue and so must be inlined by the kick itself.
+ * (false in the rare empty-but-busy race). `event` carries `skip_loop_append`
+ * and `loop_seq`, so the kick inlines an un-injected row without a second copy.
  */
 type PendingWake = { event: AdfEvent; seq?: number; injected: boolean }
 
@@ -145,8 +144,7 @@ const PENDING_WAKE_CAP = 16
 
 /** Queue a kick, deduplicating: an injected entry is redundant once ANY entry
  *  is queued (one boundary turn drains every pending injection), so only an
- *  un-injected entry — which carries blocks the kick must inline — always
- *  queues. Returns the (possibly unchanged) queue. */
+ *  un-injected entry, whose row the kick must inline, always queues. */
 function enqueueKick(queue: PendingWake[], entry: PendingWake): void {
   if (entry.injected && queue.length > 0) return
   if (queue.length >= PENDING_WAKE_CAP) return

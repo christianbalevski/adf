@@ -5518,10 +5518,12 @@ export class AgentExecutor extends EventEmitter {
     return this.config.recovery?.max_attempts ?? RECOVERY_DEFAULTS.max_attempts
   }
 
-  /** Whether the system-scope lane this dispatch runs in has room now (a
-   *  free slot or queue space), so it would not be dropped by backpressure. */
-  systemLaneHasRoom(dispatch: AdfEventDispatch | AdfBatchDispatch): boolean {
-    return this.systemDispatchQueue.pendingFor(dispatch) < MAX_QUEUE_DEPTH
+  /** Whether the system-scope lane this dispatch runs in has room for it, on
+   *  top of `reserved` dispatches the caller has committed to but the lane
+   *  cannot see yet, so it would not be dropped by backpressure. Ignores free
+   *  active slots: it holds early, never late. */
+  systemLaneHasRoom(dispatch: AdfEventDispatch | AdfBatchDispatch, reserved = 0): boolean {
+    return this.systemDispatchQueue.pendingFor(dispatch) + reserved < MAX_QUEUE_DEPTH
   }
 
   /** Re-publish the recovery fact when it changes while the agent stays in error. */

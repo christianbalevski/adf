@@ -139,7 +139,7 @@ export interface TimerReceiver {
   inError(loop: string): boolean
   /** Whether the lane this system dispatch runs in has room now. A mixed
    *  row is held whole while its lambda could not run. */
-  systemLaneHasRoom(dispatch: AdfEventDispatch): boolean
+  systemLaneHasRoom(dispatch: AdfEventDispatch, reserved: number): boolean
   /** Claim this occurrence and write its trigger row into the target loop's
    *  stream in one transaction, then wake the target. False when the claim
    *  lost (another runtime took this occurrence). */
@@ -860,13 +860,16 @@ export class TriggerEvaluator extends EventEmitter {
     // next tick. Without this, one recovery window would admit every due
     // timer while only the first runs.
     const attempted = new Set<string>()
+    // Lambda dispatches this tick has already committed to, per lambda: the
+    // lane cannot see them yet (dispatch enqueues asynchronously).
+    const reserved = new Map<string, number>()
     // Settle failures are logged once per tick (ids capped), and a busy or
     // locked file ends the tick: every remaining row stays due.
     const failed: number[] = []
     let firstError: unknown
     let notTried = 0
     for (const [i, timer] of due.entries()) {
-      const error = this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted)
+      const error = this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted, reserved)
       if (error === undefined) continue
       failed.push(timer.id)
       firstError ??= error
@@ -902,7 +905,7 @@ export class TriggerEvaluator extends EventEmitter {
    * crash mid-fire cannot refire it.
    */
   /** Returns the settle error, if the row could not be settled (it stays due). */
-  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>): unknown {
+  private fireTimer(timer: Timer, admitted: TriggerScopeV3[], now: number, attempted: Set<string>, reserved: Map<string, number>): unknown {
     const loop = timer.loop ?? 'main'
     // A loop that is not declared (deleted) can never receive: as on base, the
     // agent part is dropped and logged, and the row fires as its other scopes
@@ -921,7 +924,7 @@ export class TriggerEvaluator extends EventEmitter {
       : null
     if (agentPart) {
       if (!this.canReceive(timer, attempted)) return
-      if (lambdaDispatch && !this.timerReceiver!.systemLaneHasRoom(lambdaDispatch)) return
+      if (lambdaDispatch && !this.timerReceiver!.systemLaneHasRoom(lambdaDispatch, reserved.get(timer.lambda!) ?? 0)) return
     } else if (admitted.length > 0 && scopes.length === 0) return
 
     const nextWake = this.nextRenewal(timer, now)
@@ -932,6 +935,7 @@ export class TriggerEvaluator extends EventEmitter {
         : this.workspace!.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, now)
       if (!claimed) return
       if (inError) attempted.add(loop)
+      if (agentPart && lambdaDispatch) reserved.set(timer.lambda!, (reserved.get(timer.lambda!) ?? 0) + 1)
       if (orphaned) {
         try {
           this.workspace?.insertLog('warn', 'runtime', 'loop_dispatch_dropped', loop,

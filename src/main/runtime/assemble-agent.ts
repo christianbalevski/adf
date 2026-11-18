@@ -788,7 +788,7 @@ export function assembleAgent<P extends AgentProfileName>(
     canReceive: (loop) => loopPool.canReceive(loop),
     hasLoop: (loop) => loopPool.hasLoop(loop),
     inError: (loop) => (loop === MAIN_LOOP ? executor : loopPool.getRuntime(loop)?.executor)?.getState() === 'error',
-    systemLaneHasRoom: (dispatchValue) => executor.systemLaneHasRoom(dispatchValue),
+    systemLaneHasRoom: (dispatchValue, reserved) => executor.systemLaneHasRoom(dispatchValue, reserved),
     deliver: (timer, nextWake, firedAt, event) => {
       const loop = timer.loop ?? MAIN_LOOP
       const blocks = [{ type: 'text' as const, text: timerTriggerText(timer) }]
