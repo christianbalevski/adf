@@ -9,6 +9,7 @@ import Database from 'better-sqlite3'
 import { nanoid } from 'nanoid'
 import { tmpdir } from 'os'
 import { join } from 'path'
+import { isDeepStrictEqual } from 'util'
 import { writeFileSync, unlinkSync } from 'fs'
 import { AdfDatabase } from './adf-database'
 import type { AdfWorkspace } from './adf-workspace'
@@ -234,22 +235,15 @@ export function mergeTemplateWithOverrides(
 ): MergeResult {
   const lockedFields = templateConfig.locked_fields ?? []
 
-  // ---- 1. Section-level locked_fields check ----
-  // Keys that map directly to CreateAgentOptions sections
-  const sectionKeys: Array<keyof CreateAgentOptions> = [
-    'description', 'instructions', 'icon', 'handle', 'autonomous', 'autostart',
-    'start_in_state', 'model', 'context', 'tools', 'triggers',
-    'security', 'limits', 'messaging', 'audit', 'pre_llm_hook', 'code_execution',
-    'logging', 'mcp', 'adapters', 'serving', 'commands', 'providers',
-    'ws_connections', 'locked_fields', 'card', 'metadata'
-  ]
-  for (const key of sectionKeys) {
-    if (overrides[key] === undefined) continue
-    if (key === 'name') continue // name is always overridable
-
-    // Check if this section is locked
-    if (lockedFields.includes(key)) {
-      return { ok: false, error: `Template has locked field '${key}' — cannot override` }
+  // ---- 1. locked_fields ----
+  // A lock is a top-level key or a dotted path ('model', 'model.model_id').
+  // Leaving a locked field out of the overrides keeps the template value;
+  // setting it to anything else is refused. Fields beside it stay open.
+  for (const lock of lockedFields) {
+    const path = lock.split('.')
+    const wanted = valueAt(overrides, path)
+    if (wanted !== undefined && changes(wanted, valueAt(templateConfig, path))) {
+      return { ok: false, error: `Template locks '${lock}'; it cannot be changed. Leave it out of the overrides to keep the template value.` }
     }
   }
 
@@ -356,6 +350,14 @@ export function mergeTemplateWithOverrides(
       : undefined
   }
 
+  // Sections taken whole from the overrides (audit, mcp, logging, ...) can
+  // drop a locked field by leaving it out; put the template value back.
+  for (const lock of lockedFields) {
+    const path = lock.split('.')
+    const kept = valueAt(templateConfig, path)
+    if (kept !== undefined) setAt(options as unknown as Record<string, unknown>, path, structuredClone(kept))
+  }
+
   // A template baseline must never be able to pre-grant a locked dangerous
   // capability with no HIL ever firing. sys-update-config's code-level lock
   // (DEFAULT_LOCKED_PATHS: security.allow_local_fetch, stream_bind) only
@@ -376,6 +378,35 @@ export function mergeTemplateWithOverrides(
   delete options.stream_bind
 
   return { ok: true, options }
+}
+
+const isRecord = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v)
+
+function valueAt(obj: unknown, path: string[]): unknown {
+  let cur = obj
+  for (const key of path) {
+    if (!isRecord(cur)) return undefined
+    cur = cur[key]
+  }
+  return cur
+}
+
+function setAt(obj: Record<string, unknown>, path: string[], value: unknown): void {
+  let cur = obj
+  for (const key of path.slice(0, -1)) {
+    if (!isRecord(cur[key])) cur[key] = {}
+    cur = cur[key] as Record<string, unknown>
+  }
+  cur[path[path.length - 1]] = value
+}
+
+/** True when `wanted` sets any field to something other than `current`. Fields it leaves out are not changes. */
+function changes(wanted: unknown, current: unknown): boolean {
+  if (isRecord(wanted) && isRecord(current)) {
+    return Object.keys(wanted).some((k) => wanted[k] !== undefined && changes(wanted[k], current[k]))
+  }
+  return !isDeepStrictEqual(wanted, current)
 }
 
 // ---------------------------------------------------------------------------
@@ -401,12 +432,12 @@ function mergeTools(
   for (const tmplTool of templateTools) {
     const override = overrideMap.get(tmplTool.name)
     if (override && tmplTool.locked) {
-      return {
-        ok: false,
-        error: `Template has locked tool '${tmplTool.name}' — cannot override`
+      // Restating a locked tool as it is is fine; changing it is not.
+      if (changes(override, tmplTool)) {
+        return { ok: false, error: `Template locks tool '${tmplTool.name}'; it cannot be changed. Leave it out of the overrides to keep the template setting.` }
       }
-    }
-    if (override) {
+      merged.push(tmplTool)
+    } else if (override) {
       // Merge, preserving locked flag from template
       merged.push({ ...tmplTool, ...override, ...(tmplTool.locked ? { locked: true } : {}) })
     } else {
