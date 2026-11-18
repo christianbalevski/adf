@@ -163,7 +163,12 @@ const STOP_SETTLE_TIMEOUT_MS = 30_000
 const STOP_POLL_MS = 25
 
 function pickKickRepresentative(entries: PendingWake[], session: AgentSession): PendingWake | null {
-  const uninjected = entries.find(e => !e.injected)
+  // An un-injected entry whose row the running turn already read (it
+  // rehydrated from a stream that held the row, as when several timers fire
+  // into an empty session in one tick) owes nothing: kicking would call the
+  // model again with no new input, its prompt ending in its own reply.
+  const held = new Set(session.getMessages().flatMap(m => (typeof m.seq === 'number' ? [m.seq] : [])))
+  const uninjected = entries.find(e => !e.injected && (e.seq === undefined || !held.has(e.seq)))
   if (uninjected) return uninjected
   if (session.hasPendingWakeInjection()) return entries[0] ?? null
   return null

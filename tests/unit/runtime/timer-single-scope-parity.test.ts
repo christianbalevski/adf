@@ -250,8 +250,10 @@ describe('agent-only timers on a healthy idle agent behave as before', { timeout
       await settled(s.agent)
       tick(s.agent)
       await settled(s.agent)
-      expect(observe('agent-only two on one tick (A)', s, a, 'AGENT-TWO-A')).toMatchObject({ expired: true, run_count: 1, loop_rows: 1, provider_calls: 2 })
-      expect(observe('agent-only two on one tick (B)', s, b, 'AGENT-TWO-B')).toMatchObject({ expired: true, run_count: 1, loop_rows: 1, provider_calls: 2 })
+      // One turn reads both rows: the first dispatch rehydrates from a stream
+      // that already holds the second row, so its kick owes nothing (round 4 F1).
+      expect(observe('agent-only two on one tick (A)', s, a, 'AGENT-TWO-A')).toMatchObject({ expired: true, run_count: 1, loop_rows: 1, provider_calls: 1 })
+      expect(observe('agent-only two on one tick (B)', s, b, 'AGENT-TWO-B')).toMatchObject({ expired: true, run_count: 1, loop_rows: 1, provider_calls: 1 })
     } finally {
       await s.agent.disposeAsync()
     }

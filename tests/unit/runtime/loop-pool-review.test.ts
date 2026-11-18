@@ -477,12 +477,16 @@ describe('LoopPool — a refused wake is not a lost wake', () => {
     expect(executeTurn).toHaveBeenCalledTimes(1)
     expect(runtime.hasPendingWake()).toBe(true)
 
-    // Resumed: the next boundary delivers it.
+    // Resumed: the next turn delivers it. That turn starts from an empty
+    // session and rehydrates from the stream, which holds the row, so it reads
+    // the row itself and the queued kick owes nothing (no extra turn with no
+    // new input). The wake is consumed either way.
     mainState = 'idle'
     await runtime.dispatch(chatDispatch('e2'))
     await new Promise(resolve => setImmediate(resolve))
     await new Promise(resolve => setImmediate(resolve))
-    expect(executeTurn).toHaveBeenCalledTimes(3)
+    expect(runtime.session.getMessages().filter(m => JSON.stringify(m.content).includes('read me'))).toHaveLength(1)
+    expect(executeTurn).toHaveBeenCalledTimes(2)
     expect(runtime.hasPendingWake()).toBe(false)
   })
 })
