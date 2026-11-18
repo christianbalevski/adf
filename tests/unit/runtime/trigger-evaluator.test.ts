@@ -1239,6 +1239,28 @@ describe('TriggerEvaluator', () => {
       consoleSpy.mockRestore()
     })
 
+    it('a busy file ends the tick: the log counts the failed row and the rows not tried (round 10 F2)', () => {
+      const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+      const evaluator = new TriggerEvaluator(makeConfig({ on_timer: makeTriggerConfig([makeTarget('system')]) }))
+      evaluator.setDisplayState('active')
+      const events = collectEvents(evaluator)
+      const ws = makeWorkspaceMock(Array.from({ length: 10 }, (_, i) => ({
+        id: i + 1, schedule: { mode: 'once' as const, at: Date.now() - 100 }, payload: 'p',
+        scope: ['system' as const], lambda: 'lib/job.ts:run', warm: false, run_count: 0, created_at: Date.now() - 1000,
+      })))
+      ws.claimTimer.mockImplementation(() => { throw Object.assign(new Error('database is locked'), { code: 'SQLITE_BUSY' }) })
+      evaluator.setTimerReceiver(stubReceiver(ws, events))
+      evaluator.startTimerPolling(ws)
+      vi.advanceTimersByTime(5000)
+      expect(ws.claimTimer).toHaveBeenCalledTimes(1)
+      const failures = ws.insertLog.mock.calls.filter((c: unknown[]) => c[2] === 'renew_failed')
+      expect(failures).toHaveLength(1)
+      expect(failures[0][5]).toEqual({ timer_count: 1, timer_ids: [1], not_tried: 9 })
+      expect(failures[0][4]).toContain('9 more not tried')
+      evaluator.dispose()
+      consoleSpy.mockRestore()
+    })
+
     // Round 9 F1: a failing backlog logs once per tick, ids capped at 20 (as
     // base's expire_completed_failed did), whatever the scope or the cause.
     it.each([

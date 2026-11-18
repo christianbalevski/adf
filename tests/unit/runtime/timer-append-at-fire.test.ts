@@ -812,22 +812,23 @@ describe('round 9: F2 a tick under another connection\'s write lock', { timeout:
   })
 })
 
-describe('round 9: F3 a wake that throws after the commit', { timeout: 30_000 }, () => {
-  it('a busy mixed row: the claim and row stand, the lambda still runs, and the failure is not logged as a settle failure', async () => {
+describe('round 9/10: F3 a render that throws during a busy delivery', { timeout: 30_000 }, () => {
+  /** A host whose render of the pool's timer row (context_injected, origin timer:*) throws. */
+  const throwingRender = { onEvent: (e: { type: string; payload?: { origin?: string } }) => { if (e.type === 'context_injected' && e.payload?.origin?.startsWith('timer:')) throw new Error('renderer gone') } }
+
+  it('main, a busy mixed row: the claim and row stand, the lambda runs, and the model reads the row', async () => {
     const { filePath, open } = makeFile('r9-wake-throws')
     const workspace = open()
     const provider = new ScriptedProvider('ok')
     const agent = await build(filePath, workspace, provider)
     const runs = countLambdas(agent)
-    agent.attachHost({
-      // the pool's render event for the timer row (injectWithoutWake) throws
-      onEvent: (e: { type: string; payload?: { origin?: string } }) => { if (e.type === 'context_injected' && e.payload?.origin?.startsWith('timer:')) throw new Error('renderer gone') },
-    } as never)
+    agent.attachHost(throwingRender as never)
     const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
     try {
       provider.blockNext()
       const turn = agent.executor.executeTurn(chat('long work'))
       await until(() => provider.blocked && provider.calls === 1)
+      const before = provider.calls
       const t = addDue(workspace, 'R9-MIXED-WAKE', { scope: ['system', 'agent'], lambda: 'lib/job.js:main' })
       tick(agent); await sleep(20)
       expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
@@ -836,7 +837,38 @@ describe('round 9: F3 a wake that throws after the commit', { timeout: 30_000 },
       expect(workspace.getLogs().some(l => l.event === 'renew_failed')).toBe(false)
       provider.release()
       await turn
-      await settled(agent)
+      await settled(agent); await sleep(100); await settled(agent)
+      // the render is best-effort: the injection and the kick still happen
+      expect(provider.seen.slice(before).some(x => x.includes('R9-MIXED-WAKE'))).toBe(true)
+      expect(sessionCopies(agent, 'R9-MIXED-WAKE')).toBe(1)
+    } finally {
+      errors.mockRestore()
+      await agent.disposeAsync()
+    }
+  })
+
+  it('inner loop, busy: the model of that loop reads the row', async () => {
+    const { filePath, open } = makeFile('r10-inner-render')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE] })
+    agent.attachHost(throwingRender as never)
+    const errors = vi.spyOn(console, 'error').mockImplementation(() => {})
+    try {
+      const side = sidePool(agent).getRuntime('research')!
+      await side.dispatch(chat('warm'))
+      provider.blockNext()
+      const turn = side.dispatch(chat('long inner work'))
+      await until(() => provider.blocked)
+      const before = provider.calls
+      const t = addDue(workspace, 'R10-INNER-WAKE', { loop: 'research' })
+      tick(agent); await sleep(20)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      provider.release()
+      await turn
+      await sleep(300)
+      expect(provider.seen.slice(before).some(x => x.includes('R10-INNER-WAKE'))).toBe(true)
+      expect(side.session.getMessages().filter(m => JSON.stringify(m.content).includes('R10-INNER-WAKE'))).toHaveLength(1)
     } finally {
       errors.mockRestore()
       await agent.disposeAsync()
