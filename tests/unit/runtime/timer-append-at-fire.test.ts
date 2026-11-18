@@ -410,6 +410,35 @@ describe('inner loops and missing or disabled targets', { timeout: 30_000 }, () 
     } finally { await agent.disposeAsync() }
   })
 
+  it('an inner loop with its recovery budget spent holds its timer until recovery_at, then takes it once (round 13)', async () => {
+    const { filePath, open } = makeFile('inner-spent')
+    const workspace = open()
+    const provider = new ScriptedProvider('fail')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE], autoRetry: false, maxAttempts: 1 })
+    try {
+      const side = sidePool(agent).getRuntime('research')!
+      await side.dispatch(chat('inner fails')).catch(() => {})
+      expect(side.executor.getState()).toBe('error')
+      // the one attempt in budget, still failing
+      addDue(workspace, 'INNER-SPEND', { loop: 'research' })
+      tick(agent)
+      await until(() => side.executor.getState() === 'error' && !side.executor.isTurnActive())
+      await sleep(50)
+      const calls = provider.calls
+      const t = addDue(workspace, 'INNER-SPENT', { loop: 'research' })
+      for (let i = 0; i < 3; i++) { tick(agent); await sleep(20) }
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      expect(loopRows(workspace, 'INNER-SPENT', 'research')).toBe(0)
+      expect(provider.calls).toBe(calls)
+      provider.mode = 'ok'
+      await afterCooldown(() => tick(agent))
+      await until(() => side.executor.getState() === 'idle' && !side.executor.isTurnActive())
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      expect(loopRows(workspace, 'INNER-SPENT', 'research')).toBe(1)
+      expect(provider.seen.slice(calls).some(x => x.includes('INNER-SPENT'))).toBe(true)
+    } finally { await agent.disposeAsync() }
+  })
+
   it('a disabled loop holds the timer whole (the reviewer\'s probe): no row, not settled, lambda not run, no log', async () => {
     const { filePath, open } = makeFile('disabled-probe')
     const workspace = open()

@@ -171,7 +171,7 @@ describe('timer ticks while the agent is in error (evaluator)', () => {
     evaluator.setTimerReceiver({
       canReceive: () => true,
       hasLoop: () => true,
-      inError: () => false,
+      loopFacts: () => ({ state: 'idle', recoveryAt: null }),
       systemLaneHasRoom: () => true,
       deliver: (timer, nextWake, firedAt, event) => {
         if (!workspace.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, firedAt)) return false

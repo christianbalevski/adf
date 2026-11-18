@@ -136,7 +136,7 @@ export interface TimerReceiver {
   hasLoop(loop: string): boolean
   /** An inner loop's own published facts (state, recovery_at): the same ones
    *  the UI's store holds. */
-  loopFacts?(loop: string): GateFacts
+  loopFacts(loop: string): GateFacts
   /** Whether the lane this system dispatch runs in has room now. A mixed
    *  row is held whole while its lambda could not run. */
   systemLaneHasRoom(dispatch: AdfEventDispatch, reserved: number): boolean

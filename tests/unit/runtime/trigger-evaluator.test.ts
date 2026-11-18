@@ -971,7 +971,7 @@ describe('TriggerEvaluator', () => {
       return {
         canReceive: () => true,
         hasLoop: () => true,
-        inError: () => false,
+        loopFacts: () => ({ state: 'idle', recoveryAt: null }),
         systemLaneHasRoom: () => true,
         deliver: (timer: { id: number; next_wake_at: number; run_count: number; loop?: string | null }, nextWake: number | null, firedAt: number, event: AdfEvent<'timer'>) => {
           if (!ws.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, firedAt)) return false
@@ -1041,7 +1041,7 @@ describe('TriggerEvaluator', () => {
       } as never])
       let ready = false
       const deliver = vi.fn(() => true)
-      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, hasLoop: () => true, inError: () => false, systemLaneHasRoom: () => true, deliver })
+      evaluator.setTimerReceiver({ canReceive: (loop) => loop === 'reflector' && ready, hasLoop: () => true, loopFacts: () => ({ state: 'idle', recoveryAt: null }), systemLaneHasRoom: () => true, deliver })
 
       evaluator.startTimerPolling(ws)
       vi.advanceTimersByTime(5000)
