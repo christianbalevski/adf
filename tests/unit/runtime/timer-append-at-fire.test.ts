@@ -625,3 +625,35 @@ describe('round 1: F5 a timer turn rejected at dispatch reaches the host error p
     } finally { await agent.disposeAsync() }
   })
 })
+
+// ===========================================================================
+// Round 2 (necessity recoveryb-r2)
+// ===========================================================================
+
+describe('round 2: F2 the first queued kick decides, and the budget applies to it', { timeout: 30_000 }, () => {
+  it('a loop_send arriving while a timer kick is queued, then the turn fails with auth: no further provider call', async () => {
+    const { filePath, open } = makeFile('r2-kick-order')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE] })
+    const pool = (agent as unknown as { loopPool: { sendToLoop: (f: string, t: string, c: string, w: boolean) => Promise<unknown> } }).loopPool
+    try {
+      provider.blockNext()
+      const turn = agent.executor.executeTurn(chat('long work'))
+      await until(() => provider.blocked && provider.calls === 1)
+      addDue(workspace, 'R2-TIMER-FIRST')
+      tick(agent) // injected + timer kick queued first
+      await pool.sendToLoop('research', 'main', 'R2-LOOP-SEND', true) // injected; its kick is redundant behind the queued one
+      provider.mode = 'auth'
+      provider.release()
+      await turn
+      await settled(agent); await sleep(100); await settled(agent)
+      expect(agent.executor.getState()).toBe('error')
+      // The kick is the timer's: auth parking applies, so no turn runs.
+      expect(provider.calls).toBe(1)
+      // Both rows are in the stream and still reach the next turn the owner starts.
+      expect(loopRows(workspace, 'R2-TIMER-FIRST')).toBe(1)
+      expect(loopRows(workspace, 'R2-LOOP-SEND')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+})

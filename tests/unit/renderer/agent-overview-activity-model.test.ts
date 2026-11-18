@@ -27,6 +27,10 @@ import type { ActivityDay, UpcomingWake } from '../../../src/shared/types/agent-
 import { NOT_AUTOSTART_TEXT } from '../../../src/shared/constants/autostart-text'
 import { useAgentStore } from '../../../src/renderer/stores/agent.store'
 
+/** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
+const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
+
+
 const MIN = 60_000
 
 describe('relative times', () => {
@@ -331,25 +335,25 @@ describe('wake displays follow the gate', () => {
       { next_wake_at: 5 * MIN, scope: ['system', 'agent'] },
       { next_wake_at: 0, scope: ['system'], expired: 1 },
     ]
-    expect(nextFiringWake(timers, { state: 'off' })).toBeUndefined()
-    expect(nextFiringWake(timers, { state: 'idle' })).toBe(MIN)
+    expect(nextFiringWake(timers, { state: 'off' }, CTX)).toBeUndefined()
+    expect(nextFiringWake(timers, { state: 'idle' }, CTX)).toBe(MIN)
     // a row with an agent part waits whole while that part is held
-    expect(nextFiringWake(timers, { state: 'suspended' })).toBe(9 * MIN)
-    expect(nextFiringWake(timers, { state: 'error', recoveryAt: null })).toBe(9 * MIN)
-    expect(nextFiringWake(timers, { state: 'error', recoveryAt: 0 })).toBe(MIN)
-    expect(nextFiringWake(timers, { state: 'error', recoveryAt: 4 * MIN })).toBe(4 * MIN)
-    expect(nextFiringWake(undefined, { state: 'idle' })).toBeUndefined()
+    expect(nextFiringWake(timers, { state: 'suspended' }, CTX)).toBe(9 * MIN)
+    expect(nextFiringWake(timers, { state: 'error', recoveryAt: null }, CTX)).toBe(9 * MIN)
+    expect(nextFiringWake(timers, { state: 'error', recoveryAt: 0 }, CTX)).toBe(MIN)
+    expect(nextFiringWake(timers, { state: 'error', recoveryAt: 4 * MIN }, CTX)).toBe(4 * MIN)
+    expect(nextFiringWake(undefined, { state: 'idle' }, CTX)).toBeUndefined()
   })
 
   it('an Upcoming row has a countdown only when it fires', () => {
-    expect(wakeCountdown(agentWake, { state: 'off' }, 0)).toBeNull()
-    expect(wakeCountdown(agentWake, { state: 'idle' }, 0)).toBe('in 5 min')
-    expect(wakeCountdown(agentWake, { state: 'error', recoveryAt: 30 * MIN }, 0)).toBe('in 30 min')
+    expect(wakeCountdown(agentWake, { state: 'off' }, 0, CTX)).toBeNull()
+    expect(wakeCountdown(agentWake, { state: 'idle' }, 0, CTX)).toBe('in 5 min')
+    expect(wakeCountdown(agentWake, { state: 'error', recoveryAt: 30 * MIN }, 0, CTX)).toBe('in 30 min')
   })
 
   it('a Timers tab row has a countdown only when it fires', () => {
     const fmt = (at: number) => `at ${at}`
-    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, { state: 'off' }, fmt)).toBeNull()
-    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, { state: 'idle' }, fmt)).toBe(`at ${5 * MIN}`)
+    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, { state: 'off' }, fmt, CTX)).toBeNull()
+    expect(timerCountdown({ scope: ['agent'], next_wake_at: 5 * MIN }, { state: 'idle' }, fmt, CTX)).toBe(`at ${5 * MIN}`)
   })
 })

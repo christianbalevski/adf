@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import { gateStateOf, scopeFires, timerFireTime, wakeFireTime } from '../../../src/shared/utils/trigger-gate'
 
+/** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
+const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
+
+
 describe('trigger gate', () => {
   it('a turn in progress, including one waiting on an approval or ask, gates as active', () => {
     for (const s of ['thinking', 'tool_use', 'awaiting_approval', 'awaiting_ask']) expect(gateStateOf(s), s).toBe('active')
@@ -33,15 +37,16 @@ describe('trigger gate', () => {
 
   it('a row with an agent part fires when that part can be received; a system-only row unless off', () => {
     const due = 1000
-    expect(timerFireTime(['agent'], { state: gateStateOf('awaiting_approval') }, due)).toBe(due)
-    expect(timerFireTime(['agent'], { state: 'suspended' }, due)).toBeUndefined()
+    expect(timerFireTime(['agent'], { state: gateStateOf('awaiting_approval') }, due, null, CTX)).toBe(due)
+    expect(timerFireTime(['agent'], { state: 'suspended' }, due, null, CTX)).toBeUndefined()
     // the whole row is held with its agent part
-    expect(timerFireTime(['agent', 'system'], { state: 'suspended' }, due)).toBeUndefined()
-    expect(timerFireTime(['system', 'agent'], { state: 'error', recoveryAt: null }, due)).toBeUndefined()
-    expect(timerFireTime(['system', 'agent'], { state: 'error', recoveryAt: 5000 }, due)).toBe(5000)
-    expect(timerFireTime(['system'], { state: 'error' }, due)).toBe(due)
-    expect(timerFireTime(['agent', 'system'], { state: 'off' }, due)).toBeUndefined()
-    expect(timerFireTime([], { state: 'idle' }, due)).toBeUndefined()
+    expect(timerFireTime(['agent', 'system'], { state: 'suspended' }, due, null, CTX)).toBeUndefined()
+    expect(timerFireTime(['system', 'agent'], { state: 'error', recoveryAt: null }, due, null, CTX)).toBeUndefined()
+    expect(timerFireTime(['system', 'agent'], { state: 'error', recoveryAt: 5000 }, due, null, CTX)).toBe(5000)
+    expect(timerFireTime(['system'], { state: 'error' }, due, null, CTX)).toBe(due)
+    expect(timerFireTime(['agent', 'system'], { state: 'off' }, due, null, CTX)).toBeUndefined()
+    // a row on_timer admits in no scope settles with nothing run (as the runtime does)
+    expect(timerFireTime([], { state: 'idle' }, due, null, CTX)).toBe(due)
   })
 
   it('with a context: admitted scopes only, and an inner loop must be declared, enabled and able to receive', () => {
@@ -57,6 +62,12 @@ describe('trigger gate', () => {
     expect(timerFireTime(['system', 'agent'], { state: 'suspended' }, 10, null, sysOnly)).toBe(10)
   })
 
+  it('without a loaded config (no context) nothing is predicted (F4, round 2)', () => {
+    expect(timerFireTime(['agent'], { state: 'idle' }, 10, null, undefined)).toBeUndefined()
+    expect(timerFireTime(['system'], { state: 'idle' }, 10, null, undefined)).toBeUndefined()
+    expect(wakeFireTime({ at: 10, scope: 'system' }, { state: 'idle' }, undefined)).toBeUndefined()
+  })
+
   it('a stopped agent predicts no fire for a row on_timer admits in no scope (F4)', () => {
     const disabled = { onTimer: { enabled: false, targets: [] }, loops: [], loopFacts: {} }
     expect(timerFireTime(['agent'], { state: 'off' }, 10, null, disabled)).toBeUndefined()
@@ -67,10 +78,10 @@ describe('trigger gate', () => {
   it('an Upcoming row from an older daemon (no scopes) gates on its scope', () => {
     const agent = { id: 1, at: 0, scope: 'agent' as const }
     const system = { id: 2, at: 0, scope: 'system' as const }
-    expect(wakeFireTime(agent, { state: 'idle' })).toBe(0)
-    expect(wakeFireTime(agent, { state: 'suspended' })).toBeUndefined()
-    expect(wakeFireTime(system, { state: 'suspended' })).toBe(0)
-    expect(wakeFireTime(system, { state: 'off' })).toBeUndefined()
-    expect(wakeFireTime({ ...agent, scopes: ['agent', 'system'] }, { state: 'suspended' })).toBeUndefined()
+    expect(wakeFireTime(agent, { state: 'idle' }, CTX)).toBe(0)
+    expect(wakeFireTime(agent, { state: 'suspended' }, CTX)).toBeUndefined()
+    expect(wakeFireTime(system, { state: 'suspended' }, CTX)).toBe(0)
+    expect(wakeFireTime(system, { state: 'off' }, CTX)).toBeUndefined()
+    expect(wakeFireTime({ ...agent, scopes: ['agent', 'system'] }, { state: 'suspended' }, CTX)).toBeUndefined()
   })
 })

@@ -5,6 +5,10 @@ import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 import { stoppedNotice } from '../../../src/renderer/components/agent/overview/agent-overview-model'
 import { timerFireTime, wakeFireTime } from '../../../src/shared/utils/trigger-gate'
 
+/** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
+const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
+
+
 /**
  * Per-loop display state — what the loop tab strip's status dot reads.
  *
@@ -98,8 +102,8 @@ describe('trigger gate beside the display state', () => {
     const { gate } = useAgentStore.getState()
     return {
       notice: stoppedNotice({ gate, autostart: false, waitingTimers: 1, serving: false, starting: false }),
-      rowCountdown: wakeFireTime({ at: 0, scope: 'system', scopes: ['system'] }, { state: gate }) !== undefined,
-      timersTabCountdown: timerFireTime(['system'], { state: gate }, 0) !== undefined,
+      rowCountdown: wakeFireTime({ at: 0, scope: 'system', scopes: ['system'] }, { state: gate }, CTX) !== undefined,
+      timersTabCountdown: timerFireTime(['system'], { state: gate }, 0, null, CTX) !== undefined,
     }
   }
 

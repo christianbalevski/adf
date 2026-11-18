@@ -17,6 +17,10 @@ import { localDateKey } from '../../../src/shared/utils/date-key'
 import { DEFAULT_MIND_LOG_CONTENT } from '../../../src/shared/types/adf-v02.types'
 import { wakeFireTime } from '../../../src/shared/utils/trigger-gate'
 
+/** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
+const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
+
+
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-activity-'))
 const file = join(dir, 'agent-1.adf')
 const opened: AdfWorkspace[] = []
@@ -116,8 +120,8 @@ describe('readAgentActivity', () => {
     sql("DELETE FROM adf_timers WHERE payload = 'both'")
     expect(row).toEqual(expect.objectContaining({ scope: 'agent', scopes: ['agent', 'system'], loop: 'main' }))
     // The Upcoming row's rule (OverviewActivity): the row waits with its agent part while suspended.
-    expect(wakeFireTime(row, { state: 'suspended' })).toBeUndefined()
-    expect(wakeFireTime(row, { state: 'idle' })).toBe(now + 1000)
+    expect(wakeFireTime(row, { state: 'suspended' }, CTX)).toBeUndefined()
+    expect(wakeFireTime(row, { state: 'idle' }, CTX)).toBe(now + 1000)
   })
 
   it('reads a non-array or unparseable scope as the runtime does (AdfDatabase timer parser)', () => {
@@ -128,7 +132,7 @@ describe('readAgentActivity', () => {
       const row = readAgentActivity((s, p) => ws.querySQL(s, p), now).upcoming[0]
       sql("DELETE FROM adf_timers WHERE payload = 'odd'")
       expect(row, scope).toEqual(expect.objectContaining({ scope: scopes[0], scopes }))
-      expect(wakeFireTime(row, { state: 'idle' }), scope).toBe(now + 1000)
+      expect(wakeFireTime(row, { state: 'idle' }, CTX), scope).toBe(now + 1000)
     }
   })
 
