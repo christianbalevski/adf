@@ -64,4 +64,41 @@ export default tseslint.config(
       'react-hooks/rules-of-hooks': 'off',
     },
   },
+  {
+    // React code. Hooks named use* are React hooks; plain functions are not.
+    files: ['src/renderer/**/*.{ts,tsx}', 'src/web/**/*.{ts,tsx}', 'src/main/tui/**/*.{ts,tsx}'],
+    rules: {
+      'react-hooks/rules-of-hooks': 'error',
+    },
+  },
+  {
+    // Agent-reachable code: tools and the code sandbox. Provider keys and
+    // owner secrets reach a model only through the runtime's provider, never
+    // through anything an agent can call or run.
+    files: ['src/main/tools/**/*.ts', 'src/main/runtime/code-sandbox.ts', 'src/main/runtime/sandbox-*.ts'],
+    rules: {
+      '@typescript-eslint/no-restricted-imports': ['error', {
+        patterns: [{
+          regex: '(^|/)(settings\\.service|provider-key-store|provider-key-vault|owner-secret-store|secret-storage-[a-z-]+|daemon-secrets|mcp-oauth-store)$',
+          allowTypeImports: true,
+          message: "Agent-reachable code must not import app secret stores. An agent's own credentials live in adf_identity; app-level provider keys are used only by the runtime's provider (model_invoke).",
+        }],
+      }],
+    },
+  },
+  {
+    files: ['src/renderer/**/*.{ts,tsx}', 'src/web/**/*.{ts,tsx}'],
+    rules: {
+      'no-restricted-syntax': ['error',
+        {
+          selector: "MemberExpression[property.name='name']:matches([object.name='config'], [object.property.name='config'])",
+          message: "An agent's name is its .adf file name. Use agentNameOf(filePath) from stores/failure-notices.store; config.name is a synced copy that runs ahead during a deferred rename.",
+        },
+        {
+          selector: 'Literal[value=/your instructions/i], TemplateElement[value.raw=/your instructions/i], JSXText[value=/your instructions/i]',
+          message: "Say \"agent instructions\". The owner configures many agents, so \"your\" is ambiguous between the owner and the agent.",
+        },
+      ],
+    },
+  },
 )

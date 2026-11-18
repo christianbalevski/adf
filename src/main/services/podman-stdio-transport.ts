@@ -436,7 +436,6 @@ export class PodmanStdioTransport implements Transport {
 
   /** Drain buffered data into JSON-RPC messages. */
   private processReadBuffer(): void {
-    // eslint-disable-next-line no-constant-condition
     while (true) {
       try {
         const message = this._readBuffer.readMessage()

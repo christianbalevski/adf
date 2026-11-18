@@ -65,6 +65,7 @@ export function useAgentSurfaces(): AgentSurfaces {
     if (!agentOn || opening || !config || !filePath) return
     setOpening(true)
     try {
+      // eslint-disable-next-line no-restricted-syntax -- main names the isolated container from config.name (isolatedContainerName); this must match it.
       const info = await openApi()?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
       // The tab opens in every phase: a container that is provisioning,
       // stopped, or failed shows that instead of a blank viewer.
@@ -73,6 +74,7 @@ export function useAgentSurfaces(): AgentSurfaces {
           agentFilePath: filePath,
           containerName: info.containerName,
           agentId: config.id,
+          // eslint-disable-next-line no-restricted-syntax -- same container key as above.
           agentName: config.name,
           hostPort: info.hostPort,
           phase: info.phase,

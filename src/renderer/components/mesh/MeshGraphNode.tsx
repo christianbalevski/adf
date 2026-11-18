@@ -422,6 +422,7 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
     }
     setPendingInteraction(filePath, null)
   }, [pending, filePath, isForeground, setPendingInteraction])
+  const setHilModal = useFleetStore((s) => s.setHilModal)
 
   if (pending.type === 'ask') {
     return (
@@ -471,8 +472,6 @@ function PendingInteractionUI({ filePath, pending }: { filePath: string; pending
   // Protection/lock overrides carry a plain-English consequence — show it as
   // the title instead of "Approve <tool>?" so the human sees WHAT they approve.
   const approvalDescription = pending.protection?.description
-  const setHilModal = useFleetStore((s) => s.setHilModal)
-
   return (
     <div className="px-3 py-2 space-y-1.5">
       <p className="text-[10px] text-neutral-600 dark:text-neutral-300 leading-tight">

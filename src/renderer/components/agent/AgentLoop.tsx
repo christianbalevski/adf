@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, mem
 import { useVirtualizer } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, liveHeadOf, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { agentNameOf } from '../../stores/failure-notices.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { toDisplayState } from '../../hooks/useAgent'
@@ -1547,8 +1548,8 @@ function LoopStream({ loop }: { loop: string }) {
   // Side loops are addressed as `agent:loop` (e.g. "aom:reflection") so the
   // composer placeholder names who actually receives the message.
   const agentName = isMainLoop
-    ? (config?.name?.trim() || 'the agent')
-    : `${config?.name?.trim() || 'agent'}:${loop}`
+    ? (filePath ? agentNameOf(filePath) : 'the agent')
+    : `${filePath ? agentNameOf(filePath) : 'agent'}:${loop}`
 
   // --- `/` command palette (design doc §5) --------------------------------
   //

@@ -144,7 +144,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
   const plaintext = view.policy === 'plaintext'
-  const useKeyring = async () => {
+  const encryptWithKeyring = async () => {
     setBusy(true)
     setResult(null)
     try {
@@ -175,7 +175,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
           help={plaintext && view.plaintextSecrets > 0 ? `${view.plaintextSecrets} secret${view.plaintextSecrets === 1 ? '' : 's'} stored as plain text now.` : undefined}
         >
           {plaintext && (
-            <Button variant="primary" onClick={() => { void useKeyring() }} disabled={busy || !view.keyringAvailable}>
+            <Button variant="primary" onClick={() => { void encryptWithKeyring() }} disabled={busy || !view.keyringAvailable}>
               {busy ? 'Encrypting…' : 'Encrypt with Keychain'}
             </Button>
           )}

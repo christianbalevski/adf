@@ -11,3 +11,7 @@
 # (class="token string") triggers generic-api-key. Only this historical finding
 # is excluded; future changes and other documentation remain scanned.
 c831bc1fe56f64798d421482cbeae099f2fc3ba9:docs/daemon/api-reference.html:generic-api-key:8018
+
+# A tailnet address in a settings placeholder, removed from the tree long ago.
+# Kept in history; excluded so the tailnet-address rule guards new commits.
+b6a3acc49d47019574fb285f01b0823e2598fe9e:src/renderer/components/settings/SettingsPage.tsx:tailnet-address:808

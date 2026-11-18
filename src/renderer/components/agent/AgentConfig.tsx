@@ -1523,7 +1523,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
                 <p className="border-t border-amber-200 px-2.5 py-2 text-[10px] leading-relaxed text-amber-700 dark:border-amber-700 dark:text-amber-400">
                   An autonomous agent will keep making LLM calls without pausing between turns.
                   This will consume tokens and incur API costs. If the agent loops (e.g. repeated
-                  read/write cycles), costs can escalate quickly. Ensure your instructions have clear
+                  read/write cycles), costs can escalate quickly. Ensure the agent instructions have clear
                   stopping conditions and that <strong>sys_set_state</strong> is enabled so the agent
                   can idle or stop itself.
                 </p>
@@ -6190,6 +6190,7 @@ function PromptCompositionField({
   // that precedes each keystroke has long reached the executor by then.
   const enabledTools = config.tools.filter((t) => t.enabled).map((t) => t.name).sort().join(',')
   const measureKey = JSON.stringify([
+    // eslint-disable-next-line no-restricted-syntax -- config.name is part of the prompt the executor caches, so it belongs in the key.
     mode, config.instructions, enabledTools, config.autonomous, config.name,
     config.model?.provider, config.model?.model_id, config.loops?.length ?? 0,
     config.compute?.enabled, config.messaging?.receive

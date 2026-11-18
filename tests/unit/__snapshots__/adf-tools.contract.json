@@ -1,0 +1,2816 @@
+{
+  "agent_discover": {
+    "type": "object",
+    "properties": {
+      "scope": {
+        "type": "string",
+        "enum": [
+          "local",
+          "all"
+        ],
+        "default": "local",
+        "description": "Discovery scope. \"local\" (default) returns only agents on this runtime. \"all\" also includes remote peers found via mDNS, tailnet sweep, or manual peer entries."
+      },
+      "visibility": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "directory",
+            "localhost",
+            "lan",
+            "public",
+            "off"
+          ]
+        },
+        "description": "If provided, return only agents whose declared visibility tier is in this list."
+      },
+      "handle": {
+        "type": "string",
+        "description": "Optional case-insensitive substring match on the agent handle."
+      },
+      "description": {
+        "type": "string",
+        "description": "Optional case-insensitive substring match on the agent description."
+      },
+      "include_subdirectories": {
+        "type": "boolean",
+        "default": true,
+        "description": "(Backward-compat for the \"local\" scope branch.) When false, excludes agents in subdirectories."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "ask": {
+    "type": "object",
+    "properties": {
+      "questions": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "minLength": 1,
+              "description": "The full question."
+            },
+            "options": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "label": {
+                    "type": "string",
+                    "minLength": 1,
+                    "description": "Short choice text, e.g. \"Postgres\"."
+                  },
+                  "description": {
+                    "type": "string",
+                    "description": "One line on what picking it means, e.g. \"Needs a server; better for concurrent writes\"."
+                  }
+                },
+                "required": [
+                  "label"
+                ],
+                "additionalProperties": false
+              },
+              "minItems": 1,
+              "description": "Choices to pick from. Omit for a free-text answer. \"Other\" is always offered."
+            },
+            "multiple": {
+              "type": "boolean",
+              "description": "Allow picking several options."
+            }
+          },
+          "required": [
+            "question"
+          ],
+          "additionalProperties": false
+        },
+        "minItems": 1,
+        "description": "One or more questions, shown together as a form. The human may skip any of them."
+      }
+    },
+    "required": [
+      "questions"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "chat_info": {
+    "type": "object",
+    "properties": {
+      "adapter": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Channel adapter type to query: \"telegram\", \"discord\", \"slack\", \"whatsapp\", \"whatsapp_agent\", ... Must be enabled and connected for this agent."
+      },
+      "chat_id": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Platform chat/channel id — the source_context.chat_id (or channel_id) from an inbox message. E.g. Telegram \"-100123...\", Slack \"C0123...\", WhatsApp \"xyz@g.us\"."
+      },
+      "limit": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 100,
+        "description": "Max participants to return (default 50)."
+      }
+    },
+    "required": [
+      "adapter",
+      "chat_id"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "compute_exec": {
+    "type": "object",
+    "properties": {
+      "command": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Shell command to execute. Supports pipes, chaining, and redirection."
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "description": "Timeout in milliseconds (default 30000, max 30000 — your limits.execution_timeout_ms)."
+      },
+      "target": {
+        "type": "string",
+        "enum": [
+          "isolated",
+          "shared",
+          "host"
+        ],
+        "description": "Optional execution environment. Omit to use the default."
+      }
+    },
+    "required": [
+      "command"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "db_execute": {
+    "type": "object",
+    "properties": {
+      "sql": {
+        "type": "string",
+        "description": "INSERT, UPDATE, DELETE, CREATE TABLE, CREATE VIRTUAL TABLE, or DROP TABLE on local_* tables only. Example: \"CREATE TABLE local_notes (id INTEGER PRIMARY KEY, topic TEXT, body TEXT)\", \"INSERT INTO local_notes (topic, body) VALUES (?, ?)\", \"CREATE VIRTUAL TABLE local_embeddings USING vec0(embedding float[384])\""
+      },
+      "params": {
+        "type": "array",
+        "items": {},
+        "description": "Bind parameters for the statement."
+      }
+    },
+    "required": [
+      "sql"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "db_query": {
+    "type": "object",
+    "properties": {
+      "sql": {
+        "type": "string",
+        "description": "SELECT query on adf_loop, adf_inbox, adf_outbox, adf_timers, adf_files, adf_audit, adf_logs, adf_tasks, or local_* tables. Examples: \"SELECT * FROM adf_loop ORDER BY seq DESC LIMIT 50\", \"SELECT * FROM local_notes WHERE topic = ?\", \"SELECT rowid, distance FROM local_embeddings WHERE embedding MATCH ? AND k = 10\""
+      },
+      "params": {
+        "type": "array",
+        "items": {},
+        "description": "Bind parameters for the query."
+      }
+    },
+    "required": [
+      "sql"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "fs_delete": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "Relative path of the file to delete. Cannot delete read-only or no-delete files."
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "fs_list": {
+    "type": "object",
+    "properties": {
+      "prefix": {
+        "type": "string",
+        "description": "Optional path prefix to filter files (e.g. \"data/\" to list only files in data/)."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "fs_read": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "description": "File path to read."
+      },
+      "start_line": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "description": "Start line number (1-indexed). Text files only."
+      },
+      "end_line": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "description": "End line number (1-indexed, inclusive). Text files only."
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "fs_transfer": {
+    "type": "object",
+    "properties": {
+      "from": {
+        "type": "string",
+        "enum": [
+          "vfs",
+          "isolated",
+          "shared",
+          "host"
+        ],
+        "description": "Source environment: 'vfs', 'isolated', 'shared', or 'host'."
+      },
+      "to": {
+        "type": "string",
+        "enum": [
+          "vfs",
+          "isolated",
+          "shared",
+          "host"
+        ],
+        "description": "Destination environment: 'vfs', 'isolated', 'shared', or 'host'."
+      },
+      "path": {
+        "type": "string",
+        "description": "Path of the file or directory to transfer (relative to the environment root)."
+      },
+      "save_as": {
+        "type": "string",
+        "description": "Destination path. Defaults to the source path."
+      }
+    },
+    "required": [
+      "from",
+      "to",
+      "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "fs_write": {
+    "type": "object",
+    "properties": {
+      "mode": {
+        "type": "string",
+        "enum": [
+          "write",
+          "edit",
+          "append"
+        ],
+        "description": "Operation: \"write\" create/overwrite, \"edit\" find-and-replace, \"append\" add to end."
+      },
+      "path": {
+        "type": "string",
+        "description": "File path: \"README.md\", \"mind.md\", or any relative path."
+      },
+      "content": {
+        "type": "string",
+        "description": "write/append mode: content to write or append."
+      },
+      "old_text": {
+        "type": "string",
+        "minLength": 1,
+        "description": "edit mode (single): exact text to find. Must appear once unless replace_all is set."
+      },
+      "new_text": {
+        "type": "string",
+        "description": "edit mode (single): replacement text. Use \"\" to delete matched text."
+      },
+      "replace_all": {
+        "type": "boolean",
+        "description": "edit mode (single): replace every occurrence of old_text instead of requiring a unique match."
+      },
+      "edits": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "old_text": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Exact text to find."
+            },
+            "new_text": {
+              "type": "string",
+              "description": "Replacement text. Use \"\" to delete."
+            },
+            "replace_all": {
+              "type": "boolean",
+              "description": "Replace every occurrence (default: require a single unique match)."
+            }
+          },
+          "required": [
+            "old_text",
+            "new_text"
+          ],
+          "additionalProperties": false
+        },
+        "description": "edit mode (batch): a list of {old_text,new_text,replace_all} applied in order and atomically — if any fails, the file is not modified."
+      },
+      "protection": {
+        "type": "string",
+        "enum": [
+          "read_only",
+          "no_delete",
+          "none"
+        ],
+        "description": "write mode: protection level for new files."
+      },
+      "encoding": {
+        "type": "string",
+        "enum": [
+          "utf8",
+          "base64"
+        ],
+        "description": "write mode: content encoding. Use \"base64\" for binary files."
+      },
+      "mime_type": {
+        "type": "string",
+        "description": "write mode: MIME type (e.g. \"image/png\"). Used with encoding: \"base64\"."
+      }
+    },
+    "required": [
+      "mode",
+      "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "loop_clear": {
+    "type": "object",
+    "properties": {
+      "start": {
+        "type": "integer",
+        "description": "Start index (inclusive). Supports negative indices like Python: -1 = last entry, -3 = third from end. Omit to start from the beginning."
+      },
+      "end": {
+        "type": "integer",
+        "description": "End index (exclusive). Supports negative indices. Omit to go to the end."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "loop_compact": {
+    "type": "object",
+    "properties": {
+      "instructions": {
+        "type": "string",
+        "description": "Optional instructions for the compaction summarizer. Use this to highlight critical context, decisions, or state that must be preserved in the summary."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "loop_list": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "loop_manage": {
+    "type": "object",
+    "properties": {
+      "action": {
+        "type": "string",
+        "enum": [
+          "create",
+          "get",
+          "update",
+          "delete"
+        ],
+        "description": "create — define a new inner loop and start it (with config.autostart, the default, it runs its first turn right away). get — one loop's full definition (use loop_list to enumerate them). update — patch an inner loop (re-derives and restarts it; enabled:false stops it immediately). delete — stop it (mid-turn included), archive its stream to the audit log, then remove it."
+      },
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Loop name. Required for get, update and delete."
+      },
+      "config": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9_-]{0,31}$",
+            "description": "Loop name: 1-32 lowercase chars; unique here, \"main\" reserved."
+          },
+          "goal": {
+            "type": "string",
+            "maxLength": 4000,
+            "description": "The loop's charter, appended to its instructions. Optional: without one the loop works on whatever it is sent. Required when autostart is true."
+          },
+          "enabled": {
+            "type": "boolean",
+            "description": "Whether the loop runs. Default true on create."
+          },
+          "autostart": {
+            "type": "boolean",
+            "description": "Run a first turn on the goal without waiting to be addressed: now on create, and again whenever the agent starts. Default true on create, and needs a goal: creating without a goal requires autostart false. false: it only runs when a trigger, timer or loop_send targets it."
+          },
+          "autonomous": {
+            "type": "boolean",
+            "description": "Keep turning after text-only responses until the loop calls sys_set_state. Not inherited from you; default false. Grant sys_set_state alongside."
+          },
+          "model": {
+            "type": "object",
+            "additionalProperties": {},
+            "description": "Model override for this loop only, same provider as yours. Omit to inherit the agent model."
+          },
+          "compact_threshold": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Token count at which this loop auto-compacts. Omit to inherit yours."
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1
+            },
+            "maxItems": 64,
+            "description": "Absolute allow-list, intersected with your enabled tools; nothing implicit. Omit for loop_send + loop_list + sys_set_state; [] for a mute loop. Include sys_set_state to yield."
+          }
+        },
+        "additionalProperties": false,
+        "description": "Required for create and update."
+      }
+    },
+    "required": [
+      "action"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "loop_send": {
+    "type": "object",
+    "properties": {
+      "to_loop": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Name of the loop to deliver to, from loop_list. \"main\" is the membrane-facing loop."
+      },
+      "content": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 48000,
+        "description": "The message. Appended to the target loop's stream as a real entry, stamped with your loop name."
+      },
+      "wake": {
+        "type": "boolean",
+        "description": "Wake the target now. An idle target runs a turn immediately; a busy one reads the message at its next model boundary mid-turn and gets one extra turn only if its current turn ends first. Default false — it simply reads the message whenever it next runs."
+      }
+    },
+    "required": [
+      "to_loop",
+      "content"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "mcp_install": {
+    "type": "object",
+    "properties": {
+      "package": {
+        "type": "string",
+        "description": "Package name (npm/pypi) or command path (custom). E.g. \"@modelcontextprotocol/server-github\", \"garmin-mcp\", \"node\""
+      },
+      "type": {
+        "type": "string",
+        "enum": [
+          "npm",
+          "pypi",
+          "custom",
+          "http"
+        ],
+        "default": "npm",
+        "description": "Package type: npm, pypi, custom, or http"
+      },
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "Streamable HTTP MCP URL. Required when type=http."
+      },
+      "name": {
+        "type": "string",
+        "description": "Server name. Auto-derived from package if not provided. Required for custom type."
+      },
+      "args": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Command arguments (mainly for custom type)"
+      },
+      "host": {
+        "type": "boolean",
+        "description": "Run on host instead of container. Default false. Requires agent compute.host_access AND the app-wide \"Host access\" switch (ADF Studio → Settings → Compute)."
+      },
+      "env_keys": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Environment variable names the server needs (e.g. [\"GITHUB_PERSONAL_ACCESS_TOKEN\"])"
+      },
+      "env": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Credential values to store in agent identity (e.g. { \"API_KEY\": \"sk-...\" }). Stored as mcp:<name>:<key>. Values reach the server process VERBATIM — ~ is NOT expanded inside env values (unlike credential_files paths). When a value is a file path that must match a credential_files entry, declare BOTH as the same absolute runtime path."
+      },
+      "headers": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Static HTTP headers for type=http. Do not include secret values unless they should be stored in agent config."
+      },
+      "header_env": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "header": {
+              "type": "string"
+            },
+            "env": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "header",
+            "env"
+          ],
+          "additionalProperties": false
+        },
+        "description": "HTTP headers populated from credential env keys, e.g. [{ \"header\": \"X-API-Key\", \"env\": \"API_KEY\" }]."
+      },
+      "bearer_token_env_var": {
+        "type": "string",
+        "description": "Env key whose value should be sent as Authorization: Bearer <value> for type=http."
+      },
+      "auth": {
+        "type": "boolean",
+        "description": "Run the server once for interactive auth (OAuth, etc.) before connecting. The auth command runs in the same container the server will run in (or on the host for host-routed servers), so stored tokens persist where the server reads them; OAuth loopback callback ports are auto-forwarded from the host browser into the container. Opens a browser for the user to authorize. Sign-in is complete only when the auth command exits after storing its token; in Studio the user sees a dialog until then and can cancel it."
+      },
+      "auth_args": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Extra arguments to pass to the server during the auth preflight (e.g. [\"auth\"] for servers that have a dedicated auth subcommand)."
+      },
+      "auth_port": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 65535,
+        "description": "Host loopback port to forward into the container during the auth preflight (for OAuth callbacks with a fixed redirect port). Usually unnecessary — the port is auto-detected from the auth URL redirect_uri."
+      },
+      "credential_files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "path": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Path in the server's runtime filesystem, e.g. \"~/.config/google-drive-mcp/gcp-oauth.keys.json\". ~ expands to the server's home (agent-scoped in containers)."
+            },
+            "required": {
+              "type": "boolean",
+              "description": "Connect fails plainly when the keystore has no copy. Default false."
+            },
+            "write_back": {
+              "type": "boolean",
+              "description": "Capture the file into the identity keystore after a successful auth preflight (tokens). Default true."
+            },
+            "content": {
+              "type": "string",
+              "description": "Optional file content to store NOW in the identity keystore (sealed). Plain text, or base64 with encoding=\"base64\". Never persisted in config."
+            },
+            "encoding": {
+              "type": "string",
+              "enum": [
+                "utf8",
+                "base64"
+              ],
+              "description": "How to decode `content`. Default utf8."
+            }
+          },
+          "required": [
+            "path"
+          ],
+          "additionalProperties": false
+        },
+        "description": "File-shaped credentials (OAuth client keys, token stores). Content lives sealed in the identity keystore, is materialized into the server's filesystem before every spawn, and token files are captured back after auth — so grants survive container rebuilds and travel with the .adf."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "mcp_restart": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Name of the MCP server to reconnect"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "mcp_uninstall": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Name of the MCP server to uninstall"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "msg_delete": {
+    "type": "object",
+    "properties": {
+      "source": {
+        "type": "string",
+        "enum": [
+          "inbox",
+          "outbox"
+        ],
+        "description": "Which message store to delete from."
+      },
+      "filter": {
+        "type": "object",
+        "properties": {
+          "status": {
+            "type": "string",
+            "description": "Filter by message status (e.g. \"unread\", \"read\", \"archived\" for inbox; \"pending\", \"sent\", \"delivered\", \"failed\" for outbox)."
+          },
+          "from": {
+            "type": "string",
+            "description": "Filter by sender ID (inbox only)."
+          },
+          "source": {
+            "type": "string",
+            "description": "Filter by source transport (e.g. \"mesh\", \"telegram\")."
+          },
+          "before": {
+            "type": "integer",
+            "description": "Delete messages with timestamp before this value (epoch ms)."
+          },
+          "thread_id": {
+            "type": "string",
+            "description": "Filter by thread ID."
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "source",
+      "filter"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "msg_list": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "msg_read": {
+    "type": "object",
+    "properties": {
+      "status": {
+        "type": "string",
+        "enum": [
+          "unread",
+          "read",
+          "archived"
+        ],
+        "description": "Filter by message status. Default: unread"
+      },
+      "limit": {
+        "type": "number",
+        "description": "Maximum number of messages to return. Default: all"
+      },
+      "include_original": {
+        "type": "boolean",
+        "description": "Include the raw platform message (original_message) for channel-adapter messages — the full Telegram update, Slack event, parsed email, etc. Large; request only when the normalized fields are not enough. Default: false"
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "msg_send": {
+    "type": "object",
+    "properties": {
+      "recipient": {
+        "type": "string",
+        "minLength": 1,
+        "description": "DID of the recipient agent (e.g., \"did:key:...\"). Required unless parent_id is provided, in which case the runtime resolves recipient from the inbox message. For adapter recipients use the format \"type:id\" (e.g., \"telegram:123\")."
+      },
+      "address": {
+        "type": "string",
+        "format": "uri",
+        "description": "Delivery URL for mesh recipients (e.g., \"http://127.0.0.1:7295/agents/agent-handle/inbox\"). Required unless parent_id is provided or sending to an adapter recipient."
+      },
+      "content": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The message content to send."
+      },
+      "content_type": {
+        "type": "string",
+        "description": "MIME type of content when it is not plain text/markdown. \"application/vnd.adf.form+json\": structured questionnaire — native surfaces on telegram (form JSON REQUIRES a render choice: \"poll\" | \"compact\" | \"per_question\"); plain-text questionnaire elsewhere. \"text/html\": HTML body — honored by email and telegram; plain text elsewhere. Contract violations fail the send with the reason. Full per-adapter reference (addressing, form schema + render contracts, answer flow, support matrix): fetch https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides/channels.md"
+      },
+      "subject": {
+        "type": "string",
+        "description": "Optional subject line for the message."
+      },
+      "thread_id": {
+        "type": "string",
+        "description": "Thread ID for grouping related messages into a conversation thread. Auto-inherited from parent message if parent_id is provided."
+      },
+      "parent_id": {
+        "type": "string",
+        "description": "Message ID for threading/replies. To reply to an inbound message, set this to the inbox message id and omit recipient/address — the runtime resolves both from the parent (from becomes recipient, reply_to becomes address — a loopback reply_to from a remote peer is routed to the host it was received from), keeping the reply in the originating channel/chat. Putting the sender in recipient instead can misroute group/channel replies."
+      },
+      "attachments": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "File paths within this agent's file store to attach (e.g. [\"data.csv\", \"results/output.json\"])."
+      },
+      "meta": {
+        "type": "object",
+        "additionalProperties": {},
+        "description": "Metadata included in the message payload. Encrypted along with content — only the recipient can read it. Use for private structured data between sender and recipient."
+      },
+      "message_meta": {
+        "type": "object",
+        "additionalProperties": {},
+        "description": "Metadata on the outer message. Always cleartext — visible to relays and intermediaries. Use for routing hints (e.g. { forward_to: \"did:key:...\" }), PoW proofs, TTL, priority."
+      }
+    },
+    "required": [
+      "content"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "msg_update": {
+    "type": "object",
+    "properties": {
+      "message_ids": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        ],
+        "description": "Message ID or array of message IDs to update"
+      },
+      "status": {
+        "type": "string",
+        "enum": [
+          "read",
+          "archived",
+          "delete"
+        ],
+        "description": "New status: \"read\", \"archived\", or \"delete\" (delete only works on archived messages)"
+      }
+    },
+    "required": [
+      "message_ids",
+      "status"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "npm_install": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "description": "npm package name (e.g. \"lodash\", \"vega-lite\", \"@resvg/resvg-wasm\")"
+      },
+      "version": {
+        "type": "string",
+        "description": "Semver version or range (e.g. \"^5.30.0\", \"4.17.21\"). Defaults to \"latest\"."
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "npm_uninstall": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "description": "npm package name to remove (e.g. \"lodash\")"
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "say": {
+    "type": "object",
+    "properties": {
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "description": "The text to emit — a status update, intermediate observation, or progress report."
+      }
+    },
+    "required": [
+      "message"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "stream_bind": {
+    "type": "object",
+    "properties": {
+      "a": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "ws"
+              },
+              "connection_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "connection_id"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "process"
+              },
+              "isolation": {
+                "type": "string",
+                "enum": [
+                  "host",
+                  "container_shared",
+                  "container_isolated"
+                ]
+              },
+              "image": {
+                "type": "string"
+              },
+              "command": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              },
+              "env": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "cwd": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind",
+              "isolation",
+              "command"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "tcp"
+              },
+              "host": {
+                "type": "string"
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535
+              }
+            },
+            "required": [
+              "kind",
+              "host",
+              "port"
+            ],
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "properties": {
+              "kind": {
+                "type": "string",
+                "const": "umbilical"
+              },
+              "filter": {
+                "type": "object",
+                "properties": {
+                  "event_types": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "when": {
+                    "type": "string"
+                  },
+                  "allow_wildcard": {
+                    "type": "boolean"
+                  },
+                  "max_rate_per_sec": {
+                    "type": "integer",
+                    "exclusiveMinimum": 0
+                  },
+                  "exclude_source": {
+                    "type": "string"
+                  }
+                },
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "additionalProperties": false
+          }
+        ]
+      },
+      "b": {
+        "$ref": "#/properties/a"
+      },
+      "bidirectional": {
+        "type": "boolean"
+      },
+      "options": {
+        "type": "object",
+        "properties": {
+          "idle_timeout_ms": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "max_duration_ms": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "max_bytes": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "flow_summary_interval_ms": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "close_a_on_b_close": {
+            "type": "boolean"
+          },
+          "close_b_on_a_close": {
+            "type": "boolean"
+          },
+          "queue_high_water_bytes": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          },
+          "drain_timeout_ms": {
+            "type": "integer",
+            "exclusiveMinimum": 0
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "required": [
+      "a",
+      "b"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "stream_bindings": {
+    "type": "object",
+    "properties": {},
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "stream_unbind": {
+    "type": "object",
+    "properties": {
+      "binding_id": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
+    "required": [
+      "binding_id"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_code": {
+    "type": "object",
+    "properties": {
+      "code": {
+        "type": "string",
+        "minLength": 1,
+        "description": "JavaScript code to execute. Supports async/await. Use the `adf` object to call tools (e.g. `await adf.fs_read({ path: \"file.md\" })`), invoke the LLM (`await adf.model_invoke({ prompt: \"...\" })`), or call functions (`await adf.sys_lambda({ source: \"utils.js\", args: { x: 1 } })`). Import statements for allowed Node.js modules (crypto, buffer, url, path, util, etc.) and standard library packages (xlsx, pdf-lib, cheerio, yaml, date-fns, jimp, docx, jszip, sql.js, mupdf) are supported. Additional packages can be installed via npm_install."
+      },
+      "timeout": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 30000,
+        "description": "Execution timeout in milliseconds. Default and max: 30000 (your limits.execution_timeout_ms)."
+      },
+      "clear_state": {
+        "type": "boolean",
+        "default": true,
+        "description": "Whether to clear the sandbox state before executing. Defaults to true (fresh environment each call). Set to false to preserve variables and functions from previous calls. Use false for multi-step investigative work that reuses loaded data or helpers across calls."
+      }
+    },
+    "required": [
+      "code"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_create_adf": {
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Name for the new agent."
+      },
+      "location": {
+        "type": "string",
+        "description": "Directory path where to create the .adf file. If omitted, creates in same directory as this agent."
+      },
+      "description": {
+        "type": "string",
+        "description": "Description of what the new agent does."
+      },
+      "instructions": {
+        "type": "string",
+        "description": "System prompt for the new agent."
+      },
+      "icon": {
+        "type": "string",
+        "description": "Single emoji or character for UI display."
+      },
+      "handle": {
+        "type": "string",
+        "description": "URL-safe identity label for the agent."
+      },
+      "autonomous": {
+        "type": "boolean",
+        "description": "Whether the agent runs autonomously without human approval for each turn."
+      },
+      "start_in_state": {
+        "type": "string",
+        "enum": [
+          "active",
+          "idle",
+          "hibernate"
+        ],
+        "description": "Initial state for the agent. Defaults to active."
+      },
+      "autostart": {
+        "type": "boolean",
+        "description": "Auto-start on runtime boot. Also triggers immediate background start on creation."
+      },
+      "model": {
+        "type": "object",
+        "properties": {
+          "provider": {
+            "type": "string"
+          },
+          "model_id": {
+            "type": "string"
+          },
+          "temperature": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_tokens": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "top_p": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "thinking_budget": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "reasoning": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "effort": {
+                "type": "string",
+                "enum": [
+                  "minimal",
+                  "low",
+                  "medium",
+                  "high",
+                  "xhigh"
+                ]
+              },
+              "max_tokens": {
+                "type": "number"
+              },
+              "exclude": {
+                "type": "boolean"
+              },
+              "preserve": {
+                "type": "boolean"
+              },
+              "summary": {
+                "type": "string",
+                "enum": [
+                  "auto",
+                  "concise",
+                  "detailed"
+                ]
+              }
+            },
+            "additionalProperties": false
+          },
+          "vision": {
+            "type": "boolean"
+          },
+          "multimodal": {
+            "type": "object",
+            "properties": {
+              "image": {
+                "type": "boolean"
+              },
+              "audio": {
+                "type": "boolean"
+              },
+              "video": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          },
+          "params": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "key": {
+                  "type": "string"
+                },
+                "value": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "key",
+                "value"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "provider_params": {
+            "type": "object",
+            "additionalProperties": {}
+          }
+        },
+        "additionalProperties": false,
+        "description": "Model configuration overrides."
+      },
+      "context": {
+        "type": "object",
+        "properties": {
+          "compact_threshold": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "compaction_model": {
+            "anyOf": [
+              {
+                "type": "object",
+                "properties": {
+                  "provider": {
+                    "type": "string"
+                  },
+                  "model_id": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "provider",
+                  "model_id"
+                ],
+                "additionalProperties": true
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Model that writes compaction summaries (any configured provider). Absent = the agent's own model."
+          },
+          "audit": {
+            "type": "object",
+            "properties": {
+              "loop": {
+                "type": "boolean"
+              },
+              "inbox": {
+                "type": "boolean"
+              },
+              "outbox": {
+                "type": "boolean"
+              },
+              "files": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "loop",
+              "inbox",
+              "outbox",
+              "files"
+            ],
+            "additionalProperties": false
+          },
+          "dynamic_instructions": {
+            "type": "object",
+            "properties": {
+              "inbox_hints": {
+                "type": "boolean"
+              },
+              "context_warning": {
+                "type": "boolean"
+              },
+              "idle_reminder": {
+                "type": "boolean"
+              },
+              "mesh_updates": {
+                "type": "boolean"
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "description": "Context configuration overrides."
+      },
+      "tools": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "name": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "visible": {
+              "type": "boolean"
+            },
+            "restricted": {
+              "type": "boolean"
+            },
+            "locked": {
+              "type": "boolean"
+            }
+          },
+          "required": [
+            "name",
+            "enabled"
+          ],
+          "additionalProperties": false
+        },
+        "description": "Tool enablement overrides. Merged with defaults by tool name."
+      },
+      "triggers": {
+        "type": "object",
+        "properties": {
+          "on_startup": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "scope": {
+                      "type": "string",
+                      "enum": [
+                        "system",
+                        "agent"
+                      ]
+                    },
+                    "lambda": {
+                      "type": "string"
+                    },
+                    "command": {
+                      "type": "string"
+                    },
+                    "warm": {
+                      "type": "boolean"
+                    },
+                    "filter": {
+                      "type": "object",
+                      "properties": {
+                        "source": {
+                          "type": "string"
+                        },
+                        "sender": {
+                          "type": "string"
+                        },
+                        "to": {
+                          "type": "string"
+                        },
+                        "watch": {
+                          "type": "string"
+                        },
+                        "include_self": {
+                          "type": "boolean"
+                        },
+                        "tools": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "status": {
+                          "type": "string"
+                        },
+                        "level": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "origin": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "event": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        }
+                      },
+                      "additionalProperties": false
+                    },
+                    "debounce_ms": {
+                      "type": "number"
+                    },
+                    "interval_ms": {
+                      "type": "number"
+                    },
+                    "batch_ms": {
+                      "type": "number"
+                    },
+                    "batch_count": {
+                      "type": "number"
+                    },
+                    "locked": {
+                      "type": "boolean"
+                    },
+                    "loop": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "scope"
+                  ],
+                  "additionalProperties": false
+                },
+                "default": []
+              },
+              "locked": {
+                "type": "boolean"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "on_inbox": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_outbox": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_file_change": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_chat": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_timer": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_tool_call": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_task_create": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_task_complete": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          },
+          "on_logs": {
+            "$ref": "#/properties/triggers/properties/on_startup"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Trigger configuration overrides per trigger type."
+      },
+      "security": {
+        "type": "object",
+        "properties": {
+          "level": {
+            "type": "number",
+            "enum": [
+              0,
+              1,
+              2,
+              3
+            ]
+          },
+          "require_signature": {
+            "type": "boolean"
+          },
+          "require_payload_signature": {
+            "type": "boolean"
+          },
+          "require_encryption": {
+            "type": "boolean"
+          },
+          "middleware": {
+            "type": "object",
+            "properties": {
+              "inbox": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "lambda": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "lambda"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "outbox": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/properties/security/properties/middleware/properties/inbox/items"
+                }
+              }
+            },
+            "additionalProperties": false
+          },
+          "fetch_middleware": {
+            "type": "array",
+            "items": {
+              "$ref": "#/properties/security/properties/middleware/properties/inbox/items"
+            }
+          },
+          "require_middleware_authorization": {
+            "type": "boolean"
+          },
+          "table_protections": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string",
+              "enum": [
+                "none",
+                "append_only",
+                "authorized"
+              ]
+            }
+          }
+        },
+        "additionalProperties": false,
+        "description": "Security configuration overrides."
+      },
+      "limits": {
+        "type": "object",
+        "properties": {
+          "execution_timeout_ms": {
+            "type": "number"
+          },
+          "max_file_read_tokens": {
+            "type": "number"
+          },
+          "max_file_write_bytes": {
+            "type": "number"
+          },
+          "max_tool_result_tokens": {
+            "type": "number"
+          },
+          "max_tool_result_preview_chars": {
+            "type": "number"
+          },
+          "max_active_turns": {
+            "type": [
+              "number",
+              "null"
+            ]
+          },
+          "max_image_size_bytes": {
+            "type": "number"
+          },
+          "max_audio_size_bytes": {
+            "type": "number"
+          },
+          "max_video_size_bytes": {
+            "type": "number"
+          },
+          "suspend_timeout_ms": {
+            "type": "number"
+          },
+          "hibernate_nudge": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "interval_ms": {
+                "type": "number"
+              }
+            },
+            "required": [
+              "enabled",
+              "interval_ms"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "description": "Resource limit overrides."
+      },
+      "messaging": {
+        "type": "object",
+        "properties": {
+          "receive": {
+            "type": "boolean"
+          },
+          "mode": {
+            "type": "string",
+            "enum": [
+              "proactive",
+              "respond_only",
+              "listen_only"
+            ]
+          },
+          "inbox_mode": {
+            "type": "boolean"
+          },
+          "allow_list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "block_list": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "network": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Messaging configuration overrides."
+      },
+      "audit": {
+        "$ref": "#/properties/context/properties/audit",
+        "description": "Audit configuration. Controls whether cleared data is saved to the audit log."
+      },
+      "code_execution": {
+        "type": "object",
+        "properties": {
+          "model_invoke": {
+            "type": "boolean"
+          },
+          "sys_lambda": {
+            "type": "boolean"
+          },
+          "task_resolve": {
+            "type": "boolean"
+          },
+          "loop_inject": {
+            "type": "boolean"
+          },
+          "identity_status": {
+            "type": "boolean"
+          },
+          "get_identity": {
+            "type": "boolean"
+          },
+          "set_identity": {
+            "type": "boolean"
+          },
+          "network": {
+            "type": "boolean"
+          },
+          "packages": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "version": {
+                  "type": "string"
+                }
+              },
+              "required": [
+                "name",
+                "version"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "restricted_methods": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false,
+        "description": "Code execution method toggles."
+      },
+      "logging": {
+        "type": "object",
+        "properties": {
+          "default_level": {
+            "type": "string",
+            "enum": [
+              "debug",
+              "info",
+              "warn",
+              "error"
+            ]
+          },
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "origin": {
+                  "type": "string"
+                },
+                "min_level": {
+                  "type": "string",
+                  "enum": [
+                    "debug",
+                    "info",
+                    "warn",
+                    "error"
+                  ]
+                }
+              },
+              "required": [
+                "origin",
+                "min_level"
+              ],
+              "additionalProperties": false
+            }
+          },
+          "max_rows": {
+            "anyOf": [
+              {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false,
+        "description": "Log filtering. default_level sets the global minimum; rules override per-origin; max_rows caps the ring buffer (null = unlimited, default 10000)."
+      },
+      "mcp": {
+        "type": "object",
+        "properties": {
+          "servers": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "name": {
+                  "type": "string"
+                },
+                "transport": {
+                  "type": "string",
+                  "enum": [
+                    "stdio",
+                    "http"
+                  ]
+                },
+                "command": {
+                  "type": "string"
+                },
+                "args": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "url": {
+                  "type": "string"
+                },
+                "headers": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "header_env": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "header": {
+                        "type": "string"
+                      },
+                      "env": {
+                        "type": "string"
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "credential_ref": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "header",
+                      "env"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "bearer_token_env_var": {
+                  "type": "string"
+                },
+                "env": {
+                  "type": "object",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "env_keys": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
+                "env_schema": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "key": {
+                        "type": "string"
+                      },
+                      "scope": {
+                        "type": "string",
+                        "enum": [
+                          "agent",
+                          "app"
+                        ]
+                      },
+                      "required": {
+                        "type": "boolean"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "credential_ref": {
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "key",
+                      "scope"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "npm_package": {
+                  "type": "string"
+                },
+                "pypi_package": {
+                  "type": "string"
+                },
+                "available_tools": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "properties": {
+                      "name": {
+                        "type": "string"
+                      },
+                      "description": {
+                        "type": "string"
+                      },
+                      "input_schema": {
+                        "type": "object",
+                        "additionalProperties": {}
+                      }
+                    },
+                    "required": [
+                      "name",
+                      "input_schema"
+                    ],
+                    "additionalProperties": false
+                  }
+                },
+                "source": {
+                  "type": "string"
+                },
+                "tool_call_timeout_ms": {
+                  "type": "number"
+                },
+                "restricted": {
+                  "type": "boolean"
+                },
+                "run_location": {
+                  "type": "string",
+                  "enum": [
+                    "host",
+                    "shared"
+                  ]
+                }
+              },
+              "required": [
+                "name",
+                "transport"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "required": [
+          "servers"
+        ],
+        "additionalProperties": false,
+        "description": "MCP server configuration."
+      },
+      "adapters": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "object",
+          "properties": {
+            "enabled": {
+              "type": "boolean"
+            },
+            "config": {
+              "type": "object",
+              "additionalProperties": {}
+            },
+            "policy": {
+              "type": "object",
+              "properties": {
+                "dm": {
+                  "type": "string",
+                  "enum": [
+                    "all",
+                    "allowlist",
+                    "none"
+                  ]
+                },
+                "groups": {
+                  "type": "string",
+                  "enum": [
+                    "all",
+                    "mention",
+                    "none"
+                  ]
+                },
+                "allow_from": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                }
+              },
+              "additionalProperties": false
+            },
+            "limits": {
+              "type": "object",
+              "properties": {
+                "max_attachment_size": {
+                  "type": "number"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "required": [
+            "enabled"
+          ],
+          "additionalProperties": false
+        },
+        "description": "Channel adapter configuration. Keyed by adapter type."
+      },
+      "serving": {
+        "type": "object",
+        "properties": {
+          "shared": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "patterns": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "public": {
+            "type": "object",
+            "properties": {
+              "enabled": {
+                "type": "boolean"
+              },
+              "index": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "enabled"
+            ],
+            "additionalProperties": false
+          },
+          "api": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "method": {
+                  "type": "string",
+                  "enum": [
+                    "GET",
+                    "POST",
+                    "PUT",
+                    "PATCH",
+                    "DELETE",
+                    "WS"
+                  ]
+                },
+                "path": {
+                  "type": "string"
+                },
+                "lambda": {
+                  "type": "string"
+                },
+                "warm": {
+                  "type": "boolean"
+                },
+                "cache_ttl_ms": {
+                  "type": "number"
+                },
+                "on_card": {
+                  "type": "boolean"
+                },
+                "middleware": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/properties/security/properties/middleware/properties/inbox/items"
+                  }
+                },
+                "locked": {
+                  "type": "boolean"
+                }
+              },
+              "required": [
+                "method",
+                "path",
+                "lambda"
+              ],
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false,
+        "description": "HTTP serving configuration: shared files, public site, and API routes."
+      },
+      "providers": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "type": {
+              "type": "string",
+              "enum": [
+                "anthropic",
+                "openai",
+                "openai-compatible",
+                "openrouter"
+              ]
+            },
+            "name": {
+              "type": "string"
+            },
+            "baseUrl": {
+              "type": "string"
+            },
+            "defaultModel": {
+              "type": "string"
+            },
+            "params": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "key": {
+                    "type": "string"
+                  },
+                  "value": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "key",
+                  "value"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "requestDelayMs": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "type",
+            "name",
+            "baseUrl"
+          ],
+          "additionalProperties": false
+        },
+        "description": "Custom LLM provider definitions."
+      },
+      "ws_connections": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "id": {
+              "type": "string"
+            },
+            "url": {
+              "type": "string"
+            },
+            "did": {
+              "type": "string"
+            },
+            "enabled": {
+              "type": "boolean"
+            },
+            "lambda": {
+              "type": "string"
+            },
+            "auth": {
+              "type": "string",
+              "enum": [
+                "auto",
+                "required",
+                "none"
+              ]
+            },
+            "auto_reconnect": {
+              "type": "boolean"
+            },
+            "reconnect_delay_ms": {
+              "type": "number"
+            },
+            "keepalive_interval_ms": {
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "url",
+            "enabled"
+          ],
+          "additionalProperties": false
+        },
+        "description": "WebSocket connection definitions."
+      },
+      "locked_fields": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Config field paths that the agent cannot modify."
+      },
+      "card": {
+        "type": "object",
+        "properties": {
+          "endpoints": {
+            "type": "object",
+            "properties": {
+              "inbox": {
+                "type": "string"
+              },
+              "card": {
+                "type": "string"
+              },
+              "health": {
+                "type": "string"
+              },
+              "ws": {
+                "type": "string"
+              }
+            },
+            "additionalProperties": false
+          },
+          "resolution": {
+            "type": "object",
+            "properties": {
+              "method": {
+                "type": "string"
+              },
+              "endpoint": {
+                "type": "string"
+              },
+              "network": {
+                "type": "string"
+              },
+              "contract": {
+                "type": "string"
+              },
+              "chain_id": {
+                "type": "number"
+              },
+              "domain": {
+                "type": "string"
+              },
+              "selector": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "method"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false,
+        "description": "Agent card endpoint and resolution overrides."
+      },
+      "template": {
+        "type": "string",
+        "description": "Path to a .adf template file in this agent's file store. The template's config and files become the starting point; explicit params override on top. Template locked_fields and locked items are enforced. The child gets fresh identity keys."
+      },
+      "files": {
+        "type": "array",
+        "items": {
+          "type": "object",
+          "properties": {
+            "parent_path": {
+              "type": "string",
+              "description": "Path to the file in this (parent) agent's file store."
+            },
+            "child_path": {
+              "type": "string",
+              "description": "Path where the file should be placed in the new agent's file store."
+            }
+          },
+          "required": [
+            "parent_path",
+            "child_path"
+          ],
+          "additionalProperties": false
+        },
+        "description": "Files to copy from this agent's file store into the new agent. Overwrites existing files unless they have read_only protection."
+      },
+      "metadata": {
+        "type": "object",
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "version": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false,
+        "description": "Metadata overrides. created_at and updated_at are always auto-set."
+      }
+    },
+    "required": [
+      "name"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_delete_meta": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "The metadata key to delete."
+      }
+    },
+    "required": [
+      "key"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_delete_timer": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "integer",
+        "exclusiveMinimum": 0,
+        "description": "The timer ID to delete."
+      }
+    },
+    "required": [
+      "id"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_fetch": {
+    "type": "object",
+    "properties": {
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "The URL to fetch"
+      },
+      "method": {
+        "type": "string",
+        "enum": [
+          "GET",
+          "POST",
+          "PUT",
+          "PATCH",
+          "DELETE",
+          "HEAD",
+          "OPTIONS"
+        ],
+        "default": "GET",
+        "description": "HTTP method"
+      },
+      "headers": {
+        "type": "object",
+        "additionalProperties": {
+          "type": "string"
+        },
+        "description": "Request headers as key-value pairs"
+      },
+      "body": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {}
+        ],
+        "description": "Request body (for POST/PUT/PATCH). Accepts string or Buffer."
+      },
+      "timeout_ms": {
+        "type": "integer",
+        "minimum": 1,
+        "maximum": 60000,
+        "default": 30000,
+        "description": "Request timeout in milliseconds (max 60000)"
+      }
+    },
+    "required": [
+      "url"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_get_config": {
+    "type": "object",
+    "properties": {
+      "section": {
+        "type": "string",
+        "enum": [
+          "config",
+          "card",
+          "provider_status",
+          "tools",
+          "limits"
+        ],
+        "description": "What to retrieve. \"config\" (default) returns the full agent configuration with secret values redacted. \"card\" returns your signed agent card as served on the mesh. \"provider_status\" returns rate limit and usage metadata from the LLM provider (e.g. ChatGPT subscription usage percentages and reset times). \"tools\" returns full tool discovery metadata, including hidden and disabled tools. \"limits\" returns just the limits section (timeouts, truncation and size caps)."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_get_meta": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "Key to look up. If omitted, returns all key-value pairs."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_lambda": {
+    "type": "object",
+    "properties": {
+      "source": {
+        "type": "string",
+        "minLength": 1,
+        "description": "File path, optionally with :function_name (e.g. \"utils/parser.ts:parse\"). Calls main() if no function specified."
+      },
+      "args": {
+        "type": "object",
+        "additionalProperties": {},
+        "description": "Arguments object passed as the single parameter to the function. Functions must accept one object parameter, e.g. function add({ a, b }) { return a + b; }"
+      },
+      "timeout": {
+        "type": "integer",
+        "minimum": 1000,
+        "maximum": 30000,
+        "description": "Execution timeout in milliseconds. Default and max: 30000 (your limits.execution_timeout_ms)."
+      }
+    },
+    "required": [
+      "source"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_list_timers": {
+    "type": "object",
+    "properties": {
+      "include_expired": {
+        "type": "boolean",
+        "description": "Also list expired (completed) timers. Completed timers are kept as history instead of deleted. Default: false — only active timers."
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_set_meta": {
+    "type": "object",
+    "properties": {
+      "key": {
+        "type": "string",
+        "description": "The metadata key to set."
+      },
+      "value": {
+        "type": "string",
+        "description": "The value to store — or, when inc is true, the numeric amount to add."
+      },
+      "inc": {
+        "type": "boolean",
+        "description": "true: atomically ADD the numeric value to the current value instead of overwriting it (creates the key at value if missing). Use this for counters — read-then-write from concurrent tasks loses updates. false/omitted: overwrite."
+      },
+      "protection": {
+        "type": "string",
+        "enum": [
+          "none",
+          "readonly",
+          "increment"
+        ],
+        "description": "Protection level for new keys. Ignored for existing keys. Default: none. Options: none (read/write/delete), readonly (read only), increment (value can only increase)."
+      }
+    },
+    "required": [
+      "key",
+      "value"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_set_state": {
+    "type": "object",
+    "properties": {
+      "state": {
+        "type": "string",
+        "enum": [
+          "idle",
+          "hibernate",
+          "off"
+        ],
+        "description": "The state to transition to. \"idle\" = idle but responsive to triggers. \"hibernate\" = deep idle, timers only. \"off\" = fully stopped."
+      }
+    },
+    "required": [
+      "state"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_set_timer": {
+    "type": "object",
+    "properties": {
+      "schedule": {
+        "anyOf": [
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "once"
+              },
+              "at": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Fire at this Unix timestamp (ms, absolute UTC)."
+              }
+            },
+            "required": [
+              "type",
+              "at"
+            ],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "delay"
+              },
+              "delay_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Fire once after this many ms from now."
+              }
+            },
+            "required": [
+              "type",
+              "delay_ms"
+            ],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "interval"
+              },
+              "every_ms": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Recurring interval (ms)."
+              },
+              "start_at": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "First fire time (Unix ms). Default: now + every_ms."
+              },
+              "end_at": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Stop recurring after this time (Unix ms)."
+              },
+              "max_runs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Stop recurring after this many fires."
+              }
+            },
+            "required": [
+              "type",
+              "every_ms"
+            ],
+            "additionalProperties": true
+          },
+          {
+            "type": "object",
+            "properties": {
+              "type": {
+                "type": "string",
+                "const": "cron"
+              },
+              "cron": {
+                "type": "string",
+                "description": "5-field cron expression (min hour dom month dow), evaluated in the host's local time zone."
+              },
+              "end_at": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Stop recurring after this time (Unix ms)."
+              },
+              "max_runs": {
+                "type": "integer",
+                "exclusiveMinimum": 0,
+                "description": "Stop recurring after this many fires."
+              }
+            },
+            "required": [
+              "type",
+              "cron"
+            ],
+            "additionalProperties": true
+          }
+        ],
+        "description": "Timer schedule. Set type to \"once\", \"delay\", \"interval\", or \"cron\" and include the fields for that type."
+      },
+      "payload": {
+        "type": "string",
+        "description": "Payload delivered when timer fires. When scope includes \"agent\", this becomes the user message in your next turn — write it as plain text instructions to your future self (e.g. \"Check on the data import and report progress to the user\")."
+      },
+      "scope": {
+        "type": "array",
+        "items": {
+          "type": "string",
+          "enum": [
+            "system",
+            "agent"
+          ]
+        },
+        "minItems": 1,
+        "default": [
+          "system"
+        ],
+        "description": "Who handles the timer. \"agent\" — fires as a turn in your LLM loop with the payload as your prompt. \"system\" — executes the lambda/script without an LLM turn. Use both to run a lambda AND get an LLM turn."
+      },
+      "lambda": {
+        "type": "string",
+        "description": "Source path for system scope execution. JS/TS lambda: \"path/file.ts:functionName\" (receives the event object). Shell script: \"path/file.sh\" — runs line-by-line in the shell with event context as env vars ($EVENT_TYPE, $TIMER_ID, ...)."
+      },
+      "warm": {
+        "type": "boolean",
+        "description": "Keep the lambda sandbox worker alive between invocations for faster re-execution."
+      },
+      "locked": {
+        "type": "boolean",
+        "description": "Lock this timer so it cannot be deleted or modified by agents. Only a human can unlock it."
+      },
+      "loop": {
+        "type": "string",
+        "description": "Which cognition loop this timer wakes. Main only — an inner loop's timers always wake that loop, so passing this from one is refused. Omit (or \"main\") to wake the main loop. Applies to agent scope only — a system-scope timer wakes no loop and carries no loop stamp."
+      }
+    },
+    "required": [
+      "schedule"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "sys_update_config": {
+    "type": "object",
+    "properties": {
+      "path": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Dot-path to the config field to update. For arrays of named objects, use the name directly (e.g. \"tools.fs_read.enabled\", \"tools.sys_code.enabled\"). Numeric indices still work but names are preferred. Examples: \"description\", \"model.temperature\", \"state\", \"tools.sys_code.enabled\", \"tools.sys_code.visible\", \"triggers.on_chat.enabled\"."
+      },
+      "value": {
+        "description": "The new value. Any valid JSON (string, number, boolean, object, array, null)."
+      },
+      "action": {
+        "type": "string",
+        "enum": [
+          "set",
+          "append",
+          "remove"
+        ],
+        "description": "Operation: \"set\" (default) replaces the value at path, \"append\" pushes to an array, \"remove\" removes from an array by index."
+      },
+      "index": {
+        "type": "integer",
+        "minimum": 0,
+        "description": "Array index for action \"remove\"."
+      }
+    },
+    "required": [
+      "path"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "ws_connect": {
+    "type": "object",
+    "properties": {
+      "id": {
+        "type": "string",
+        "description": "ID of a configured connection to start"
+      },
+      "url": {
+        "type": "string",
+        "format": "uri",
+        "description": "WebSocket URL for ad-hoc connection"
+      },
+      "did": {
+        "type": "string",
+        "description": "Expected remote DID"
+      },
+      "lambda": {
+        "type": "string",
+        "description": "Lambda handler for hot-path events (file:fn format)"
+      },
+      "persist": {
+        "type": "boolean",
+        "description": "Whether to save to ws_connections config (default: true). Set false for ephemeral connections."
+      },
+      "auto_reconnect": {
+        "type": "boolean"
+      },
+      "reconnect_delay_ms": {
+        "type": "number"
+      },
+      "keepalive_interval_ms": {
+        "type": "number"
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "ws_connections": {
+    "type": "object",
+    "properties": {
+      "direction": {
+        "type": "string",
+        "enum": [
+          "inbound",
+          "outbound"
+        ],
+        "description": "Filter by direction"
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "ws_disconnect": {
+    "type": "object",
+    "properties": {
+      "connection_id": {
+        "type": "string",
+        "description": "Connection ID to close"
+      },
+      "id": {
+        "type": "string",
+        "description": "Config ID to disconnect"
+      }
+    },
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  },
+  "ws_send": {
+    "type": "object",
+    "properties": {
+      "connection_id": {
+        "type": "string",
+        "description": "Target connection ID"
+      },
+      "data": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {}
+        ],
+        "description": "Text (string) or binary (Uint8Array). From LLM tool calls, pass base64 string with binary: true."
+      },
+      "binary": {
+        "type": "boolean",
+        "description": "If true and data is a string, decode it as base64 and send as a binary frame."
+      }
+    },
+    "required": [
+      "connection_id",
+      "data"
+    ],
+    "additionalProperties": false,
+    "$schema": "http://json-schema.org/draft-07/schema#"
+  }
+}

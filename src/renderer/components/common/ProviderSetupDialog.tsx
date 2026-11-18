@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { agentNameOf } from '../../stores/failure-notices.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { changeAgentConfig } from '../../utils/edit-conflict'
 import type { AgentConfig } from '../../../shared/types/adf-v02.types'
@@ -26,7 +27,8 @@ import { useOwnedProviderList } from '../providers/useOwnedProviderList'
 export function ProviderSetupDialog() {
   const request = useAppStore((s) => s.providerSetupRequest)
   const resolveProviderSetup = useAppStore((s) => s.resolveProviderSetup)
-  const agentName = useAgentStore((s) => s.config?.name)
+  const filePath = useDocumentStore((s) => s.filePath)
+  const agentName = filePath ? agentNameOf(filePath) : undefined
   const agentProvider = useAgentStore((s) => s.config?.model?.provider)
 
   const list = useOwnedProviderList()

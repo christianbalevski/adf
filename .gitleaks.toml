@@ -21,3 +21,23 @@ regexes = ['''did:key:z6Mk[A-Za-z0-9]*\.\.\.''']
 description = "Key variable names in code, not key values"
 regexTarget = "line"
 regexes = ['''\bprivateKeyPkcs8\b''']
+
+# Personal details. The repository is public: real tailnet addresses and real
+# agent DIDs never belong in code, docs, fixtures or placeholders. Use
+# documentation values instead (100.101.102.103, did:key:z6Mk...).
+[[rules]]
+id = "tailnet-address"
+description = "Tailscale (CGNAT 100.64.0.0/10) address; use 100.101.102.103 in examples"
+regex = '''\b100\.(6[4-9]|[7-9][0-9]|1[01][0-9]|12[0-7])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\b'''
+keywords = ["100."]
+  [[rules.allowlists]]
+  regexTarget = "match"
+  regexes = [
+    '''^100\.100\.100\.200$''', # Alibaba Cloud metadata endpoint (SSRF guard)
+    '''^100\.101\.102\.103$''', '''^100\.64\.0\.0$''', '''^100\.127\.255\.255$''']
+
+[[rules]]
+id = "full-did-key"
+description = "Complete did:key identifier; truncate examples (did:key:z6Mk...)"
+regex = '''did:key:z6Mk[1-9A-HJ-NP-Za-km-z]{44}'''
+keywords = ["did:key:z6mk"]
