@@ -700,16 +700,19 @@ export class LoopPool implements LoopPoolApi {
     // only live render. Emitting the SAME stamped text the row holds makes both
     // paths render identically (the renderer reads the `[from loop:…]` stamp
     // off the content in either case). Unconditional so the empty-but-busy
-    // race below does not swallow the card (review C5).
-    this.deps.onLoopEvent({
-      type: 'context_injected',
-      // The row is already persisted, so its seq rides along: the entry the
-      // chat panel appends live then wears the same `metadata.seq` the
-      // rehydrated row does (pagination cursor only; nothing renders it).
-      payload: { category: 'loop', origin, content: text, delivery: 'next_boundary', seq },
-      timestamp: Date.now(),
-      loop: loopName,
-    })
+    // race below does not swallow the card (review C5). Best-effort: a host
+    // whose render throws must not stop the injection and the kick below.
+    try {
+      this.deps.onLoopEvent({
+        type: 'context_injected',
+        // The row is already persisted, so its seq rides along: the entry the
+        // chat panel appends live then wears the same `metadata.seq` the
+        // rehydrated row does (pagination cursor only; nothing renders it).
+        payload: { category: 'loop', origin, content: text, delivery: 'next_boundary', seq },
+        timestamp: Date.now(),
+        loop: loopName,
+      })
+    } catch { /* render is best-effort */ }
     // Inject only when the session is live. An empty (released) session
     // rehydrates from the stream on its next dispatch and would then hold BOTH
     // the row and this injection. Returns false so a busy-path caller knows the

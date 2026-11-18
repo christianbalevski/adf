@@ -800,15 +800,9 @@ export function assembleAgent<P extends AgentProfileName>(
       const wake = { ...event, data: { ...event.data, skip_loop_append: true, loop_seq: seq } }
       // A turn rejected at dispatch reaches the host's error path, as every
       // other trigger's does (onEvaluatorTrigger).
-      try {
-        loopPool.deliverAppended(loop, wake, blocks, seq, `timer:${timer.id}`, (error, dispatchValue) => {
-          for (const bindings of hostBindings()) bindings.onTriggerError?.(error, dispatchValue)
-        })
-      } catch (error) {
-        // Committed: the row is settled and written, so the occurrence stands
-        // (the loop reads the row on its next turn); only the wake failed.
-        try { workspace.insertLog('warn', 'timer', 'timer_wake_failed', loop, `Timer #${timer.id} was written to loop "${loop}" but its wake failed: ${error instanceof Error ? error.message : String(error)}`, { timer_id: timer.id }) } catch { /* observability is never fatal */ }
-      }
+      loopPool.deliverAppended(loop, wake, blocks, seq, `timer:${timer.id}`, (error, dispatchValue) => {
+        for (const bindings of hostBindings()) bindings.onTriggerError?.(error, dispatchValue)
+      })
       return true
     },
   })

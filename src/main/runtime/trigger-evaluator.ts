@@ -864,21 +864,23 @@ export class TriggerEvaluator extends EventEmitter {
     // locked file ends the tick: every remaining row stays due.
     const failed: number[] = []
     let firstError: unknown
-    for (const timer of due) {
+    let notTried = 0
+    for (const [i, timer] of due.entries()) {
       const error = this.fireTimer(timer, admittedTimerScopes(timerCfg, timer.scope), now, attempted)
       if (error === undefined) continue
       failed.push(timer.id)
       firstError ??= error
       const code = (error as { code?: string }).code
-      if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') break
+      if (code === 'SQLITE_BUSY' || code === 'SQLITE_LOCKED') { notTried = due.length - i - 1; break }
     }
     if (failed.length === 0) return
     const message = firstError instanceof Error ? firstError.message : String(firstError)
-    console.error(`[TriggerEvaluator] Failed to settle ${failed.length} timer(s):`, firstError)
+    const rest = notTried > 0 ? `; ${notTried} more not tried this tick (the file is busy)` : ''
+    console.error(`[TriggerEvaluator] Failed to settle ${failed.length} timer(s)${rest}:`, firstError)
     try {
       this.workspace?.insertLog('error', 'timer', 'renew_failed', null,
-        `Failed to settle ${failed.length} timer(s): ${message}`,
-        { timer_count: failed.length, timer_ids: failed.slice(0, 20) })
+        `Failed to settle ${failed.length} timer(s)${rest}: ${message}`,
+        { timer_count: failed.length, timer_ids: failed.slice(0, 20), ...(notTried > 0 ? { not_tried: notTried } : {}) })
     } catch { /* database may be unavailable */ }
   }
 
