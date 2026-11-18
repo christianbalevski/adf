@@ -16,24 +16,30 @@
  *              row settles exactly when it fires: its agent part is written
  *              into the target loop, or (system-only) its lambda is dispatched.
  *
- * Grid: main state (idle, hibernate, suspended, error with budget, error in
- * cooldown, error after auth) × the inner loop's state (idle, error after a
- * failed turn, error after auth) × on_timer targets (both, agent, system) ×
- * timer scopes (and their order) × target loop (main, inner, missing,
- * disabled).
+ * Grid: main state (idle, hibernate, suspended, off, busy, error with budget,
+ * error in cooldown, error after auth, error entered while the failed turn
+ * still holds the slot) × the inner loop's state (idle, busy, error after a
+ * failed turn, error after auth, runtime failed to start) × on_timer targets
+ * (both, agent, system) × timer scopes (and their order) × target loop (main,
+ * inner, missing, disabled).
+ *
+ * Time, not just yes/no: the three UI paths must predict the same fire time,
+ * and that time must be the runtime's first fire under a fake clock (now; a
+ * later time, and not 1 ms before it; or never).
  *
  * Executors are stubbed after their state is reached (executeTurn records
  * instead of running), so a cell never changes the facts of the next one.
  * hibernate and suspended are published by hand on the two paths the executor
  * uses (the evaluator's setDisplayState and the store's setState).
  */
-import { describe, expect, it, afterAll } from 'vitest'
+import { describe, expect, it, afterAll, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AgentRuntimeBuilder } from '../../../src/main/runtime/agent-runtime-builder'
+import { ERROR_RECOVERY_COOLDOWN_MS } from '../../../src/main/runtime/agent-executor'
 import { createHeadlessAgent, MockLLMProvider } from '../../../src/main/runtime/headless'
 import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
@@ -59,8 +65,8 @@ type Agent = Awaited<ReturnType<AgentRuntimeBuilder['build']>>
 type Executor = Agent['executor']
 type Pool = { getRuntime: (n: string) => { executor: Executor }; sideLoopStates: () => Record<string, string>; sideLoopRecoveryAt?: () => Record<string, number> }
 
-const MAIN_STATES = ['idle', 'hibernate', 'suspended', 'error-budget', 'error-cooldown', 'error-auth'] as const
-const INNER_STATES = ['idle', 'error-failed', 'error-auth'] as const
+const MAIN_STATES = ['idle', 'hibernate', 'suspended', 'off', 'busy', 'error-budget', 'error-cooldown', 'error-auth', 'error-slot'] as const
+const INNER_STATES = ['idle', 'busy', 'error-failed', 'error-auth', 'not-started'] as const
 const TARGETS = { both: ['system', 'agent'], agent: ['agent'], system: ['system'] } as const
 const SCOPES = [['agent'], ['system'], ['system', 'agent'], ['agent', 'system']] as const
 const LOOPS = ['main', 'side', 'ghost', 'off'] as const
@@ -116,13 +122,30 @@ async function buildCase(main: typeof MAIN_STATES[number], inner: typeof INNER_S
   publishTo(agent.executor, 'main')
   publishTo(side.executor, 'side')
 
-  if (inner !== 'idle') {
+  if (inner.startsWith('error')) {
     provider.mode = inner === 'error-auth' ? 'auth' : 'fail'
     await side.executor.executeTurn(chat('inner fails'))
+  } else if (inner === 'busy') {
+    // a turn in flight: the runtime is busy, and its executor published a work state
+    ;(side.executor as unknown as { activeTurnCount: number }).activeTurnCount++
+    useAgentStore.getState().setState('thinking', 'side')
+  } else if (inner === 'not-started') {
+    // declared and enabled, but its runtime failed to build (loop_start_failed)
+    ;(pool as unknown as { runtimes: Map<string, unknown> }).runtimes.delete('side')
   }
   if (main.startsWith('error')) {
     provider.mode = main === 'error-auth' ? 'auth' : 'fail'
     await agent.executor.executeTurn(chat('main fails'))
+    if (main === 'error-slot') {
+      // error entered while the failed turn still holds the agent's slot
+      const ex = agent.executor as unknown as { activeAgentTurnCount: number; setState: (s: string) => void }
+      ex.activeAgentTurnCount++
+      ex.setState('error')
+    }
+  } else if (main === 'busy') {
+    ;(agent.executor as unknown as { activeTurnCount: number }).activeTurnCount++
+    agent.triggerEvaluator.setDisplayState('thinking')
+    useAgentStore.getState().setState('thinking')
   } else if (main !== 'idle') {
     agent.triggerEvaluator.setDisplayState(main)
     useAgentStore.getState().setState(main)
@@ -145,7 +168,7 @@ function reattach(agent: Agent, workspace: AdfWorkspace, pool: Pool) {
   for (const [loop, state] of Object.entries(pool.sideLoopStates())) store.setState(state, loop, recovery[loop])
 }
 
-interface Mismatch { cell: string; tab: boolean; upcoming: boolean; next: boolean; acted: boolean }
+interface Mismatch { cell: string; tab?: number; upcoming?: number; next?: number; actual?: number }
 
 async function runCells(label: string, agent: Agent, workspace: AdfWorkspace, out: Mismatch[]) {
   const tick = () => (agent.triggerEvaluator as unknown as { checkTimers: () => void }).checkTimers()
@@ -163,16 +186,29 @@ async function runCells(label: string, agent: Agent, workspace: AdfWorkspace, ou
       const facts = { state: s.gate, recoveryAt: s.recoveryAt } // as useGateFacts reads the store
       const ctx = m.timerContext?.(s.config, s.loopGateFacts ?? {})
       const now = Date.now()
-      const tabAt = m.timerCountdown(row, facts, (at: number) => String(at), ctx) as string | null
-      const tab = tabAt !== null && Number(tabAt) <= now
-      const upcoming = m.wakeCountdown(up, facts, now, ctx) === 'due'
+      const tabText = m.timerCountdown(row, facts, (at: number) => String(at), ctx) as string | null
+      const tabAt = tabText === null ? undefined : Number(tabText)
+      const upAt = (m.overviewNextWake([up], undefined, facts, ctx) as { at: number | undefined }).at
       const nextAt = m.nextFiringWake([row], facts, ctx) as number | undefined
-      const next = nextAt !== undefined && nextAt <= now
-      tick()
-      await flush()
-      const acted = (workspace.getTimers().find(t => t.id === id)?.run_count ?? 0) > 0
-      if (tab !== acted || upcoming !== acted || next !== acted) {
-        out.push({ cell: `${label} scopes=${scopes.join('+')} loop=${loop}`, tab, upcoming, next, acted })
+      const settledNow = () => (workspace.getTimers().find(t => t.id === id)?.run_count ?? 0) > 0
+      const tickAt = async (at: number) => {
+        vi.useFakeTimers({ toFake: ['Date'], now: at })
+        try { tick(); await flush() } finally { vi.useRealTimers() }
+        return settledNow()
+      }
+      // The runtime's first fire time, read with a fake clock: now, at the
+      // predicted later time (and not 1 ms before), or never (well past any
+      // cooldown).
+      let actual: number | undefined
+      if (await tickAt(now)) actual = now
+      else if (tabAt !== undefined && tabAt > now) {
+        actual = (await tickAt(tabAt - 1)) ? tabAt - 1 : (await tickAt(tabAt)) ? tabAt : -1
+      } else {
+        actual = (await tickAt(now + 3 * ERROR_RECOVERY_COOLDOWN_MS)) ? -1 : undefined
+      }
+      const predicted = tabAt === undefined ? undefined : Math.max(tabAt, now)
+      if (tabAt !== upAt || tabAt !== nextAt || predicted !== actual) {
+        out.push({ cell: `${label} scopes=${scopes.join('+')} loop=${loop}`, tab: tabAt, upcoming: upAt, next: nextAt, actual })
       }
       workspace.deleteTimer(id)
       cells++

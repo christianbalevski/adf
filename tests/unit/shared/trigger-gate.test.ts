@@ -57,6 +57,13 @@ describe('trigger gate', () => {
     expect(timerFireTime(['system', 'agent'], { state: 'suspended' }, 10, null, sysOnly)).toBe(10)
   })
 
+  it('a stopped agent predicts no fire for a row on_timer admits in no scope (F4)', () => {
+    const disabled = { onTimer: { enabled: false, targets: [] }, loops: [], loopFacts: {} }
+    expect(timerFireTime(['agent'], { state: 'off' }, 10, null, disabled)).toBeUndefined()
+    expect(timerFireTime(['system'], { state: 'off' }, 10, null, disabled)).toBeUndefined()
+    expect(timerFireTime(['agent'], { state: 'idle' }, 10, null, disabled)).toBe(10)
+  })
+
   it('an Upcoming row from an older daemon (no scopes) gates on its scope', () => {
     const agent = { id: 1, at: 0, scope: 'agent' as const }
     const system = { id: 2, at: 0, scope: 'system' as const }

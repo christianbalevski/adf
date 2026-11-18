@@ -135,3 +135,17 @@ describe('trigger gate beside the display state', () => {
     expect(useAgentStore.getState().gate).toBe('active')
   })
 })
+
+describe('a timer injected mid-turn (F6)', () => {
+  it('renders live as the same timer trigger a reload shows', async () => {
+    const { parseLoopToDisplay } = await import('../../../src/shared/utils/loop-parser')
+    const content = 'A scheduled timer has fired.\nPayload: water the plants'
+    const handle = createAgentEventHandler()
+    handle({ type: 'state_changed', payload: { state: 'thinking' }, timestamp: 1 } as AgentExecutionEvent)
+    handle({ type: 'context_injected', payload: { category: 'loop', origin: 'timer:7', content, delivery: 'next_boundary', seq: 42 }, timestamp: 2 } as AgentExecutionEvent)
+    const live = useAgentStore.getState().log.at(-1)!
+    const reload = parseLoopToDisplay([{ seq: 42, role: 'user', content_json: [{ type: 'text', text: content }], created_at: 2 } as never]).at(-1)!
+    expect({ type: live.type, content: live.content, triggerType: live.metadata?.triggerType, seq: live.metadata?.seq })
+      .toEqual({ type: reload.type, content: reload.content, triggerType: reload.metadata?.triggerType, seq: reload.metadata?.seq })
+  })
+})

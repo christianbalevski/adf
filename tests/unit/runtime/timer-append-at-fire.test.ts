@@ -511,3 +511,128 @@ describe('a mixed [system, agent] row while its agent part is held', { timeout: 
     } finally { await agent.disposeAsync() }
   })
 })
+
+// ===========================================================================
+// Round 1 (break-it recoveryb-r1)
+// ===========================================================================
+
+describe('round 1: F1 one recovery window admits one attempt', { timeout: 30_000 }, () => {
+  it('five recurring agent timers, out of budget, provider still down: one row per cooldown window', async () => {
+    const { agent, workspace, provider } = await erroredAgent('r1-burst', { maxAttempts: 1 })
+    const rows = () => workspace.getLoop().filter(e => JSON.stringify(e.content_json).includes('BURST-')).length
+    const attempts = () => workspace.getLogs().filter(l => l.event === 'error_recovery_trigger').length
+    const base = Date.now()
+    try {
+      for (let i = 0; i < 5; i++) workspace.addTimer({ mode: 'interval', every_ms: 60_000 } as never, base - 1000, `BURST-${i}`, ['agent'])
+      tick(agent); await sleep(50)
+      expect(rows()).toBe(0) // in cooldown: held
+      const windows: Array<{ rows: number; attempts: number; state: string }> = []
+      for (let w = 1; w <= 3; w++) {
+        vi.useFakeTimers({ toFake: ['Date'], now: base + w * (ERROR_RECOVERY_COOLDOWN_MS + 120_000) })
+        try { tick(agent); await sleep(500) } finally { vi.useRealTimers() }
+        windows.push({ rows: rows(), attempts: attempts(), state: agent.executor.getState() })
+      }
+      expect(windows).toEqual([
+        { rows: 1, attempts: 1, state: 'error' },
+        { rows: 2, attempts: 2, state: 'error' },
+        { rows: 3, attempts: 3, state: 'error' },
+      ])
+      expect(provider.mode).toBe('fail')
+    } finally { await agent.disposeAsync() }
+  })
+
+  it('an inner loop in error takes one timer per tick as its attempt', async () => {
+    const { filePath, open } = makeFile('r1-inner-burst')
+    const workspace = open()
+    const provider = new ScriptedProvider('fail')
+    const agent = await build(filePath, workspace, provider, { loops: [SIDE] })
+    try {
+      const side = sidePool(agent).getRuntime('research')!
+      await side.dispatch(chat('inner fails')).catch(() => {})
+      expect(side.executor.getState()).toBe('error')
+      for (let i = 0; i < 3; i++) addDue(workspace, `IN-BURST-${i}`, { loop: 'research', every: 3_600_000 })
+      provider.blockNext() // the attempt's call waits, so the attempt holds the inner loop
+      tick(agent); await sleep(50)
+      const rows = workspace.forLoop('research').getLoop().filter(e => JSON.stringify(e.content_json).includes('IN-BURST-')).length
+      expect(rows).toBe(1)
+      provider.release()
+      await sleep(100)
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+describe('round 1: F2 one failed attempt changes state once per transition', { timeout: 30_000 }, () => {
+  it('state_changed for one failed timer attempt: idle, thinking, error (slot held), error (fact)', async () => {
+    const { agent, workspace } = await erroredAgent('r1-republish', { delayMs: 600_000 })
+    try {
+      await sleep(20)
+      const events: string[] = []
+      agent.executor.on('event', (e: { type: string; payload: { state: string; recovery_at?: number | null } }) => {
+        if (e.type === 'state_changed') events.push(`${e.payload.state}:${e.payload.recovery_at}`)
+      })
+      addDue(workspace, 'R1-ONE-ATTEMPT')
+      tick(agent)
+      await settled(agent); await sleep(50)
+      expect(agent.executor.getState()).toBe('error')
+      expect(events).toEqual(['idle:undefined', 'thinking:undefined', 'error:null', 'error:0'])
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+describe('round 1: F3 a mixed row is held whole while its lambda lane is full', { timeout: 30_000 }, () => {
+  it('no row, not settled, lambda not dropped; fires once when the lane has room', async () => {
+    const { filePath, open } = makeFile('r1-backpressure')
+    const workspace = open()
+    const provider = new ScriptedProvider('ok')
+    const agent = await build(filePath, workspace, provider)
+    const releases: Array<() => void> = []
+    let runs = 0
+    agent.executor.setSystemScopeHandler({
+      execute: () => { runs++; return new Promise<void>(r => releases.push(r)) },
+      executeBatch: async () => {},
+    } as never)
+    try {
+      const lambda = 'lib/job.js:main'
+      const sys = () => createDispatch(createEvent({ type: 'timer', source: 'test', data: { timer: { id: 999, payload: 'fill', scope: ['system'] } as never } }), { scope: 'system', lambda })
+      const fill: Promise<void>[] = []
+      for (let i = 0; i < 100; i++) fill.push(agent.executor.executeTurn(sys()).catch(() => {}))
+      await sleep(20)
+      const running = runs
+      const t = addDue(workspace, 'R1-MIXED-BP', { scope: ['system', 'agent'], lambda })
+      tick(agent); await sleep(50)
+      expect(row(workspace, t)).toMatchObject({ expired: false, run_count: 0 })
+      expect(loopRows(workspace, 'R1-MIXED-BP')).toBe(0)
+      expect(workspace.getLogs().some(l => /dropped/i.test(l.message ?? '') && (l.message ?? '').includes(lambda))).toBe(false)
+      // drain the lane
+      while (releases.length) { releases.shift()!(); await sleep(1) }
+      await Promise.all(fill)
+      expect(runs).toBeGreaterThan(running)
+      while (releases.length) { releases.shift()!(); await sleep(1) }
+      tick(agent); await sleep(50)
+      while (releases.length) { releases.shift()!(); await sleep(1) }
+      await settled(agent)
+      expect(row(workspace, t)).toMatchObject({ expired: true, run_count: 1 })
+      expect(loopRows(workspace, 'R1-MIXED-BP')).toBe(1)
+    } finally { await agent.disposeAsync() }
+  })
+})
+
+describe('round 1: F5 a timer turn rejected at dispatch reaches the host error path', { timeout: 30_000 }, () => {
+  it('beforeDispatch throws: onTriggerError is called with the timer dispatch', async () => {
+    const { filePath, open } = makeFile('r1-host-error')
+    const workspace = open()
+    const agent = await build(filePath, workspace, new ScriptedProvider('ok'))
+    const errors: Array<{ error: unknown; type?: string }> = []
+    agent.attachHost({
+      beforeDispatch: () => { throw new Error('host refused') },
+      onTriggerError: (error, d) => { errors.push({ error, type: 'event' in d ? d.event.type : undefined }) },
+    } as never)
+    try {
+      addDue(workspace, 'R1-HOST-ERR')
+      tick(agent); await sleep(100)
+      expect(errors).toHaveLength(1)
+      expect(errors[0].type).toBe('timer')
+      expect(String(errors[0].error)).toContain('host refused')
+    } finally { await agent.disposeAsync() }
+  })
+})
