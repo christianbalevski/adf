@@ -17,6 +17,7 @@
  */
 
 import type { AgentConfig, ToolDeclaration } from '@shared/types/adf-v02.types'
+import { dedupeToolDeclarations } from '../../../../shared/utils/tool-declarations'
 import type { AdfWorkspace } from '../../../adf/adf-workspace'
 import type { ShellNode, PipelineNode, CommandNode } from '../parser/ast'
 import type { CommandResult, ShellGate } from '../commands/types'
@@ -205,9 +206,10 @@ export function notifyToolCallObservers(
   }
 }
 
-/** Find a tool declaration by name */
+/** Find a tool declaration by name, reading duplicates as the turn does
+ *  (first wins, restricted/locked sticky). */
 function findDeclaration(name: string, config: AgentConfig): ToolDeclaration | undefined {
-  return config.tools.find(t => t.name === name)
+  return dedupeToolDeclarations(config.tools).deduped.find(t => t.name === name)
 }
 
 /** Check if an MCP tool's server is restricted. Match by the `mcp_<server>_`

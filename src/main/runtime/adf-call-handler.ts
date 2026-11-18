@@ -18,6 +18,7 @@ import { withAuthorization, currentAuthorization } from './authorization-context
 import type { AgentSession } from './agent-session'
 import { currentSourceOrUnknown } from './execution-context'
 import { LOOP_RESET_TOOLS, TURN_ONLY_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
+import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -303,7 +304,8 @@ export class AdfCallHandler {
       }
 
       // Check tool existence and configuration
-      const toolDecl = this.config.tools.find(t => t.name === method)
+      // The turn's reading of duplicates (first wins, restricted/locked sticky).
+      const toolDecl = dedupeToolDeclarations(this.config.tools).deduped.find(t => t.name === method)
 
       if (!toolDecl) {
         // Check if tool exists in registry but isn't declared
