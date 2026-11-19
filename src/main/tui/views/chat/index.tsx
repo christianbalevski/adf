@@ -30,7 +30,7 @@ import { ApprovalDetailsOverlay, DENY_OVERLAY, DETAILS_OVERLAY, DenyOverlay } fr
 import { alwaysApprove, rejectWithFeedback } from './approvals'
 import { ASK_PROGRESS_KEY, askProgress, pendingAskFor, replyToAsk, skipAsk } from './asks'
 import type { TaskListEntry } from '../../api/types'
-import { chatCommands, readChatState } from './commands'
+import { chatCommands } from './commands'
 import { isPromptEmpty, isPromptMenuOpen } from '../../app/Prompt'
 import {
   CHAT_VIEW,

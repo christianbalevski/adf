@@ -8,7 +8,7 @@ import { parseOwnerCommandRow } from './owner-command-row'
  */
 
 import type { ContentBlock } from '../types/provider.types'
-import type { LoopEntry, DisplayEntry, DisplayEntryType } from '../types/adf-v02.types'
+import type { LoopEntry, DisplayEntry } from '../types/adf-v02.types'
 import { attachmentsOf, displayAttachment, isFileRefBlock, splitLegacyUploads, type DisplayAttachment } from './file-ref'
 
 /**

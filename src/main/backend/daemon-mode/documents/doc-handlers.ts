@@ -326,7 +326,6 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
     const { messages } = await client.request<{ messages: OutboxMessage[] }>('GET', `/agents/${enc(id)}/outbox`)
     return {
       outbox: {
-        // eslint-disable-next-line @typescript-eslint/no-unused-vars
         messages: messages.map(({ original_message, address, network, attachments, meta, ...rest }) => rest),
       },
     }
@@ -399,7 +398,6 @@ export const DOC_HANDLERS: DaemonHandlerTable = {
   [IPC.DOC_GET_TASKS]: (ctx, _event, args: { limit?: number } = {}) => onOpenFile(ctx, 'Reading the open agent\'s tasks', { tasks: [] }, async (client, id) => {
     const { tasks } = await client.request<{ tasks: Array<TaskEntry & { canAlwaysApprove?: boolean; alwaysApproveBlockedReason?: string }> }>(
       'GET', `/agents/${enc(id)}/tasks`, { query: { limit: args?.limit } })
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     return { tasks: tasks.map(({ canAlwaysApprove, alwaysApproveBlockedReason, ...task }) => task) }
   }),
 

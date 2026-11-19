@@ -17,3 +17,8 @@ justify fs_copy when existing file operations compose the behavior.
 
 Persistent investigation state must use these existing capabilities, with no
 new built-in investigation tool or investigation-specific runtime injection.
+
+`tests/unit/adf-format-contract.test.ts` snapshots this contract: built-in
+tables, the agent config schema, and every built-in tool's input schema. A
+failing snapshot there is a format change; update it only with that
+justification.

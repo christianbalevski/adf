@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Box, Text } from 'ink'
+import { Text } from 'ink'
 import { useTheme } from '../../app/theme'
 import { useKeys } from '../../app/keys'
 import { useStore } from '../../state/store'

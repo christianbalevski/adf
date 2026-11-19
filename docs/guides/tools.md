@@ -764,7 +764,18 @@ Use `template` to specify a path to a `.adf` file stored in the calling agent's 
 - **Preserved credentials** — non-signing identity rows (API keys, MCP credentials, adapter credentials) from the template are copied, provided they are stored as plaintext (encrypted rows from password-protected templates are skipped)
 - **All template files** — copied to the child with their original protection levels
 
-**Locked field enforcement:** The template's `locked_fields` and any `locked: true` flags on tools, triggers, trigger targets, and API routes are enforced during the merge. If an override targets a locked field or item, the tool returns an error without creating anything. Locked fields cannot be stripped by the creating agent — they carry forward to the child.
+**Locked field enforcement:** The template's `locked_fields` and any `locked: true` flags on tools, triggers, trigger targets, and API routes are enforced during the merge. A lock is a section (`model`) or one field by its dotted path (`model.model_id`), and each locked field is checked on its own:
+
+- Leave a locked field out of the call and the child keeps the template value. Fields beside it stay open: with `model.model_id` locked, `model: { temperature: 0.2 }` is fine.
+- Setting a locked field or tool to the value it already has is not a change, and is accepted.
+- Setting it to a different value returns an error naming the lock (`Template locks 'model.model_id'; it cannot be changed.`), and nothing is created.
+- A section the call replaces whole (`logging`, `audit`, `mcp`) keeps its locked fields even if the replacement leaves them out.
+- Locked commands, triggers, trigger targets and API routes follow the same rule: restating one unchanged is accepted, changing it is refused.
+- A `name` lock does not apply here: each child takes the name given in the call.
+
+The merge covers the settings this tool takes as parameters. Template settings outside them are not carried into the child, locked or not; for example `compute`, `loops`, `recovery`, `sandbox`, `bare_prompt`, `include_base_prompt`, `umbilical_taps` and `stream_bindings`. The child gets the defaults for those.
+
+The creating agent cannot strip `locked_fields`; the locks carry forward to the child.
 
 Config merge order: `AGENT_DEFAULTS → template config → explicit tool params`.
 

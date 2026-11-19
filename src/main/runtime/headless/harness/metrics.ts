@@ -80,14 +80,13 @@ export class MetricsCollector {
   /** Instrument the harness dispatch boundary to capture completed turns. */
   wrapDispatch(agentId: string, target: { dispatch: (dispatch: AdfEventDispatch) => Promise<void> }): void {
     const original = target.dispatch.bind(target)
-    const collector = this
-    target.dispatch = async function (dispatch: AdfEventDispatch) {
+    target.dispatch = async (dispatch: AdfEventDispatch) => {
       const startedAt = performance.now()
       try {
         await original(dispatch)
-        collector.recordTurn({ agentId, startedAt, durationMs: performance.now() - startedAt })
+        this.recordTurn({ agentId, startedAt, durationMs: performance.now() - startedAt })
       } catch (err) {
-        collector.recordTurn({
+        this.recordTurn({
           agentId,
           startedAt,
           durationMs: performance.now() - startedAt,
@@ -104,7 +103,7 @@ export class MetricsCollector {
     const getHandles = (process as any)._getActiveHandles?.bind(process)
     if (!getHandles) return
     const handles = getHandles() as Array<{ constructor?: { name?: string } }>
-    let intervals = 0
+    const intervals = 0
     let timeouts = 0
     for (const h of handles) {
       const n = h?.constructor?.name

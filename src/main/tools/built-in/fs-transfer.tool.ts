@@ -21,7 +21,7 @@ import type { Tool } from '../tool.interface'
 import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { PodmanService } from '../../services/podman.service'
-import type { ComputeCapabilities, ComputeTarget } from './compute-target'
+import type { ComputeCapabilities } from './compute-target'
 import { ensureHostWorkspace } from '../../services/host-exec.service'
 
 const Endpoint = z.enum(['vfs', 'isolated', 'shared', 'host'])

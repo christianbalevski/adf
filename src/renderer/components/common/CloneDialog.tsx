@@ -12,7 +12,6 @@ interface CloneDialogProps {
   open: boolean
   onClose: () => void
   filePath: string
-  dirPath: string
   /** The agent's runtime; omitted for This computer (docs/design/multi-runtime.md §5.2). */
   runtimeId?: string
   onCloned: () => void
@@ -21,7 +20,7 @@ interface CloneDialogProps {
 const REQUIRED_TABLES = new Set(['adf_config', 'adf_meta'])
 const IDENTITY_TABLE = 'adf_identity'
 
-export function CloneDialog({ open, onClose, filePath, dirPath, runtimeId, onCloned }: CloneDialogProps) {
+export function CloneDialog({ open, onClose, filePath, runtimeId, onCloned }: CloneDialogProps) {
   const [tables, setTables] = useState<TableInfo[]>([])
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [loading, setLoading] = useState(false)

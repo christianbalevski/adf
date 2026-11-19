@@ -144,7 +144,7 @@ export class ApprovalsUi {
         else this.deps.openFile?.(action.filePath)
         return
       case 'show':
-        this.focusMainWindow() ?? this.deps.showMainWindow?.()
+        if (!this.focusMainWindow()) this.deps.showMainWindow?.()
         return
       case 'settings': {
         const win = this.focusMainWindow() ?? this.deps.showMainWindow?.() ?? null

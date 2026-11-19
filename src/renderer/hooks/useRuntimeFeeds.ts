@@ -289,7 +289,7 @@ async function resyncOpenAgent(runtime: RuntimeView, reopen: ReopenAgent | null)
   // Still open there, or the user has moved on meanwhile.
   if (held === filePath || now.filePath !== filePath || now.runtimeId !== runtime.id) return null
   console.log(`[Runtimes] ${runtime.id} connected without ${filePath} open: opening it again`)
-  const agent = useAgentStore.getState().config?.name || agentNameOf(filePath)
+  const agent = agentNameOf(filePath)
   const kept = await stashUnsavedEditors().catch(() => 0)
   const keptText = kept > 0 ? '; unsaved changes kept for recovery' : ''
   let opened = false
@@ -316,7 +316,7 @@ async function resyncOpenAgent(runtime: RuntimeView, reopen: ReopenAgent | null)
  */
 async function closeRemovedAgent(id: RuntimeId, filePath: string): Promise<{ closed: string; kept: boolean }> {
   console.log(`[Runtimes] ${id} left the set: closing its open agent ${filePath}`)
-  const closed = `${useAgentStore.getState().config?.name || agentNameOf(filePath)} closed`
+  const closed = `${agentNameOf(filePath)} closed`
   const kept = await stashUnsavedEditors().catch(() => 0)
   const doc = useDocumentStore.getState()
   // The user has moved on meanwhile: their agent stays.

@@ -77,7 +77,6 @@ export interface ContainerPhaseInfo {
 // ---------------------------------------------------------------------------
 
 const SHARED_CONTAINER = 'adf-mcp'
-const STOP_DELAY_MS = 30_000
 
 /** Label recording the host port published to the container's noVNC (6080).
  *  First entry of the generic io.adf.port.* scheme for exposing container ports. */

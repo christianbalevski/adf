@@ -120,7 +120,6 @@ export function canonicalJsonStringify(obj: unknown): string {
  * everything except `signature` and `transit`.
  */
 function getMessageSignableData(message: AlfMessage): Buffer {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { signature, transit, ...signable } = message
   return Buffer.from(canonicalJsonStringify(signable))
 }
@@ -130,7 +129,6 @@ function getMessageSignableData(message: AlfMessage): Buffer {
  * everything except `payload.signature`.
  */
 function getPayloadSignableData(payload: AlfPayload): Buffer {
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   const { signature, ...signable } = payload
   return Buffer.from(canonicalJsonStringify(signable))
 }

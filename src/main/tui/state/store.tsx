@@ -333,7 +333,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     }
   }
   /** Requests name session `id` from now on (null: none). */
-  const useSession = (id: string | null) => {
+  const adoptSession = (id: string | null) => {
     client = id ? plain.withClientSession(id) : plain
     current.add(client)
   }
@@ -1214,7 +1214,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       return
     }
     sessionId = id
-    useSession(id)
+    adoptSession(id)
     focusSent = undefined
     if (id) {
       stream = c.clientSessionEvents(id, { onEvent: onClientFrame, onState: onStreamState, onResume: onStreamResume, onGap: onStreamGap }).start()
@@ -1233,7 +1233,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       stream?.close()
       stream = null
       sessionId = null
-      useSession(null)
+      adoptSession(null)
       await openStream()
       if (stopped) return
       if (hadSession) toast('The daemon no longer had this app\'s client session — reopened, reloading', 'warn', 4000)
@@ -1272,7 +1272,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   function endSession(c: DaemonClient): Promise<void> {
     const id = sessionId
     sessionId = null
-    if (c === client) useSession(null)
+    if (c === client) adoptSession(null)
     focusSent = undefined
     if (!id) return Promise.resolve()
     return c.endClientSession(id).then(() => {}, () => {})

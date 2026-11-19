@@ -581,7 +581,7 @@ const headHandler: CommandHandler = {
       if (/^\d+$/.test(key)) n = parseInt(key, 10)
     }
 
-    let text = ctx.stdin
+    const text = ctx.stdin
     if (ctx.args.length > 0) {
       const [content, error] = await shellReadFile(ctx.toolRegistry, ctx.workspace, vfsPath(ctx.args[0]), { end_line: n })
       if (error !== null) return err(`head: ${error}`)

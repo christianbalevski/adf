@@ -47,6 +47,7 @@
     "stress:runtime": "node scripts/stress-runtime.mjs",
     "postinstall": "install-electron",
     "check:brand": "node scripts/check-brand-tokens.mjs",
+    "check:ratchet": "node scripts/check-ratchet.mjs",
     "icons": "node scripts/generate-icons.mjs",
     "dev:web": "vite --config vite.web.config.ts",
     "build:web": "vite build --config vite.web.config.ts"
@@ -169,6 +170,7 @@
     "electron-vite": "^5.0.0",
     "eslint": "^9.39.5",
     "eslint-plugin-react-hooks": "^7.1.1",
+    "fast-check": "^4.10.2",
     "globals": "^16.5.0",
     "ink": "^7.1.1",
     "ink-testing-library": "^4.0.0",

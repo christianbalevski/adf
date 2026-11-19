@@ -1,4 +1,3 @@
-// eslint-disable-next-line no-control-regex -- refusing control characters in a path is the point
 const CONTROL_CHARACTERS = /[\u0000-\u001F\u007F]/
 
 /** Longest path an agent file may have. */

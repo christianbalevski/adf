@@ -101,6 +101,35 @@ should be placed under `tests/integration/` and excluded from the default
 test run; document the credentials needed at the top of each integration
 test file.
 
+## Checks
+
+CI runs these on every pull request; run them before you push:
+
+```bash
+npm run lint           # ESLint, no warnings allowed
+npm run typecheck
+npm run check:ratchet  # counts that may only go down
+npm test
+```
+
+- **Lint rules carry review decisions.** Several rules in `eslint.config.mjs`
+  encode something a reviewer would otherwise catch (an agent's name comes from
+  its file name; tools never import secret stores; UI copy wording). The error
+  message says what to do instead. Give a suppression its reason after `--`.
+- **Ratchet.** `scripts/check-ratchet.mjs` counts patterns the code is moving
+  away from: `any`, lint and TypeScript suppressions, workaround and
+  back-compat comments, TODOs, timers and `useEffect` in the renderer. A count
+  that rises fails. A count that falls also fails until you lock it in with
+  `npm run check:ratchet -- --update`. `--list <id>` shows where each one is.
+- **Format contract.** `tests/unit/adf-format-contract.test.ts` snapshots the
+  built-in tables, the agent config schema and every tool's input schema. A
+  failing snapshot is a change to the `.adf` format; see [AGENTS.md](AGENTS.md).
+- **Property tests** (`*.property.test.ts`, [fast-check](https://fast-check.dev))
+  check a rule against generated inputs or orderings: Kill, template locks.
+  When the inputs are a short fixed list, test every one with `it.each`
+  instead. When you add one, break the code it guards and confirm it
+  fails; a property test that cannot fail checks nothing.
+
 ## Reporting bugs
 
 Use the GitHub issue tracker. Include:

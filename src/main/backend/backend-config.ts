@@ -98,7 +98,6 @@ const MAX_RUNTIME_ORDER = 256
 
 /** A saved connection name as `adf remotes` shows it: 1-64 characters, no control characters. */
 export function validRemoteName(value: unknown): value is string {
-  // eslint-disable-next-line no-control-regex
   return typeof value === 'string' && value.length > 0 && value.length <= 64 && !/[\u0000-\u001f\u007f]/.test(value)
 }
 

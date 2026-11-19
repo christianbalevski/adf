@@ -2,7 +2,6 @@ import { useState, useCallback, useEffect, useRef } from 'react'
 import { Dialog } from './Dialog'
 import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
-import { useAgentStore } from '../../stores/agent.store'
 import { useTrackedDirsStore } from '../../stores/tracked-dirs.store'
 import { useAdfFile } from '../../hooks/useAdfFile'
 import { startForegroundAgent } from '../../utils/start-agent'
@@ -755,13 +754,6 @@ export function AgentReviewDialog() {
     expandRightPanelToTab('agent', 'config')
   }, [setDialog, expandRightPanelToTab, resetSteps])
 
-  // Dismiss: close dialog without closing the file. Review re-triggers on next open.
-  const handleDismiss = useCallback(() => {
-    successRef.current = true
-    setDialog(false)
-    resetSteps()
-  }, [setDialog, resetSteps])
-
   const handleCancel = useCallback(async () => {
     successRef.current = true
     setDialog(false)
@@ -777,7 +769,7 @@ export function AgentReviewDialog() {
   }, [resetSteps])
 
   const handleDialogClose = useCallback(() => {
-    // Programmatic closes (accept, dismiss, cancel, review-config) mark
+    // Programmatic closes (accept, cancel, review-config) mark
     // successRef before the store close; consume the mark here.
     if (successRef.current) {
       successRef.current = false

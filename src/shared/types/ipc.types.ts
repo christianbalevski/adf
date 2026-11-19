@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { LoopMedia } from './media.types'
 import type { AgentRegistryEntry } from '../schemas/agent-registry.schema'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'

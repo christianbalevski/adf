@@ -7,14 +7,10 @@
 
 import { nanoid as _nanoid } from 'nanoid'
 
-/** Short 10-char IDs — sufficient for per-agent uniqueness (inbox/outbox rows) */
-const nanoid = () => _nanoid(10)
-
 /** 20-char IDs for globally unique ALF message IDs */
 const messageId = () => _nanoid(20)
 import type {
   AlfMessage,
-  AlfPayload,
   AlfAttachment,
   StoredAttachment,
   InboxMessage,
