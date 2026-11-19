@@ -15,7 +15,7 @@ import type {
 import type { AdfWorkspace } from '../adf/adf-workspace'
 import {
   createEvent, createDispatch,
-  type AdfEvent, type AdfEventType, type AdfBatchDispatch, type AnyAdfEvent,
+  type AdfEvent, type AdfEventType, type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEvent,
   type FileChangeEventData,
   type LlmCallEventData,
   TRIGGER_OBSERVES_OWN_ACTIVITY,
