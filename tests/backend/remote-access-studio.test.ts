@@ -1004,7 +1004,9 @@ describe('IPC (registered in every mode) and the saved pairing', () => {
     const s = store()
     const settingsDir = mkdtempSync(join(tmpdir(), 'adf-remotes-'))
     dirs.push(settingsDir)
-    const env = { ...process.env, ADF_DAEMON_SETTINGS: join(settingsDir, 'adf-settings.json'), ADF_TEST_KEYCHAIN_FILE: join(settingsDir, 'keychain.json'), ADF_TEST_SEAMS: '1' }
+    // The test keychain file stands in for the OS keychain, which the setup turns off (ADF_KEYCHAIN=0 would win over it).
+    const { ADF_KEYCHAIN: _keychainOff, ...inherited } = process.env
+    const env = { ...inherited, ADF_DAEMON_SETTINGS: join(settingsDir, 'adf-settings.json'), ADF_TEST_KEYCHAIN_FILE: join(settingsDir, 'keychain.json'), ADF_TEST_SEAMS: '1' }
     let changes = 0
     const ipc = registerRemoteAccessHandlers({
       mode: 'embedded', daemon: () => null, backend: s.store, codec: fakeCodec(), window: () => null, keepDaemonRunning: () => false,

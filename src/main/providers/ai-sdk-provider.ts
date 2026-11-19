@@ -1,7 +1,7 @@
 import { streamText, generateText, jsonSchema, type LanguageModel, type ToolSet } from 'ai'
 import { randomUUID } from 'node:crypto'
 import type { LLMProvider, CreateMessageOptions } from './provider.interface'
-import type { LLMResponse, ContentBlock, LLMMessage, ReasoningConfig, ReasoningStyle, ReasoningEffort } from '../../shared/types/provider.types'
+import type { LLMResponse, ContentBlock, LLMMessage, ReasoningStyle, ReasoningEffort } from '../../shared/types/provider.types'
 import type { ToolProviderFormat } from '../../shared/types/tool.types'
 import type { ProviderType } from '../../shared/constants/adf-defaults'
 import { getTokenCounterService } from '../services/token-counter.service'

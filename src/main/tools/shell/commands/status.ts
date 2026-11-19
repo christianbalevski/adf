@@ -412,7 +412,7 @@ const pwdHandler: CommandHandler = {
   helpText: 'pwd                  Always / (VFS root)',
   category: 'identity',
   resolvedTools: [],
-  async execute(ctx: CommandContext): Promise<CommandResult> {
+  async execute(_ctx: CommandContext): Promise<CommandResult> {
     return ok('/')
   }
 }

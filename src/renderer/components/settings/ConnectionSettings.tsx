@@ -311,7 +311,7 @@ export function LocalServerSection({ rows, backend, busy, onConnect, onKeepRunni
   const localRow = local.find((r) => r.kind === 'local')
   return (
     <PageSection id="local" title="Local server" help={LOCAL_HELP} docs={DOCS.backendLocalServer} collapsible open>
-      {local.map((row, i) => {
+      {local.map((row) => {
         const menu: RowMenuItem[] = row.kind === 'local' && !legacyRow ? [{ label: 'Inside Studio (legacy)', onSelect: () => onConnect('embedded') }] : []
         const daemonHere = row.kind === 'local' && inUse && daemon
         const errors = daemonHere ? [

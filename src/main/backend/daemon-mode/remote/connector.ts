@@ -67,8 +67,6 @@ function abortable(wait: Promise<void>, signal?: AbortSignal): Promise<void> {
 
 /** Node/undici error codes of a failed TLS handshake or certificate check. */
 const TLS_CODE = /^(CERT_|UNABLE_TO_|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN|ERR_TLS_|ERR_SSL_|ERR_CERT|HOSTNAME_MISMATCH|EPROTO$)/
-/** Codes of a host that cannot be reached at all. */
-const UNREACHABLE_CODE = /^(ECONNREFUSED|ENOTFOUND|EAI_AGAIN|EAI_NONAME|ETIMEDOUT|EHOSTUNREACH|ENETUNREACH|ECONNRESET|EPIPE|UND_ERR_CONNECT_TIMEOUT|UND_ERR_SOCKET|UND_ERR_HEADERS_TIMEOUT)$/
 
 /** The first error code along `cause` and AggregateError `errors` (fetch wraps the socket's error). */
 export function networkErrorCode(err: unknown, depth = 0): string | null {

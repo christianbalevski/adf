@@ -95,8 +95,6 @@ interface EntryOpts {
   note?: string
 }
 
-const gap = (ws: GapWorkstream, need: string): ChannelGap => ({ ws, need })
-
 function local(kind: ChannelKind, note?: string, opts: { reads?: readonly string[]; remote?: string } = {}): ChannelEntry {
   return { class: 'local', kind, scope: 'studio', routes: opts.reads ?? [], gaps: [], ...(opts.remote ? { remote: opts.remote } : {}), ...(note ? { note } : {}) }
 }

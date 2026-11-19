@@ -20,7 +20,7 @@ import { useTrackedDirs } from './hooks/useTrackedDirs'
 import { isAgentAvatarMode } from './components/orbital/agent-avatar'
 import { RemotePickerHost } from './components/common/RemotePickerDialog'
 import { useAgentStore } from './stores/agent.store'
-import { reportFailure } from './stores/failure-notices.store'
+import { reportFailure, agentNameOf } from './stores/failure-notices.store'
 import { agentWindowFile, agentWindowsAvailable, isAgentWindow, openAgentWindow, windowRuntime } from './utils/window-kind'
 import { openWindowAgent, startQueueHandover, startQueueMirror } from './utils/agent-window'
 import { IS_MAC } from './utils/platform'
@@ -199,14 +199,12 @@ export default function App() {
 
   // An agent window's title is its agent's name; with more than one runtime,
   // `<agent> · <runtime name>` (multi-runtime.md §5.5).
-  const agentName = useAgentStore((s) => s.config?.name)
   const windowLabel = useRuntimesStore((s) => runtimeLabel(windowRuntime, s.runtimes))
   useEffect(() => {
     if (!isAgentWindow) return
-    const fileName = agentWindowFile?.split(/[\\/]/).pop()?.replace(/\.adf$/i, '')
-    const name = agentName || fileName
-    document.title = name ? (windowLabel ? `${name} · ${windowLabel}` : name) : document.title
-  }, [agentName, windowLabel])
+    const fileName = agentWindowFile ? agentNameOf(agentWindowFile) : ''
+    document.title = fileName ? (windowLabel ? `${fileName} · ${windowLabel}` : fileName) : document.title
+  }, [agentWindowFile, windowLabel])
 
   // Application menu actions (File > New/Open/Add Directory, app menu > Settings)
   useEffect(() => {
@@ -276,7 +274,7 @@ export default function App() {
           const { filePath, runtimeId } = useDocumentStore.getState()
           const config = useAgentStore.getState().config
           if (agentWindowsAvailable && filePath) {
-            openAgentWindow({ filePath, agentId: config?.id ?? null, ...(config?.name ? { name: config.name } : {}), runtimeId })
+            openAgentWindow({ filePath, agentId: config?.id ?? null, name: agentNameOf(filePath), runtimeId })
           }
           break
         }

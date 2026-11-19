@@ -38,7 +38,6 @@ export function claudePlanName(cli: Pick<CliAuthStatus, 'subscriptionType' | 'pl
 
 /** Remove ANSI CSI/OSC sequences (Claude Code prints the URL as an OSC 8 link). */
 export function stripAnsi(s: string): string {
-  // eslint-disable-next-line no-control-regex
   return s.replace(/\u001b\][^\u0007\u001b]*(?:\u0007|\u001b\\)/g, '').replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, '')
 }
 

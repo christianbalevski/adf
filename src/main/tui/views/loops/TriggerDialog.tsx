@@ -2,7 +2,7 @@
 // a local draft; nothing is written until the diff is reviewed and confirmed.
 
 import { useState } from 'react'
-import { Box, Text } from 'ink'
+import { Text } from 'ink'
 import { useTheme } from '../../app/theme'
 import { useKeys } from '../../app/keys'
 import { useActions, useStore } from '../../state/store'

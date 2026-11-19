@@ -2,7 +2,6 @@ import { EventEmitter } from 'events'
 import { realpathSync } from 'fs'
 import { basename, join } from 'path'
 import { deriveHandle } from '../utils/handle'
-import { nanoid } from 'nanoid'
 import type { AgentExecutor } from './agent-executor'
 import { AgentSession } from './agent-session'
 import type { TriggerEvaluator } from './trigger-evaluator'
@@ -1275,7 +1274,7 @@ export class BackgroundAgentManager extends EventEmitter {
       resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, derivedKey ?? null) }),
     )
     const mgr = new McpClientManager(scratchDir, oauthProviderFactory)
-    let mcpManager: McpClientManager | null = mgr
+    const mcpManager: McpClientManager | null = mgr
     mgr.on('log', (serverName, entry) => {
       const level = entry.stream === 'stderr' ? 'warn' : 'info'
       try { workspace.insertLog(level, 'mcp', entry.stream, serverName, entry.message) } catch { /* ignore */ }

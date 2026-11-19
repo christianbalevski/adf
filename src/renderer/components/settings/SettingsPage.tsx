@@ -4,7 +4,7 @@ import { sameContent } from '../../utils/list-rebase'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { CompactOverlay } from '../layout/CompactOverlay'
-import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
+import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type UiFont, type UiScale } from '../../stores/app.store'
 import { isFontInstalled } from '../../utils/fonts'
 import { PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../../shared/utils/settings-migrations'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS } from '../../../shared/constants/adf-defaults'
@@ -38,7 +38,7 @@ import { HOST_ACCESS_CONFIRM, MCP_ON_HOST_CONFIRM, useConfirm } from '../common/
 import { Tooltip } from '../common/Tooltip'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
-import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
+import { DOCS, NETWORK_DOCS } from '../../../shared/constants/docs-links'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
 import { CommitInput, ContainerMemoryGroup, checkWholeNumber } from './settings-inputs'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../../shared/constants/compute-defaults'
@@ -144,7 +144,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
   const plaintext = view.policy === 'plaintext'
-  const useKeyring = async () => {
+  const encryptWithKeyring = async () => {
     setBusy(true)
     setResult(null)
     try {
@@ -175,7 +175,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
           help={plaintext && view.plaintextSecrets > 0 ? `${view.plaintextSecrets} secret${view.plaintextSecrets === 1 ? '' : 's'} stored as plain text now.` : undefined}
         >
           {plaintext && (
-            <Button variant="primary" onClick={() => { void useKeyring() }} disabled={busy || !view.keyringAvailable}>
+            <Button variant="primary" onClick={() => { void encryptWithKeyring() }} disabled={busy || !view.keyringAvailable}>
               {busy ? 'Encrypting…' : 'Encrypt with Keychain'}
             </Button>
           )}

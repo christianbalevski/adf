@@ -2179,6 +2179,7 @@ export class RuntimeService extends EventEmitter {
       const stillOpen = this.documents.get(doc.filePath) === doc
       if (stillOpen && at !== doc.filePath) this.documents.rekey(doc.filePath, at)
       if (stillOpen) try {
+        // eslint-disable-next-line no-unsafe-finally -- caught by the try around it, not thrown out of the finally.
         if (!existsSync(at)) throw new Error(`no file at ${at}`) // never create one by reopening
         doc.workspace = AdfWorkspace.open(at)
         unlockWorkspaceEnvelopes(doc.workspace)

@@ -339,7 +339,7 @@ export class MeshServer {
         const before = this.lanSnapshot?.listenable.join(',')
         this.lanSnapshot = snapshot
         const problems = await listeners.sync(snapshot.listenable)
-        for (const [address, problem] of problems) console.warn(`[MeshServer] ${problem}`)
+        for (const problem of problems.values()) console.warn(`[MeshServer] ${problem}`)
         if (before !== snapshot.listenable.join(',')) {
           const refused = snapshot.addresses.filter((a) => a.refusal).map((a) => `${a.address} (${a.iface})`)
           console.log(`[MeshServer] LAN addresses: ${listeners.addresses().join(', ') || 'none'}${refused.length ? `; on a network not allowed: ${refused.join(', ')}` : ''}`)
@@ -1029,7 +1029,6 @@ export function canonicalizeCardForSignature(card: AlfAgentCard): string {
   signable.description = card.description
   if (card.icon !== undefined) signable.icon = card.icon
   if (card.resolution) {
-    // eslint-disable-next-line @typescript-eslint/no-unused-vars
     const { endpoint, ...resolutionRest } = card.resolution as unknown as { endpoint?: string; [k: string]: unknown }
     signable.resolution = resolutionRest
   }

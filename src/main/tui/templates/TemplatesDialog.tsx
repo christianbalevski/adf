@@ -88,7 +88,6 @@ export function TemplatesDialog({ overlay, close: closeOverlay, width, height }:
   const read = (): DialogState => (store.getState().viewState[slotKey] as DialogState | undefined) ?? initial
   const patch = (next: Partial<DialogState>) => store.actions.setViewState(slotKey, { ...read(), ...next })
   const { step, index, fileIndex, list, detail, loadError, error } = useTuiSelector(s => (s.viewState[slotKey] as DialogState | undefined) ?? initial)
-  const setList = (value: TemplateListResult | null) => patch({ list: value })
   const setDetail = (value: TemplateDetail | null) => patch({ detail: value })
   const setLoadError = (value: DialogState['loadError']) => patch({ loadError: value })
   const setError = (value: string | null) => patch({ error: value })

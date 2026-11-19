@@ -63,6 +63,7 @@ import { useOverviewRead, type OverviewReader } from './useOverviewRead'
 import { useAgentStore } from '../../../stores/agent.store'
 import { useAppStore } from '../../../stores/app.store'
 import { useDocumentStore } from '../../../stores/document.store'
+import { agentNameOf } from '../../../stores/failure-notices.store'
 import { getLoopActivity } from '../../../utils/loop-activity'
 import { Tooltip } from '../../common/Tooltip'
 import { orbitalMotionStateFor, useOpenAgentOrbitalSeed } from '../../orbital'
@@ -306,7 +307,7 @@ export function AgentOverview() {
     if (vitals) setNow(Date.now())
   }, [vitals])
 
-  const name = config?.name || vitals?.name || vitals?.handle || ''
+  const name = (filePath ? agentNameOf(filePath) : '') || vitals?.name || vitals?.handle || ''
   const handle = config?.handle || vitals?.handle || ''
   const model = config?.model?.model_id || vitals?.model
   const motion = orbitalMotionStateFor(live.state, live.toolRunning)

@@ -130,7 +130,6 @@ const RESERVED_IMPORT_ALIASES = new Set(['owner', 'system', 'user'])
 /** One path segment safe for the file store: no separators, no dot-only names. */
 function safePathSegment(value: string | undefined, maxLength: number): string | null {
   if (!value) return null
-  // eslint-disable-next-line no-control-regex
   const cleaned = value.replace(/[\x00-\x1f\x7f<>:"/\\|?*]/g, '_').trim().slice(0, maxLength)
   if (!cleaned || /^\.+$/.test(cleaned)) return null
   return cleaned
@@ -2491,7 +2490,6 @@ export class MeshManager extends EventEmitter {
     const from = typeof message.from === 'string' ? message.from : null
     const result: StoredAttachment[] = []
     for (const att of message.payload.attachments ?? []) {
-      // eslint-disable-next-line @typescript-eslint/no-unused-vars
       const { data, ...record } = att as StoredAttachment
       delete record.path
       delete record.skipped

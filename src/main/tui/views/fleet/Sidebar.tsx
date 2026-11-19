@@ -78,8 +78,6 @@ function target(row: TreeRow): { agentId: string; loop: string } | null {
   return { agentId: row.agent.summary.id, loop: row.kind === 'loop' ? row.loop.info.name : MAIN_LOOP }
 }
 
-const agentIdOf = (row: TreeRow): string | null => (row.kind === 'agent' || row.kind === 'loop' ? row.agent.summary.id : row.kind === 'stopped' ? row.entry.key : null)
-
 export function FleetSidebar({ width, height, focused }: SidebarProps) {
   useFleetPoller()
   const theme = useTheme()

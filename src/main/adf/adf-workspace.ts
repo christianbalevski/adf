@@ -30,7 +30,6 @@ import type {
   TaskEntry,
   TaskStatus
 } from '@shared/types/adf-v02.types'
-import { LOG_LEVELS } from '@shared/types/adf-v02.types'
 import { AdfDatabase, type LoopEntryRow } from './adf-database'
 import { SkillIndexer, skillsRegistryRefusal, type SkillIndexResult, type SkillIndexRunResult } from './skill-indexer'
 import { existsAlready, fileRevision, staleRevision, staleRevisionMessage } from '../runtime/resource-revisions'

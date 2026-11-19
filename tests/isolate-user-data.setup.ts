@@ -25,6 +25,13 @@ process.env.ADF_LEASE_DIR = leaseDirForSuite
 process.env.ADF_TEST_SEAMS ??= '1'
 process.env.ADF_MACHINE_ID ??= 'test-machine'
 
+// No test may write the developer's OS keychain. A daemon started on a temp
+// settings path stores `daemon-runtime-signing-key:<scope>` under service
+// "ADF", one new item per run; Studio's boot reads every "ADF" item, and an
+// unsigned dev Electron asks for each one separately. Suites that test the
+// keychain path inject a backend or probe, or unset this themselves.
+process.env.ADF_KEYCHAIN = '0'
+
 /**
  * Remove a temp tree. Links (junctions, symlinks) are unlinked, never
  * followed: a recursive rm follows a Windows junction into its target.

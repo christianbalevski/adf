@@ -18,7 +18,7 @@ import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../sha
 import type { SystemScopeHandler } from './system-scope-handler'
 import { PreLlmHookError, PreLlmHookRunner, preLlmHookApplies, type PreLlmHookRequest } from './pre-llm-hook'
 import {
-  type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEventDispatch,
+  type AdfEventDispatch, type AdfBatchDispatch,
   type InboxEventData, type OutboxEventData, type FileChangeEventData, type ChatEventData,
   type TimerEventData, type ToolCallEventData, type TaskCompleteEventData, type LogEntryEventData,
   type LlmCallEventData,
@@ -206,8 +206,6 @@ interface ToolSnapshot {
   declarations: Map<string, NonNullable<AgentConfig['tools']>[number]>
 }
 
-type ToolDeclarationEntry = NonNullable<AgentConfig['tools']>[number]
-
 /** Coarse human-readable span used in crash-recovery notices, e.g. `3h 12m`. */
 function formatElapsed(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return 'an unknown amount of time'
@@ -225,7 +223,6 @@ function formatElapsed(ms: number): string {
  *  chars, and the `]` that would escape a `[System notice: …]` frame before
  *  embedding one in a durable history notice. */
 function sanitizeForNotice(msg: string): string {
-  // eslint-disable-next-line no-control-regex
   return msg.replace(/[\u0000-\u001f\]]+/g, ' ').slice(0, 150)
 }
 
@@ -3972,6 +3969,7 @@ export class AgentExecutor extends EventEmitter {
         if (!opts?.nested) this.runningTurnId = null
         this.setState('idle')
         this.replayQueuedChats()
+        // eslint-disable-next-line no-unsafe-finally -- the catch above handles every error; this return only skips the normal cleanup below.
         return  // Skip normal cleanup
       }
 
@@ -4683,7 +4681,6 @@ export class AgentExecutor extends EventEmitter {
       // instead of failing. Non-blocking: the loop already returned the task
       // reference; approval re-runs the call with a one-time bypass.
       if (rawResult.isError && rawResult.protection) {
-        const p = rawResult.protection
         const meta = this.buildApprovalMeta(toolName, rawResult.protection)
         // The row now asks for a protection override, not the original
         // restricted-tool approval: rewrite its durable metadata (and require

@@ -11,7 +11,6 @@ import type {
   ExecutorState,
   IdentityStatus,
   LoopInfo,
-  TaskEntry,
   TaskListEntry,
   UmbilicalEvent,
 } from '../api/types'

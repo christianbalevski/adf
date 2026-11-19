@@ -335,7 +335,6 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   const browserWindowOf = (id: number): BrowserWindow | null =>
     BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.webContents.id === id) ?? null
 
-  // eslint-disable-next-line prefer-const
   let manager: RuntimeManager
   const closedWindows = new Set<number>()
   const aggregator = new ApprovalsAggregator(primaryId)

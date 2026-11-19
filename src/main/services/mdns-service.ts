@@ -210,7 +210,11 @@ export class MdnsService extends EventEmitter {
       const old = this.published
       this.published = null
       await new Promise<void>((resolve) => {
-        try { (old as unknown as { stop?: (cb: () => void) => void }).stop?.(() => resolve()) ?? resolve() } catch { resolve() }
+        try {
+          const stop = (old as unknown as { stop?: (cb: () => void) => void }).stop
+          if (stop) stop.call(old, () => resolve())
+          else resolve()
+        } catch { resolve() }
         setTimeout(resolve, GOODBYE_FLUSH_MS)
       })
     }

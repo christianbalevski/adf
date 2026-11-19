@@ -64,7 +64,6 @@ function segment(raw: string): string {
   } catch {
     throw new GithubDiscoveryError(`The URL has an undecodable segment "${raw.slice(0, 80)}".`)
   }
-  // eslint-disable-next-line no-control-regex -- refusing control characters is the point
   if (!value || value === '.' || value === '..' || /[/\\\u0000-\u001F\u007F]/.test(value)) {
     throw new GithubDiscoveryError(`The URL has an unusable path segment "${raw.slice(0, 80)}".`)
   }
