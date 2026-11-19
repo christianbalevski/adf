@@ -831,8 +831,11 @@ describe('round 9: F2 a tick under another connection\'s write lock', { timeout:
       tick(agent)
       const blocked = Date.now() - started
       other.exec('ROLLBACK')
+      // The tick stopped at the first SQLITE_BUSY: one row failed, the other 19 were not tried.
+      const settleErrors = errors.mock.calls.map(c => String(c[0])).filter(line => line.startsWith('[TriggerEvaluator] Failed to settle'))
+      expect(settleErrors).toEqual(['[TriggerEvaluator] Failed to settle 1 timer(s); 19 more not tried this tick (the file is busy):'])
       errors.mockRestore()
-      expect(blocked).toBeLessThan(4000) // one BEGIN wait + the log attempt (~400 ms; 1589 on a slow CI runner); without the busy break, 20 BEGIN waits + the log, at least 4200 ms
+      expect(blocked).toBeLessThan(4000) // secondary: one BEGIN wait + the log attempt (~400 ms; 1589 on a slow CI runner)
       for (const id of ids) expect(row(workspace, id)).toMatchObject({ expired: false, run_count: 0 })
     } finally {
       try { other.close() } catch { /* closed */ }
