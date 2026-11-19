@@ -45,7 +45,7 @@
     "registry:check": "node scripts/registry-index.mjs --check",
     "registry:new": "npx tsx scripts/registry-new-agent.ts",
     "stress:runtime": "node scripts/stress-runtime.mjs",
-    "postinstall": "install-electron",
+    "postinstall": "install-electron && node scripts/sign-dev-electron.mjs",
     "check:brand": "node scripts/check-brand-tokens.mjs",
     "check:ratchet": "node scripts/check-ratchet.mjs",
     "icons": "node scripts/generate-icons.mjs",
