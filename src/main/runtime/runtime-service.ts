@@ -680,6 +680,10 @@ export interface RuntimeAgentMcpDiagnostics {
 export interface RuntimeAgentTriggersDiagnostics {
   agentId: string
   displayState: string | null
+  /** In `error`: the recovery fact (`recovery_at`) the trigger gate reads. Absent when parked or not in error. */
+  recoveryAt?: number
+  /** The same fact for each inner loop in error that is not parked. */
+  loopRecoveryAt?: Record<string, number>
   configured: Array<{ type: string; enabled: boolean; targetCount: number; targets: TriggerConfig['targets'] }>
 }
 
@@ -3691,9 +3695,12 @@ export class RuntimeService extends EventEmitter {
 
   getAgentTriggersDiagnostics(agentId: string): RuntimeAgentTriggersDiagnostics {
     const target = this.requireTarget(agentId)
+    const recoveryAt = target.managed?.agent.executor?.getRecoveryAt() ?? null
     return {
       agentId: target.id,
       displayState: target.managed?.agent.triggerEvaluator?.getDisplayState() ?? null,
+      ...(recoveryAt !== null ? { recoveryAt } : {}),
+      loopRecoveryAt: target.managed?.agent.loopPool?.sideLoopRecoveryAt() ?? {},
       configured: Object.entries(target.config.triggers ?? {}).map(([type, trigger]) => ({
         type,
         enabled: trigger?.enabled ?? false,

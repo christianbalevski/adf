@@ -117,14 +117,14 @@ function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.reat
   if (startResult.success) {
     // Use the actual executor state (may be mid-turn: thinking/tool_use)
     const reattachedState = toDisplayState(startResult.agentState ?? 'idle')
-    useAgentStore.getState().setState(startResult.agentState ?? 'idle')
+    useAgentStore.getState().setState(startResult.agentState ?? 'idle', undefined, startResult.recoveryAt)
     // Inner loops keep running across a switch: show their real
     // states, not the reset default (idle).
     const loopStates: Record<string, string> = { [MAIN_LOOP]: reattachedState }
     for (const [loop, state] of Object.entries(startResult.loopStates ?? {})) {
       const displayState = toDisplayState(state)
       loopStates[loop] = displayState
-      useAgentStore.getState().setState(state, loop)
+      useAgentStore.getState().setState(state, loop, startResult.loopRecoveryAt?.[loop])
     }
     // A turn that ended during the switch reported its idle to neither
     // the background list nor this view: send what was queued for

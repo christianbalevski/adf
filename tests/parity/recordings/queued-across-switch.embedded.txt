@@ -1622,6 +1622,7 @@
   args: []
   result:
     agentState: "idle"
+    loopRecoveryAt: {}
     loopStates:
       critic: "idle"
     pendingApprovals: []

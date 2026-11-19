@@ -1305,12 +1305,12 @@ The top-level `audit` object has the same fields and defaults as `context.audit`
 
 ### 5.20 Recovery Configuration
 
-`recovery` controls how the runtime retries a turn that failed with a transient provider error (§6.2).
+`recovery` controls how the runtime retries a turn that failed with a transient provider error (§6.2), and bounds the triggers that run as recovery attempts in `error` (§7.5).
 
 | Field | Default | Description |
 |-------|---------|-------------|
 | `auto_retry` | `true` | Retry the failed turn. |
-| `max_attempts` | `5` | Consecutive failed attempts per work item before the runtime stops retrying. |
+| `max_attempts` | `5` | Recovery attempts allowed after consecutive failures, counted until a model call succeeds. A backoff retry and a trigger that runs as a recovery attempt (§7.5) each count once. |
 | `base_delay_ms` | `15000` | First retry delay; it doubles each attempt with ±20% jitter. |
 | `max_delay_ms` | `300000` | Retry delay ceiling. |
 
@@ -1449,7 +1449,7 @@ A loop is a named conversation of the agent (§0.3). Every agent has the loop `m
 
 *Storage.* Each loop's transcript is the `adf_loop` rows with `loop = <name>`. `adf_timers`, `adf_tasks` and `adf_logs` rows carry the loop that created them in their `loop` column; NULL means `main`. Transcript snapshots use the `adf_audit` source `loop:<name>` (§13.3). Each loop is compacted separately (§13.2).
 
-*Routing.* A trigger target with `loop: "<name>"` wakes that loop; a target without `loop` wakes `main` (§7.2). An agent-scope timer wakes the loop in its `loop` column (§7.7). The model moves work between loops with `loop_send`. A runtime MUST drop, and log with `event="loop_dispatch_dropped"`, a dispatch addressed to a loop that does not exist or is disabled; it MUST NOT deliver it to `main` instead.
+*Routing.* A trigger target with `loop: "<name>"` wakes that loop; a target without `loop` wakes `main` (§7.2). An agent-scope timer wakes the loop in its `loop` column (§7.7). The model moves work between loops with `loop_send`. A runtime MUST drop, and log with `event="loop_dispatch_dropped"`, a dispatch addressed to a loop that does not exist or is disabled; it MUST NOT deliver it to `main` instead. A timer is handled by §7.7: for a loop that does not exist, its agent part is dropped and logged this way; for a disabled loop, it is held and stays due.
 
 *Management.* `loop_manage` is available in `main` and in any inner loop granted it. The loops of an agent form one flat list: a loop created from an inner loop is its sibling. When an inner loop calls `loop_manage`, a runtime MUST refuse an `update` or `delete` of that loop itself, and MUST refuse a `create`, `update` or `delete` unless the resulting tools, and for `update` and `delete` the target's current tools, are all held by the calling loop. Its actions are `create`, `get`, `update` and `delete`; `update` cannot rename a loop. A runtime MUST refuse to create a loop when the agent already has 16 inner loops, and MUST refuse `loop_manage` changes when `locked_fields` locks `loops`. Deleting a loop, through `loop_manage` or by removing it from config, stops it, writes its transcript to `adf_audit` as `loop:<name>` whatever `audit.loop` says, deletes its unlocked timers and keeps its locked timers.
 
@@ -1535,13 +1535,15 @@ A system-scope lambda receives the event object. An agent-scope target does not 
 
 State gating uses the main loop's state; executor work states gate as `active`, and `error` is the main loop's executor state (§6.1).
 
+In `error`, an agent-scope trigger for the main loop fires only as a recovery attempt, and each attempt spends the `recovery` budget (§5.20). It MUST NOT fire after an authentication failure, while a turn still holds the main loop, or once the budget is spent; after the budget is spent a runtime MAY allow one further attempt per cooldown period. While the main loop is in `error`, a runtime MUST NOT admit an agent-scope trigger for an inner loop. A trigger admitted before main entered `error` (a debounce, interval or batch window already open) and a kick already queued for an inner loop may still run. A timer that does not fire stays due (§7.7), and an inbox message stays unread; other trigger events are dropped, as in any state that blocks them. A trigger the runtime admits but that reaches the loop after it has stopped accepting recovery attempts is not run; if its payload is already in the loop's stream (§7.7), the loop reads it on its next turn.
+
 | State | System scope | Agent scope |
 |-------|--------------|-------------|
 | `active` | Fires | Runs |
 | `idle` | Fires | Fires |
 | `hibernate` | Fires | `on_timer` only |
 | `suspended` | Fires | No |
-| `error` | Fires | No |
+| `error` | Fires | Recovery attempt only |
 | `off` | No | No |
 
 ### 7.6 Timer Schedules
@@ -1584,17 +1586,28 @@ A timer fires for a scope when both hold:
 1. The timer's `scope` includes that scope.
 2. `on_timer` is enabled and has a target with that scope.
 
-When a timer comes due, the runtime:
+A timer whose agent scope `on_timer` admits is **received** when its payload is written into the stream of its target loop: the loop in the timer's `loop` column (NULL means `main`). The runtime fires such a timer only when that loop can receive it, that is, when all hold:
 
-1. Computes the next fire time. For a `once` timer, or when `max_runs` or `end_at` has been reached, there is none, and the runtime sets `expired = 1`. Otherwise it sets `next_wake_at`.
+1. The state gate (§7.5) admits agent scope for that loop.
+2. The loop is enabled.
+3. The loop is not in `error`, or it is in `error` and may start a recovery attempt now (§7.5).
+
+When it fires, the runtime settles the occurrence and writes the payload into the loop's stream in one transaction, and only if the timer is still on that occurrence. It then wakes the loop with a timer event that refers to the written row, so the row is not written twice. A loop that is running a turn reads the row at its next model boundary, and runs one more turn only if its turn ends before it has read the row. A timer whose target cannot receive is held (below), its lambda included. A timer whose `loop` names a loop that does not exist is not held: the runtime MUST drop its agent part, log it with `event="loop_dispatch_dropped"` and MUST NOT deliver it to `main`. The rest of the timer is handled as a timer with no admitted agent scope (below).
+
+A timer with no agent scope that `on_timer` admits is settled when it fires, before its lambda runs, and only if the timer is still on that occurrence. If the runtime cannot deliver such a `once` fire (backpressure), it clears `expired` so that the timer fires later. A timer that `on_timer` admits in no scope is settled with nothing run, except while the agent is `off`. While the agent is `off`, no timer is settled.
+
+Settling an occurrence:
+
+1. Computes the next fire time, from the time of settling. For a `once` timer, or when `max_runs` or `end_at` has been reached, there is none, and the runtime sets `expired = 1`. Otherwise it sets `next_wake_at`.
 2. Increments `run_count` and sets `last_fired_at`.
-3. Delivers the event to the matching system and agent handlers. An agent-scope fire wakes the loop in the timer's `loop` column (NULL means `main`); if that loop does not exist or is disabled, the runtime drops the fire (§6.4).
 
-A runtime MUST NOT delete expired timers as part of firing; they remain as history. If the runtime cannot deliver a `once` fire (backpressure or a dropped dispatch), it clears `expired` so that the timer fires later.
+Because settling is conditional on the occurrence, two runtimes that check the same file fire each occurrence once.
+
+A runtime MUST NOT delete expired timers as part of firing; they remain as history.
 
 After downtime, a runtime fires each missed timer once on load and then schedules its next occurrence. A runtime MUST NOT fire every missed occurrence.
 
-A timer that `on_timer` admits in at least one of its scopes is not settled while the state gate (§7.5), read from the main loop's state, blocks all of those scopes. A runtime MUST NOT set `expired`, advance `next_wake_at`, increment `run_count` or set `last_fired_at` for it; the timer stays due and fires once, as a missed timer, on the first check after the gate admits one of those scopes.
+A timer that `on_timer` admits in at least one of its scopes is not settled while it is held: while its agent part cannot be received, or, for a timer with no admitted agent scope, while the state gate (§7.5) blocks every admitted scope. A runtime MUST NOT run a held timer's lambda, set `expired`, advance `next_wake_at`, increment `run_count` or set `last_fired_at` for it; it stays due and fires once, as a missed timer, on the first check after it may fire.
 
 When a loop is deleted, the runtime deletes its unlocked timers and logs `loop_timers_dropped`; locked timers are kept.
 

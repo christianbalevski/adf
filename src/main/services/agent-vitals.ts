@@ -656,8 +656,10 @@ export function readUpcoming(q: Sql): UpcomingWake[] {
     }
     const scope: UpcomingWake['scope'] = scopes[0] === 'agent' ? 'agent' : 'system'
     const text = upcomingText(t.payload)
-    if (scope === 'agent') return { id: t.id, at: t.next_wake_at, scope, scopes, loop: t.loop || 'main', ...(text ? { prompt: text } : {}) }
-    return { id: t.id, at: t.next_wake_at, scope, scopes, ...(t.lambda ? { lambda: t.lambda } : {}), ...(text ? { input: text } : {}) }
+    // Every row carries its loop: a row with an agent part fires when that loop can receive, whichever scope is listed first.
+    const loop = t.loop || 'main'
+    if (scope === 'agent') return { id: t.id, at: t.next_wake_at, scope, scopes, loop, ...(text ? { prompt: text } : {}) }
+    return { id: t.id, at: t.next_wake_at, scope, scopes, loop, ...(t.lambda ? { lambda: t.lambda } : {}), ...(text ? { input: text } : {}) }
   })
 }
 

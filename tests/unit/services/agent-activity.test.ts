@@ -15,7 +15,11 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, HEAVY_MIN_AGE_MS, memoryBytes, readAgentActivity, readMemoryStrata, type AgentVitalsDeps, type VitalsWorkspace } from '../../../src/main/services/agent-vitals'
 import { localDateKey } from '../../../src/shared/utils/date-key'
 import { DEFAULT_MIND_LOG_CONTENT } from '../../../src/shared/types/adf-v02.types'
-import { wakeFires } from '../../../src/shared/utils/trigger-gate'
+import { wakeFireTime } from '../../../src/shared/utils/trigger-gate'
+
+/** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
+const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
+
 
 const dir = mkdtempSync(join(tmpdir(), 'adf-agent-activity-'))
 const file = join(dir, 'agent-1.adf')
@@ -101,7 +105,7 @@ describe('readAgentActivity', () => {
   it('reads the next three live timers as raw pieces', () => {
     const a = readAgentActivity((s, p) => ws.querySQL(s, p), now)
     expect(a.upcoming[0]).toEqual({ id: expect.any(Number), at: now + 5 * 60_000, scope: 'agent', scopes: ['agent'], loop: 'main', prompt: 'Check the inbox' })
-    expect(a.upcoming[1]).toEqual({ id: expect.any(Number), at: now + HOUR, scope: 'system', scopes: ['system'], lambda: 'lib/sync.ts:run', input: '{"full":true}' })
+    expect(a.upcoming[1]).toEqual({ id: expect.any(Number), at: now + HOUR, scope: 'system', scopes: ['system'], loop: 'main', lambda: 'lib/sync.ts:run', input: '{"full":true}' })
     expect(a.upcoming[2]).toEqual(expect.objectContaining({ scope: 'agent', loop: 'critic' }))
     expect(a.upcoming[2].prompt).toHaveLength(1000)
     expect(a.upcoming[2].prompt?.endsWith('…')).toBe(true)
@@ -109,14 +113,15 @@ describe('readAgentActivity', () => {
     expect('recent' in a).toBe(false)
   })
 
-  it('carries every scope of a mixed timer, so its row keeps its countdown in suspended', () => {
+  it('carries every scope of a mixed timer, so its row is held whole in suspended', () => {
     sql('INSERT INTO adf_timers (schedule_json, next_wake_at, payload, scope, lambda, created_at, expired) VALUES (?, ?, ?, ?, ?, ?, 0)',
       [JSON.stringify({ mode: 'once', at: now + 1000 }), now + 1000, 'both', JSON.stringify(['agent', 'system']), null, now])
     const row = readAgentActivity((s, p) => ws.querySQL(s, p), now).upcoming[0]
     sql("DELETE FROM adf_timers WHERE payload = 'both'")
-    expect(row).toEqual(expect.objectContaining({ scope: 'agent', scopes: ['agent', 'system'] }))
-    // The Upcoming row's rule (OverviewActivity): the system half fires while suspended.
-    expect(wakeFires(row, 'suspended')).toBe(true)
+    expect(row).toEqual(expect.objectContaining({ scope: 'agent', scopes: ['agent', 'system'], loop: 'main' }))
+    // The Upcoming row's rule (OverviewActivity): the row waits with its agent part while suspended.
+    expect(wakeFireTime(row, { state: 'suspended' }, CTX)).toBeUndefined()
+    expect(wakeFireTime(row, { state: 'idle' }, CTX)).toBe(now + 1000)
   })
 
   it('reads a non-array or unparseable scope as the runtime does (AdfDatabase timer parser)', () => {
@@ -127,7 +132,7 @@ describe('readAgentActivity', () => {
       const row = readAgentActivity((s, p) => ws.querySQL(s, p), now).upcoming[0]
       sql("DELETE FROM adf_timers WHERE payload = 'odd'")
       expect(row, scope).toEqual(expect.objectContaining({ scope: scopes[0], scopes }))
-      expect(wakeFires(row, 'idle'), scope).toBe(true)
+      expect(wakeFireTime(row, { state: 'idle' }, CTX), scope).toBe(now + 1000)
     }
   })
 

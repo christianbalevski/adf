@@ -167,7 +167,7 @@ mixed `[thinking, text, thinking]` stays three ordered events.
 
 | Event | Payload |
 |---|---|
-| `agent.state.changed` | `{ filePath, state }` |
+| `agent.state.changed` | `{ filePath, state, recovery_at? }` |
 | `agent.error` | `{ filePath, event }` |
 | `agent.loaded` | `{ filePath, name, handle, autostart }` |
 | `agent.unloaded` | `{ filePath }` |
@@ -333,8 +333,8 @@ loop history, so the failed work is not lost.
 ## `error.*` — stable
 
 Recovery from the terminal `error` state. Non-auth errors (`tool_mismatch`,
-`turn_error`) let the next incoming agent-scope trigger run as a recovery
-attempt instead of being dropped; auth errors stay parked until fixed.
+`turn_error`) let an agent-scope trigger run as a recovery attempt, within the
+`recovery` budget; auth errors stay parked until fixed.
 
 | Event | Payload |
 |---|---|
@@ -342,17 +342,30 @@ attempt instead of being dropped; auth errors stay parked until fixed.
 | `error.recovery_suppressed` | `{ reason, trigger, attempts, max_attempts }` |
 
 `recovery_trigger` fires when a trigger is spent as a recovery turn; `trigger`
-is the trigger type that woke the agent, and `after_cooldown` is true when the
-attempt cap had been hit but the cooldown window had elapsed. `recovery_suppressed`
-fires once per error episode when the cap is hit and the cooldown has not
-elapsed — every agent-scope trigger is dropped until a chat message arrives or
-the cooldown passes.
+is the event type that woke the agent (`timer`, `inbox`, and so on), and
+`after_cooldown` is true when the attempt cap had been hit but the cooldown
+window had elapsed. `recovery_suppressed` fires once per error episode when the
+budget is spent and the cooldown has not elapsed; `trigger` is `null`. Until a
+chat message arrives or the cooldown passes, agent-scope triggers do not run:
+a timer stays due and fires on the first tick after the cooldown, a message
+stays unread, and other trigger events are dropped.
+
+In `error`, `agent.state.changed` carries `recovery_at`: the earliest time
+(epoch ms) a trigger may run as a recovery attempt, `0` when one may start now,
+or `null` while none may (an auth error, or a turn still holds the agent). The
+event repeats with the same `state` when only `recovery_at` changes: when a turn
+takes the agent while it is in `error` (`null`), and when the turn that failed
+lets go of it (the new value).
 
 ## `timer.*` — stable
 
 | Event | Payload |
 |---|---|
 | `timer.fired` | `{ timer_id, scope, run_count, scheduled_at }` |
+
+For `scope: 'agent'`, `timer.fired` is emitted once per occurrence, when the
+timer is received (its payload is written into the loop). For `scope: 'system'`
+it is emitted when the lambda is dispatched.
 
 ## `hil.*` — stable
 

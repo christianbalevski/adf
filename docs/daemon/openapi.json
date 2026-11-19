@@ -20379,6 +20379,15 @@
               "null"
             ]
           },
+          "recoveryAt": {
+            "type": "integer",
+            "description": "In `error`: the earliest time (epoch ms) a trigger may run as a recovery attempt, `0` = now. Absent when the agent is parked or not in error."
+          },
+          "loopRecoveryAt": {
+            "type": "object",
+            "additionalProperties": { "type": "integer" },
+            "description": "The same fact for each inner loop in `error` that is not parked, keyed by loop name."
+          },
           "configured": {
             "type": "array",
             "items": {
@@ -28742,7 +28751,7 @@
           },
           "loop": {
             "type": "string",
-            "description": "agent: loop the wake dispatches to (`main` when the timer names none)"
+            "description": "The loop the agent part wakes (`main` when the timer names none); carried on every row"
           },
           "prompt": {
             "type": "string",

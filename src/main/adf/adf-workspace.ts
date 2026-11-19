@@ -1526,6 +1526,10 @@ export class AdfWorkspace {
    * compaction to slip into. Without it two forceCompact calls racing on one
    * loop let the loser archive the winner's summary plus every row written
    * after it (aom 2026-09-03: audit 841 = summary + 7 rows of fresh work).
+   * A row newer than `requireSeq` is never archived: the summary did not
+   * cover it. Rows appended while this call awaits its I/O (a timer or
+   * loop_send written into the stream from outside the turn) survive after
+   * the summary.
    * One transaction; same backup/audit policy and umbilical event as clearLoop.
    */
   async compactLoop(
@@ -1560,15 +1564,16 @@ export class AdfWorkspace {
                 `compactLoop: ${preserved.size - rows.length} preserved seq(s) missing from the loop`
               )
             }
-            return { entries: entries.filter(e => !preserved.has(e.seq)), ctx: rows }
+            const kept = (e: LoopEntryRow) => preserved.has(e.seq) || (requireSeq !== undefined && e.seq > requireSeq)
+            return { entries: entries.filter(e => !kept(e)), ctx: entries.filter(kept) }
           },
           auditLoop,
-          ({ entries: archived, ctx: preservedRows, archive }) => {
+          ({ entries: archived, ctx: keptRows, archive }) => {
             if (archive) this.insertLoopAudit(archived, archive)
             this.db.deleteLoopBySeqs(this.boundLoop, archived.map(e => e.seq))
             let ord: number | undefined
-            if (preservedRows.length > 0) {
-              ord = preservedRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
+            if (keptRows.length > 0) {
+              ord = keptRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
             }
             this.db.appendLoopEntry(this.boundLoop, 'user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
           }
@@ -2056,10 +2061,11 @@ export class AdfWorkspace {
     return this.db.getDueTimers()
   }
 
-  /** Flag completed timers as expired history instead of deleting them. */
-  expireTimers(ids: number[], firedAt?: number): number {
-    return this.db.expireTimers(ids, firedAt)
+  /** Settle a due occurrence; true for exactly one claim per occurrence (AdfDatabase.claimTimer). */
+  claimTimer(id: number, expectedNextWakeAt: number, expectedRunCount: number, nextWakeAt: number | null, firedAt: number): boolean {
+    return this.db.claimTimer(id, expectedNextWakeAt, expectedRunCount, nextWakeAt, firedAt)
   }
+
 
   // ===========================================================================
   // File Operations

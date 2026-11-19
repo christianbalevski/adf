@@ -3,7 +3,11 @@ import { useAgentStore, selectLoopSlice, MAIN_LOOP } from '../../../src/renderer
 import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 import { stoppedNotice } from '../../../src/renderer/components/agent/overview/agent-overview-model'
-import { timerFires, wakeFires } from '../../../src/shared/utils/trigger-gate'
+import { timerFireTime, wakeFireTime } from '../../../src/shared/utils/trigger-gate'
+
+/** The context a loaded agent provides: on_timer admits both scopes, no inner loops. */
+const CTX = { onTimer: { enabled: true, targets: [{ scope: 'system' as const }, { scope: 'agent' as const }] }, loops: [], loopFacts: {} }
+
 
 /**
  * Per-loop display state — what the loop tab strip's status dot reads.
@@ -98,8 +102,8 @@ describe('trigger gate beside the display state', () => {
     const { gate } = useAgentStore.getState()
     return {
       notice: stoppedNotice({ gate, autostart: false, waitingTimers: 1, serving: false, starting: false }),
-      rowCountdown: wakeFires({ scope: 'system', scopes: ['system'] }, gate),
-      timersTabCountdown: timerFires(['system'], gate),
+      rowCountdown: wakeFireTime({ at: 0, scope: 'system', scopes: ['system'] }, { state: gate }, CTX) !== undefined,
+      timersTabCountdown: timerFireTime(['system'], { state: gate }, 0, null, CTX) !== undefined,
     }
   }
 
@@ -133,5 +137,19 @@ describe('trigger gate beside the display state', () => {
     expect(useAgentStore.getState().gate).toBe('off')
     useAgentStore.getState().setState('active')
     expect(useAgentStore.getState().gate).toBe('active')
+  })
+})
+
+describe('a timer injected mid-turn (F6)', () => {
+  it('renders live as the same timer trigger a reload shows', async () => {
+    const { parseLoopToDisplay } = await import('../../../src/shared/utils/loop-parser')
+    const content = 'A scheduled timer has fired.\nPayload: water the plants'
+    const handle = createAgentEventHandler()
+    handle({ type: 'state_changed', payload: { state: 'thinking' }, timestamp: 1 } as AgentExecutionEvent)
+    handle({ type: 'context_injected', payload: { category: 'loop', origin: 'timer:7', content, delivery: 'next_boundary', seq: 42 }, timestamp: 2 } as AgentExecutionEvent)
+    const live = useAgentStore.getState().log.at(-1)!
+    const reload = parseLoopToDisplay([{ seq: 42, role: 'user', content_json: [{ type: 'text', text: content }], created_at: 2 } as never]).at(-1)!
+    expect({ type: live.type, content: live.content, triggerType: live.metadata?.triggerType, seq: live.metadata?.seq })
+      .toEqual({ type: reload.type, content: reload.content, triggerType: reload.metadata?.triggerType, seq: reload.metadata?.seq })
   })
 })

@@ -25,6 +25,11 @@ import { clearAllUmbilicalBuses } from '../../../src/main/runtime/umbilical-bus'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
 import { approvalHub } from '../../../src/main/runtime/approval-hub'
 
+/** What a model request at this point records (AgentExecutor.getModelSeenSeq): the newest seq in the session. */
+const maxSeq = (session: { getMessages: () => Array<{ seq?: number }> }) => session.getMessages().reduce((m, x) => Math.max(m, x.seq ?? 0), 0)
+const markSeen = (executor: unknown, session: { getMessages: () => Array<{ seq?: number }> }) => { (executor as { modelSeenSeq: number }).modelSeenSeq = maxSeq(session) }
+
+
 let rootDir: string
 let filePath: string
 let ws: AdfWorkspace
@@ -33,6 +38,8 @@ let events: AgentExecutionEvent[]
 let mainSession: AgentSession
 let mainBusy: boolean
 let mainState: string
+/** Main's model-seen mark (AgentExecutor.getModelSeenSeq), as the fixture's executor would record it. */
+let mainSeen = 0
 let mainDispatches: Array<AdfEventDispatch | AdfBatchDispatch>
 
 /**
@@ -116,6 +123,7 @@ function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
       isBusy: () => mainBusy,
       dispatch: async (value) => { mainDispatches.push(value) },
       getState: () => mainState,
+      modelSeenSeq: () => mainSeen,
     },
   })
 }
@@ -135,6 +143,7 @@ beforeEach(() => {
   mainSession = new AgentSession(ws)
   mainBusy = false
   mainState = 'idle'
+  mainSeen = 0
   mainDispatches = []
   respond = null
   pool = buildPool()
@@ -397,6 +406,7 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     // Simulate the running turn reaching a model boundary and draining the
     // injection — main read it mid-turn, so there is nothing left to deliver.
     mainSession.drainContextInjections()
+    mainSeen = maxSeq(mainSession) // ...and the model call that follows the drain
     expect(mainSession.hasPendingWakeInjection()).toBe(false)
 
     mainBusy = false
@@ -442,6 +452,7 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
 
     // The running turn reaches a model boundary and drains it — read mid-turn.
     runtime.session.drainContextInjections()
+    markSeen(runtime.executor, runtime.session) // the model call after the drain
     expect(runtime.session.hasPendingWakeInjection()).toBe(false)
 
     release()
@@ -469,6 +480,7 @@ describe('LoopPool — sendToLoop (RT-F6 delivery)', () => {
     // Both injected; one model boundary drains both.
     expect(runtime.session.peekPendingContextInjections()).toHaveLength(2)
     runtime.session.drainContextInjections()
+    markSeen(runtime.executor, runtime.session) // the model call after the drain
 
     release()
     await firstTurn

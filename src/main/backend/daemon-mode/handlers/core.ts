@@ -286,7 +286,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
         return fallback
       }
       const [triggers, interactions] = await Promise.all([
-        client.request<{ displayState: string | null }>('GET', `/agents/${enc(running.id)}/triggers`).catch(sideRead('the display state', { displayState: null })),
+        client.request<{ displayState: string | null; recoveryAt?: number; loopRecoveryAt?: Record<string, number> }>('GET', `/agents/${enc(running.id)}/triggers`).catch(sideRead<{ displayState: string | null; recoveryAt?: number; loopRecoveryAt?: Record<string, number> }>('the display state', { displayState: null })),
         client.request<FleetPendingInteraction[]>('GET', '/approvals/interactions').catch(sideRead('the pending approvals and asks', [] as FleetPendingInteraction[])),
       ])
       const mine = interactions.filter((i) => samePath(i.filePath, agentPath, ctx.mode === 'remote'))
@@ -294,6 +294,8 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
         success: true,
         sessionId: running.sessionId,
         agentState: triggers.displayState ?? running.runtimeState,
+        ...(triggers.recoveryAt !== undefined ? { recoveryAt: triggers.recoveryAt } : {}),
+        ...(triggers.loopRecoveryAt ? { loopRecoveryAt: triggers.loopRecoveryAt } : {}),
         // Side loops keep running across a switch; the view starts from their real states (embedded: sideLoopStates()).
         loopStates: running.loopStates ?? {},
         pendingApprovals: mine.filter((i) => i.type === 'approval').map((i) => ({

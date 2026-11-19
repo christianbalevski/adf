@@ -22,7 +22,7 @@ import type { AdfCallHandler } from './adf-call-handler'
 import { PreLlmHookRunner } from './pre-llm-hook'
 import type { AgentProfileName } from './agent-capability-profiles'
 import { AGENT_PROFILES, profileHasAsyncTeardown } from './agent-capability-profiles'
-import { AgentExecutor } from './agent-executor'
+import { AgentExecutor, timerTriggerText } from './agent-executor'
 import type { TaskCompletedFn } from './task-run'
 import { AgentSession } from './agent-session'
 import { TriggerEvaluator } from './trigger-evaluator'
@@ -575,7 +575,7 @@ export function assembleAgent<P extends AgentProfileName>(
     if (event.type === 'state_changed') {
       const payload = event.payload as { state?: string }
       if (payload.state) {
-        triggerEvaluator.setDisplayState(payload.state)
+        triggerEvaluator.setDisplayState(payload.state, (payload as { recovery_at?: number | null }).recovery_at)
         if (payload.state === 'off') {
           for (const bindings of hostBindings()) void bindings.onStateOff?.()
         }
@@ -776,6 +776,7 @@ export function assembleAgent<P extends AgentProfileName>(
       isBusy: () => executor.isTurnActive() || inFlight.size > 0,
       dispatch: (value) => dispatch(value),
       getState: () => executor.getState(),
+      modelSeenSeq: () => executor.getModelSeenSeq(),
     },
   })
 
@@ -785,6 +786,35 @@ export function assembleAgent<P extends AgentProfileName>(
   // equivalent inside `createRuntime`; main's executor lives out here, so it is
   // wired here. Nothing else sets main's `onTurnSettled`.
   executor.onTurnSettled = () => loopPool.consumeMainWake()
+
+  // A due timer's agent part: received once its payload is written into the
+  // target loop's stream. The conditional claim and that write are one
+  // transaction (adf_timers and adf_loop live in the same file; IMMEDIATE so a
+  // second runtime on the file cannot interleave). After the commit, a
+  // timer-typed wake that carries the row's seq, so the executor does not
+  // write it again and auth parking and the recovery budget still apply.
+  triggerEvaluator.setTimerReceiver({
+    canReceive: (loop) => loopPool.canReceive(loop),
+    hasLoop: (loop) => loopPool.hasLoop(loop),
+    loopFacts: (loop) => loopPool.loopFacts(loop),
+    systemLaneHasRoom: (dispatchValue, reserved) => executor.systemLaneHasRoom(dispatchValue, reserved),
+    deliver: (timer, nextWake, firedAt, event) => {
+      const loop = timer.loop ?? MAIN_LOOP
+      const blocks = [{ type: 'text' as const, text: timerTriggerText(timer) }]
+      const seq = workspace.immediateTransaction(() =>
+        workspace.claimTimer(timer.id, timer.next_wake_at, timer.run_count, nextWake, firedAt)
+          ? workspace.forLoop(loop).appendToLoop('user', blocks)
+          : null)
+      if (seq === null) return false
+      const wake = { ...event, data: { ...event.data, skip_loop_append: true, loop_seq: seq } }
+      // A turn rejected at dispatch reaches the host's error path, as every
+      // other trigger's does (onEvaluatorTrigger).
+      loopPool.deliverAppended(loop, wake, blocks, seq, `timer:${timer.id}`, (error, dispatchValue) => {
+        for (const bindings of hostBindings()) bindings.onTriggerError?.(error, dispatchValue)
+      })
+      return true
+    },
+  })
 
   /**
    * Main's loop tools. `loop_send`/`loop_list`/`loop_manage` are ordinary
