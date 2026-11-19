@@ -832,7 +832,7 @@ describe('round 9: F2 a tick under another connection\'s write lock', { timeout:
       const blocked = Date.now() - started
       other.exec('ROLLBACK')
       errors.mockRestore()
-      expect(blocked).toBeLessThan(1500) // one BEGIN wait (+ its log attempt), not 20 × 2 × 200 ms
+      expect(blocked).toBeLessThan(4000) // one BEGIN wait + the log attempt (~400 ms; 1589 on a slow CI runner); without the busy break, 20 BEGIN waits + the log, at least 4200 ms
       for (const id of ids) expect(row(workspace, id)).toMatchObject({ expired: false, run_count: 0 })
     } finally {
       try { other.close() } catch { /* closed */ }
