@@ -304,3 +304,19 @@ jobs:
       - name: Publish
         shell: bash
         run: npm publish ./agentdocumentformat-cli-*.tgz --access public
+
+  # --- Website rebuild: agentdocumentformat.org bakes the latest Studio
+  # release and npm version in at build time. Runs after both publish paths
+  # finish (either may fail independently); skipped when no secret is set.
+  site-rebuild:
+    needs: [publish, npm-publish]
+    if: always() && (needs.publish.result == 'success' || needs.npm-publish.result == 'success')
+    runs-on: ubuntu-latest
+    permissions: {}
+    steps:
+      - name: Trigger Vercel deploy hook
+        env:
+          HOOK: ${{ secrets.VERCEL_DEPLOY_HOOK }}
+        run: |
+          if [ -z "$HOOK" ]; then echo "VERCEL_DEPLOY_HOOK not set; skipping"; exit 0; fi
+          curl -fsS -X POST "$HOOK"
