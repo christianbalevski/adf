@@ -104,7 +104,11 @@ describe('mesh status and fleet routes', () => {
 
   it('GET /fleet/map aggregates the slices in one call', async () => {
     const mesh = fakeMesh([])
-    const { server } = setup({ mesh, networkService: { getStatus: () => ({}), getDiscoveredRuntimes: () => [{ runtime_id: 'peer-1' }] } })
+    const getDiscoveredRuntimes = vi.fn(async () => [])
+    const { runtime, server } = setup({ mesh, networkService: {
+      getStatus: () => ({}), getDiscoveredRuntimes, getFleetPeers: () => [{ runtime_id: 'peer-1' }],
+    } })
+    const liveRoster = vi.spyOn(runtime, 'listLiveAgents')
     const res = await server.inject({ method: 'GET', url: '/fleet/map?sinceSeq=0' })
     expect(res.statusCode).toBe(200)
     const body = res.json()
@@ -113,6 +117,8 @@ describe('mesh status and fleet routes', () => {
     expect(body.fleet).toHaveProperty('agents')
     expect(body.adapters).toEqual({ adapters: [], perAgent: [] })
     expect(body.peers).toEqual([{ runtime_id: 'peer-1' }])
+    expect(liveRoster).toHaveBeenCalledTimes(1)
+    expect(getDiscoveredRuntimes).not.toHaveBeenCalled()
   })
 
   it('GET /fleet/recent-tools adds loaded agents the mesh does not track, read from their workspaces', async () => {

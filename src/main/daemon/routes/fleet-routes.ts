@@ -125,11 +125,15 @@ export function registerFleetRoutes(server: FastifyInstance, ctx: DaemonRouteCon
   server.get<{ Querystring: { sinceSeq?: string } }>('/fleet/map', async (request, reply) => {
     const sinceSeq = sinceSeqOf(request.query.sinceSeq)
     if (sinceSeq === null) return badRequest(reply, 'sinceSeq must be a non-negative integer')
+    const live = vitalsDeps.getFleetLiveSnapshot?.()
+    const mapMeshSource = live ? { ...meshSource, liveAgents: () => live.meshAgents } : meshSource
     const [debug, fleet, adapters, peers] = await Promise.all([
-      buildMeshStatus(meshSource, { debug: true, sinceSeq }).catch(() => null),
-      vitals.getFleetStatus(),
+      buildMeshStatus(mapMeshSource, { debug: true, sinceSeq }).catch(() => null),
+      vitals.getFleetStatus(live),
       Promise.resolve().then(adapterStatus).catch(() => ({ adapters: [], perAgent: [] })),
-      Promise.resolve().then(() => options.networkService?.getDiscoveredRuntimes?.() ?? []).catch(() => []),
+      Promise.resolve().then(() =>
+        options.networkService?.getFleetPeers?.() ?? options.networkService?.getDiscoveredRuntimes?.() ?? []
+      ).catch(() => []),
     ])
     let burn: unknown = null
     try { burn = getFleetBurnService().getBurn() } catch { burn = null }

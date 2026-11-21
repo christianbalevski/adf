@@ -76,6 +76,23 @@ describe('measured Markdown windows', () => {
     } finally { full.unmount(); windowed.unmount() }
   })
 
+  it('windows long fences as they stream and preserves wrapped lines and the language label', async () => {
+    const text = '```ts\n' + Array.from({ length: 600 }, (_, i) => `const value${i} = "${'中文🙂 '.repeat(i % 11)}"`).join('\n')
+    const full = mountMarkdown({ text, width: 42 }, false)
+    const windowed = mountMarkdown({ text, width: 42 }, true)
+    try {
+      expect(await windowed.ready()).toBe(await full.ready())
+      expect(windowed.nodes()).toBeLessThan(full.nodes() / 4)
+      for (const frame of [
+        { text: text + '\n// streamed', width: 42 },
+        { text: text + '\n// streamed\n```', width: 42, clip: 200 },
+        { text: text + '\n// streamed\n```', width: 42, clip: full.height() - 28 },
+      ]) {
+        expect(await windowed.update(frame)).toBe(await full.update(frame))
+      }
+    } finally { full.unmount(); windowed.unmount() }
+  })
+
   it('keeps earlier-item rows visible when ChatView clipping crosses a markup-heavy final item', async () => {
     const store = createTuiStore({ client: new DaemonClient({ baseUrl: 'http://127.0.0.1:9', fetch: async () => { throw new Error('no network in fixture') } }), live: false, initialView: 'chat' })
     const key = transcriptKey('fixture', 'main')

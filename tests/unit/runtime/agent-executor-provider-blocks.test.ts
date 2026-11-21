@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { createHeadlessAgent, MockLLMProvider } from '../../../src/main/runtime/headless'
 import { createDispatch, createEvent } from '../../../src/shared/types/adf-event.types'
-import type { ContentBlock } from '../../../src/shared/types/provider.types'
+import type { ContentBlock, LLMMessage } from '../../../src/shared/types/provider.types'
 import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
 
 const malformed: ContentBlock[] = [
@@ -10,6 +10,35 @@ const malformed: ContentBlock[] = [
 ]
 
 describe('provider tool-call validation', () => {
+  it('checks only appended tool blocks and discards old IDs after a session reset', async () => {
+    const agent = createHeadlessAgent({ name: 'agent-1', provider: new MockLLMProvider(), profile: 'benchmark' })
+    const initialContent = vi.fn(() => 'hello')
+    const original: LLMMessage = { role: 'user', get content() { return initialContent() } }
+    const result: LLMMessage = { role: 'user', content: [{ type: 'tool_result', tool_use_id: 'joined', content: 'done' }] }
+    const repair = vi.spyOn(agent.session, 'repairToolPairing')
+    try {
+      agent.session.addMessage(original, undefined, { skipLoop: true })
+      agent.session.addMessage({ role: 'assistant', content: [{ type: 'tool_use', id: 'joined', name: 'tool', input: {} }] }, undefined, { skipLoop: true })
+      agent.session.addMessage(result, undefined, { skipLoop: true })
+      agent.executor['checkToolPairing']()
+      expect(initialContent).toHaveBeenCalled()
+      expect(repair).not.toHaveBeenCalled()
+
+      initialContent.mockClear()
+      agent.session.addMessage(result, undefined, { skipLoop: true })
+      agent.executor['checkToolPairing']()
+      expect(initialContent).not.toHaveBeenCalled()
+      expect(repair).not.toHaveBeenCalled()
+
+      agent.session.reset()
+      agent.session.addMessage({ role: 'user', content: 'new session' }, undefined, { skipLoop: true })
+      agent.session.addMessage(result, undefined, { skipLoop: true })
+      agent.executor['checkToolPairing']()
+      expect(repair).toHaveBeenCalledOnce()
+      expect(result.content).toEqual([{ type: 'text', text: '[Tool result removed — no matching call in history]' }])
+    } finally { await agent.disposeAsync({ mode: 'immediate' }) }
+  })
+
   it.each(malformed)('rejects a tool call missing its id or name before execution: %j', async (block) => {
     const provider = new MockLLMProvider()
     vi.spyOn(provider, 'createMessage').mockResolvedValue({ id: 'reply-1', content: [block], stop_reason: 'tool_use', usage: { input_tokens: 1, output_tokens: 1 } })

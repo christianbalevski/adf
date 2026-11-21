@@ -1,5 +1,6 @@
 import { describe, it, expect, vi } from 'vitest'
 import { CodeSandboxService } from '../../../src/main/runtime/code-sandbox'
+import { SandboxHost } from '../../../src/main/runtime/sandbox-host'
 
 /**
  * Regression suite for the global resource ceiling.
@@ -56,6 +57,97 @@ describe('CodeSandboxService global admission control', () => {
       sandbox.destroyAll()
     }
   }, 60000)
+
+  it.each([false, true])('does not spawn a cancelled call (permit granted before abort: %s)', async (grantFirst) => {
+    const sandbox = new CodeSandboxService()
+    sandbox.setMaxWorkers(1)
+    const spawn = vi.spyOn(SandboxHost.prototype, 'spawnWorker')
+    try {
+      const cold = { ephemeral: true }
+      await sandbox.execute('holder', 'return 1', 5000, undefined, undefined, cold)
+
+      const controller = new AbortController()
+      const cancelled = sandbox.executeIsolated('cancelled', 'return 2', 5000, undefined, undefined, { ...cold, signal: controller.signal })
+      expect(sandbox.getResourceStats().waiting).toBe(1)
+      if (grantFirst) sandbox.destroy('holder')
+      controller.abort()
+      expect(sandbox.getResourceStats().waiting).toBe(0)
+      if (!grantFirst) sandbox.destroy('holder')
+
+      expect((await cancelled).errorCode).toBe('ABORTED')
+      expect(sandbox.getResourceStats().cold).toBe(0)
+      expect(spawn).toHaveBeenCalledTimes(1)
+      expect((await sandbox.execute('next', 'return 3', 5000, undefined, undefined, cold)).result).toBe('3')
+    } finally {
+      spawn.mockRestore()
+      sandbox.destroyAll()
+    }
+  })
+
+  it('keeps a shared queued creation when one caller aborts', async () => {
+    const sandbox = new CodeSandboxService()
+    sandbox.setMaxWorkers(1)
+    try {
+      const cold = { ephemeral: true }
+      await sandbox.execute('holder', 'return 1', 5000, undefined, undefined, cold)
+      const controller = new AbortController()
+      const cancelled = sandbox.execute('shared', 'return 2', 5000, undefined, undefined, { ...cold, signal: controller.signal })
+      const remaining = sandbox.execute('shared', 'return 3', 5000, undefined, undefined, cold)
+
+      controller.abort()
+      expect((await cancelled).errorCode).toBe('ABORTED')
+      expect(sandbox.getResourceStats().waiting).toBe(1)
+      sandbox.destroy('holder')
+      expect((await remaining).result).toBe('3')
+      expect(sandbox.getResourceStats().cold).toBe(1)
+    } finally {
+      sandbox.destroyAll()
+    }
+  })
+
+  it('returns a permit when spawning throws before a worker exists', async () => {
+    const sandbox = new CodeSandboxService()
+    sandbox.setMaxWorkers(1)
+    const spawn = vi.spyOn(SandboxHost.prototype, 'spawnWorker').mockImplementationOnce(() => { throw new Error('test spawn failure') })
+    try {
+      const cold = { ephemeral: true }
+      const failed = sandbox.execute('failed', 'return 1', 5000, undefined, undefined, cold)
+      const next = sandbox.execute('next', 'return 2', 5000, undefined, undefined, cold)
+
+      expect((await failed).errorCode).toBe('SANDBOX_TERMINATED')
+      expect((await next).result).toBe('2')
+      expect(sandbox.getResourceStats()).toMatchObject({ cold: 1, waiting: 0 })
+    } finally {
+      spawn.mockRestore()
+      sandbox.destroyAll()
+    }
+  })
+
+  it('hands off one warm permit at a time when the running worker becomes idle', async () => {
+    const sandbox = new CodeSandboxService()
+    ;(sandbox as unknown as { maxWarmWorkers: number }).maxWarmWorkers = 1
+    const started = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<{ result: string }>()
+    try {
+      const first = sandbox.execute('first', 'return await adf.fs_read({})', 5000, () => {
+        started.resolve()
+        return release.promise
+      })
+      await started.promise
+      const second = sandbox.execute('second', 'return 2', 5000)
+      const third = sandbox.execute('third', 'return 3', 5000)
+      expect(sandbox.getResourceStats()).toMatchObject({ warm: 1, waiting: 2 })
+
+      release.resolve({ result: '1' })
+      expect((await first).result).toBe('1')
+      expect((await second).result).toBe('2')
+      expect((await third).result).toBe('3')
+      expect(sandbox.getResourceStats()).toMatchObject({ warm: 1, waiting: 0 })
+      expect([...workersOf(sandbox).keys()]).toEqual(['third'])
+    } finally {
+      sandbox.destroyAll()
+    }
+  })
 
   it('reports the ceiling in one aggregate warning, not one per agent', async () => {
     const sandbox = new CodeSandboxService()

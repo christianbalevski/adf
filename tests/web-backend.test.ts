@@ -1,6 +1,7 @@
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { gunzipSync } from 'node:zlib'
 import Fastify, { type FastifyInstance } from 'fastify'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { DaemonRequestGuard, daemonHostAllowList, type DeviceTokenAuthority } from '../src/main/daemon/request-guard'
@@ -604,5 +605,26 @@ describe('browser Studio authentication and transport', () => {
     expect(index.headers['content-security-policy']).toContain("frame-ancestors 'none'")
     expect((await server.inject({ url: '/studio/escape.js', headers })).statusCode).toBe(404)
     expect((await server.inject({ url: '/studio/%2e%2e/secret.js', headers })).statusCode).toBe(404)
+  })
+
+  it('caches fingerprinted assets and negotiates gzip without caching the HTML entry', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'adf-web-test-')); dirs.push(root)
+    mkdirSync(join(root, 'assets'))
+    const code = 'console.log("fixture");\n'.repeat(100)
+    writeFileSync(join(root, 'index.html'), '<div>Studio</div>')
+    writeFileSync(join(root, 'assets', 'index-Ab12XY_z.js'), code)
+    const { server, headers } = await start({ root })
+    const url = '/studio/assets/index-Ab12XY_z.js'
+    const encoded = await server.inject({ url, headers: { ...headers, 'accept-encoding': 'gzip' } })
+    expect(encoded.headers).toMatchObject({
+      'cache-control': 'private, max-age=31536000, immutable',
+      'content-encoding': 'gzip',
+      vary: 'Accept-Encoding',
+    })
+    expect(gunzipSync(encoded.rawPayload).toString()).toBe(code)
+    const identity = await server.inject({ url, headers: { ...headers, 'accept-encoding': 'br, gzip;q=0' } })
+    expect(identity.headers['content-encoding']).toBeUndefined()
+    expect(identity.body).toBe(code)
+    expect((await server.inject({ url: '/studio/', headers })).headers['cache-control']).toBe('no-store')
   })
 })

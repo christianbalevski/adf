@@ -31,7 +31,7 @@ const app = join(root, 'node_modules', 'electron', 'dist', 'Electron.app')
 const keychain = join(homedir(), 'Library', 'Keychains', 'login.keychain-db')
 
 const log = (line) => console.log(`[sign-dev-electron] ${line}`)
-const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] })
+const run = (cmd, args) => execFileSync(cmd, args, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true })
 
 /** SHA-1 of the identity's certificate, or null when the keychain has none. */
 function findIdentity() {

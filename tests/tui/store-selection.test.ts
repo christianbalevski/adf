@@ -9,6 +9,40 @@ const FILE_1 = `${FOLDER}/agent-1.adf`
 const FILE_2 = `${FOLDER}/agent-2.adf`
 const AGENT_1 = '6f1c2d3e-4b5a-4c6d-8e7f-9a0b1c2d3e4f'
 
+it('opens the requested agent and loop as soon as the roster arrives', async () => {
+  const pending = deferred()
+  const history = deferred()
+  const list = [FILE_1, FILE_2].map((filePath, i) => ({
+    id: `id-${i + 1}`, filePath, name: `agent-${i + 1}`, handle: `agent-${i + 1}`, autostart: false,
+  }))
+  const requests: Array<{ agentId: string; loop: string }> = []
+  const client = {
+    baseUrl: 'http://127.0.0.1:47390',
+    async agents() { return list },
+    async loopHistory(agentId: string, { loop }: { loop: string }) {
+      requests.push({ agentId, loop })
+      history.resolve()
+      return { entries: [], total: 0, offset: 0 }
+    },
+    async config() { return { config: { name: 'agent-1' } } },
+  } as unknown as DaemonClient
+  const store = createTuiStore({ client, live: false, initialAgent: { identifier: 'agent-2', loop: 'critic' } })
+  store.actions.refreshAgent = () => pending.promise
+  const refresh = store.actions.refreshAgents()
+  try {
+    await history.promise
+    expect(requests).toEqual([{ agentId: 'id-2', loop: 'critic' }])
+    expect(store.getState().selectedAgentId).toBe('id-2')
+    store.actions.selectAgent('id-1')
+    pending.resolve()
+    await refresh
+    expect(store.getState().selectedAgentId).toBe('id-1')
+  } finally {
+    pending.resolve()
+    store.stop()
+  }
+})
+
 function deferred() {
   let resolve!: () => void
   const promise = new Promise<void>((r) => { resolve = r })

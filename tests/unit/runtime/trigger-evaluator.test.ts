@@ -2010,3 +2010,73 @@ describe('file deletion during a debounce window', () => {
     } finally { evaluator.dispose(); vi.useRealTimers() }
   })
 })
+
+describe('file-change diff work', () => {
+  it('dispatches a one-sided large edit without constructing its diff', () => {
+    const evaluator = new TriggerEvaluator(makeConfig({
+      on_file_change: makeTriggerConfig([makeTarget('system')]),
+    }))
+    const events = collectEvents(evaluator)
+
+    evaluator.onFileChange('notes.txt', 'modified', 'a\n'.repeat(100_000), 'old text')
+
+    expect(events).toHaveLength(1)
+    expect(events[0]).toMatchObject({ event: { data: { diff: null } } })
+  })
+
+  it('skips workspace reads when file-change triggers are disabled', () => {
+    const evaluator = new TriggerEvaluator(makeConfig())
+    const getFileMeta = vi.fn()
+    evaluator.setWorkspace({ getFileMeta } as never)
+
+    evaluator.onFileChange('notes.txt', 'modified', 'new text', 'old text')
+
+    expect(getFileMeta).not.toHaveBeenCalled()
+  })
+
+  it('diffs each debounced target from its own starting content', () => {
+    vi.useFakeTimers()
+    const evaluator = new TriggerEvaluator(makeConfig({
+      on_file_change: makeTriggerConfig([
+        makeTarget('system', { debounce_ms: 100 }),
+        makeTarget('system', { debounce_ms: 200 }),
+      ]),
+    }))
+    evaluator.setWorkspace({ readFile: () => 'final text', getFileMeta: () => null } as never)
+    const events = collectEvents(evaluator)
+    try {
+      evaluator.onFileChange('notes.txt', 'modified', 'intermediate text', 'old text')
+      evaluator.onFileChange('notes.txt', 'modified', 'final text', 'intermediate text')
+      vi.advanceTimersByTime(200)
+
+      expect(events).toHaveLength(2)
+      for (const event of events) {
+        expect(event).toMatchObject({ event: { data: { diff: expect.stringContaining('-old text\n+final text') } } })
+      }
+    } finally {
+      evaluator.dispose()
+      vi.useRealTimers()
+    }
+  })
+
+  it('drops an earlier path when a later path supersedes it for the same target', () => {
+    vi.useFakeTimers()
+    const evaluator = new TriggerEvaluator(makeConfig({
+      on_file_change: makeTriggerConfig([makeTarget('system', { debounce_ms: 100 })]),
+    }))
+    evaluator.setWorkspace({ readFile: () => 'final text', getFileMeta: () => null } as never)
+    const events = collectEvents(evaluator)
+    try {
+      evaluator.onFileChange('first.txt', 'modified', 'first edit', 'original text')
+      evaluator.onFileChange('second.txt', 'modified', 'another edit', 'another baseline')
+      evaluator.onFileChange('first.txt', 'modified', 'final text', 'first edit')
+      vi.advanceTimersByTime(100)
+
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({ event: { data: { path: 'first.txt', diff: expect.stringContaining('-first edit\n+final text') } } })
+    } finally {
+      evaluator.dispose()
+      vi.useRealTimers()
+    }
+  })
+})

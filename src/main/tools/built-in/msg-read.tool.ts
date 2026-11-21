@@ -33,12 +33,7 @@ export class InboxReadTool implements Tool {
   async execute(input: unknown, workspace: AdfWorkspace): Promise<ToolResult> {
     const parsed = input as z.infer<typeof InputSchema>
     const status = parsed.status || 'unread'
-    const limit = parsed.limit
-
-    let messages = workspace.getInbox(status)
-    if (limit) {
-      messages = messages.slice(0, limit)
-    }
+    const messages = workspace.readInbox(status, parsed.limit, parsed.include_original === true)
 
     if (messages.length === 0) {
       return {
@@ -54,14 +49,8 @@ export class InboxReadTool implements Tool {
       }
     }
 
-    // Strip original_message by default (large raw platform JSON); agents can
-    // opt back in with include_original to inspect the unnormalized message.
-    const sanitized = parsed.include_original
-      ? messages
-      : messages.map(({ original_message, ...rest }) => rest)
-
     return {
-      content: JSON.stringify(sanitized, null, 2),
+      content: JSON.stringify(messages, null, 2),
       isError: false
     }
   }

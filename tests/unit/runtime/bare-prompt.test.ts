@@ -1,4 +1,4 @@
-import { describe, expect, it, beforeEach } from 'vitest'
+import { describe, expect, it, beforeEach, vi } from 'vitest'
 import { mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -134,6 +134,38 @@ describe('bare_prompt', () => {
     )
     expect(provider.systems[0]).toContain('STEP ONE.')
     expect(provider.systems[0]).not.toContain('{{playbook.md}}')
+  })
+
+  it('reads omitted prompt files only on the first breakdown of a prompt snapshot', async () => {
+    const provider = new RecordingProvider()
+    const agent = createHeadlessAgent({
+      provider,
+      profile: 'benchmark',
+      basePrompt: 'Optional manual: {{manual.md}}',
+      createOptions: { instructions: 'Follow {{playbook.md}}' },
+    })
+    agent.executor.updateConfig({ ...agent.executor.getConfig(), bare_prompt: true })
+    agent.workspace.writeFile('manual.md', 'The absent manual still needs a diagnostic estimate.')
+    agent.workspace.writeFile('playbook.md', 'The sent playbook.')
+    const readFile = vi.spyOn(agent.workspace, 'readFile')
+    try {
+      await agent.executor.executeTurn(chatDispatch('go'))
+      expect(provider.systems[0]).toContain('The sent playbook.')
+      expect(readFile).toHaveBeenCalledWith('playbook.md')
+      expect(readFile).not.toHaveBeenCalledWith('manual.md')
+
+      const first = agent.executor.getContextBreakdown()
+      expect(readFile).toHaveBeenCalledWith('manual.md')
+      expect(first?.system_prompt_parts.base_and_sections).toBeGreaterThan(0)
+      expect(first?.injected_files.map(({ path }) => path)).toEqual(['playbook.md'])
+
+      readFile.mockClear()
+      expect(agent.executor.getContextBreakdown()?.system_prompt_parts).toEqual(first?.system_prompt_parts)
+      expect(readFile).not.toHaveBeenCalledWith('manual.md')
+    } finally {
+      readFile.mockRestore()
+      await agent.disposeAsync()
+    }
   })
 
   it('leaves the full prompt intact when the flag is off', async () => {

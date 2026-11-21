@@ -1243,6 +1243,10 @@ export class AdfWorkspace {
     return this.db.getLoopEntries(this.boundLoop, limit, offset)
   }
 
+  getLoopTail(limit: number): LoopEntryRow[] {
+    return this.db.getLoopEntriesTail(this.boundLoop, limit)
+  }
+
   /** Keyset pagination: entries immediately preceding `beforeSeq`, ascending. */
   getLoopBefore(beforeSeq: number, limit: number): LoopEntryRow[] {
     return this.db.getLoopEntriesBefore(this.boundLoop, beforeSeq, limit)
@@ -1340,8 +1344,9 @@ export class AdfWorkspace {
    * synchronously inside the transaction — slower, blocking, but correct by
    * construction because nothing can run between the read and the commit.
    *
-   * With `compress: false` (audit disabled) there is no await at all and the
-   * read happens on the same tick as the commit.
+   * When supplied, `backupReady` allows archive preparation to overlap the
+   * pre-destructive backup. The transaction always waits for it. Retake the
+   * snapshot if another connection wrote while the backup was in progress.
    *
    * `afterCommit` runs synchronously in the same tick as the successful commit
    * — no await between COMMIT and the hook — so callers can reset in-memory
@@ -1351,9 +1356,10 @@ export class AdfWorkspace {
     read: () => { entries: LoopEntryRow[]; ctx: C },
     compress: boolean,
     commit: (payload: { entries: LoopEntryRow[]; ctx: C; archive: LoopArchive }) => R,
-    afterCommit?: () => void
+    { afterCommit, backupReady }: { afterCommit?: () => void; backupReady?: Promise<void> } = {},
   ): Promise<R> {
     if (!compress) {
+      if (backupReady) await backupReady
       const result = this.db.transaction(() => commit({ ...read(), archive: null }))
       this.runAfterCommit(afterCommit)
       return result
@@ -1362,28 +1368,39 @@ export class AdfWorkspace {
     for (let attempt = 1; attempt <= AdfWorkspace.MAX_ARCHIVE_ATTEMPTS; attempt++) {
       const revision = this.db.getLoopRevision(this.boundLoop)
       const epoch = this.db.getLoopEpoch()
-      const { entries, ctx } = read()
-      if (entries.length === 0) {
-        // Nothing to compress ⇒ no await happened ⇒ still the read's tick.
-        const result = this.db.transaction(() => commit({ entries, ctx, archive: null }))
-        this.runAfterCommit(afterCommit)
-        return result
-      }
-      const json = JSON.stringify(entries)
-      // Cap concurrent pool jobs (A3) — release in finally so a compress throw
-      // can't leak a permit and deadlock the fleet.
-      await acquireCompressSlot()
-      let data: Buffer
+      const externalVersion = backupReady ? this.db.dataVersion() : undefined
+      let snapshot: ReturnType<typeof read>
       try {
-        data = await brotliCompressAsync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
-      } finally {
-        releaseCompressSlot()
+        snapshot = read()
+      } catch (error) {
+        // A speculative read can fail before we would have tried it in the
+        // serial path. Repeat after the backup at that original boundary.
+        if (!backupReady || attempt !== 1) throw error
+        await backupReady
+        continue
       }
+      const { entries, ctx } = snapshot
+      let archive: LoopArchive = null
+      if (entries.length > 0) {
+        const json = JSON.stringify(entries)
+        // Cap concurrent pool jobs (A3) — release in finally so a compress
+        // throw can't leak a permit and deadlock the fleet.
+        await acquireCompressSlot()
+        try {
+          const data = await brotliCompressAsync(Buffer.from(json, 'utf-8'), BROTLI_ARCHIVE_OPTS)
+          archive = { json, data }
+        } finally {
+          releaseCompressSlot()
+        }
+      }
+      if (backupReady) await backupReady
       try {
-        const result = this.db.transaction(() => {
-          if (this.db.getLoopRevision(this.boundLoop) !== revision || this.db.getLoopEpoch() !== epoch) throw LOOP_REVISION_CHANGED
-          return commit({ entries, ctx, archive: { json, data } })
-        })
+        const commitPrepared = () => {
+          if (this.db.getLoopRevision(this.boundLoop) !== revision || this.db.getLoopEpoch() !== epoch ||
+            (externalVersion !== undefined && this.db.dataVersion() !== externalVersion)) throw LOOP_REVISION_CHANGED
+          return commit({ entries, ctx, archive })
+        }
+        const result = backupReady ? this.db.immediateTransaction(commitPrepared) : this.db.transaction(commitPrepared)
         this.runAfterCommit(afterCommit)
         return result
       } catch (error) {
@@ -1456,7 +1473,7 @@ export class AdfWorkspace {
             // loop). The executor rewrites it once it has a new estimate.
             this.db.deleteMeta(this.contextBaselineKey())
           },
-          opts?.onCommitted
+          { afterCommit: opts?.onCommitted }
         )
         await AdfDatabase.removeBackup(this.filePath)
       } catch (error) {
@@ -1540,12 +1557,19 @@ export class AdfWorkspace {
       // compaction is the dominant cost at fleet scale (amplified by C2's q5,
       // which makes the backup, not the compress, the bottleneck). Main-stream
       // compaction, clearLoop, replaceLoop, and loop deletion keep the backup.
-      const skipBackup = this.boundLoop !== MAIN_LOOP
-      if (!skipBackup) {
-        try { await this.db.backupBeforeDestructive() } catch { /* best-effort */ }
-      }
+      let auditLoop = this.getAuditConfig().loop
+      let backupMade = false
+      const backupReady = this.boundLoop === MAIN_LOOP ? (async () => {
+        try {
+          await this.db.backupBeforeDestructive()
+          backupMade = true
+        } catch { /* best-effort */ }
+        // Honor policy changes during the backup as before. When auditing
+        // was enabled at entry we can already be preparing the archive.
+        auditLoop = this.getAuditConfig().loop
+      })() : undefined
       try {
-        const auditLoop = this.getAuditConfig().loop
+        if (backupReady && !auditLoop) await backupReady
         const preserved = new Set(preservedSeqs)
         await this.runLoopMutation<LoopEntryRow[], void>(
           () => {
@@ -1564,23 +1588,27 @@ export class AdfWorkspace {
           },
           auditLoop,
           ({ entries: archived, ctx: preservedRows, archive }) => {
-            if (archive) this.insertLoopAudit(archived, archive)
+            if (archive && auditLoop) this.insertLoopAudit(archived, archive)
             this.db.deleteLoopBySeqs(this.boundLoop, archived.map(e => e.seq))
             let ord: number | undefined
             if (preservedRows.length > 0) {
               ord = preservedRows.reduce((min, e) => Math.min(min, e.ord ?? e.seq), Number.POSITIVE_INFINITY) - 1
             }
             this.db.appendLoopEntry(this.boundLoop, 'user', summary.content, summary.model, summary.tokens, summary.createdAt, { ord })
-          }
+          },
+          { backupReady },
         )
         // Only touch the shared .bak if we created one — never delete residue a
         // prior (crashed) op in this file's exclusive chain left for recovery.
-        if (!skipBackup) await AdfDatabase.removeBackup(this.filePath)
+        if (backupMade) await AdfDatabase.removeBackup(this.filePath)
       } catch (error) {
+        // A read/compression failure can arrive before the backup finishes.
+        // Keep the per-file queue until this operation is done using .bak.
+        if (backupReady) await backupReady
         // A superseded compaction is a clean refusal, not a failure — nothing
         // was touched and there is no backup to point at.
         if (error instanceof LoopCompactionSupersededError) {
-          if (!skipBackup) await AdfDatabase.removeBackup(this.filePath)
+          if (backupMade) await AdfDatabase.removeBackup(this.filePath)
         } else {
           console.error(`[AdfWorkspace] compactLoop failed. Backup preserved at: ${this.filePath}.bak`)
         }
@@ -1592,6 +1620,10 @@ export class AdfWorkspace {
 
   getLoopCount(): number {
     return this.db.getLoopCount(this.boundLoop)
+  }
+
+  getLoopUsageRows(): ReturnType<AdfDatabase['getLoopUsageRows']> {
+    return this.db.getLoopUsageRows(this.boundLoop)
   }
 
   /** True when the row with this seq is still in the loop. */
@@ -1769,9 +1801,12 @@ export class AdfWorkspace {
     return Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)
   }
 
-  /** This loop's live rows: seq and display-order key (ord when set, else seq). */
-  getLoopOrderKeys(): Array<{ seq: number; key: number }> {
-    return this.db.getLoopOrderKeys(this.boundLoop)
+  getOldestLoopOrderKey(): { seq: number; key: number } | undefined {
+    return this.db.getOldestLoopOrderKey(this.boundLoop)
+  }
+
+  listLoopSeqs(): number[] {
+    return this.db.listLoopSeqs(this.boundLoop)
   }
 
   /**
@@ -1866,6 +1901,10 @@ export class AdfWorkspace {
     return this.db.getInboxMessages(status)
   }
 
+  readInbox(status: InboxStatus, limit: number | undefined, includeOriginal: boolean): InboxMessage[] {
+    return this.db.readInboxMessages(status, limit, includeOriginal)
+  }
+
   getInboxMessageById(id: string): InboxMessage | null {
     return this.db.getInboxMessageById(id)
   }
@@ -1877,6 +1916,10 @@ export class AdfWorkspace {
    */
   getInboxCounts(): { unread: number; read: number; archived: number; total: number } {
     return this.db.getInboxCounts()
+  }
+
+  getInboxCount(status?: InboxStatus): number {
+    return status ? this.db.getInboxCount(status) : this.db.getInboxCounts().total
   }
 
   /** Unread tallies by sender and by source, plus the oldest arrival time. */
@@ -2114,12 +2157,12 @@ export class AdfWorkspace {
   writeFileBufferUnique(relativePath: string, content: Buffer, mimeType?: string): string {
     for (let n = 1; ; n++) {
       const candidate = numberedPath(relativePath, n)
-      const existing = this.db.readFile(candidate)
-      if (!existing) {
+      const same = this.db.fileContentEquals(candidate, content)
+      if (same === null) {
         this.writeFileBuffer(candidate, content, mimeType)
         return candidate
       }
-      if (existing.content.equals(content)) return candidate
+      if (same) return candidate
     }
   }
 
@@ -2265,6 +2308,10 @@ export class AdfWorkspace {
     }))
   }
 
+  listFilePage(prefix: string | undefined, limit: number | undefined): ReturnType<AdfDatabase['listFilePage']> {
+    return this.db.listFilePage(prefix, limit)
+  }
+
   fileExists(relativePath: string): boolean {
     return this.db.fileExists(relativePath)
   }
@@ -2289,14 +2336,16 @@ export class AdfWorkspace {
 
   renameFolder(oldPrefix: string, newPrefix: string): number {
     const prefix = oldPrefix.endsWith('/') ? oldPrefix : `${oldPrefix}/`
-    // Every moved file's BLOB is read only to feed the change events; with no
-    // sink registered the rename is a single UPDATE and nothing else.
+    // Only small text snapshots can be included in file-change events.
     const notify = !!this.onFileChangeCallback
     const moved = this.listFiles()
       .filter(file => file.path.startsWith(prefix))
       .map(file => ({
         path: file.path,
-        content: notify ? this.db.readFile(file.path)?.content : undefined,
+        content: notify && file.size <= AdfWorkspace.MAX_DIFF_BYTES &&
+          this.isTextLikeMimeType(file.mime_type ?? this.getMimeType(file.path))
+          ? this.db.readFile(file.path)?.content
+          : undefined,
         metadata: notify ? this.getFileMeta(file.path) : null
       }))
     const replacementPrefix = newPrefix.endsWith('/') ? newPrefix : `${newPrefix}/`
@@ -2600,8 +2649,8 @@ export class AdfWorkspace {
     this.emitDataChange('tasks')
   }
 
-  getTasksByStatus(status: TaskStatus): TaskEntry[] {
-    return this.db.getTasksByStatus(status)
+  getTasksByStatus(status: TaskStatus, limit?: number): TaskEntry[] {
+    return this.db.getTasksByStatus(status, limit)
   }
 
   getAllTasks(limit?: number): TaskEntry[] {
@@ -2724,6 +2773,10 @@ export class AdfWorkspace {
 
   querySQL(sql: string, params?: unknown[]): unknown[] {
     return this.db.querySQL(sql, params)
+  }
+
+  querySQLPreview(sql: string, params: unknown[] | undefined, limit: number): { rows: unknown[]; total: number } {
+    return this.db.querySQLPreview(sql, params, limit)
   }
 
   /**

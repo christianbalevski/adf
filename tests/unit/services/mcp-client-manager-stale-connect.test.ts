@@ -68,7 +68,7 @@ function serverConfig(name = 's'): McpServerConfig {
 const flush = () => new Promise<void>((r) => setTimeout(r, 0))
 
 describe('McpClientManager stale-connect guard', () => {
-  it('abandons a connect that resolves after disconnect(): closes client + transport, no map mutation, no events', async () => {
+  it('closes and settles a pending initialize during disconnectAll(), even if the SDK never answers', async () => {
     const manager = new McpClientManager()
     const transport = fakeTransport()
 
@@ -76,7 +76,10 @@ describe('McpClientManager stale-connect guard', () => {
     const client = h.MockClient.instances.at(-1)!
 
     // Agent stops while the connection attempt is still awaiting client.connect
-    await manager.disconnect('s')
+    await manager.disconnectAll()
+    expect(await connectPromise).toBeNull()
+    expect(client.closed).toBe(true)
+    expect(transport.closed).toBe(true)
     expect(manager.getServerState('s')).toBeNull()
 
     const events: string[] = []
@@ -85,11 +88,7 @@ describe('McpClientManager stale-connect guard', () => {
 
     // The in-flight connect now succeeds against the deleted entry
     client.connectDeferred.resolve()
-    const tools = await connectPromise
-
-    expect(tools).toBeNull()
-    expect(client.closed).toBe(true)
-    expect(transport.closed).toBe(true)
+    await flush()
     // The deleted entry must not be resurrected and nothing may be emitted
     expect(manager.getServerState('s')).toBeNull()
     expect(manager.getServerStates()).toEqual([])
@@ -106,15 +105,14 @@ describe('McpClientManager stale-connect guard', () => {
     client.connectDeferred.resolve()
     await flush() // now awaiting listTools()
 
-    await manager.disconnect('s')
-
-    client.listToolsDeferred.resolve({ tools: [{ name: 'x', inputSchema: {} }] })
-    const tools = await connectPromise
-
-    expect(tools).toBeNull()
+    await manager.disconnectAll()
+    expect(await connectPromise).toBeNull()
     expect(client.closed).toBe(true)
     expect(transport.closed).toBe(true)
     expect(manager.getServerState('s')).toBeNull()
+    client.listToolsDeferred.reject(new Error('late discovery failure'))
+    await flush()
+    expect(manager.getServerStates()).toEqual([])
   })
 
   it('a stale attempt resolving late does not clobber a re-added server of the same name', async () => {
@@ -149,6 +147,45 @@ describe('McpClientManager stale-connect guard', () => {
     expect(transport2.closed).toBe(false)
     expect(manager.isConnected('s')).toBe(true)
     expect(manager.getServerState('s')?.toolCount).toBe(1)
+  })
+
+  it('stops a replacement waiting to close the old entry when the manager unloads', async () => {
+    const manager = new McpClientManager()
+    const first = manager.connect(serverConfig(), { externalTransport: fakeTransport() })
+    const client = h.MockClient.instances.at(-1)!
+    const instances = h.MockClient.instances.length
+    let release!: () => void
+    client.close = async () => new Promise<void>((resolve) => { release = resolve })
+    const replacement = manager.connect(serverConfig(), { externalTransport: fakeTransport() })
+    await flush()
+    const closing = manager.disconnectAll()
+    release()
+    await closing
+    expect(await first).toBeNull()
+    expect(await replacement).toBeNull()
+    expect(h.MockClient.instances).toHaveLength(instances)
+    expect(manager.getServerState('s')).toBeNull()
+    client.connectDeferred.resolve()
+  })
+
+  it('can restart immediately after cancelling the pending attempt', async () => {
+    const manager = new McpClientManager()
+    const first = manager.connect(serverConfig(), { externalTransport: fakeTransport() })
+    const original = h.MockClient.instances.at(-1)!
+    try {
+      const restarted = manager.restart('s')
+      expect(await first).toBeNull()
+      await flush()
+      const next = h.MockClient.instances.at(-1)!
+      expect(next).not.toBe(original)
+      next.connectDeferred.resolve()
+      next.listToolsDeferred.resolve({ tools: [{ name: 'x', inputSchema: {} }] })
+      expect(await restarted).toHaveLength(1)
+      original.connectDeferred.resolve()
+      expect(manager.isConnected('s')).toBe(true)
+    } finally {
+      await manager.disconnectAll()
+    }
   })
 
   it('exposes the server-reported version from the initialize handshake after connect', async () => {

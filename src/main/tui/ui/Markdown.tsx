@@ -151,12 +151,25 @@ function renderBlock(block: Block, index: number, theme: Theme, color?: string) 
   }
 }
 
+const CODE_CHUNK_LINES = 40
+
+/** Keep measured prefixes of a growing fence independently windowable. */
+function splitCodeBlocks(block: Block): Block[] {
+  if (block.kind !== 'code' || block.lines.length <= CODE_CHUNK_LINES) return [block]
+  const chunks: Block[] = []
+  for (let start = 0; start < block.lines.length; start += CODE_CHUNK_LINES) {
+    chunks.push({ kind: 'code', lang: start === 0 ? block.lang : '', lines: block.lines.slice(start, start + CODE_CHUNK_LINES) })
+  }
+  return chunks
+}
+
 export function Markdown({ text, color, raw = false, viewport }: MarkdownProps) {
   const theme = useTheme()
   const [, measured] = useReducer((n: number) => n + 1, 0)
   const cache = useRef<{ text: string; width: number; theme: Theme; heights: Map<number, BlockMeasurement> } | null>(null)
   const nodes = useRef(new Map<number, DOMElement>())
-  const blocks = raw ? [] : parseBlocks(text)
+  const parsed = raw ? [] : parseBlocks(text)
+  const blocks = viewport ? parsed.flatMap(splitCodeBlocks) : parsed
   const signatures = viewport ? blocks.map(block => JSON.stringify(block)) : []
   if (viewport && (!cache.current || cache.current.width !== viewport.width || cache.current.theme !== theme || !text.startsWith(cache.current.text))) {
     cache.current = { text, width: viewport.width, theme, heights: new Map() }

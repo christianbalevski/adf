@@ -106,7 +106,7 @@ import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { KILL_IN_PROGRESS_ERROR, RuntimeGate } from '../runtime/runtime-gate'
-import { MeshManager } from '../runtime/mesh-manager'
+import { MeshManager, type MeshInboxUpdate } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
 import { appendOwnerMessageUnderLease } from '../runtime/owner-message-append'
@@ -118,7 +118,7 @@ import { approvalHub } from '../runtime/approval-hub'
 import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import { MenuBarController } from '../tray/menu-bar'
 import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../tray/menu-bar-model'
-import type { AgentState, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, AgentState, ChatAppendedPayload, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { agentProviderKeySource, createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { providerSelectionChanged } from '../providers/provider-selection'
 import { ensureCoreToolDeclarations } from '../runtime/core-tool-declarations'
@@ -192,7 +192,7 @@ import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
 import { createEvent, createDispatch } from '../../shared/types/adf-event.types'
 import type { MeshEvent, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
-import type { AgentConfig, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, LoopEntry, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
@@ -3009,9 +3009,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
       const totalCount = loopWorkspace.getLoopCount()
       const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
-      const loopEntries = offset > 0
-        ? loopWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-        : loopWorkspace.getLoop()
+      const loopEntries = loopWorkspace.getLoopTail(LOOP_DISPLAY_LIMIT)
       const displayEntries = parseLoopToDisplay(loopEntries)
       return {
         chatHistory: {
@@ -3626,9 +3624,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     t1 = performance.now()
     const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
-    const loopEntries = offset > 0
-      ? currentWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-      : currentWorkspace.getLoop()
+    const loopEntries = currentWorkspace.getLoopTail(LOOP_DISPLAY_LIMIT)
     perfLog(`[PERF] DOC_GET_BATCH.getLoop: ${(performance.now() - t1).toFixed(1)}ms (entries=${loopEntries.length}, offset=${offset})`)
 
     t1 = performance.now()
@@ -4822,6 +4818,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       ],
     })
     const newExecutor = assembled.executor
+    newExecutor.confirmProviderValidation(provider)
     const newTriggerEvaluator = assembled.triggerEvaluator
     let lastAgentName = config.name
     const foregroundHost: AgentHostBindings = {
@@ -5661,12 +5658,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
       })
 
-      meshManager.on('inbox_updated', (data: { filePath: string; inbox: unknown }) => {
-        if (data.filePath === currentFilePath) {
+      meshManager.on('inbox_updated', ({ filePath, workspace }: MeshInboxUpdate) => {
+        if (filePath === currentFilePath) {
           const win = getMainWindow()
           if (win) {
-            // Wrap raw InboxMessage[] in version envelope for renderer
-            win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages: data.inbox } })
+            const messages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
+            win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages } })
           }
         }
       })
@@ -5999,20 +5996,22 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { delivered, failed: filePaths.map((filePath) => ({ filePath, error: 'empty message' })) }
     }
 
-    // Refresh an open loop panel after a direct loop append — the write went
-    // straight to SQLite, so no executor event will repaint the panel. Skipped
-    // while the foreground agent is mid-turn: chat_updated would clobber the
-    // streaming UI, and the trigger turn repaints it moments later anyway.
-    const pushForegroundLoop = (filePath: string): void => {
-      if (filePath !== currentFilePath || !currentWorkspace) return
-      if (agentExecutor && toDisplayState(agentExecutor.getState()) === 'active') return
-      const win = getMainWindow()
-      if (!win) return
-      win.webContents.send(IPC.AGENT_EVENT, {
-        type: 'chat_updated',
-        payload: { uiLog: parseLoopToDisplay(currentWorkspace.getLoop()) },
-        timestamp: Date.now()
-      })
+    // Direct writes bypass the executor's events. Send just the new entry
+    // while its workspace is still open, and leave a running stream alone.
+    const pushForegroundAppend = (filePath: string, workspace: AdfWorkspace, row: LoopEntry): void => {
+      if (filePath !== currentFilePath || workspace !== currentWorkspace) return
+      if (agentExecutor && (agentExecutor.isTurnActive() || toDisplayState(agentExecutor.getState()) === 'active')) return
+      try {
+        const [entry] = parseLoopToDisplay([row])
+        if (!entry) return
+        getMainWindow()?.webContents.send(IPC.AGENT_EVENT, {
+          type: 'chat_appended',
+          payload: { filePath, entry } satisfies ChatAppendedPayload,
+          timestamp: row.created_at
+        } satisfies AgentExecutionEvent)
+      } catch (error) {
+        console.warn('[Fleet] Failed to display committed owner message:', error)
+      }
     }
 
     // Owner → agent is plain CHAT, not mesh mail: these are our own agents,
@@ -6073,13 +6072,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         // when the user starts it properly. No inbox row. Written under the
         // agent's lease: a file another runtime runs is refused, with the
         // holder's sentence.
-        const isForeground = filePath === currentFilePath && !!currentWorkspace
-        const appended = await appendOwnerMessageUnderLease(processAgentLeases(), filePath, content, isForeground ? { workspace: currentWorkspace! } : {})
+        const workspace = filePath === currentFilePath ? currentWorkspace : null
+        const appended = await appendOwnerMessageUnderLease(processAgentLeases(), filePath, content, workspace ? {
+          workspace,
+          onCommitted: (row) => pushForegroundAppend(filePath, workspace, row)
+        } : {})
         if (!appended.ok) {
           failed.push({ filePath, error: appended.error })
           continue
         }
-        if (isForeground) pushForegroundLoop(filePath)
         delivered.push(filePath)
       } catch (error) {
         failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })

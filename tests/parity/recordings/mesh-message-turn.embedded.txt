@@ -944,7 +944,7 @@
         -
           label: "ADF Studio Documentation"
 
-## llm requests (7)
+## llm requests (5)
 #1:
   messages:
     -
@@ -964,15 +964,6 @@
   system: ""
   tools: []
 #3:
-  messages:
-    -
-      role: "user"
-      text: "hi"
-  model: "parity-model"
-  stream: false
-  system: ""
-  tools: []
-#4:
   messages:
     -
       role: "user"
@@ -1244,7 +1235,7 @@
     - "sys_set_meta"
     - "sys_delete_meta"
     - "sys_fetch"
-#5:
+#4:
   messages:
     -
       role: "user"
@@ -1522,16 +1513,7 @@
     - "sys_set_meta"
     - "sys_delete_meta"
     - "sys_fetch"
-#6:
-  messages:
-    -
-      role: "user"
-      text: "hi"
-  model: "parity-model"
-  stream: false
-  system: ""
-  tools: []
-#7:
+#5:
   messages:
     -
       role: "user"
