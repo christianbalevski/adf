@@ -7,6 +7,7 @@ import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
 import type { LoopEntryRow } from '../../../src/main/adf/adf-database'
 import { readArchivedChatPage, ARCHIVE_MAX_SNAPSHOT_BYTES } from '../../../src/main/adf/archived-loop-page'
+import { indexArchiveRows } from '../../../src/main/adf/archive-snapshot-index'
 
 let rootDir: string
 let ws: AdfWorkspace
@@ -66,6 +67,42 @@ function row(seq: number, label = `r${seq}`, ord?: number): LoopEntryRow {
 }
 
 describe('readArchivedChatPage', () => {
+  it('seeks successive large pages without decoding again, including a shifted duplicate and live exclusion', async () => {
+    const baseline = AdfWorkspace.create(join(rootDir, 'small.adf'), { name: 'small' })
+    try {
+      const label = (seq: number) => `内容 ${seq}, ["\\\\"]`
+      const source = Array.from({ length: 130 }, (_, i) => row(i + 1, label(i + 1)))
+      const padding = 'a'.repeat(525_000)
+      for (const workspace of [ws, baseline]) {
+        workspace.appendToLoop('user', text('live: omit the archived seq 1'))
+        archive([row(10, 'older only', -1), row(94, 'earliest duplicate', 47)], workspace)
+      }
+      archive(source.toReversed().map((entry) => ({ ...entry, padding })))
+      archive(source.toReversed(), baseline)
+      const getBlob = vi.spyOn(ws, 'getAuditBlob')
+      const tape = async (workspace: AdfWorkspace) => {
+        const pages: Awaited<ReturnType<typeof readArchivedChatPage>>[] = []
+        let cursor: string | null = '1000:1000'
+        for (let i = 0; i < 10 && cursor; i++) {
+          const page = await readArchivedChatPage(workspace, cursor, { limit: 23 })
+          pages.push(page)
+          cursor = page.hasMore ? page.cursor : null
+        }
+        return pages
+      }
+      const pages = await tape(ws)
+      const control = await tape(baseline)
+      expect(pages).toEqual(control)
+      expect(pages.length).toBeGreaterThan(3)
+      expect(pages.at(-1)?.hasMore).toBe(false)
+      expect(pages.flatMap(contents)).toContain('earliest duplicate')
+      expect(pages.flatMap(contents)).not.toContain(label(1))
+      expect(getBlob.mock.calls).toEqual([[2], [1]])
+    } finally {
+      baseline.close()
+    }
+  })
+
   it('seeks successive pages in one decoded snapshot, including a display-order tie at the cursor', async () => {
     const oldAudit = archive([row(1)])
     const source = Array.from({ length: 600 }, (_, i) => row(i + 2))
@@ -221,5 +258,27 @@ describe('readArchivedChatPage', () => {
 
   it('refuses a malformed cursor', async () => {
     await expect(readArchivedChatPage(ws, 'nope')).rejects.toThrow(/Invalid archive cursor/)
+  })
+})
+
+describe('archive byte index', () => {
+  it('indexes valid rows among other JSON values and preserves slices when sorting by ord', async () => {
+    const a = row(2, '\u2603 quote " and backslash \\', 1)
+    const b = row(1, 'some ])}+ delimiters', 1)
+    const json = Buffer.from(`\t [ ${JSON.stringify(a)}, 1.2e10, {"k":[1,2]}, null, "[s]", ${JSON.stringify(b)} ] \r\n`)
+    const index = await indexArchiveRows(json)
+    expect(index?.length).toBe(2)
+    expect(index?.positionAt(0)).toEqual({ key: 1, seq: 1 })
+    expect(index?.rowAt(0)).toEqual(b)
+    expect(index?.rowAt(1)).toEqual(a)
+  })
+
+  it.each(['[{},]', '[{} {}]', '[1] null', '["unclosed]', '[{"x":[1,2}]'])('rejects malformed arrays, including a bad suffix after a valid value: %s', async (json) => {
+    await expect(indexArchiveRows(Buffer.from(json))).rejects.toThrow(SyntaxError)
+  })
+
+  it('defers duplicate and unsafe positions to the legacy reader', async () => {
+    await expect(indexArchiveRows(Buffer.from(JSON.stringify([row(1), row(1)])))).resolves.toBeNull()
+    await expect(indexArchiveRows(Buffer.from(JSON.stringify([row(2, 'bad ord', Number.MAX_SAFE_INTEGER + 1)])))).resolves.toBeNull()
   })
 })
