@@ -1243,6 +1243,10 @@ export class AdfWorkspace {
     return this.db.getLoopEntries(this.boundLoop, limit, offset)
   }
 
+  getLoopTail(limit: number): LoopEntryRow[] {
+    return this.db.getLoopEntriesTail(this.boundLoop, limit)
+  }
+
   /** Keyset pagination: entries immediately preceding `beforeSeq`, ascending. */
   getLoopBefore(beforeSeq: number, limit: number): LoopEntryRow[] {
     return this.db.getLoopEntriesBefore(this.boundLoop, beforeSeq, limit)

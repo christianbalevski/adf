@@ -3009,9 +3009,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
       const totalCount = loopWorkspace.getLoopCount()
       const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
-      const loopEntries = offset > 0
-        ? loopWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-        : loopWorkspace.getLoop()
+      const loopEntries = loopWorkspace.getLoopTail(LOOP_DISPLAY_LIMIT)
       const displayEntries = parseLoopToDisplay(loopEntries)
       return {
         chatHistory: {
@@ -3626,9 +3624,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     t1 = performance.now()
     const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
-    const loopEntries = offset > 0
-      ? currentWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-      : currentWorkspace.getLoop()
+    const loopEntries = currentWorkspace.getLoopTail(LOOP_DISPLAY_LIMIT)
     perfLog(`[PERF] DOC_GET_BATCH.getLoop: ${(performance.now() - t1).toFixed(1)}ms (entries=${loopEntries.length}, offset=${offset})`)
 
     t1 = performance.now()

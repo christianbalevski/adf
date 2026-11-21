@@ -2339,7 +2339,7 @@ export class RuntimeService extends EventEmitter {
     try { target.managed?.agent.session.flushToLoop?.() } catch { /* best effort */ }
     const total = workspace.getLoopCount()
     const offset = Math.max(0, total - CHAT_DISPLAY_LIMIT)
-    const entries = offset > 0 ? workspace.getLoopPaginated(CHAT_DISPLAY_LIMIT, offset) : workspace.getLoop()
+    const entries = workspace.getLoopTail(CHAT_DISPLAY_LIMIT)
     return {
       ...this.getAgentHeader(target.id),
       configRevision: configRevision(workspace).revision,
@@ -2380,7 +2380,7 @@ export class RuntimeService extends EventEmitter {
     const offset = opts.offset === undefined
       ? Math.max(0, total - limit)
       : clampInteger(opts.offset, 0, Math.max(0, total))
-    const entries = workspace.getLoopPaginated(limit, offset)
+    const entries = opts.offset === undefined ? workspace.getLoopTail(limit) : workspace.getLoopPaginated(limit, offset)
     return { agentId: target.id, loop, total, limit, offset, entries }
   }
 
@@ -2736,9 +2736,7 @@ export class RuntimeService extends EventEmitter {
     if (total === 0) return { agentId: target.id, loop: loopName, chatHistory: null }
     const clampedLimit = clampInteger(limit, 1, 500)
     const offset = Math.max(0, total - clampedLimit)
-    const loopEntries = offset > 0
-      ? workspace.getLoopPaginated(clampedLimit, offset)
-      : workspace.getLoop()
+    const loopEntries = workspace.getLoopTail(clampedLimit)
     return {
       agentId: target.id,
       loop: loopName,
