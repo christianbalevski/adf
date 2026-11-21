@@ -134,6 +134,9 @@ const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read',
  * write-isolated bookkeeping; per-loop recovery is a later wave.
  */
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+
+/** Last sentence of an over-cap notice when there is no code route to name. */
+const NARROW_RESULT = 'Request a smaller or more specific result.'
 // Sent when a turn answering an owner chat is about to end with nothing the
 // owner can see (only thinking, or a bare state change). Written to the loop
 // like any other model input.
@@ -5133,7 +5136,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       filteredResult = rawResult
     }
-    const result = this.enforceToolResultLimit(filteredResult, toolName)
+    const result = this.enforceToolResultLimit(filteredResult, toolName, this.toolResultRemedy(toolName))
 
     // Build adf-file:// URL for the renderer image preview
     let eventImageUrl: string | undefined
@@ -5300,7 +5303,21 @@ export class AgentExecutor extends EventEmitter {
     }
   }
 
-  private enforceToolResultLimit(result: ToolResult, toolName: string): ToolResult {
+  /** What the agent can do to get at a tool result that was over the cap. */
+  private toolResultRemedy(toolName: string): string {
+    // Name the code route only for a result that isn't the agent's own code
+    // (sys_code, sys_lambda), when sys_code is enabled and registered (it isn't
+    // on a host without a sandbox service), and when inline code may make the
+    // call: inline code is refused a tool that any declaration marks restricted,
+    // as the turn's dedupe reads it. Any other refusal the gate gives says why.
+    const declaration = (name: string) => this.config.tools.find(t => t.name === name)
+    if (toolName === 'sys_code' || toolName === 'sys_lambda') return NARROW_RESULT
+    if (!declaration('sys_code')?.enabled || !this.toolRegistry.get('sys_code')) return NARROW_RESULT
+    if (this.config.tools.some(t => t.name === toolName && t.restricted)) return NARROW_RESULT
+    return `Calls made from code are not capped: if running it again is safe, try it from sys_code (\`await adf[${JSON.stringify(toolName)}]({...})\` with the same arguments, without \`_async\`) and return only the part you need.`
+  }
+
+  private enforceToolResultLimit(result: ToolResult, toolName: string, remedy = NARROW_RESULT): ToolResult {
     const maxTokens = this.config.limits?.max_tool_result_tokens ?? 16000
     const content = result.content
 
@@ -5330,7 +5347,7 @@ export class AgentExecutor extends EventEmitter {
       content:
         `[TRUNCATED] Tool "${toolName}" returned ~${tokenCount.toLocaleString()} tokens ` +
         `(limit: ${maxTokens.toLocaleString()}). The full result was discarded to protect the context window. ` +
-        `Request a smaller or more specific result.\n\n` +
+        `${remedy}\n\n` +
         preview
     }
   }
