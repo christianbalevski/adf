@@ -539,7 +539,8 @@ export class EmailAdapter implements ChannelAdapter {
   }
 
   private async doFetchUnseen(initial: boolean): Promise<void> {
-    if (!this.client || !this.ctx) return
+    const client = this.client
+    if (!client || !this.ctx) return
 
     const config = this.ctx.getConfig()
     const policy = config.policy ?? {}
@@ -552,7 +553,7 @@ export class EmailAdapter implements ChannelAdapter {
         // Only mail arriving after this connect gets ingested: record the
         // mailbox's next UID as a floor. The pre-connect backlog stays UNSEEN
         // and unflagged — nothing is lost if catch-up is re-enabled later.
-        const mailbox = this.client.mailbox
+        const mailbox = client.mailbox
         const uidNext = mailbox ? mailbox.uidNext : undefined
         if (typeof uidNext === 'number') {
           this.uidFloor = uidNext
@@ -566,28 +567,22 @@ export class EmailAdapter implements ChannelAdapter {
       }
     }
 
-    // Collect all unseen messages first — interleaving STORE commands inside
-    // an active FETCH stream can block the IMAP pipeline. fetch yields in
-    // sequence order (oldest first), so the max_messages cap keeps the oldest
-    // backlog; everything skipped here is left UNSEEN and unflagged in the
-    // mailbox — only ingestion is bounded, nothing is lost.
-    const collected: FetchMessageObject[] = []
+    // Select oldest eligible UIDs using envelope metadata. Skipped mail stays unseen.
+    const selectedUids: number[] = []
     const cutoff = Date.now() - catchUp.max_age_hours * 3_600_000
     let tooOld = 0
     let overflow = 0
     try {
-      for await (const msg of this.client.fetch({ seen: false }, {
+      for await (const msg of client.fetch({ seen: false }, {
         envelope: true,
-        source: true,
-        bodyStructure: true,
         uid: true
       })) {
         // catch_up.enabled=false: pre-connect backlog is permanently out of scope
         if (this.uidFloor != null && msg.uid < this.uidFloor) continue
         const sentAt = msg.envelope?.date?.getTime()
         if (sentAt != null && sentAt < cutoff) { tooOld++; continue }
-        if (collected.length >= catchUp.max_messages) { overflow++; continue }
-        collected.push(msg)
+        if (selectedUids.length >= catchUp.max_messages) { overflow++; continue }
+        selectedUids.push(msg.uid)
       }
     } catch (err) {
       // fetch throws if no messages match — that's fine
@@ -596,6 +591,7 @@ export class EmailAdapter implements ChannelAdapter {
       }
     }
 
+    if (client !== this.client) return
     if (tooOld > 0 || overflow > 0) {
       const parts: string[] = []
       if (overflow > 0) parts.push(`${overflow} unread remain past the ${catchUp.max_messages}-message cap; will ingest next cycle`)
@@ -607,6 +603,22 @@ export class EmailAdapter implements ChannelAdapter {
       }
     }
 
+    if (selectedUids.length === 0) return
+    // Finish FETCH before processing and sending STORE on the same connection.
+    const collected: FetchMessageObject[] = []
+    try {
+      for await (const msg of client.fetch(selectedUids.join(','), {
+        envelope: true,
+        source: true,
+        bodyStructure: true,
+        uid: true
+      }, { uid: true })) {
+        collected.push(msg)
+      }
+    } catch (err) {
+      if (!(err instanceof Error && err.message.includes('Nothing to fetch'))) throw err
+    }
+    if (client !== this.client) return
     if (collected.length === 0) return
     this.ctx.log('info', `Found ${collected.length} unseen message(s)`)
 
@@ -627,10 +639,10 @@ export class EmailAdapter implements ChannelAdapter {
       }
 
       // Mark all processed messages as seen in one batch
-      if (processedUids.length > 0 && this.client) {
+      if (processedUids.length > 0 && client === this.client) {
         try {
           const uidRange = processedUids.join(',')
-          await this.client.messageFlagsAdd(uidRange, ['\\Seen'], { uid: true })
+          await client.messageFlagsAdd(uidRange, ['\\Seen'], { uid: true })
           this.ctx?.log('info', `Marked ${processedUids.length} message(s) as seen`)
         } catch (err) {
           this.ctx?.log('warn', `Failed to mark messages as seen: ${err instanceof Error ? err.message : err}`)
