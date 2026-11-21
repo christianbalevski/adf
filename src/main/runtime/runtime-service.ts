@@ -211,6 +211,7 @@ export interface RuntimeLoadAgentOptions {
 interface StartProviderPreflight {
   killEpoch: number
   credentialsLocked?: string
+  failed?: boolean
 }
 
 interface PendingRuntimeLoad {
@@ -897,7 +898,19 @@ export class RuntimeService extends EventEmitter {
     // Double-start TOCTOU guard: claim an in-flight slot SYNCHRONOUSLY before
     // any await so concurrent loads of the same file converge on one build.
     const pending = this.inFlightLoads.get(canonicalPath)
-    if (pending) return pending.done
+    if (pending) {
+      try {
+        return await pending.done
+      } catch (error) {
+        const check = pending.providerPreflight
+        // A manual provider refusal belongs to checked starts. An unchecked
+        // start that joined this slot can still load through its ordinary path.
+        if (!opts.providerPreflight && check?.failed && !RuntimeGate.killedSince(check.killEpoch)) {
+          return this.loadAgent(canonicalPath, opts)
+        }
+        throw error
+      }
+    }
 
     // The body starts a microtask later, after the slot is claimed: an
     // 'agent-lifecycle' listener that loads the same file from inside
@@ -1048,20 +1061,28 @@ export class RuntimeService extends EventEmitter {
       if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey
       let checkedProvider: LLMProvider | undefined
       let assertSameProvider: (() => void) | undefined
-      if (opts.providerPreflight && this.providerFactory && !opts.provider) {
+      const preflight = opts.providerPreflight
+      if (preflight && this.providerFactory && !opts.provider) {
         const fingerprint = this.startProviderFingerprint(config, workspace, keyCell.current)
         assertSameProvider = () => {
           if (this.startProviderFingerprint(workspace.getAgentConfig(), workspace, keyCell.current) !== fingerprint) {
+            preflight.failed = true
             throw new RuntimeLoopError('The provider changed while the agent was starting. Start the agent again.', 409, 'provider_check_failed')
           }
         }
-        const check = await this.checkProviderForStart(config, canonicalPath, workspace, keyCell.current, this.providerFactory)
-        if (RuntimeGate.killedSince(opts.providerPreflight.killEpoch)) {
+        const check = await this.checkProviderForStart(config, canonicalPath, workspace, keyCell.current, this.providerFactory).catch(error => {
+          preflight.failed = true
+          throw error
+        })
+        if (RuntimeGate.killedSince(preflight.killEpoch)) {
           throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
         }
         assertSameProvider()
-        if (!check.ok) throw new RuntimeLoopError(check.error, 409, check.code ?? 'provider_check_failed')
-        opts.providerPreflight.credentialsLocked = check.credentialsLocked
+        if (!check.ok) {
+          preflight.failed = true
+          throw new RuntimeLoopError(check.error, 409, check.code ?? 'provider_check_failed')
+        }
+        preflight.credentialsLocked = check.credentialsLocked
         checkedProvider = check.provider
       }
       const provider = checkedProvider ?? await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
@@ -1619,12 +1640,13 @@ export class RuntimeService extends EventEmitter {
       if (!filePath) throw new Error(`RuntimeService: unknown agent "${identifier}"`)
       let providerPreflight: StartProviderPreflight | undefined
       if (opts.preflight) {
-        const pending = this.inFlightLoads.get(this.canonicalFilePath(filePath))
-        if (!pending) providerPreflight = { killEpoch }
-        else if (pending.providerPreflight) providerPreflight = pending.providerPreflight
+        const canonicalPath = this.canonicalFilePath(filePath)
+        const pending = this.inFlightLoads.get(canonicalPath)
+        if (pending?.providerPreflight) providerPreflight = pending.providerPreflight
+        else if (!pending && !this.filePathToAgentId.has(canonicalPath)) providerPreflight = { killEpoch }
         else {
-          // An unchecked load already owns the slot. This caller still asked
-          // for a provider gate, so keep the standalone check for that race.
+          // A file-path request may resolve to a loaded agent, or an unchecked
+          // load may already own the slot. Both still need the requested check.
           const check = await this.preflightProvider(identifier)
           if (!check.ok) throw new RuntimeLoopError(check.error, 409, check.code ?? 'provider_check_failed')
           credentialsLocked = check.credentialsLocked
