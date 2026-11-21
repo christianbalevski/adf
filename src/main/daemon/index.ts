@@ -499,6 +499,7 @@ const daemon = new DaemonHost({
     }),
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
+    getFleetPeers: () => runtimeDiscovery.getFleetPeers(),
     getPeers: (args: { waitMs?: number }) => runtimeDiscovery.peers(args),
   },
   // The admin install routes report progress on the client stream, as

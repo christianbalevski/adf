@@ -27,7 +27,7 @@ vi.mock('electron', () => {
 
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { createDaemonVitalsDeps } from '../src/main/daemon/vitals-routes'
-import { FORCE_MIN_INTERVAL_MS, overlayLiveStates } from '../src/main/services/agent-vitals'
+import { AgentVitalsService, FORCE_MIN_INTERVAL_MS, overlayLiveStates } from '../src/main/services/agent-vitals'
 import { RuntimeService } from '../src/main/runtime/runtime-service'
 import { MockLLMProvider, createHeadlessAgent } from '../src/main/runtime/headless'
 import type { AgentActivity, AgentVitals } from '../src/shared/types/agent-vitals.types'
@@ -183,21 +183,22 @@ describe('GET /agents/:id/activity', () => {
 })
 
 describe('createDaemonVitalsDeps', () => {
-  it('overlays executor display states on mesh rows and reports the mesh state', () => {
+  it('overlays executor display states using one live roster per fleet snapshot', async () => {
     const filePath = join(tmpdir(), 'agent-1.adf')
     const row = { filePath, handle: 'agent-1', state: 'idle' } as MeshAgentStatus
     let enabled = true
+    const listLiveAgents = vi.fn(() => [{
+      agentId: randomUUID(),
+      filePath,
+      executorState: 'thinking',
+      workspace: {} as never,
+      getContextGauge: () => ({ tokens: 1200, threshold: 100_000 }),
+    }])
     const deps = createDaemonVitalsDeps({
       runtime: {
         getAgent: () => undefined,
-        scanAdfFiles: () => [],
-        listLiveAgents: () => [{
-          agentId: randomUUID(),
-          filePath,
-          executorState: 'thinking',
-          workspace: {} as never,
-          getContextGauge: () => ({ tokens: 1200, threshold: 100_000 }),
-        }],
+        scanAdfFilesAsync: async () => [],
+        listLiveAgents,
       },
       mesh: { isEnabled: () => enabled, getAgentStatuses: () => [row] },
       ws: { getConnections: () => [{}, {}] },
@@ -209,6 +210,10 @@ describe('createDaemonVitalsDeps', () => {
     expect(deps.getWsConnectionCount(filePath)).toBe(2)
     expect(deps.getTrackedDirectories()).toEqual([])
     expect(deps.getMaxScanDepth()).toBe(5)
+    listLiveAgents.mockClear()
+    const fleet = await new AgentVitalsService(deps).getFleetStatus()
+    expect(fleet.agents).toMatchObject([{ filePath, state: 'active', contextTokens: 1200 }])
+    expect(listLiveAgents).toHaveBeenCalledTimes(1)
     enabled = false
     expect(deps.isMeshRunning()).toBe(false)
     expect(deps.getLiveMeshAgents()).toEqual([])

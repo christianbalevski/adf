@@ -30,7 +30,7 @@ export interface VitalsRuntime {
   /** A running agent or an open document (D4); vitals read either from its file. */
   getAgentOrDocument?(agentId: string): RuntimeAgentRef | undefined
   listLiveAgents(): RuntimeLiveAgent[]
-  scanAdfFiles(dirs: string[], maxDepth?: number): string[]
+  scanAdfFilesAsync(dirs: string[], maxDepth?: number): Promise<string[]>
 }
 
 export interface DaemonVitalsSources {
@@ -50,21 +50,39 @@ function canon(filePath: string): string {
 /** AgentVitalsDeps from the daemon's runtime, settings, mesh and WS manager. */
 export function createDaemonVitalsDeps(src: DaemonVitalsSources): AgentVitalsDeps {
   const live = (): RuntimeLiveAgent[] => src.runtime.listLiveAgents()
-  const liveStates = (): Array<{ filePath: string; state: ReturnType<typeof toDisplayState> }> =>
-    live().map((a) => ({ filePath: a.filePath, state: toDisplayState(a.executorState) }))
+  const liveStates = (agents = live()) =>
+    agents.map((a) => ({ filePath: a.filePath, state: toDisplayState(a.executorState) }))
+  const meshAgents = (states: ReturnType<typeof liveStates>) =>
+    src.mesh?.isEnabled() ? overlayLiveStates(src.mesh.getAgentStatuses(), states) : []
+  const workspaces = (agents = live()) => agents.map((a) => ({ filePath: a.filePath, workspace: a.workspace }))
   return {
     isMeshRunning: () => !!src.mesh?.isEnabled(),
-    getLiveMeshAgents: () => (src.mesh?.isEnabled() ? overlayLiveStates(src.mesh.getAgentStatuses(), liveStates()) : []),
+    getLiveMeshAgents: () => src.mesh?.isEnabled() ? meshAgents(liveStates()) : [],
     getTrackedDirectories: () => (src.settings ? storedDirs(src.settings) : []),
     getMaxScanDepth: () => (src.settings ? maxDepthOf(src.settings) : 5),
-    listAdfFiles: async (dir, maxDepth) => src.runtime.scanAdfFiles([dir], maxDepth),
+    listAdfFiles: (dir, maxDepth) => src.runtime.scanAdfFilesAsync([dir], maxDepth),
     getContextGauge: (filePath) => {
       const key = canon(filePath)
       return live().find((a) => canon(a.filePath) === key)?.getContextGauge()
     },
     getWsConnectionCount: (filePath) => (src.ws ? src.ws.getConnections(filePath).length || undefined : undefined),
     getLiveExecStates: liveStates,
-    getOpenWorkspaces: () => live().map((a) => ({ filePath: a.filePath, workspace: a.workspace })),
+    getOpenWorkspaces: workspaces,
+    getFleetLiveSnapshot: () => {
+      const agents = live()
+      const states = liveStates(agents)
+      const byPath = new Map<string, RuntimeLiveAgent>()
+      for (const agent of agents) {
+        const path = canon(agent.filePath)
+        if (!byPath.has(path)) byPath.set(path, agent)
+      }
+      return {
+        meshAgents: meshAgents(states),
+        liveExecStates: states,
+        openWorkspaces: workspaces(agents),
+        getContextGauge: (path) => byPath.get(path)?.getContextGauge(),
+      }
+    },
   }
 }
 
@@ -73,16 +91,16 @@ export function createDaemonVitalsDeps(src: DaemonVitalsSources): AgentVitalsDep
  * name, as every /agents/:id route), else a tracked agent that is not loaded (agent id or
  * handle from its file). `null` file: loaded without one.
  */
-function resolveVitalsFile(
+async function resolveVitalsFile(
   id: string,
   runtime: VitalsRuntime,
   vitals: AgentVitalsService,
   settings: TrackedDirsSettings | undefined,
-): { filePath: string | null } | undefined {
+): Promise<{ filePath: string | null } | undefined> {
   const loaded = runtime.getAgentOrDocument?.(id) ?? runtime.getAgent(id)
   if (loaded) return { filePath: loaded.filePath }
   if (!settings) return undefined
-  const files = runtime.scanAdfFiles(storedDirs(settings), maxDepthOf(settings))
+  const files = await runtime.scanAdfFilesAsync(storedDirs(settings), maxDepthOf(settings))
   let byHandle: string | undefined
   for (const filePath of files) {
     const meta = vitals.peekFleetMetaCached(filePath)
@@ -100,13 +118,13 @@ export function registerVitalsRoutes(
   type Req = { Params: { id: string }; Querystring: { force?: string } }
 
   /** Validate `force` and resolve the file; sends the error reply and returns null on failure. */
-  const target = (request: FastifyRequest<Req>, reply: FastifyReply, what: string): { filePath: string; forced: boolean } | null => {
+  const target = async (request: FastifyRequest<Req>, reply: FastifyReply, what: string): Promise<{ filePath: string; forced: boolean } | null> => {
     const force = request.query.force
     if (force !== undefined && !['1', '0', 'true', 'false'].includes(force)) {
       reply.code(400).send({ error: 'force must be 1, 0, true or false', code: 'bad_request' })
       return null
     }
-    const found = resolveVitalsFile(request.params.id, deps.runtime, deps.vitals, deps.settings)
+    const found = await resolveVitalsFile(request.params.id, deps.runtime, deps.vitals, deps.settings)
     if (!found) {
       reply.code(404).send({ error: `Unknown agent "${request.params.id}"`, code: 'not_found' })
       return null
@@ -119,7 +137,7 @@ export function registerVitalsRoutes(
   }
 
   server.get<Req>('/agents/:id/vitals', async (request, reply) => {
-    const t = target(request, reply, 'vitals are')
+    const t = await target(request, reply, 'vitals are')
     if (!t) return reply
     try {
       // agentsSpawned counts children in the last fleet scan. The daemon has
@@ -132,7 +150,7 @@ export function registerVitalsRoutes(
   })
 
   server.get<Req>('/agents/:id/activity', async (request, reply) => {
-    const t = target(request, reply, 'activity is')
+    const t = await target(request, reply, 'activity is')
     if (!t) return reply
     try {
       return await deps.vitals.getAgentActivity(t.filePath, { force: t.forced })
