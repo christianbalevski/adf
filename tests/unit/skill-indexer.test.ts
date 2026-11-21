@@ -317,6 +317,17 @@ describe('watched paths', () => {
 })
 
 describe('SkillIndexer', () => {
+  it('rejects an oversized manifest from metadata before reading its content', () => {
+    const path = 'skills/alpha/SKILL.md'
+    const host = createHost(new Map([[path, 'a'.repeat(MAX_SKILL_FILE_BYTES + 1)]]))
+    const readFile = vi.spyOn(host, 'readFile')
+    const indexer = new SkillIndexer(host, {})
+    indexer.refresh()
+    expect(readFile).not.toHaveBeenCalledWith(path)
+    expect(host.files.get(SKILLS_REGISTRY_PATH)).toContain(`exceeds ${MAX_SKILL_FILE_BYTES} bytes`)
+    indexer.dispose()
+  })
+
   it('writes the registry read_only and reports the change once', () => {
     const files = new Map([[manifest('alpha').path, manifest('alpha').content!]])
     const host = createHost(files)

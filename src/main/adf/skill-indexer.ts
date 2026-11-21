@@ -262,9 +262,10 @@ export function buildSkillRegistry(sources: SkillSource[], stateText: string | n
       rejected.push({ path: file.path, reason: `exceeds ${MAX_SKILL_FILE_BYTES} bytes` })
       continue
     }
-    const parsed = file.content === null
+    const content = file.content
+    const parsed = content === null
       ? { error: 'file disappeared while indexing' }
-      : parseSkillFrontmatter(file.content)
+      : parseSkillFrontmatter(content)
     if ('error' in parsed) {
       rejected.push({ path: file.path, reason: parsed.error })
       continue
@@ -441,9 +442,14 @@ export class SkillIndexer {
 
   private runIndex(): SkillIndexRunResult | null {
     try {
-      const sources: SkillSource[] = this.host.listFiles()
+      const host = this.host
+      const sources: SkillSource[] = host.listFiles()
         .filter(file => isSkillManifestPath(file.path))
-        .map(file => ({ path: file.path, size: file.size, content: this.host.readFile(file.path) }))
+        .map(file => ({
+          path: file.path,
+          size: file.size,
+          get content() { return host.readFile(file.path) },
+        }))
       const result = buildSkillRegistry(sources, this.host.readFile(SKILLS_STATE_PATH))
 
       const previous = this.host.readFile(SKILLS_REGISTRY_PATH)
