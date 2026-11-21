@@ -623,10 +623,6 @@ else if (envelopeSweepSeam !== 'off') setTimeout(() => { void runEnvelopeSweep()
 if (envelopeSweepSeam) console.log(`[ADF Daemon] Test seam: boot envelope sweep ${envelopeSweepSeam} (ADF_TEST_ENVELOPE_SWEEP)`)
 
 withSource('system:daemon', () => {
-  // Clean up scratch dirs left by previous processes that exited uncleanly
-  // (parity with Studio boot).
-  try { purgeStaleProcessDirs() } catch (err) { console.warn('[ADF Daemon] Stale scratch purge failed:', err) }
-
   bootEnvelopeSweep.then(() => daemon.start())
     .then(address => {
       // Only the daemon that claimed its PID file and listening port may
@@ -634,6 +630,8 @@ withSource('system:daemon', () => {
       // the running daemon's notification history.
       approvalHub.initializePersistence(`${settingsPath}.notifications.json`)
       console.log(`[ADF Daemon] Listening on http://${address.host}:${address.port}`)
+      // Stale scratch belongs to dead processes; it does not gate readiness.
+      void purgeStaleProcessDirs().catch(err => console.warn('[ADF Daemon] Stale scratch purge failed:', err))
       console.log(`[ADF Daemon] Settings: ${settings.filePath ?? '(memory)'}`)
       withSource('system:daemon', () => {
         emitUmbilicalEvent({
