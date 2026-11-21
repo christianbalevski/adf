@@ -1,8 +1,9 @@
-import { describe, it, expect, afterAll, beforeEach } from 'vitest'
+import { describe, it, expect, afterAll, beforeEach, vi } from 'vitest'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { unlinkSync, existsSync } from 'fs'
 import { AdfWorkspace, type WorkspaceDataScope } from '../../../src/main/adf/adf-workspace'
+import type { AdfDatabase } from '../../../src/main/adf/adf-database'
 
 /**
  * The workspace `files` data-change scope: every file mutation (text and
@@ -57,6 +58,25 @@ describe('files data-change scope', () => {
     scopes.length = 0
     expect(ws.renameFolder('dir1', 'dir2')).toBeGreaterThan(0)
     expect(filesSignals()).toBeGreaterThan(0)
+  })
+
+  it('does not load binary or oversized text bodies while preparing folder rename events', () => {
+    ws.writeFile('mixed/small.md', 'small')
+    ws.writeFile('mixed/large.md', 'a'.repeat(1024 * 1024 + 1))
+    ws.writeFileBuffer('mixed/image.png', Buffer.from([0x89, 0x50]), 'image/png')
+    const changes = vi.fn()
+    ws.setOnFileChangeCallback(changes)
+    const db = (ws as unknown as { db: AdfDatabase }).db
+    const readFile = vi.spyOn(db, 'readFile')
+    try {
+      expect(ws.renameFolder('mixed', 'moved')).toBe(3)
+      expect(readFile.mock.calls).toEqual([['mixed/small.md']])
+      expect(changes).toHaveBeenCalledWith(expect.objectContaining({ path: 'mixed/small.md', previousContent: 'small' }))
+      expect(changes).toHaveBeenCalledWith(expect.objectContaining({ path: 'moved/image.png', content: undefined }))
+    } finally {
+      readFile.mockRestore()
+      ws.setOnFileChangeCallback(null)
+    }
   })
 
   it('a table change does not raise it', () => {
