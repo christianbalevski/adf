@@ -423,6 +423,34 @@ describe('event stream', () => {
   interface ClientFrame { cursor: number; kind: string; id: string }
   const isClientFrame = (v: unknown): v is ClientFrame => !!v && typeof v === 'object' && (v as ClientFrame).kind === 'host'
 
+  it.each([1, 64])('reads fragmented SSE frames in %i-byte chunks and discards a partial frame at EOF', async (chunkSize) => {
+    const id = 'café'.repeat(512)
+    const script = ': heartbeat\r\nevent: host\rdata: {"cursor":1,\r\ndata: "kind":"host","id":' +
+      `${JSON.stringify(id)}}\r\n\r\n${frame(2, 'bare CR').replace(/\n/g, '\r')}${frame(3, 'LF')}` +
+      frame(4, 'incomplete').slice(0, -1)
+    const bytes = new TextEncoder().encode(script)
+    const fetch: typeof globalThis.fetch = async () => new Response(new ReadableStream({
+      start(controller) {
+        for (let start = 0; start < bytes.length; start += chunkSize) {
+          controller.enqueue(bytes.subarray(start, start + chunkSize))
+        }
+        controller.close()
+      },
+    }))
+    const got: ClientFrame[] = []
+    const stream = new EventStream<ClientFrame>({
+      baseUrl: 'http://127.0.0.1:7385', fetch, isFrame: isClientFrame,
+      onEvent: f => got.push(f), minBackoffMs: 10_000,
+    }).start()
+    try {
+      await until(() => stream.connection.state === 'reconnecting')
+      expect(got.map(f => f.id)).toEqual([id, 'bare CR', 'LF'])
+      expect(stream.cursor).toBe(3)
+    } finally {
+      stream.close()
+    }
+  })
+
   it.each([
     ['a new epoch', [hello('e1', 2) + frame(1, 'a') + frame(2, 'b'), hello('e2', 2) + frame(1, 'c') + frame(2, 'd')]],
     ['the cursor going backwards', [frame(1, 'a') + frame(2, 'b'), frame(1, 'c') + frame(2, 'd')]],

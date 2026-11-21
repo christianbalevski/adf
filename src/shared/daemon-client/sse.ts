@@ -265,7 +265,9 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
   private async read(body: ReadableStream<Uint8Array>, controller: AbortController): Promise<void> {
     const reader = body.getReader()
     const decoder = new TextDecoder()
-    let buffer = ''
+    const parts: string[] = []
+    let endsWithCr = false
+    let endsWithLineBreak = false
     const abort = () => { void reader.cancel().catch(() => {}) }
     controller.signal.addEventListener('abort', abort, { once: true })
     try {
@@ -273,14 +275,33 @@ export class EventStream<F extends StreamFrame = DaemonEventFrame> {
         const { value, done } = await reader.read()
         if (done) break
         this.armIdle()
-        buffer += decoder.decode(value, { stream: true }).replace(/\r\n?/g, '\n')
-        let boundary = buffer.indexOf('\n\n')
-        while (boundary >= 0) {
-          const block = buffer.slice(0, boundary)
-          buffer = buffer.slice(boundary + 2)
-          this.handleBlock(block)
-          boundary = buffer.indexOf('\n\n')
+        let chunk = decoder.decode(value, { stream: true })
+        if (!chunk) continue
+        // Treat a CRLF split across reads as one line break, including when
+        // the CR already completed the frame in the preceding read.
+        if (endsWithCr && chunk.startsWith('\n')) chunk = chunk.slice(1)
+        endsWithCr = chunk.endsWith('\r')
+        if (!chunk) continue
+        chunk = chunk.replace(/\r\n?/g, '\n')
+
+        // Search only the new text. One trailing line break from the prior
+        // fragment may combine with the first line break of this chunk.
+        let start = 0
+        if (endsWithLineBreak && chunk.startsWith('\n')) {
+          this.handleBlock(parts.join(''))
+          parts.length = 0
+          start = 1
         }
+        let boundary = chunk.indexOf('\n\n', start)
+        while (boundary !== -1) {
+          parts.push(chunk.slice(start, boundary))
+          this.handleBlock(parts.join(''))
+          parts.length = 0
+          start = boundary + 2
+          boundary = chunk.indexOf('\n\n', start)
+        }
+        endsWithLineBreak = start < chunk.length && chunk.endsWith('\n')
+        if (start < chunk.length) parts.push(chunk.slice(start))
       }
     } finally {
       controller.signal.removeEventListener('abort', abort)
