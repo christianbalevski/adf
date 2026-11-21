@@ -1,5 +1,6 @@
 import { createHash } from 'crypto'
-import { mkdirSync, rmSync, readdirSync } from 'fs'
+import { mkdirSync, rmSync } from 'fs'
+import { readdir, rm } from 'node:fs/promises'
 import { basename, join } from 'path'
 import { getTempPath } from './user-data-path'
 
@@ -44,10 +45,10 @@ export function purgeAllScratchDirs(): void {
  * exited uncleanly.  A directory is stale if the PID it belongs to
  * is no longer running.
  */
-export function purgeStaleProcessDirs(): void {
+export async function purgeStaleProcessDirs(): Promise<void> {
   const tempDir = getTempPath()
   let entries: string[]
-  try { entries = readdirSync(tempDir) } catch { return }
+  try { entries = await readdir(tempDir) } catch { return }
 
   for (const entry of entries) {
     if (!entry.startsWith(`${SCRATCH_PREFIX}-`)) continue
@@ -65,7 +66,7 @@ export function purgeStaleProcessDirs(): void {
       alive = err?.code === 'EPERM'
     }
     if (!alive) {
-      try { rmSync(join(tempDir, entry), { recursive: true, force: true }) } catch { /* ignore */ }
+      try { await rm(join(tempDir, entry), { recursive: true, force: true }) } catch { /* ignore */ }
     }
   }
 }

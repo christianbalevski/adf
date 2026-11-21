@@ -1181,8 +1181,7 @@ app.whenReady().then(async () => {
   })
 
   // Clean up scratch dirs left by previous instances that exited uncleanly.
-  // Deferred so the synchronous temp-dir scan never delays first paint.
-  setImmediate(() => purgeStaleProcessDirs())
+  void purgeStaleProcessDirs()
 
   app.on('activate', () => {
     // Through the same gate, so a Dock click during quit cleanup can't boot a
