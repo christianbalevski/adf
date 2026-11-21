@@ -2499,6 +2499,7 @@ export class AgentExecutor extends EventEmitter {
       let continueLoop = true
       let activeTurns = 0
       this.compactionFailedThisTurn = false
+      let attemptedEmergencyCompaction = false
       const maxActiveTurns = this.config.limits?.max_active_turns ?? null
       // Track target state from sys_set_state tool
       let targetState: string | null = null
@@ -2667,10 +2668,13 @@ export class AgentExecutor extends EventEmitter {
           // During the memory-flush grace turn the preflight compacts only at
           // an emergency bound above the normal threshold, so the nudge turn
           // isn't immediately killed by the same threshold that triggered it.
-          const preflightBound = this.memoryFlushNudgeIssued
-            ? Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
-            : compactThreshold
-          if (preflightTokens >= preflightBound && this.provider) {
+          const emergencyBound = Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
+          const preflightBound = this.memoryFlushNudgeIssued ? emergencyBound : compactThreshold
+          const atEmergencyBound = preflightTokens >= emergencyBound
+          // Try again only if this turn reaches the emergency bound for the first time.
+          if (preflightTokens >= preflightBound && this.provider &&
+              (!this.compactionFailedThisTurn || (atEmergencyBound && !attemptedEmergencyCompaction))) {
+            attemptedEmergencyCompaction ||= atEmergencyBound
             this.emitEvent({
               type: 'context_injected',
               payload: { category: 'status', content: 'Compacting conversation history (context limit reached)…' },
@@ -6154,6 +6158,11 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private buildSystemPrompt(): string {
+    const live = this.basePromptSource?.()
+    if (typeof live === 'string' && live !== this.basePrompt) {
+      this.basePrompt = live
+      this.systemPromptMemo = null
+    }
     // Short-circuit for the steady state: nothing that feeds the prompt has
     // moved since the last build, so re-deriving the cache key (assemblePrompt,
     // a placeholder scan, a char-loop hash over every injected file and a
@@ -6199,8 +6208,6 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private assembleSystemPrompt(): string {
-    const live = this.basePromptSource?.()
-    if (typeof live === 'string') this.basePrompt = live
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
