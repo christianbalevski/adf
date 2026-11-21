@@ -421,6 +421,7 @@ export class AdfDatabase {
   private db: Database.Database
   private filePath: string
   private closed = false
+  private timerWake: { dataVersion: number; totalChanges: number; nextWake?: number } | null = null
   private assistantTokenCache: {
     loop: string
     revision: number
@@ -570,6 +571,8 @@ export class AdfDatabase {
     updateTimer?: Database.Statement
     deleteTimer?: Database.Statement
     getDueTimers?: Database.Statement
+    getNextTimerWake?: Database.Statement
+    getTotalChanges?: Database.Statement
     expireTimer?: Database.Statement
     readFile?: Database.Statement
     writeFile?: Database.Statement
@@ -3365,8 +3368,14 @@ export class AdfDatabase {
     // "Due" = active timers whose wake time has passed (the fire query).
     // Rows flagged expired are history and must never refire.
     this.stmts.getDueTimers = this.db.prepare(
-      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop, expired FROM adf_timers WHERE next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
+      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop, expired FROM adf_timers WHERE next_wake_at >= ? AND next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
     )
+    this.stmts.getNextTimerWake = this.db.prepare(
+      'SELECT next_wake_at FROM adf_timers WHERE expired = 0 ORDER BY next_wake_at ASC LIMIT 1'
+    ).pluck()
+    this.stmts.getTotalChanges = this.db.prepare(
+      'SELECT total_changes()'
+    ).pluck()
     // Completed timers are flagged, not deleted — they fire one last time
     // right after settling, so stamp the run onto the row for history.
     this.stmts.expireTimer = this.db.prepare(
@@ -4678,7 +4687,19 @@ export class AdfDatabase {
   /** Active timers whose wake time has passed — the set the evaluator fires. */
   getDueTimers(): Timer[] {
     const now = Date.now()
-    const rows = this.stmts.getDueTimers!.all(now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
+    // A quiet database can keep the lower bound across polls. Track both
+    // external commits and local changes, including writes through generic SQL.
+    const dataVersion = this.dataVersion()
+    const totalChanges = this.stmts.getTotalChanges!.get() as number
+    let wake = this.timerWake
+    if (!wake || wake.dataVersion !== dataVersion || wake.totalChanges !== totalChanges || this.db.inTransaction) {
+      const nextWake = this.stmts.getNextTimerWake!.get() as number | undefined
+      wake = { dataVersion, totalChanges, nextWake }
+      // An uncommitted wake might later roll back without changing either stamp.
+      if (!this.db.inTransaction) this.timerWake = wake
+    }
+    if (wake.nextWake === undefined || wake.nextWake > now) return []
+    const rows = this.stmts.getDueTimers!.all(wake.nextWake, now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
     return rows.map((row) => this.rowToTimer(row))
   }
 
