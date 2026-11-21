@@ -240,13 +240,9 @@ interface AgentStoreState extends LoopSlice {
    * Stamp `metadata.seq` (the adf_loop row a live-appended entry ended up in)
    * on entries that do not have one yet.
    *
-   * Deliberately invisible: no renderer reads `seq`, so this mutates the
-   * existing entry objects in place and bumps NEITHER version. Going through
-   * `updateEntryAt` would rewrite `metadata`, which `isContentOnlyDelta`
-   * (correctly) treats as structural — every streamed block would then force a
-   * whole-log regroup (tool pairing, activity grouping, the result filter) for
-   * a pagination cursor nothing draws. `handleLoadOlder` reads the store
-   * imperatively via getState(), so it sees the stamp without a re-render.
+   * The cursor is stamped in place, without a structural version bump.
+   * A stamp on the trailing text block also signals that its Markdown stream
+   * has finished, so bump its log version to flush the final render.
    */
   stampSeq: (indexes: number[], seq: number, loop?: string) => void
   setLog: (log: AgentLogEntry[], earlierCount?: number, loop?: string) => void
@@ -395,11 +391,14 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     stampSeq: (indexes, seq, loop) => {
       if (indexes.length === 0) return
       const slice = selectLoopSlice(get(), loop)
+      let completedText = false
       for (const index of indexes) {
         const entry = slice.log[index]
         if (!entry || typeof entry.metadata?.seq === 'number') continue
         entry.metadata = { ...entry.metadata, seq }
+        if (index === slice.log.length - 1 && entry.type === 'text') completedText = true
       }
+      if (completedText) patchSlice(loop, (s) => ({ logVersion: s.logVersion + 1 }))
     },
     setLog: (log, earlierCount, loop) => patchSlice(loop, (s) => ({
       log,

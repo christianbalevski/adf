@@ -170,14 +170,28 @@ describe('live entries carry the same adf_loop seq as hydrated ones', () => {
     expect(selectLoopSlice(store).log[0].metadata?.seq).toBeUndefined()
   })
 
-  it('costs no structural recomputation — a seq stamp redraws nothing', () => {
+  it('signals trailing text completion without structural recomputation', () => {
     const handle = createAgentEventHandler()
     handle({ type: 'text_delta', timestamp: 1, payload: { delta: 'hi' } })
-    const before = selectLoopSlice(useAgentStore.getState()).structuralVersion
+    const before = selectLoopSlice(useAgentStore.getState())
     handle({ type: 'turn_complete', timestamp: 1, payload: { content: [], seq: 5 } })
     const after = selectLoopSlice(useAgentStore.getState())
-    expect(after.structuralVersion).toBe(before)
+    expect(after.logVersion).toBe(before.logVersion + 1)
+    expect(after.structuralVersion).toBe(before.structuralVersion)
     expect(after.log[0].metadata?.seq).toBe(5)
+  })
+
+  it('starts a new text entry when an adjacent response follows a completed stream', () => {
+    const handle = createAgentEventHandler()
+    handle({ type: 'text_delta', timestamp: 1, payload: { delta: 'First response' } })
+    handle({ type: 'turn_complete', timestamp: 1, payload: { content: [], seq: 5 } })
+    handle({ type: 'text_delta', timestamp: 2, payload: { delta: 'Second response' } })
+    handle({ type: 'text_delta', timestamp: 3, payload: { delta: ' continues' } })
+    const { log } = selectLoopSlice(useAgentStore.getState())
+    expect(log.map((entry) => [entry.content, entry.metadata?.seq])).toEqual([
+      ['First response', 5],
+      ['Second response continues', undefined],
+    ])
   })
 })
 

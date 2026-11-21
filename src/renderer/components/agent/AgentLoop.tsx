@@ -6,7 +6,7 @@ import { agentNameOf } from '../../stores/failure-notices.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
-import { pickOldestSeq } from '../../hooks/live-seq'
+import { lacksSeq, pickOldestSeq } from '../../hooks/live-seq'
 import { rebindPendingRequests } from '../../hooks/approval-target'
 import { captureAgentView, isCurrentAgentView } from '../../utils/agent-view'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
@@ -494,6 +494,7 @@ const LogEntryRow = memo(({
   askAnswer,
   compact = false,
   continuing = false,
+  streamingText = false,
   errorAction: rowErrorAction = null,
   onErrorAction
 }: {
@@ -527,6 +528,7 @@ const LogEntryRow = memo(({
   compact?: boolean
   /** The agent is still working from this step, even if its tool has returned. */
   continuing?: boolean
+  streamingText?: boolean
   /** The error row's one action, when it is the latest unresolved error. */
   errorAction?: LoopErrorAction | null
   onErrorAction?: (action: LoopErrorAction, entry: AgentLogEntry) => void
@@ -675,7 +677,7 @@ const LogEntryRow = memo(({
         const interrupted = entry.metadata?.interrupted === true
         return (
           <div>
-            <MarkdownEntry content={entry.content} />
+            <MarkdownEntry content={entry.content} streaming={streamingText} />
             {(entry.timestamp > 0 || interrupted) && (
               <div className="mt-0.5 flex items-center gap-1.5 px-1 text-[10px] text-[var(--ink-faint)]">
                 {entry.timestamp > 0 && <span>{formatLoopTime(entry.timestamp)}</span>}
@@ -2154,6 +2156,7 @@ function LoopStream({ loop }: { loop: string }) {
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
         continuing={activity.entryId === entry.id}
+        streamingText={entry.type === 'text' && isActive && entry.id === tailEntry?.id && lacksSeq(entry)}
         errorAction={entry.type === 'error' && entry.id === errorActionId ? errorAction(entry.content) : null}
         onErrorAction={handleErrorAction}
       />

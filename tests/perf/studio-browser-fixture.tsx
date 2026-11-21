@@ -17,7 +17,7 @@ function mount() {
   host.style.cssText = 'width:720px;font:14px/20px Arial'
   document.body.append(host)
   const root = createRoot(host)
-  const update = (content: string) => flushSync(() => root.render(<MarkdownEntry content={content} />))
+  const update = (content: string, streaming = true) => flushSync(() => root.render(<MarkdownEntry content={content} streaming={streaming} />))
   update('')
   return { host, update, content: () => host.firstElementChild as HTMLElement, close: () => { root.unmount(); host.remove() } }
 }
@@ -100,27 +100,56 @@ async function correctness() {
   check(highlighted.content().querySelector('.shiki'), 'grammar load did not refresh mounted Markdown')
   check(highlighted.content().innerHTML === canonical(python), 'highlight-version refresh differs from canonical output')
   highlighted.close()
-  return { streamedBoundaries: boundaries, fixtures: fixtures.length, selectionAndCss: !STUDIO_BASELINE, grammarRefresh: true }
+
+  const large = mount()
+  const fenced = '[Stable link](https://example.com)\n\n```unknown\n' + 'const value = 123\n'.repeat(700)
+  large.update(fenced)
+  const link = large.content().querySelector('a')
+  let queued = fenced + 'queued line'
+  large.update(queued)
+  if (!STUDIO_BASELINE) check(!large.content().textContent?.includes('queued line'), 'large unsettled Markdown repainted before its cadence')
+  for (let i = 0; i < 6; i++) {
+    await delay(45)
+    queued += '\nmore content'
+    large.update(queued)
+  }
+  check(large.content().textContent?.includes('queued line'), 'large unsettled Markdown never refreshed during streaming')
+  await delay(260)
+  check(large.content().innerHTML === canonical(queued), 'large unsettled Markdown did not paint when paused')
+  const final = queued + '\n```\n\n<script>alert(1)</script>All done.'
+  large.update(queued + '\nolder queued text')
+  large.update(final, false)
+  check(large.content().innerHTML === canonical(final), 'completion did not immediately paint canonical Markdown')
+  if (!STUDIO_BASELINE) check(large.content().querySelector('a') === link, 'large updates replaced an unchanged link')
+  await delay(260)
+  check(large.content().innerHTML === canonical(final), 'queued preview overwrote the completed Markdown')
+  check(!large.content().querySelector('script'), 'unsanitized markup was inserted')
+  large.close()
+
+  return { streamedBoundaries: boundaries, fixtures: fixtures.length, selectionAndCss: !STUDIO_BASELINE, grammarRefresh: true, largeStreamCompletion: true }
 }
 
 function documentOfSize(bytes: number) {
   const paragraph = '## Review section\n\nA paragraph with **bold text**, a [safe link](https://example.com), and `inline code` that explains the next step.\n\n'
   return paragraph.repeat(Math.ceil(bytes / paragraph.length)).slice(0, bytes)
 }
-async function stream(bytes: number) {
+async function stream(source: string) {
   const view = mount()
-  const source = documentOfSize(bytes)
   const samples: number[] = []
-  for (let end = 100; end <= source.length; end += 100) {
+  for (let end = 100; end < source.length + 100; end += 100) {
     const start = performance.now()
     view.update(source.slice(0, end))
     void view.content().offsetHeight
     samples.push(performance.now() - start)
   }
+  const completionStart = performance.now()
+  view.update(source, false)
+  void view.content().offsetHeight
+  const completionMs = performance.now() - completionStart
   await delay(240)
   check(view.content().innerHTML === canonical(source), 'stream final output mismatch')
   view.close()
-  return { bytes, deltaBytes: 100, ...stats(samples) }
+  return { bytes: source.length, deltaBytes: 100, ...stats(samples), completionMs }
 }
 async function highlighting(bytes: number) {
   const line = 'export function selectValue(input: Record<string, unknown>): string { return JSON.stringify(input.value ?? "empty") }\n'
@@ -144,15 +173,19 @@ async function highlighting(bytes: number) {
 
 Object.assign(window, { runStudioBench: async () => {
   const checks = await correctness()
-  await stream(2000)
+  await stream(documentOfSize(2000))
   const streams = []
-  for (const bytes of [2000, 20000, 100000]) for (let trial = 0; trial < 3; trial++) streams.push({ trial, ...await stream(bytes) })
+  for (const bytes of [2000, 20000, 100000]) for (let trial = 0; trial < 3; trial++) streams.push({ trial, ...await stream(documentOfSize(bytes)) })
+  const unsettledStreaming = [
+    { case: 'open fence', ...await stream('```unknown\n' + 'const value = 123\n'.repeat(1800)) },
+    { case: 'leading reference definition', ...await stream('[ref]: https://example.com\n\n' + documentOfSize(32000)) },
+  ]
   const code = []
   for (const bytes of [5000, 20000, 39000]) code.push(await highlighting(bytes))
   // The stable-node/selection assertions are the primary regression gates.
   // A generous warm-cache ceiling additionally catches accidental re-highlighting
   // without relying on sub-millisecond timers or desktop-specific speed ratios.
   if (!STUDIO_BASELINE) check(code[2].medianMs < 20, 'warm 39KB highlight cache regressed (>20ms median)')
-  return { baseline: STUDIO_BASELINE, correctness: checks, streaming: streams, highlighting: code,
-    methodology: 'Real production React MarkdownEntry, Chromium DOM, app Markdown CSS. Synchronous100-character updates with forced layout; not user FPS. Three trials/size; grammar warmed before20 highlighting samples. Canonical settle checked outside timing. Profiler optional and disabled by default.' }
+  return { baseline: STUDIO_BASELINE, correctness: checks, streaming: streams, unsettledStreaming, highlighting: code,
+    methodology: 'Real production React MarkdownEntry, Chromium DOM, app Markdown CSS. Synchronous 100-character updates with forced layout; not user FPS. Three trials per ordinary stream size; grammar warmed before 20 highlighting samples. Final update and layout timed separately. Profiler optional and disabled by default.' }
 } })
