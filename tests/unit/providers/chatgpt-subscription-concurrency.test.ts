@@ -15,8 +15,7 @@ import type { LanguageModel } from 'ai'
  */
 
 const AUTH = {
-  getValidAccessToken: async () => 'test-token',
-  getAccountId: () => 'test-account',
+  getRequestAuth: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
 }
 
 /**

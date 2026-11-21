@@ -110,7 +110,7 @@ interface PendingRelayFlow {
 }
 
 class ChatGptAuthManager {
-  private refreshPromise: Promise<string> | null = null
+  private refreshPromise: Promise<TokenSet> | null = null
   private cachedTokens: TokenSet | null = null
   private email?: string
   private activeAuthFlow: ChatGptAuthFlow | null = null
@@ -306,6 +306,19 @@ class ChatGptAuthManager {
   }
 
   async getValidAccessToken(): Promise<string> {
+    return (await this.getValidTokens()).access_token
+  }
+
+  /** The provider request needs a token and the account belonging to it. */
+  async getRequestAuth(): Promise<{ accessToken: string; accountId?: string }> {
+    const tokens = await this.getValidTokens()
+    return {
+      accessToken: tokens.access_token,
+      accountId: chatgptAccountIdFromJwt(tokens.access_token) || tokens.account_id || undefined,
+    }
+  }
+
+  private async getValidTokens(): Promise<TokenSet> {
     const tokens = this.syncFromDisk()
     if (!tokens) {
       throw new Error('Not authenticated — sign in first')
@@ -313,7 +326,7 @@ class ChatGptAuthManager {
 
     // Token still valid
     if (Date.now() + REFRESH_BUFFER_MS < tokens.expires_at) {
-      return tokens.access_token
+      return tokens
     }
 
     // Concurrent refresh protection
@@ -342,15 +355,15 @@ class ChatGptAuthManager {
    * while this call queued, our copy is already dead and spending it would both
    * fail here and be pointless. Adopt the newer set instead.
    */
-  private async refreshIfStillNeeded(tokens: TokenSet): Promise<string> {
+  private async refreshIfStillNeeded(tokens: TokenSet): Promise<TokenSet> {
     const fresh = this.syncFromDisk()
     if (fresh && Date.now() + REFRESH_BUFFER_MS < fresh.expires_at) {
-      return fresh.access_token
+      return fresh
     }
     return this.refreshTokens(fresh ?? tokens)
   }
 
-  private async refreshTokens(tokens: TokenSet): Promise<string> {
+  private async refreshTokens(tokens: TokenSet): Promise<TokenSet> {
     let data: RefreshResponse
     // Only the token endpoint rejecting the refresh token ends the session.
     // Network errors, 5xx and 429 are transient: the session stays on disk.
@@ -383,7 +396,7 @@ class ChatGptAuthManager {
         fresh.refresh_token !== tokens.refresh_token &&
         Date.now() + REFRESH_BUFFER_MS < fresh.expires_at
       ) {
-        return fresh.access_token
+        return fresh
       }
 
       if (!rejected) {
@@ -406,14 +419,15 @@ class ChatGptAuthManager {
     // storage problem, not an expired session. Rewriting it as "sign in again"
     // would point the user at the wrong fix and discard live credentials.
     // OpenAI rotates refresh tokens — persist the new one immediately.
-    this.persist({
+    const refreshed = {
       access_token: data.access_token,
       refresh_token: data.refresh_token,
       expires_at: Date.now() + data.expires_in * 1000,
       account_id: chatgptAccountIdFromJwt(data.access_token) ||
         chatgptAccountIdFromJwt(data.id_token) || tokens.account_id
-    })
-    return data.access_token
+    }
+    this.persist(refreshed)
+    return refreshed
   }
 
   getAuthStatus(): AuthStatus {
