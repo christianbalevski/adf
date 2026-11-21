@@ -106,7 +106,7 @@ import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { KILL_IN_PROGRESS_ERROR, RuntimeGate } from '../runtime/runtime-gate'
-import { MeshManager } from '../runtime/mesh-manager'
+import { MeshManager, type MeshInboxUpdate } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
 import { appendOwnerMessageUnderLease } from '../runtime/owner-message-append'
@@ -5661,12 +5661,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
       })
 
-      meshManager.on('inbox_updated', (data: { filePath: string; inbox: unknown }) => {
-        if (data.filePath === currentFilePath) {
+      meshManager.on('inbox_updated', ({ filePath, workspace }: MeshInboxUpdate) => {
+        if (filePath === currentFilePath) {
           const win = getMainWindow()
           if (win) {
-            // Wrap raw InboxMessage[] in version envelope for renderer
-            win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages: data.inbox } })
+            const messages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
+            win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages } })
           }
         }
       })
