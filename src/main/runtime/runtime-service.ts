@@ -3007,7 +3007,7 @@ export class RuntimeService extends EventEmitter {
   getAgentTasks(agentId: string, opts: RuntimeAgentTasksOptions = {}): { agentId: string; tasks: RuntimeTaskEntry[] } {
     const target = this.requireTarget(agentId)
     const tasks = opts.status
-      ? target.workspace.getTasksByStatus(opts.status)
+      ? target.workspace.getTasksByStatus(opts.status, opts.limit === undefined ? undefined : clampInteger(opts.limit, 1, 1000))
       : target.workspace.getAllTasks(clampInteger(opts.limit ?? 200, 1, 1000))
     return { agentId: target.id, tasks: tasks.map(task => this.withApprovalAffordance(target.managed, target.config, task)) }
   }

@@ -3576,7 +3576,7 @@ export class AdfDatabase {
       'UPDATE adf_tasks SET args = ? WHERE id = ?'
     )
     this.stmts.getTasksByStatus = this.db.prepare(
-      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE status = ? ORDER BY created_at ASC'
+      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE status = ? ORDER BY created_at ASC LIMIT ?'
     )
     this.stmts.getAllTasks = this.db.prepare(
       'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks ORDER BY created_at DESC LIMIT ?'
@@ -5012,8 +5012,8 @@ export class AdfDatabase {
     this.stmts.updateTaskArgs!.run(args, id)
   }
 
-  getTasksByStatus(status: TaskStatus): TaskEntry[] {
-    const rows = this.stmts.getTasksByStatus!.all(status) as Record<string, unknown>[]
+  getTasksByStatus(status: TaskStatus, limit = -1): TaskEntry[] {
+    const rows = this.stmts.getTasksByStatus!.all(status, limit) as Record<string, unknown>[]
     return rows.map(r => this.mapTaskRow(r))
   }
 

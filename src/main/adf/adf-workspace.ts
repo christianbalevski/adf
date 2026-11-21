@@ -2622,8 +2622,8 @@ export class AdfWorkspace {
     this.emitDataChange('tasks')
   }
 
-  getTasksByStatus(status: TaskStatus): TaskEntry[] {
-    return this.db.getTasksByStatus(status)
+  getTasksByStatus(status: TaskStatus, limit?: number): TaskEntry[] {
+    return this.db.getTasksByStatus(status, limit)
   }
 
   getAllTasks(limit?: number): TaskEntry[] {
