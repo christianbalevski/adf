@@ -111,9 +111,18 @@ export class TokenCounterService {
    */
   countTokens(text: string, provider: string, model?: string): number {
     if (!text) return 0
+    return this.countWithTokenizer(text, this.resolveTokenizer(provider, model), provider)
+  }
 
+  /** Keep tokenizer selection stable when measurement is deferred. */
+  bindTokenizer(provider: string, model?: string): (text: string) => number {
+    const tokenizer = this.resolveTokenizer(provider, model)
+    return (text) => text ? this.countWithTokenizer(text, tokenizer, provider) : 0
+  }
+
+  private countWithTokenizer(text: string, tokenizer: TokenizerFamily, provider: string): number {
     try {
-      if (this.resolveTokenizer(provider, model) === 'anthropic') {
+      if (tokenizer === 'anthropic') {
         return countWithLongRunsEstimated(text, anthropicCountTokens)
       }
       return countWithLongRunsEstimated(text, (t) => gptEncode(t).length)

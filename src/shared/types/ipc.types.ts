@@ -500,9 +500,10 @@ export interface ContextBreakdownToolGroup {
 }
 
 /**
- * Per-request context token breakdown for a running executor. Expensive parts
- * (system prompt, tool schemas) are measured when the executor's caches
- * rebuild; message/dynamic figures are cheap estimates computed at read time.
+ * Per-request context token breakdown for a running executor. Prompt and
+ * tool totals are measured on cache rebuild. Layer and file figures are
+ * cached on the first diagnostic read. Message and dynamic figures are
+ * estimated at read time.
  */
 /**
  * Price of each system prompt layer, measured in rendered form ({{path}}
