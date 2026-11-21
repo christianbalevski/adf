@@ -1,6 +1,7 @@
 import { createRequire } from 'node:module'
 import { PROVIDER_TYPES, type ProviderType } from '../../shared/constants/adf-defaults'
 import { mediaKindOfMime } from '../../shared/utils/file-ref'
+import type { LLMMessage } from '../../shared/types/provider.types'
 
 export type TokenizerFamily = 'anthropic' | 'gpt'
 
@@ -55,6 +56,7 @@ function countWithLongRunsEstimated(text: string, count: (text: string) => numbe
  * Token counting service that supports multiple providers
  */
 export class TokenCounterService {
+  private readonly requestMessageChars = new WeakMap<LLMMessage[], { length: number; totalChars: number; mediaChars: number }>()
   /** Settings key (or display name) → factory family, registered by provider-factory. */
   private providerTypesByKey = new Map<string, ProviderType>()
 
@@ -198,6 +200,18 @@ export class TokenCounterService {
     return this.estimateMessagesTokensSplit(messages).estimated
   }
 
+  /** For the session's projected history, which replaces the array on rewrites. */
+  estimateAppendOnlyMessagesTokens(messages: LLMMessage[]): number {
+    const previous = this.requestMessageChars.get(messages)
+    const prefix = previous && previous.length <= messages.length ? previous : undefined
+    if (prefix?.length === messages.length) return charsToTokens(prefix.totalChars, prefix.mediaChars)
+    const suffix = this.measureMessageChars(messages, prefix?.length ?? 0)
+    const totalChars = (prefix?.totalChars ?? 0) + suffix.totalChars
+    const mediaChars = (prefix?.mediaChars ?? 0) + suffix.mediaChars
+    this.requestMessageChars.set(messages, { length: messages.length, totalChars, mediaChars })
+    return charsToTokens(totalChars, mediaChars)
+  }
+
   /**
    * estimateMessagesTokens, with thinking taken from the API where it was
    * recorded: an assistant message whose loop row (`seq`) reported reasoning
@@ -209,6 +223,15 @@ export class TokenCounterService {
     messages: Array<{ role: string; content: any; seq?: number }>,
     reasoningBySeq?: ReadonlyMap<number, number>
   ): { estimated: number; reported: number } {
+    const { totalChars, mediaChars, reported } = this.measureMessageChars(messages, 0, reasoningBySeq)
+    return { estimated: charsToTokens(totalChars, mediaChars), reported }
+  }
+
+  private measureMessageChars(
+    messages: Array<{ role: string; content: any; seq?: number }>,
+    start: number,
+    reasoningBySeq?: ReadonlyMap<number, number>
+  ): { totalChars: number; mediaChars: number; reported: number } {
     let totalChars = 0
     // Binary payloads (data URIs, base64 audio) are counted separately: they
     // are ~30× less token-dense than prose, so folding them into totalChars
@@ -217,7 +240,8 @@ export class TokenCounterService {
     let mediaChars = 0
     let reported = 0
 
-    for (const msg of messages) {
+    for (let i = start; i < messages.length; i++) {
+      const msg = messages[i]
       totalChars += 16 // role overhead ~4 tokens × ~4 chars
       if (typeof msg.content === 'string') {
         totalChars += msg.content.length
@@ -262,12 +286,13 @@ export class TokenCounterService {
         }
       }
     }
-    // ~3.5 chars per token for English (conservative)
-    return {
-      estimated: Math.ceil(totalChars / 3.5) + Math.ceil(mediaChars / MEDIA_CHARS_PER_TOKEN),
-      reported,
-    }
+    return { totalChars, mediaChars, reported }
   }
+}
+
+/** Round once after accumulating the full text and media character counts. */
+function charsToTokens(totalChars: number, mediaChars: number): number {
+  return Math.ceil(totalChars / 3.5) + Math.ceil(mediaChars / MEDIA_CHARS_PER_TOKEN)
 }
 
 /**

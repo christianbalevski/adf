@@ -583,6 +583,11 @@ export class AgentExecutor extends EventEmitter {
   private provider: LLMProvider | null
   private toolRegistry: ToolRegistry
   private session: AgentSession
+  private readonly checkedToolPairs = new WeakMap<LLMMessage[], {
+    count: number
+    uses: Set<string>
+    results: Set<string>
+  }>()
   private config: AgentConfig
   private basePrompt: string
   /** Settings' app system prompt, read each turn: an edit applies at the next turn (setBasePromptSource). */
@@ -918,7 +923,7 @@ export class AgentExecutor extends EventEmitter {
     const support = this.mediaSupport()
     const { messages } = projectMessageMedia(this.session.getMessages(), support)
     const files = projectFileRefs(messages, this.mediaSizeLimits(), support, requestMediaLimit(this.config.context))
-    return getTokenCounterService().estimateMessagesTokens(files.messages)
+    return getTokenCounterService().estimateAppendOnlyMessagesTokens(files.messages)
   }
 
   /**
@@ -2705,35 +2710,7 @@ export class AgentExecutor extends EventEmitter {
         // reset landed mid-turn) and repair them instead of letting the provider
         // reject the request. Repair only when an orphan exists — it replaces
         // the array reference, which invalidates the incremental conversion cache.
-        {
-          const msgs = this.session.getMessages()
-          const toolUseIds = new Set<string>()
-          const toolResultIds = new Set<string>()
-          for (const m of msgs) {
-            if (!Array.isArray(m.content)) continue
-            for (const b of m.content) {
-              if (b.type === 'tool_use' && b.id) toolUseIds.add(b.id)
-              else if (b.type === 'tool_result' && b.tool_use_id) toolResultIds.add(b.tool_use_id)
-            }
-          }
-          let hasOrphan = false
-          for (const m of msgs) {
-            if (!Array.isArray(m.content)) continue
-            for (const b of m.content) {
-              if (b.type === 'tool_result' && b.tool_use_id && !toolUseIds.has(b.tool_use_id)) {
-                hasOrphan = true
-                console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${b.tool_use_id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
-              } else if (b.type === 'tool_use' && b.id && !toolResultIds.has(b.id)) {
-                hasOrphan = true
-                console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${b.id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
-              }
-            }
-          }
-          if (hasOrphan) {
-            try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
-            this.session.repairToolPairing()
-          }
-        }
+        this.checkToolPairing()
 
         // A mid-turn external reset (clear chat / mesh session reset) can leave
         // the history empty after repair. Sending zero messages is a guaranteed
@@ -5445,6 +5422,46 @@ export class AgentExecutor extends EventEmitter {
     this.setState('idle')
     this.emitRuntimeEvent('agent.recovered', { reason: 'auth', state: 'idle', notice })
     return true
+  }
+
+  private checkToolPairing(): void {
+    const messages = this.session.getMessages()
+    // AgentSession appends in place and replaces the array whenever it rewrites
+    // a prefix. The checked prefix has no orphans, so only new blocks need to
+    // be checked against the IDs from the prefix plus the new suffix.
+    const scan = this.checkedToolPairs.get(messages) ?? { count: 0, uses: new Set<string>(), results: new Set<string>() }
+    for (let index = scan.count; index < messages.length; index++) {
+      const { content } = messages[index]
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type === 'tool_use' && block.id) scan.uses.add(block.id)
+        else if (block.type === 'tool_result' && block.tool_use_id) scan.results.add(block.tool_use_id)
+      }
+    }
+
+    let hasOrphan = false
+    for (let index = scan.count; index < messages.length; index++) {
+      const { content } = messages[index]
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type === 'tool_result' && block.tool_use_id && !scan.uses.has(block.tool_use_id)) {
+          hasOrphan = true
+          console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${block.tool_use_id}, msgIndex=${index}/${messages.length}) — repairing`)
+        } else if (block.type === 'tool_use' && block.id && !scan.results.has(block.id)) {
+          hasOrphan = true
+          console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${block.id}, msgIndex=${index}/${messages.length}) — repairing`)
+        }
+      }
+    }
+
+    if (hasOrphan) {
+      this.checkedToolPairs.delete(messages)
+      try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
+      this.session.repairToolPairing()
+    } else {
+      scan.count = messages.length
+      this.checkedToolPairs.set(messages, scan)
+    }
   }
 
   /**
