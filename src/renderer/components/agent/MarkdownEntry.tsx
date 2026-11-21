@@ -1,4 +1,4 @@
-import { memo, useRef, useEffect, useLayoutEffect, useCallback } from 'react'
+import { memo, useRef, useLayoutEffect, useCallback } from 'react'
 import { renderMarkdownToSafeHtml, useMarkdownHighlightVersion } from '../../utils/markdown'
 import { createMarkdownDomRenderer } from '../../utils/markdown-dom'
 import { isAdfFileUrl, openAdfFileLink } from '../../utils/open-adf-link'
@@ -20,33 +20,28 @@ function renderMarkdown(src: string): string {
   return renderMarkdownToSafeHtml(encodeAdfFileUrls(src))
 }
 
-// How long a streamed answer must hold still before it is parsed once more in
-// full. The incremental path only ever concatenates independently-parsed
-// blocks; this pass guarantees the transcript the user keeps is byte-for-byte
-// the whole-document parse.
+// Fallback for streams with no explicit completion event. The last content is
+// rendered canonically once it holds still.
 const MARKDOWN_SETTLE_MS = 200
 
-// Memoized markdown component to avoid re-parsing on every render.
-// While an answer streams, the DOM renderer re-parses and replaces only
-// the block still being written instead of the whole accumulated text (which is
-// quadratic at ~20 deltas/s). A row that never changes — every restored
-// transcript row — takes exactly the one full parse it always did.
-export const MarkdownEntry = memo(({ content, className = 'px-1.5 py-1 text-neutral-800 dark:text-neutral-200' }: { content: string; className?: string }) => {
+export const MarkdownEntry = memo(({ content, streaming = false, className = 'px-1.5 py-1 text-neutral-800 dark:text-neutral-200' }: {
+  content: string
+  streaming?: boolean
+  className?: string
+}) => {
   const openWebsite = useRuntimeWebsiteLink()
   const container = useRef<HTMLDivElement>(null)
   const renderer = useRef<ReturnType<typeof createMarkdownDomRenderer> | null>(null)
-  const mountedContent = useRef(content)
   const highlightVersion = useMarkdownHighlightVersion()
   useLayoutEffect(() => {
     if (!container.current) return
-    renderer.current ??= createMarkdownDomRenderer(container.current, renderMarkdown)
-    renderer.current.update(content, highlightVersion)
-  }, [content, highlightVersion])
-  useEffect(() => {
-    if (content === mountedContent.current) return
-    const timer = setTimeout(() => renderer.current?.settle(content, highlightVersion), MARKDOWN_SETTLE_MS)
+    const dom = renderer.current ??= createMarkdownDomRenderer(container.current, renderMarkdown)
+    dom.update(content, highlightVersion, streaming)
+    if (!streaming) return
+    const timer = setTimeout(() => dom.update(content, highlightVersion, false), MARKDOWN_SETTLE_MS)
     return () => clearTimeout(timer)
-  }, [content, highlightVersion])
+  }, [content, highlightVersion, streaming])
+  useLayoutEffect(() => () => renderer.current?.cancelPending(), [])
   const handleClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
     const anchor = (e.target as HTMLElement).closest('a[href]')
     if (!anchor) return
