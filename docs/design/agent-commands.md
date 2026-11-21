@@ -171,7 +171,7 @@ Refusals throw `OwnerCommandRefusedError` and write nothing. Everything after st
    - Any other error, including `TIMEOUT` and `SANDBOX_TERMINATED` → `error`.
    - Otherwise → `ok`.
    - A lambda that catches the error itself and returns is `ok`. Its return value is what it is.
-9. **Body.** The return value is already serialized by the sandbox prelude (`serialize()` in `sandbox-prelude.ts`): a string passes through verbatim, anything else becomes 2-space JSON, and `undefined` becomes `(no return value)`. On `error` or `denied`, the body is the error message. Non-empty stdout is appended as `\n\nOutput:\n<stdout>`, as `sys_lambda` does. Then `body = executor.boundToolResult(body, '/' + name)` applies the agent's `limits.max_tool_result_tokens` and `max_tool_result_preview_chars`, with the same truncation text as a tool result (§6).
+9. **Body.** The return value is already serialized by the sandbox prelude (`serialize()` in `sandbox-prelude.ts`): a string passes through verbatim, anything else becomes 2-space JSON, and `undefined` becomes `(no return value)`. On `error` or `denied`, the body is the error message. Non-empty stdout is appended as `\n\nOutput:\n<stdout>`, as `sys_lambda` does. Then `body = executor.boundToolResult(body, '/' + name)` applies the agent's `limits.max_tool_result_tokens` and `max_tool_result_preview_chars`, with the same truncation text as a tool result that has no code route to name (§6): a command can't be repeated from code.
 10. **Record.** `executor.recordOwnerCommand(formatOwnerCommandRow(header, body))` (§4). The return value carries `deferred` and `seq`.
 
 ### 2.3 Agent state
