@@ -192,7 +192,7 @@ describe('adf label', () => {
     const labels = dirs.flatMap((d) => {
       try { return [[d.name, readAdfCompat(readFileSync(join(root, d.name, 'SKILL.md'), 'utf8')).native] as const] } catch { return [] }
     })
-    expect(labels.length).toBe(19)
+    expect(labels.length).toBe(20)
     expect(labels.filter(([, native]) => !native)).toEqual([])
   })
 })
