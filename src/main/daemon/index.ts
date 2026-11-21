@@ -511,6 +511,7 @@ const daemon = new DaemonHost({
   // debounced token usage is the most losable data, and a hang anywhere later
   // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).
   onShutdownStart: [
+    () => approvalHub.flushPersistence(),
     () => getTokenUsageService().flush(),
     () => flushSubscriptionUsage(),
   ],
@@ -518,6 +519,8 @@ const daemon = new DaemonHost({
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is
   // independently try-caught by the host.
   onShutdown: [
+    // Agent teardown records final outcomes after the initial durability flush.
+    () => approvalHub.flushPersistence(),
     () => trackedDirWatcher.close(),
     () => agentFactory.stopTemplatesWatcher(),
     () => wsConnectionManager.stopAll(),
@@ -626,6 +629,10 @@ withSource('system:daemon', () => {
 
   bootEnvelopeSweep.then(() => daemon.start())
     .then(address => {
+      // Only the daemon that claimed its PID file and listening port may
+      // recover pending receipts. A refused second start must not rewrite
+      // the running daemon's notification history.
+      approvalHub.initializePersistence(`${settingsPath}.notifications.json`)
       console.log(`[ADF Daemon] Listening on http://${address.host}:${address.port}`)
       console.log(`[ADF Daemon] Settings: ${settings.filePath ?? '(memory)'}`)
       withSource('system:daemon', () => {

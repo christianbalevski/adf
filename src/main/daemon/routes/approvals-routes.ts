@@ -2,6 +2,8 @@
 // fleet map's pending badges (APPROVALS_*, MESH_PENDING_INTERACTIONS).
 //
 //   GET  /approvals                      pending + history (NotificationsSnapshot)
+//   DELETE /approvals/history            clear resolved history; pending stays live
+//   GET /approvals/history?before=       a bounded page of resolved history
 //   GET  /approvals/input?filePath=&approvalId=
 //   POST /approvals/resolve              { filePath, approvalId, approved, feedback? }
 //   GET  /approvals/interactions         pending asks + approvals per agent, every loop
@@ -21,6 +23,14 @@ import { badRequest, stringParam } from './route-helpers'
 
 export function registerApprovalsRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
   server.get('/approvals', async () => approvalHub.fullSnapshot())
+  server.delete('/approvals/history', async () => approvalHub.clearHistory())
+  server.get<{ Querystring: { before?: string } }>('/approvals/history', async (request, reply) => {
+    const before = request.query.before === undefined ? undefined : Number(request.query.before)
+    if (before !== undefined && (!Number.isSafeInteger(before) || before < 0 || request.query.before?.trim() === '')) {
+      return badRequest(reply, 'before must be a non-negative safe integer')
+    }
+    return approvalHub.historyPage(before)
+  })
 
   // The snapshot omits each approval's raw tool input (it can be large); the
   // full-context modal fetches it here. `{}` when the entry is gone or

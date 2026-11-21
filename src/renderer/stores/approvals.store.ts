@@ -1,5 +1,5 @@
 import { create } from 'zustand'
-import type { NotificationsSnapshot, PendingNotification, ResolvedNotification } from '../../shared/types/ipc.types'
+import type { NotificationHistoryPage, NotificationsSnapshot, PendingNotification, ResolvedNotification } from '../../shared/types/ipc.types'
 import { noticeKey } from '../../shared/runtime-tag'
 
 /**
@@ -12,6 +12,8 @@ import { noticeKey } from '../../shared/runtime-tag'
  */
 interface NotificationsBridge {
   listPendingNotifications?: () => Promise<NotificationsSnapshot>
+  clearNotificationHistory?: () => Promise<{ success: boolean; error?: string }>
+  getNotificationHistory?: (before?: number) => Promise<NotificationHistoryPage>
   resolvePendingApproval?: (
     filePath: string,
     approvalId: string,
@@ -59,16 +61,21 @@ interface ApprovalsStoreState {
   approvals: PendingNotification[]
   /**
    * Recently resolved rows, newest first — the greyed-out tail under the
-   * pending ones. Session-scoped and main-process-owned, exactly like
-   * `approvals`: every push replaces it.
+   * pending ones. This is the bounded live tail; older rows are fetched
+   * a page at a time from their runtime.
    */
   history: ResolvedNotification[]
+  historyPage: (NotificationHistoryPage & { runtimeId: string }) | null
+  historyLoading: boolean
+  historyError: string | null
   /** Title-bar dropdown visibility. */
   panelOpen: boolean
   /** Corner notices for requests that arrived while their agent was off-screen. */
   toasts: ApprovalToast[]
 
   setSnapshot: (snapshot: NotificationsSnapshot) => void
+  browseHistory: (runtimeId: string, before?: number) => Promise<void>
+  showRecentHistory: () => void
   setPanelOpen: (open: boolean) => void
   togglePanel: () => void
   pushToast: (toast: ApprovalToast) => void
@@ -76,24 +83,54 @@ interface ApprovalsStoreState {
   reset: () => void
 }
 
+let historyRequest = 0
+
 export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
   approvals: [],
   history: [],
+  historyPage: null,
+  historyLoading: false,
+  historyError: null,
   panelOpen: false,
   toasts: [],
 
   setSnapshot: ({ pending, history }) =>
-    set((state) => ({
-      approvals: pending,
-      history,
-      // A toast for a request that no longer exists is a lie — drop it the
-      // moment the snapshot says it was answered (from any surface).
-      toasts: state.toasts.filter((t) => pending.some((a) => noticeKey(a.runtimeId, a.id) === t.id))
-      // The panel is NOT closed when the last pending row goes: answering the
-      // final approval while looking at the list would yank the list out from
-      // under the click, and the row you just answered is precisely what you
-      // want to see (greyed, with its outcome) immediately afterwards.
-    })),
+    set((state) => {
+      const changed = JSON.stringify(state.history) !== JSON.stringify(history)
+      if (changed) historyRequest++
+      return {
+        approvals: pending,
+        history: changed ? history : state.history,
+        // Only actual history changes invalidate browsing. Pending-only pushes
+        // keep the page; a clear/new receipt also invalidates in-flight reads.
+        ...(changed ? { historyPage: null, historyLoading: false, historyError: null } : {}),
+        // A toast for a request that no longer exists is a lie — drop it the
+        // moment the snapshot says it was answered (from any surface).
+        toasts: state.toasts.filter((t) => pending.some((a) => noticeKey(a.runtimeId, a.id) === t.id))
+        // The panel is NOT closed when the last pending row goes: answering the
+        // final approval while looking at the list would yank the list out from
+        // under the click, and the row you just answered is precisely what you
+        // want to see (greyed, with its outcome) immediately afterwards.
+      }
+    }),
+
+  browseHistory: async (runtimeId, before) => {
+    const request = ++historyRequest
+    set({ historyLoading: true, historyError: null })
+    try {
+      const read = approvalsBridge(runtimeId)?.getNotificationHistory
+      if (!read) throw new Error('This runtime does not support browsing notification history.')
+      const page = await read(before)
+      if (request === historyRequest) set({ historyPage: { ...page, runtimeId }, historyLoading: false })
+    } catch (error) {
+      if (request === historyRequest) set({ historyLoading: false, historyError: error instanceof Error ? error.message : 'Could not load notification history.' })
+    }
+  },
+
+  showRecentHistory: () => {
+    historyRequest++
+    set({ historyPage: null, historyLoading: false, historyError: null })
+  },
 
   setPanelOpen: (panelOpen) => set({ panelOpen }),
   togglePanel: () => set((state) => ({ panelOpen: !state.panelOpen })),
@@ -108,5 +145,8 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
 
   dismissToast: (id) => set((state) => ({ toasts: state.toasts.filter((t) => t.id !== id) })),
 
-  reset: () => set({ approvals: [], history: [], panelOpen: false, toasts: [] })
+  reset: () => {
+    historyRequest++
+    set({ approvals: [], history: [], historyPage: null, historyLoading: false, historyError: null, panelOpen: false, toasts: [] })
+  }
 }))

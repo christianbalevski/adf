@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 350 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 352 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -39,7 +39,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (15)
 - [Providers & sign-in](#tag-providers-sign-in) (22)
-- [Tasks & approvals](#tag-tasks-approvals) (12)
+- [Tasks & approvals](#tag-tasks-approvals) (14)
 - [Timers](#tag-timers) (4)
 - [Templates](#tag-templates) (14)
 - [Tracked folders](#tag-tracked-folders) (6)
@@ -8824,6 +8824,8 @@ Human-in-the-loop: tool approvals, ask requests and suspend prompts.
 | POST | [`/agents/{id}/asks/{requestId}/respond`](#op-answeragentask) | Answer an ask request |
 | POST | [`/agents/{id}/suspend/respond`](#op-respondagentsuspend) | Resume or stop after a suspend prompt |
 | GET | [`/approvals`](#op-getapprovals) | Approvals hub snapshot |
+| GET | [`/approvals/history`](#op-getnotificationhistory) | Browse notification history |
+| DELETE | [`/approvals/history`](#op-clearnotificationhistory) | Clear notification history |
 | GET | [`/approvals/input`](#op-getapprovalinput) | Raw tool input of one pending approval |
 | POST | [`/approvals/resolve`](#op-resolveapproval) | Resolve a pending approval |
 | GET | [`/approvals/interactions`](#op-getpendinginteractions) | Pending asks and approvals per agent |
@@ -9258,7 +9260,7 @@ Example 200 (`application/json`):
 
 **Approvals hub snapshot**
 
-Every pending approval and ask across loaded agents and loops (oldest first), plus the recently resolved ones of this daemon run. Raw tool input is omitted; fetch it with GET /approvals/input.
+Every pending approval and ask across loaded agents and loops (oldest first), plus the 50 most recent resolved notifications (newest first). Older history is retained across restarts and fetched through GET /approvals/history until manually cleared. Requests interrupted by a runtime restart are recorded as expired. Raw tool input is omitted; fetch it with GET /approvals/input.
 
 Operation `getApprovals` · bearer token
 
@@ -9312,6 +9314,86 @@ Example 200 (`application/json`):
       "resolvedAt": 0
     }
   ]
+}
+```
+
+<a id="op-getnotificationhistory"></a>
+
+### GET `/approvals/history`
+
+**Browse notification history**
+
+Returns at most 50 resolved notifications, newest first. Omit before for the newest page; pass the returned nextBefore to read older entries. The cursor counts from the oldest end, so newly resolved notifications do not shift older pages. Discard cursors when history is cleared; Studio resets browsing on the next live snapshot.
+
+Operation `getNotificationHistory` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `before` | query | integer |  | The previous page's nextBefore cursor. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [NotificationHistoryPage](#schema-notificationhistorypage) | History page |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "history": [
+    {
+      "id": "string",
+      "kind": "approval",
+      "requestId": "string",
+      "filePath": "string",
+      "agentName": "string",
+      "loop": "string",
+      "toolName": "string",
+      "preview": "string",
+      "question": "string",
+      "reason": "restricted",
+      "protection": {},
+      "canAlwaysApprove": true,
+      "alwaysApproveBlockedReason": "string",
+      "requestedAt": 0,
+      "outcome": "approved",
+      "resolvedAt": 0
+    }
+  ],
+  "nextBefore": 0
+}
+```
+
+<a id="op-clearnotificationhistory"></a>
+
+### DELETE `/approvals/history`
+
+**Clear notification history**
+
+Permanently clears this runtime's resolved notification history for all connected clients. Pending approvals and asks remain actionable. Returns success: false if the cleared history could not be saved.
+
+Operation `clearNotificationHistory` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessErrorResponse](#schema-successerrorresponse) | Clear result |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": false,
+  "error": "This approval is no longer pending — it was already resolved, timed out, or its agent stopped."
 }
 ```
 
@@ -22511,6 +22593,15 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | `outcome` | `"approved"` \| `"rejected"` \| `"answered"` \| `"expired"` | yes |  |
 | `resolvedAt` | number | yes |  |
 
+<a id="schema-notificationhistorypage"></a>
+
+### NotificationHistoryPage
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `history` | [ResolvedNotification](#schema-resolvednotification)[] | yes |  |
+| `nextBefore` | integer \| null | yes | Cursor for the next older page, or null when there are no older entries. |
+
 <a id="schema-notificationssnapshot"></a>
 
 ### NotificationsSnapshot
@@ -22518,7 +22609,7 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `pending` | [PendingNotification](#schema-pendingnotification)[] | yes | Oldest first. Raw tool input omitted (GET /approvals/input). |
-| `history` | [ResolvedNotification](#schema-resolvednotification)[] | yes | Newest first, capped at 50, this daemon run only |
+| `history` | [ResolvedNotification](#schema-resolvednotification)[] | yes | At most 50 most recent entries, newest first. Older persisted entries are fetched through GET /approvals/history. |
 
 <a id="schema-approvalinputresponse"></a>
 

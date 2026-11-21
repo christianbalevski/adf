@@ -701,12 +701,12 @@ export interface ResolvedNotification extends Omit<PendingNotification, 'input'>
   resolvedAt: number
 }
 
-/**
- * The whole notifications payload: what is still blocking an agent, plus a
- * bounded, newest-first tail of what recently stopped blocking. Pushed as one
- * object so a window that reloads or opens late is correct after a single
- * message, with no resync protocol.
- */
+/** A bounded page, with a cursor counted from the oldest end of history. */
+export interface NotificationHistoryPage {
+  history: ResolvedNotification[]
+  nextBefore: number | null
+}
+
 /**
  * Queued messages of one agent loop, handed from a closing agent window to
  * the main window, which sends them when the loop's turn ends
@@ -720,10 +720,11 @@ export interface QueueHandoverEntry {
   messages: Array<{ id: string; text: string; content?: unknown[]; error?: string; failures?: number }>
 }
 
+/** Live requests and the newest history page, pushed together to every client. */
 export interface NotificationsSnapshot {
   /** Oldest first — the thing blocking longest reads first. */
   pending: PendingNotification[]
-  /** Newest first, capped, per-app-session (never persisted). */
+  /** Most recent resolved rows, newest first. Older history is fetched in pages. */
   history: ResolvedNotification[]
   /**
    * Daemon mode with agent windows open (docs/design/agent-windows.md): the
