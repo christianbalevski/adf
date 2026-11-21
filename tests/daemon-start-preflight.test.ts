@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 import { createDaemonHttpApi } from '../src/main/daemon/http-api'
 import { RuntimeService, type RuntimeProviderFactory } from '../src/main/runtime/runtime-service'
+import { RuntimeGate } from '../src/main/runtime/runtime-gate'
 import { createHeadlessAgent, MockLLMProvider } from '../src/main/runtime/headless'
 import type { AgentConfig } from '../src/shared/types/adf-v02.types'
 import type { ProviderConfig } from '../src/shared/types/ipc.types'
@@ -18,18 +19,23 @@ function setup() {
   const created = createHeadlessAgent({ filePath, name: 'agent-1', provider: new MockLLMProvider() })
   created.workspace.setAgentConfig({ ...created.workspace.getAgentConfig(), model: { provider: 'anthropic', model_id: 'claude-x' } as AgentConfig['model'] })
   created.dispose()
-  const state = { providers: [] as ProviderConfig[], valid: false }
+  const state = { providers: [] as ProviderConfig[], valid: false, factoryCalls: 0, validationCalls: 0, beforeValidation: async () => {} }
   const factory: RuntimeProviderFactory = (config) => {
+    state.factoryCalls++
     if (!state.providers.some((p) => p.id === config.model.provider)) throw new Error(`Provider "${config.model.provider}" is not configured`)
     const provider = new MockLLMProvider()
-    provider.validateConfig = async () => (state.valid ? { valid: true } : { valid: false, error: 'HTTP 401 from the provider' })
+    provider.validateConfig = async () => {
+      state.validationCalls++
+      await state.beforeValidation()
+      return state.valid ? { valid: true } : { valid: false, error: 'HTTP 401 from the provider' }
+    }
     return provider
   }
   const runtime = new RuntimeService({ enforceReviewGate: false, providerFactory: factory, settings: { get: (k) => (k === 'providers' ? state.providers : undefined) } })
   const server = createDaemonHttpApi(runtime, {})
   cleanups.push(() => server.close())
   cleanups.push(async () => { for (const a of runtime.listAgents()) await runtime.unloadAgent(a.id, { mode: 'immediate' }) })
-  return { url: `/agents/${encodeURIComponent(filePath)}/start`, runtime, server, state }
+  return { filePath, url: `/agents/${encodeURIComponent(filePath)}/start`, runtime, server, state }
 }
 
 describe('POST /agents/:id/start?preflight=1', () => {
@@ -50,9 +56,59 @@ describe('POST /agents/:id/start?preflight=1', () => {
     expect(runtime.listAgents()).toEqual([])
 
     state.valid = true
+    state.factoryCalls = state.validationCalls = 0
     const started = await server.inject({ method: 'POST', url: `${url}?preflight=1` })
     expect(started.statusCode).toBe(200)
     expect(started.json()).toMatchObject({ success: true, loaded: true })
+    await runtime.sendChat(runtime.listAgents()[0].id, 'hello')
+    expect(state.factoryCalls).toBe(1)
+    expect(state.validationCalls).toBe(1)
+  })
+
+  it.each(['kill', 'provider edit'] as const)('refuses a stale in-flight check after a %s', async (reason) => {
+    const { url, server, runtime, state } = setup()
+    state.providers = [{ id: 'anthropic', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-test' }]
+    state.valid = true
+    let started!: () => void
+    let finish!: () => void
+    const validating = new Promise<void>(resolve => { started = resolve })
+    const hold = new Promise<void>(resolve => { finish = resolve })
+    state.beforeValidation = async () => { started(); await hold }
+    const request = server.inject({ method: 'POST', url: `${url}?preflight=1` })
+    await validating
+    if (reason === 'kill') RuntimeGate.beginKill()()
+    else state.providers[0] = { ...state.providers[0], apiKey: 'sk-replacement' }
+    finish()
+    const response = await request
+    expect(response.statusCode).toBe(409)
+    expect(response.json()).toMatchObject({ code: reason === 'kill' ? 'kill_in_progress' : 'provider_check_failed' })
+    expect(runtime.listAgents()).toEqual([])
+    RuntimeGate.resume()
+  })
+
+  it('checks a loaded agent addressed by its file path', async () => {
+    const { filePath, url, server, runtime, state } = setup()
+    state.providers = [{ id: 'anthropic', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-test' }]
+    await runtime.loadAgent(filePath)
+    const checked = await server.inject({ method: 'POST', url: `${url}?preflight=1` })
+    expect(checked.statusCode).toBe(409)
+    expect(checked.json()).toMatchObject({ code: 'provider_check_failed' })
+    expect(state.validationCalls).toBe(1)
+  })
+
+  it('does not impose a failed provider check on an unchecked load of the same file', async () => {
+    const { filePath, url, server, runtime, state } = setup()
+    state.providers = [{ id: 'anthropic', type: 'anthropic', name: 'Anthropic', apiKey: 'sk-test' }]
+    const validating = Promise.withResolvers<void>()
+    const release = Promise.withResolvers<void>()
+    state.beforeValidation = async () => { validating.resolve(); await release.promise }
+    const checked = server.inject({ method: 'POST', url: `${url}?preflight=1` })
+    await validating.promise
+    const unchecked = runtime.loadAgent(filePath)
+    release.resolve()
+    expect((await checked).statusCode).toBe(409)
+    await expect(unchecked).resolves.toMatchObject({ filePath })
+    expect(state.validationCalls).toBe(1)
   })
 
   it('without the flag the start is unchecked, as before', async () => {

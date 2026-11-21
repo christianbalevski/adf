@@ -2562,13 +2562,7 @@ export function createDaemonHttpApi(
       const preflight = request.query?.preflight === '1' || request.query?.preflight === 'true'
       // A chat is queued behind this start: the startup turn skips its greeting (Studio's AGENT_START hasUserMessage).
       const hasUserMessage = request.query?.hasUserMessage === '1' || request.query?.hasUserMessage === 'true'
-      let credentialsLocked: string | undefined
-      if (preflight && !runtime.getAgent(request.params.id)) {
-        const check = await runtime.preflightProvider(request.params.id)
-        if (!check.ok) return reply.code(409).send({ error: check.error, code: check.code ?? 'provider_check_failed' })
-        credentialsLocked = check.credentialsLocked
-      }
-      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage, killEpoch })
+      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage, killEpoch, preflight })
       return {
         success: true,
         loaded: result.loaded,
@@ -2576,10 +2570,10 @@ export function createDaemonHttpApi(
         agent: runtime.getAgentStatus(result.ref.id),
         sessionId: runtime.getAgentSessionId(result.ref.id),
         // The provider key is stored but locked: the start went on, unchecked.
-        ...(credentialsLocked ? { preflight: { code: 'credentials_locked', message: credentialsLocked } } : {}),
+        ...(result.credentialsLocked ? { preflight: { code: 'credentials_locked', message: result.credentialsLocked } } : {}),
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('unknown agent')) {
+      if (err instanceof Error && !(err instanceof RuntimeLoopError) && err.message.includes('unknown agent')) {
         return notFound(reply, `Unknown agent "${request.params.id}"`)
       }
       return handleRuntimeError(reply, err)
