@@ -181,4 +181,12 @@ describe('adf starts the daemon before it needs it', () => {
     expect(await runCli(['agents'], failed.value)).toBe(1)
     expect(failed.err()).toContain('ADF Studio is running.\nQuit ADF Studio, then run adf again.')
   })
+
+  it('validates commands and TUI flags before checking daemon readiness', async () => {
+    const a = io(async () => null, async () => { throw new Error('unexpected network request') })
+    expect(await runCli(['unknown-command'], a.value)).toBe(2)
+    expect(await runCli(['status'], a.value)).not.toBe(0)
+    expect(await runCli(['tui', '--view'], a.value)).toBe(2)
+    expect(a.urls).toEqual([])
+  })
 })
