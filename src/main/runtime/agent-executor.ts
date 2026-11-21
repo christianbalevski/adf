@@ -65,6 +65,11 @@ import {
   toLlmCallEventData,
 } from './llm-call-metadata'
 
+interface SystemPromptDiagnostics {
+  promptParts: SystemPromptParts
+  injectedFiles: ContextBreakdownFileEntry[]
+}
+
 /** `hil.requested` fields telling an owner surface (daemon/TUI) whether
  *  "Always approve" is offered — snake_case like the rest of the payload. The
  *  server re-checks on the always-approve call; this is only the affordance. */
@@ -771,11 +776,8 @@ export class AgentExecutor extends EventEmitter {
      *  follows the provider at rebuild — a provider swap without a config
      *  change keeps the old figure, which is an acceptable approximation. */
     promptTokens: number
-    /** Per-layer prices (base+sections / runtime blocks / instructions), each
-     *  measured whether or not the current composition mode includes it. */
-    promptParts: SystemPromptParts
-    /** Per-file share of promptTokens for {{path}} injections (rendered form). */
-    injectedFiles: ContextBreakdownFileEntry[]
+    /** Measured on the first diagnostic read of this prompt snapshot. */
+    diagnostics: SystemPromptDiagnostics | (() => SystemPromptDiagnostics)
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
   /** One dynamic-instruction count, shared by preflight and diagnostics. */
@@ -959,7 +961,9 @@ export class AgentExecutor extends EventEmitter {
     try {
       this.buildSystemPrompt()
       this.buildToolSnapshot()
-      if (!this.systemPromptCache || !this.toolSnapshotCache) return null
+      const prompt = this.systemPromptCache
+      if (!prompt || !this.toolSnapshotCache) return null
+      if (typeof prompt.diagnostics === 'function') prompt.diagnostics = prompt.diagnostics()
       const tc = getTokenCounterService()
       const workspace = this.session.getWorkspace()
       const rows = workspace.getAssistantTokenRows()
@@ -988,9 +992,9 @@ export class AgentExecutor extends EventEmitter {
       const since = tc.estimateMessagesTokensSplit(messages.slice(replyTokens !== undefined ? cut + 1 : cut), reasoningBySeq)
       if (replyTokens !== undefined) since.reported += replyTokens
       const breakdown = assembleContextBreakdown({
-        systemPromptTokens: this.systemPromptCache.promptTokens,
-        systemPromptParts: this.systemPromptCache.promptParts,
-        injectedFiles: this.systemPromptCache.injectedFiles,
+        systemPromptTokens: prompt.promptTokens,
+        systemPromptParts: prompt.diagnostics.promptParts,
+        injectedFiles: prompt.diagnostics.injectedFiles,
         toolGroups: this.toolSnapshotCache.toolGroups,
         toolsTotalTokens: this.toolSnapshotCache.toolsTotalTokens,
         dynamicInstructionsTokens: this.countDynamicInstructionTokens(this.currentDynamicInstructions),
@@ -6391,41 +6395,34 @@ export class AgentExecutor extends EventEmitter {
       const autonomousText = this.config.autonomous
         ? (this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
         : ''
-      let promptTokens = this.countPromptTokens(cachedPrompt)
-      if (autonomousText.trim() && !bare) {
-        promptTokens += this.countPromptTokens(SEP + autonomousText)
-      }
+      const autonomousSuffix = autonomousText.trim() ? SEP + autonomousText : ''
+      const countTokens = getTokenCounterService().bindTokenizer(this.tokenizerProviderId())
+      const sentAutonomousTokens = bare ? undefined : countTokens(autonomousSuffix)
+      const promptTokens = countTokens(cachedPrompt) + (sentAutonomousTokens ?? 0)
+      const snapshot = this.injectedFileSnapshots ?? new Map<string, string>()
 
-      // Per-layer prices for the composition receipt. Each layer is measured
-      // in its rendered form (placeholders resolved), whether or not the
-      // current mode includes it, so the panel can show what switching would
-      // cost. Layers omitted from the prompt resolve against a throwaway copy
-      // of the session snapshot — the real snapshot only ever holds files
-      // that reached the prompt (that is what injectedFilesHash promises).
-      const measureLayer = (text: string): number => {
-        if (!text.trim()) return 0
-        const ws = this.session.getWorkspace()
-        const scratch = new Map(this.injectedFileSnapshots ?? [])
-        return this.countPromptTokens(resolveInjectedFiles(text, (p) => ws.readFile(p), scratch))
-      }
-      const promptParts: SystemPromptParts = {
-        base_and_sections: measureLayer(fullSections),
-        runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) +
-          (autonomousText.trim() ? this.countPromptTokens(SEP + autonomousText) : 0),
-        instructions: measureLayer(instructionsBlock),
-      }
-
-      // Cache the result
       this.systemPromptCache = {
         injectedFilesHash,
         configHash,
         cachedPrompt,
         promptTokens,
-        promptParts,
-        injectedFiles: measureInjectedFiles(
-          this.injectedFileSnapshots ?? new Map(),
-          (text) => this.countPromptTokens(text)
-        )
+        diagnostics: () => {
+          const workspace = this.session.getWorkspace()
+          // Price every layer in its rendered form. Off-mode placeholder
+          // reads stay in this copy and never change the sent prompt.
+          const scratch = new Map(snapshot)
+          const measureLayer = (text: string): number => text.trim()
+            ? countTokens(resolveInjectedFiles(text, (path) => workspace.readFile(path), scratch))
+            : 0
+          return {
+            promptParts: {
+              base_and_sections: measureLayer(fullSections),
+              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + (sentAutonomousTokens ?? countTokens(autonomousSuffix)),
+              instructions: measureLayer(instructionsBlock),
+            },
+            injectedFiles: measureInjectedFiles(snapshot, countTokens),
+          }
+        },
       }
     }
 
