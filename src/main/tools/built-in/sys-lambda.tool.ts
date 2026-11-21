@@ -5,7 +5,6 @@ import type { AdfWorkspace } from '../../adf/adf-workspace'
 import type { ToolResult, ToolProviderFormat } from '../../../shared/types/tool.types'
 import type { CodeSandboxService } from '../../runtime/code-sandbox'
 import type { AdfCallHandler } from '../../runtime/adf-call-handler'
-import { transformImports, transformExports } from '../../runtime/code-sandbox'
 import { loadLambdaSource } from '../../runtime/ts-transpiler'
 import { withSource } from '../../runtime/execution-context'
 import { withAuthorization } from '../../runtime/authorization-context'
@@ -104,14 +103,10 @@ export class SysLambdaTool implements Tool {
       }
     }
 
-    // Transform the code: strip exports, transform imports
-    let transformedCode = transformImports(fileContent)
-    transformedCode = transformExports(transformedCode)
-
     // Wrap code to define functions and call the target
     // The function is exposed via __exports, then called with args
     const wrappedCode = `
-${transformedCode}
+${fileContent}
 
 // Expose the target function and call it
 if (typeof ${functionName} === 'function') {

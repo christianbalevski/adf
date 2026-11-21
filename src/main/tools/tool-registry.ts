@@ -38,6 +38,8 @@ export interface ToolExecutionContext {
    * of relying on the async-local context — which would otherwise be null.
    */
   agentId?: string
+  /** See ToolCallContext.isolated. */
+  isolated?: boolean
   /**
    * Skip the `tool.started` emission. Used when the caller already emitted
    * `tool.started` at enqueue time (async-restricted approval path) so a tap
@@ -186,12 +188,14 @@ export class ToolRegistry {
     }
 
     let result: ToolResult
-    const call: ToolCallContext | undefined = context?.signal
+    const inherited: ToolCallContext | undefined = context?.signal
       ? { signal: context.signal, ...(context.taskId ? { taskId: context.taskId } : {}) }
       : callContext.getStore()
+    // `isolated` reaches this tool only; nested calls see the inherited context.
+    const call = context?.isolated ? { ...inherited, isolated: true } : inherited
     try {
       result = call
-        ? await callContext.run(call, () => this.executeToolInner(name, input, workspace, call))
+        ? await callContext.run(inherited ?? {}, () => this.executeToolInner(name, input, workspace, call))
         : await this.executeToolInner(name, input, workspace)
     } catch (error) {
       // Thrown here means the failure escaped the per-tool catch (e.g. an abort

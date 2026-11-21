@@ -168,6 +168,11 @@ function pickKickRepresentative(entries: PendingWake[], session: AgentSession): 
   return null
 }
 
+/** The sys_code sandbox of one side loop. */
+function loopSandboxId(filePath: string, loopName: string): string {
+  return `${filePath}:loop:${loopName}`
+}
+
 /** One side loop: its own mind, on the agent's body. */
 export class LoopRuntime {
   readonly name: string
@@ -1393,7 +1398,9 @@ export class LoopPool implements LoopPoolApi {
     // registry — the exact authority leak the rebinding exists to close.
     const sandbox = this.deps.codeSandboxService
     if (granted.has('sys_code') && sandbox) {
-      runtime.registry.register(new SysCodeTool(sandbox, filePath, runtime.callHandler ?? undefined, timeout))
+      // A sandbox of the loop's own: saved state, and helpers bound to the
+      // loop's call handler, must not cross between loops.
+      runtime.registry.register(new SysCodeTool(sandbox, filePath, runtime.callHandler ?? undefined, timeout, loopSandboxId(filePath, runtime.name)))
     } else {
       runtime.registry.unregister('sys_code')
     }
@@ -1424,6 +1431,7 @@ export class LoopPool implements LoopPoolApi {
     if (!runtime) return
     this.runtimes.delete(name)
     runtime.dispose()
+    this.deps.codeSandboxService?.destroy(loopSandboxId(this.deps.workspace.getFilePath(), name))
   }
 
   /**

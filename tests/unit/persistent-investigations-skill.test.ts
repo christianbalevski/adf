@@ -6,7 +6,7 @@ import { AdfWorkspace } from '../../src/main/adf/adf-workspace'
 import { parseSkillFrontmatter } from '../../src/main/adf/skill-indexer'
 import { AgentSession } from '../../src/main/runtime/agent-session'
 import { AdfCallHandler } from '../../src/main/runtime/adf-call-handler'
-import { CodeSandboxService, transformExports, transformImports } from '../../src/main/runtime/code-sandbox'
+import { CodeSandboxService } from '../../src/main/runtime/code-sandbox'
 import { ToolRegistry } from '../../src/main/tools/tool-registry'
 import { FsReadTool } from '../../src/main/tools/built-in/fs-read.tool'
 import { FsWriteTool } from '../../src/main/tools/built-in/fs-write.tool'
@@ -51,7 +51,7 @@ function fixture(options: { inject?: boolean; resultTokens?: number } = {}) {
     },
     reopen() { workspace.dispose(); workspace = AdfWorkspace.open(filePath); bind() },
     run(path: string) {
-      const code = `${transformExports(transformImports(source))}\nreturn await refresh(${JSON.stringify({ path })});`
+      const code = `${source}\nreturn await refresh(${JSON.stringify({ path })});`
       return sandbox.execute(`investigation-skill:${Math.random()}`, code, 10000, (method, args) => handler.handleCall(method, args))
     },
   }

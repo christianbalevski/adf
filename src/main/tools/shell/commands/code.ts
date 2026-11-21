@@ -36,11 +36,11 @@ function authorizedRegistry(registry: ToolRegistry): ToolRegistry {
     get(target, prop, receiver) {
       if (prop === UNWRAP) return target
       if (prop === 'executeTool') {
-        return (name: string, input: unknown, ws: unknown) => {
+        return (name: string, input: unknown, ws: unknown, ...rest: unknown[]) => {
           const injected = CODE_DELEGATING_TOOLS.has(name)
             ? (input as Record<string, unknown>)
             : { ...((input as Record<string, unknown>) ?? {}), _authorized: true }
-          return (target.executeTool as (...a: unknown[]) => unknown)(name, injected, ws)
+          return (target.executeTool as (...a: unknown[]) => unknown)(name, injected, ws, ...rest)
         }
       }
       return Reflect.get(target, prop, receiver)
@@ -57,6 +57,8 @@ const nodeHandler: CommandHandler = {
     '',
     'The code runs in a sandboxed environment with access to adf.* methods.',
     'Top-level await is supported in both -e code and -p expressions.',
+    'Each run gets a fresh sandbox, like a new node process: it neither sees',
+    'nor clears what sys_code calls with clear_state: false saved.',
   ].join('\n'),
   category: 'code',
   resolvedTools: ['sys_code'],
@@ -98,7 +100,7 @@ const nodeHandler: CommandHandler = {
       code = assignments + ' ' + code
     }
 
-    const result = await ctx.toolRegistry.executeTool('sys_code', { code }, ctx.workspace)
+    const result = await ctx.toolRegistry.executeTool('sys_code', { code }, ctx.workspace, { isolated: true })
     if (result.isError) return err(`node: ${result.content}`)
     return ok(result.content)
   }

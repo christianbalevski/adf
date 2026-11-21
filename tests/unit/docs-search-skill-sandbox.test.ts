@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { CodeSandboxService, transformExports, transformImports } from '../../src/main/runtime/code-sandbox'
+import { CodeSandboxService } from '../../src/main/runtime/code-sandbox'
 import type { AdfCallResult } from '../../src/main/runtime/code-sandbox'
 import { parseSkillsCatalogDocument } from '../../src/shared/schemas/skills-catalog.schema'
 
@@ -37,7 +37,7 @@ function runner(failing = new Set<string>()) {
   return {
     urls,
     async run(args: Record<string, unknown>) {
-      const code = `${transformExports(transformImports(lambdaSource))}
+      const code = `${lambdaSource}
 return await main(${JSON.stringify(args)});`
       return sandbox.execute(`docs-search-test:${Math.random()}`, code, 10000, onAdfCall)
     }

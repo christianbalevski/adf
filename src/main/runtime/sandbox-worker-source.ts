@@ -928,7 +928,7 @@ parentPort.on('message', async (msg) => {
 
   const timeoutPromise = new Promise(function (resolve) {
     timeoutHandle = setTimeout(function () {
-      resolve({ ok: false, value: 'Execution timed out after ' + timeoutMs + 'ms', code: 'TIMEOUT' });
+      resolve({ ok: false, value: 'Execution timed out after ' + timeoutMs + 'ms; work it was still awaiting may finish later and change saved state', code: 'TIMEOUT' });
     }, timeoutMs);
   });
 

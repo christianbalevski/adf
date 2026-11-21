@@ -3,6 +3,7 @@ import { cpus } from 'os'
 import { randomUUID } from 'crypto'
 import { AsyncResource } from 'node:async_hooks'
 import { clampTimerDelay } from '../utils/timer-delay'
+import { transformCode } from './code-transform'
 
 export interface CodeResult {
   result?: string
@@ -29,52 +30,6 @@ export interface ToolConfig {
 const DEFAULT_TIMEOUT = 10_000
 /** The host-side worker guard fires this long after the in-worker timeout. */
 const WORKER_GUARD_BUFFER_MS = 2000
-
-/**
- * Transform import statements to await __require() calls.
- * Uses await so ESM-only packages (which return a Promise from __require) work
- * transparently. For CJS modules, await on a non-Promise returns the value immediately.
- * Handles: import { X } from 'mod', import X from 'mod', import * as X from 'mod'
- */
-function transformImports(code: string): string {
-  // import { X, Y } from 'mod'
-  code = code.replace(
-    /import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]\s*;?/g,
-    (_, names, mod) => `const {${names}} = await __require('${mod}');`
-  )
-  // import * as X from 'mod'
-  code = code.replace(
-    /import\s*\*\s*as\s+(\w+)\s+from\s*['"]([^'"]+)['"]\s*;?/g,
-    (_, name, mod) => `const ${name} = await __require('${mod}');`
-  )
-  // import X from 'mod'
-  code = code.replace(
-    /import\s+(\w+)\s+from\s*['"]([^'"]+)['"]\s*;?/g,
-    (_, name, mod) => `const ${name} = await __require('${mod}');`
-  )
-  return code
-}
-
-/**
- * Strip export keywords so functions/constants become context-accessible.
- */
-function transformExports(code: string): string {
-  code = code.replace(/export\s+async\s+function\s/g, 'async function ')
-  code = code.replace(/export\s+function\s/g, 'function ')
-  code = code.replace(/export\s+const\s/g, 'const ')
-  code = code.replace(/export\s+let\s/g, 'let ')
-  code = code.replace(/export\s+class\s/g, 'class ')
-  // export default function → function
-  code = code.replace(/export\s+default\s+function\s/g, 'function ')
-  code = code.replace(/export\s+default\s+async\s+function\s/g, 'async function ')
-  // export default <expr> → just the expression (as a no-op statement)
-  code = code.replace(/export\s+default\s+/g, '')
-  // export { foo, bar } or export { foo as bar } — remove entire line
-  code = code.replace(/^export\s*\{[^}]*\}\s*;?\s*$/gm, '')
-  return code
-}
-
-export { transformImports, transformExports }
 
 /** One in-flight execute() call, registered on its worker so the message router
  *  can dispatch to it and so worker death can settle it. */
@@ -170,6 +125,13 @@ export interface ExecuteOptions {
    * sandbox id when collateral cancellation is unacceptable.
    */
   terminateOnAbort?: boolean
+  /**
+   * Make the code's top-level declarations and imports globals of the sandbox,
+   * so the next execution on it can use them (sys_code, clear_state: false).
+   * Off for lambdas: they re-run a whole file, often several files in one
+   * sandbox, and a function left over from another file must not answer.
+   */
+  persist?: boolean
 }
 
 /**
@@ -249,6 +211,7 @@ export type OnAdfCallFn = (method: string, args: unknown) => Promise<AdfCallResu
  *
  * What shares a context is decided by the caller's id, not by the agent:
  *   `<agentId>`                       sys_code — one persistent sandbox per agent
+ *   `<agentId>:loop:<name>`           sys_code in a side loop, one per loop
  *   `<agentId>:lambda:<file>`         warm trigger lambdas, per source file
  *   `<agentId>:lambda:<file>:<uuid>`  cold trigger lambdas, one per invocation
  *   `<agentId>:fn:<file>`             sys_lambda, per source file
@@ -271,6 +234,9 @@ export type OnAdfCallFn = (method: string, args: unknown) => Promise<AdfCallResu
  */
 export class CodeSandboxService {
   private workers: Map<string, WorkerEntry> = new Map()
+  /** Workers destroy() detached while executions were in flight, by entry, so
+   *  destroyAll() still reaches them before they finish on their own. */
+  private detached: Map<WorkerEntry, string> = new Map()
   /** In-flight worker creations, so concurrent execute() calls share one worker
    *  instead of each building their own and the loser leaking. */
   private creating: Map<string, Promise<WorkerEntry>> = new Map()
@@ -333,9 +299,7 @@ export class CodeSandboxService {
   private recycleForAllowlist(): void {
     const key = this.readPaths().join('\n')
     for (const [id, entry] of Array.from(this.workers)) {
-      if (entry.readKey === key) continue
-      if (entry.inflight > 0) entry.pendingDestroy = true
-      else this.destroyWorker(id)
+      if (entry.readKey !== key) this.destroy(id)
     }
   }
 
@@ -427,9 +391,7 @@ export class CodeSandboxService {
       return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
     }
 
-    // Transform imports and exports before sending to worker
-    let transformedCode = transformImports(code)
-    transformedCode = transformExports(transformedCode)
+    const transformedCode = transformCode(code, options?.persist)
 
     if (options?.agent) this.registerSandbox(options.agent, agentId)
 
@@ -455,7 +417,7 @@ export class CodeSandboxService {
         // If creation won the race after cancellation, reap its unique worker;
         // otherwise this no-op leaves the shared service untouched.
         if (options.terminateOnAbort) {
-          void creation.then(() => this.destroyWorker(agentId), () => {})
+          void creation.then((created) => this.destroyEntry(agentId, created), () => {})
         }
         return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
       }
@@ -499,7 +461,7 @@ export class CodeSandboxService {
       const onAbort = (): void => {
         if (settled) return
         settle({ stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' })
-        if (options?.terminateOnAbort) this.destroyWorker(agentId)
+        if (options?.terminateOnAbort) this.destroyEntry(agentId, entry)
       }
       const settle = (r: CodeResult): void => {
         if (settled) return
@@ -527,10 +489,10 @@ export class CodeSandboxService {
         console.warn(`[CodeSandbox] Worker timeout for agent ${agentId}, terminating worker`)
         settle({
           stdout: '',
-          error: `Execution timed out after ${effectiveTimeout}ms`,
+          error: `Execution timed out after ${effectiveTimeout}ms; the sandbox was restarted, so anything earlier calls saved in it is gone`,
           errorCode: 'TIMEOUT'
         })
-        this.destroyWorker(agentId)
+        this.destroyEntry(agentId, entry)
       }, effectiveTimeout + WORKER_GUARD_BUFFER_MS) // Extra buffer for async RPC round-trips
 
       // The worker can die while we await its creation — registering on a dead
@@ -556,9 +518,7 @@ export class CodeSandboxService {
     // Decrement inflight count and destroy if deferred
     entry.inflight--
     entry.lastUsed = Date.now()
-    if (entry.pendingDestroy && entry.inflight <= 0 && this.workers.get(agentId) === entry) {
-      this.destroyWorker(agentId)
-    }
+    if (entry.pendingDestroy && entry.inflight <= 0) this.destroyEntry(agentId, entry)
 
     return result
   }
@@ -590,15 +550,24 @@ export class CodeSandboxService {
 
   /**
    * Terminate a specific agent's worker. Called on agent stop.
-   * If executions are in-flight, defers destruction until they complete.
+   * A worker with executions in flight is detached now (the next execute() on
+   * this id gets a new worker) and terminated once those executions finish.
    */
   destroy(agentId: string): void {
     const entry = this.workers.get(agentId)
     if (entry && entry.inflight > 0) {
       entry.pendingDestroy = true
+      this.workers.delete(agentId)
+      this.unregisterSandbox(agentId)
+      this.detached.set(entry, agentId)
       return
     }
     this.destroyWorker(agentId)
+  }
+
+  /** Whether a live worker exists for this sandbox id. */
+  has(sandboxId: string): boolean {
+    return this.workers.has(sandboxId)
   }
 
   /**
@@ -635,6 +604,7 @@ export class CodeSandboxService {
     for (const agentId of Array.from(this.workers.keys())) {
       this.destroyWorker(agentId)
     }
+    for (const [entry, agentId] of Array.from(this.detached)) this.destroyEntry(agentId, entry)
   }
 
   /** Record that `agent` owns sandbox id `sandboxId`. */
@@ -1031,15 +1001,25 @@ export class CodeSandboxService {
 
   private destroyWorker(agentId: string): void {
     const entry = this.workers.get(agentId)
-    if (entry) {
+    if (entry) this.destroyEntry(agentId, entry)
+  }
+
+  /** Terminate one worker. Keyed by entry, not id: a detached worker must not
+   *  remove the replacement registered under the same id since. */
+  private destroyEntry(agentId: string, entry: WorkerEntry): void {
+    this.detached.delete(entry)
+    if (this.workers.get(agentId) === entry) {
       this.workers.delete(agentId)
       this.unregisterSandbox(agentId)
-      void entry.worker.terminate()
-      // terminate() is async; settle now so nothing waits for the exit event,
-      // and hand the admission permit back immediately so a queued execution
-      // starts now rather than when the OS gets round to reaping the thread.
-      this.release(entry)
-      this.settleWorkerPending(entry, 'Sandbox worker terminated')
     }
+    // A released permit means the worker is already gone (exit, boot failure
+    // or an earlier teardown).
+    if (entry.released) return
+    void entry.worker.terminate()
+    // terminate() is async; settle now so nothing waits for the exit event,
+    // and hand the admission permit back immediately so a queued execution
+    // starts now rather than when the OS gets round to reaping the thread.
+    this.release(entry)
+    this.settleWorkerPending(entry, 'Sandbox worker terminated')
   }
 }
