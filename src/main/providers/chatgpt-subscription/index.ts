@@ -24,6 +24,27 @@ function mayNeedSurrogateRepair(text: string | undefined): boolean {
   return text !== undefined && REPAIRABLE_RE.test(text)
 }
 
+const INLINE_IMAGE_MIN_CHARS = 64 * 1024
+const INLINE_IMAGE_PREFIX = '"image_url":"data:image/'
+const INLINE_IMAGE_RE = /"image_url":"(data:image\/[A-Za-z0-9.+_-]+;base64,[A-Za-z0-9+/=]+)"/g
+const IMAGE_PLACEHOLDER_PREFIX = '__ADF_CODEX_IMAGE_'
+const IMAGE_PLACEHOLDER_RE = /"__ADF_CODEX_IMAGE_(\d+)__"/g
+
+/** Keep large ASCII image values out of the JSON pass over the SDK body. */
+function detachInlineImages(body: string, instructions: string | undefined): { body: string; images: string[] } | undefined {
+  if (body.length < INLINE_IMAGE_MIN_CHARS || !body.includes(INLINE_IMAGE_PREFIX) ||
+    body.includes(IMAGE_PLACEHOLDER_PREFIX) || instructions?.includes(IMAGE_PLACEHOLDER_PREFIX)) return
+
+  // The SDK emits compact JSON. These values contain only characters that
+  // JSON.stringify preserves verbatim, and they cannot need surrogate repair.
+  const images: string[] = []
+  const compact = body.replace(INLINE_IMAGE_RE, (original, image: string) => {
+    if (image.length < INLINE_IMAGE_MIN_CHARS) return original
+    return `"image_url":"${IMAGE_PLACEHOLDER_PREFIX}${images.push(image) - 1}__"`
+  })
+  return images.length ? { body: compact, images } : undefined
+}
+
 /**
  * Rate limit and usage info extracted from x-codex-* response headers.
  * A type alias, not an interface: it is handed to consumers typed as
@@ -270,21 +291,28 @@ export function createChatGPTSubscriptionProvider(authManager: {
     let requestSummary: string | undefined
     if (init?.body && typeof init.body === 'string') {
       try {
+        // Raw params can replace arbitrary request fields. Keep them on the
+        // regular path so placeholders only originate in this SDK body.
+        const detached = extraParams === undefined ? detachInlineImages(init.body, pendingInstructions) : undefined
+        const source = detached?.body ?? init.body
         // Every string that can end up in the patched body comes from one of
         // these three; if none of them can hold a lone surrogate, the deep
         // walk has nothing to find and is skipped.
         const repairStrings =
           extraParamsMayNeedRepair ||
-          mayNeedSurrogateRepair(init.body) ||
+          mayNeedSurrogateRepair(source) ||
           mayNeedSurrogateRepair(pendingInstructions)
-        const body = JSON.parse(init.body)
+        const body = JSON.parse(source)
         const { repairedStrings } = patchCodexRequestBody(body, pendingInstructions, extraParams, { repairStrings })
         if (repairedStrings > 0) {
           console.warn(`[ChatGPT Subscription] Repaired ${repairedStrings} string(s) with lone UTF-16 surrogates before send (would have been a 400 Bad Request)`)
         }
         const serialized = JSON.stringify(body)
-        requestSummary = describeCodexRequest(body, serialized.length)
-        patchedInit = { ...init, body: serialized }
+        const wireBody = detached
+          ? serialized.replace(IMAGE_PLACEHOLDER_RE, (_, index: string) => `"${detached.images[Number(index)]}"`)
+          : serialized
+        requestSummary = describeCodexRequest(body, wireBody.length)
+        patchedInit = { ...init, body: wireBody }
       } catch { /* not JSON, pass through */ }
     }
 
