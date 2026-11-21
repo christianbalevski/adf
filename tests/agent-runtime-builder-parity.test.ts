@@ -1,4 +1,4 @@
-import { mkdtempSync } from 'node:fs'
+import { existsSync, mkdtempSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -19,6 +19,7 @@ import { currentAgentDerivedKey, subscribeAgentRuntimeSignals } from '../src/mai
 import { approvalHub } from '../src/main/runtime/approval-hub'
 import { mcpConnectorFor } from '../src/main/runtime/mcp-connectors'
 import { hashMcpToolInfo } from '../src/main/services/mcp-tool-sync'
+import { scratchDirForAgent } from '../src/main/utils/scratch-dir'
 import { createDispatch, createEvent } from '../src/shared/types/adf-event.types'
 import type { runMcpHttpOAuthFlow } from '../src/main/services/mcp-http-oauth'
 import type { McpOAuthRecord } from '../src/main/services/mcp-oauth.types'
@@ -272,6 +273,66 @@ describe('AgentRuntimeBuilder parity: start window, tool toggles (review fix)', 
     } finally {
       await agent.disposeAsync()
     }
+  })
+})
+
+describe('AgentRuntimeBuilder subsystem startup', () => {
+  it('starts adapter I/O while MCP is still connecting and waits for both before assembly', async () => {
+    let releaseMcp!: (tools: McpToolInfo[]) => void
+    let releaseAdapter!: (started: boolean) => void
+    const mcpReady = new Promise<McpToolInfo[]>((resolve) => { releaseMcp = resolve })
+    const adapterReady = new Promise<boolean>((resolve) => { releaseAdapter = resolve })
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockReturnValue(mcpReady)
+    const startAdapter = vi.spyOn(ChannelAdapterManager.prototype, 'startAdapter').mockReturnValue(adapterReady)
+    const { filePath, workspace } = makeAgentFile('parallel-start', {
+      mcp: { servers: [stdioServer('srv')] },
+      adapters: { telegram: { enabled: true, config: {} } },
+    })
+    let assembled = false
+    const build = new AgentRuntimeBuilder().build({
+      workspace, filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider(),
+    }).then((agent) => { assembled = true; return agent })
+
+    try {
+      await waitFor(() => connect.mock.calls.length === 1 && startAdapter.mock.calls.length === 1)
+      releaseAdapter(true)
+      await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(assembled).toBe(false)
+      releaseMcp([PING_TOOL])
+      const agent = await build
+      expect(agent.registry.get('mcp_srv_ping')).toBeDefined()
+      expect(agent.adapterManager).not.toBeNull()
+    } finally {
+      releaseAdapter(true)
+      releaseMcp([PING_TOOL])
+      const agent = await build.catch(() => null)
+      await agent?.disposeAsync()
+    }
+  })
+
+  it('cleans up MCP startup when adapter setup rejects', async () => {
+    const connect = vi.spyOn(McpClientManager.prototype, 'connect').mockResolvedValue([PING_TOOL])
+    const disconnect = vi.spyOn(McpClientManager.prototype, 'disconnectAll')
+    const failure = new Error('adapter registrations unavailable')
+    const { filePath, workspace } = makeAgentFile('partial-start', {
+      mcp: { servers: [stdioServer('srv')] },
+    })
+    const dispose = vi.spyOn(workspace, 'dispose')
+    const builder = new AgentRuntimeBuilder({
+      settings: {
+        get: (key: string) => {
+          if (key === 'adapters') throw failure
+          return undefined
+        },
+      },
+    })
+    await expect(builder.build({
+      workspace, filePath, config: workspace.getAgentConfig(), provider: new MockLLMProvider(),
+    })).rejects.toBe(failure)
+    expect(connect).toHaveBeenCalledOnce()
+    expect(disconnect).toHaveBeenCalledOnce()
+    expect(dispose).toHaveBeenCalledOnce()
+    expect(existsSync(scratchDirForAgent(filePath))).toBe(false)
   })
 })
 

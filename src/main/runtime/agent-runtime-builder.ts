@@ -297,38 +297,30 @@ export class AgentRuntimeBuilder {
     // a freshly-synced config out to the live executor once it exists (a no-op
     // during the initial connect, which runs before assembly).
     let assembled: AssembledAgent<'daemon'> | undefined
-    const mcpRuntime = await this.registerMcpTools(
-      registry,
-      workspace,
-      config,
-      label,
-      adfCallHandler,
-      () => assembled ?? null,
-      keyRef,
-    )
-    const adapterRuntime = await this.registerChannelAdapters(workspace, config, keyRef)
-    // StreamBindingManager is keyed by the stable agent id (config.id) —
-    // parity with the Studio background path, and the id the podman compute
-    // registry tracks.
-    const streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, config.id, filePath ?? config.id)
-    this.wireFetchMiddleware(registry, workspace, agentId, adfCallHandler)
-    const sysGetConfigTool = registry.get('sys_get_config') as SysGetConfigTool | undefined
-    sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), registry))
+    // MCP tool setup runs first, and adapter startup buffers inbound until
+    // assembly. Await both outcomes so cleanup owns any successful sibling.
+    const [mcpStartup, adapterStartup] = await Promise.allSettled([
+      this.registerMcpTools(registry, workspace, config, label, adfCallHandler, () => assembled ?? null, keyRef),
+      this.registerChannelAdapters(workspace, config, keyRef),
+    ])
 
     let disposed = false
+    let streamBindingManager: StreamBindingManager | null = null
     const cleanup = async () => {
       if (disposed) return
       disposed = true
       const cleanupPromises: Promise<unknown>[] = [...computeStartup]
+      const mcpRuntime = mcpStartup.status === 'fulfilled' ? mcpStartup.value : null
+      const adapterRuntime = adapterStartup.status === 'fulfilled' ? adapterStartup.value : null
       // Stop preprocessing, handshakes and interactive OAuth before removing
       // the manager's entries and closing its connected servers.
-      mcpRuntime.cancelPending()
-      if (mcpRuntime.manager) {
+      mcpRuntime?.cancelPending()
+      if (mcpRuntime?.manager) {
         const mgr = mcpRuntime.manager
         mgr.removeAllListeners()
         cleanupPromises.push(mgr.disconnectAll())
       }
-      if (adapterRuntime.manager) {
+      if (adapterRuntime?.manager) {
         const mgr = adapterRuntime.manager
         mgr.removeAllListeners()
         cleanupPromises.push(mgr.stopAll())
@@ -344,7 +336,7 @@ export class AgentRuntimeBuilder {
         }
       }
       await Promise.allSettled(cleanupPromises)
-      removeScratchDir(mcpRuntime.scratchDir)
+      removeScratchDir(mcpRuntime?.scratchDir ?? null)
       if (this.codeSandboxService) {
         // Reap by prefix: lambdas, middleware and taps live in derived sandbox
         // ids (`<agentId>:lambda:<file>:<fn>[:<invocation>]`), and cold lambdas
@@ -354,26 +346,39 @@ export class AgentRuntimeBuilder {
       }
     }
 
-    const systemScopeHandler = this.codeSandboxService && adfCallHandler
-      ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
-      : null
-
-    // Umbilical bus + taps + agent.loaded/unloaded + adapter/MCP bridges.
-    // Shared with both Studio hosts (runtime/umbilical-lifecycle.ts) so all
-    // three produce the same ordered event stream. Listed FIRST so its start
-    // runs before every other resource and its stop runs last.
-    const umbilical = createUmbilicalResources({
-      agentId: config.id,
-      workspace,
-      filePath,
-      config,
-      codeSandboxService: this.codeSandboxService,
-      adfCallHandler,
-      adapterManager: adapterRuntime.manager,
-      mcpManager: mcpRuntime.manager,
-    })
-
     try {
+      if (mcpStartup.status === 'rejected') throw mcpStartup.reason
+      if (adapterStartup.status === 'rejected') throw adapterStartup.reason
+      const mcpRuntime = mcpStartup.value
+      const adapterRuntime = adapterStartup.value
+
+      // StreamBindingManager is keyed by the stable agent id (config.id) —
+      // parity with the Studio background path, and the id the podman compute
+      // registry tracks.
+      streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, config.id, filePath ?? config.id)
+      this.wireFetchMiddleware(registry, workspace, agentId, adfCallHandler)
+      const sysGetConfigTool = registry.get('sys_get_config') as SysGetConfigTool | undefined
+      sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), registry))
+
+      const systemScopeHandler = this.codeSandboxService && adfCallHandler
+        ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
+        : null
+
+      // Umbilical bus + taps + agent.loaded/unloaded + adapter/MCP bridges.
+      // Shared with both Studio hosts (runtime/umbilical-lifecycle.ts) so all
+      // three produce the same ordered event stream. Listed FIRST so its start
+      // runs before every other resource and its stop runs last.
+      const umbilical = createUmbilicalResources({
+        agentId: config.id,
+        workspace,
+        filePath,
+        config,
+        codeSandboxService: this.codeSandboxService,
+        adfCallHandler,
+        adapterManager: adapterRuntime.manager,
+        mcpManager: mcpRuntime.manager,
+      })
+
       assembled = assembleAgent({
         profile: 'daemon',
         workspace,
