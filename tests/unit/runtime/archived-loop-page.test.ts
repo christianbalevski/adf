@@ -111,6 +111,25 @@ describe('readArchivedChatPage', () => {
     expect(second.hasMore).toBe(false)
   })
 
+  it('peeks without walking live seqs and shares a concurrent decode', async () => {
+    const seq = ws.appendToLoop('user', text('previous answer'))
+    const live = ws.appendToLoop('user', text('still live'))
+    await ws.compactLoop([live], { content: text('[Loop Compacted] summary') })
+    const sequences = vi.spyOn(ws, 'listLoopSeqs')
+    const blobs = vi.spyOn(ws, 'getAuditBlob')
+    expect(await readArchivedChatPage(ws, null, { peek: true })).toMatchObject({ hasMore: true, uiLog: [] })
+    expect(sequences).not.toHaveBeenCalled()
+    expect(blobs).not.toHaveBeenCalled()
+
+    const [first, second] = await Promise.all([
+      readArchivedChatPage(ws, `${live}:${live}`),
+      readArchivedChatPage(ws, `${live}:${live}`),
+    ])
+    expect(first).toEqual(second)
+    expect(first.uiLog[0].metadata?.seq).toBe(seq)
+    expect(blobs).toHaveBeenCalledOnce()
+  })
+
   it('pages successive compactions in display order with summaries before their tails', async () => {
     ws.appendToLoop('user', text('first-1'))
     ws.appendToLoop('assistant', text('first-2'))

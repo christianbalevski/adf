@@ -4,7 +4,7 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import type { DisplayEntry } from '../../shared/types/adf-v02.types'
 import { assertSafeBrotliRuntime } from '../utils/brotli-runtime-guard'
 import type { AdfWorkspace } from './adf-workspace'
-import type { LoopEntryRow } from './adf-database'
+import type { AdfDatabase, LoopEntryRow } from './adf-database'
 
 const brotliDecompressAsync = promisify(brotliDecompress)
 
@@ -37,6 +37,19 @@ type Snapshot = { rows: LoopEntryRow[]; seekable: boolean; bytes: number }
 
 const cache = new Map<string, Snapshot>()
 let cacheBytes = 0
+const pending = new Map<string, Promise<Snapshot | null>>()
+const workspaceIds = new WeakMap<AdfDatabase, number>()
+let nextWorkspaceId = 0
+
+function snapshotKey(workspace: AdfWorkspace, auditId: number): string {
+  const db = workspace.getDatabase()
+  let id = workspaceIds.get(db)
+  if (id === undefined) {
+    id = nextWorkspaceId++
+    workspaceIds.set(db, id)
+  }
+  return `${id}:${auditId}`
+}
 
 function cacheGet(id: string): Snapshot | undefined {
   const hit = cache.get(id)
@@ -46,9 +59,6 @@ function cacheGet(id: string): Snapshot | undefined {
 
 function cachePut(id: string, snapshot: Snapshot): void {
   if (snapshot.bytes > CACHE_MAX_BYTES) return
-  // Two page requests can miss the cache and finish decoding the same snapshot.
-  cacheBytes -= cache.get(id)?.bytes ?? 0
-  cache.delete(id)
   cache.set(id, snapshot)
   cacheBytes += snapshot.bytes
   for (const [oldId, old] of cache) {
@@ -122,9 +132,17 @@ export function decodeArchiveCursor(cursor: string): Position | null {
 }
 
 async function readSnapshot(workspace: AdfWorkspace, meta: { id: number; size_bytes: number }): Promise<Snapshot | null> {
-  const cacheId = `${workspace.getFilePath()}\u0000${meta.id}`
+  const cacheId = snapshotKey(workspace, meta.id)
   const hit = cacheGet(cacheId)
   if (hit) return hit
+  const existing = pending.get(cacheId)
+  if (existing) return existing
+  const load = loadSnapshot(workspace, meta, cacheId).finally(() => pending.delete(cacheId))
+  pending.set(cacheId, load)
+  return load
+}
+
+async function loadSnapshot(workspace: AdfWorkspace, meta: { id: number; size_bytes: number }, cacheId: string): Promise<Snapshot | null> {
   // size_bytes is the recorded JSON length — untrusted, so only a fast path;
   // maxOutputLength is the guard.
   if (meta.size_bytes > ARCHIVE_MAX_SNAPSHOT_BYTES) return null
@@ -168,7 +186,6 @@ export async function readArchivedChatPage(
   opts: { peek?: boolean; limit?: number } = {}
 ): Promise<ArchivedChatPage> {
   const empty: ArchivedChatPage = { uiLog: [], cursor: null, hasMore: false, unreadable: 0 }
-  const live = workspace.getLoopOrderKeys()
   let start: Position
   if (cursor !== null) {
     const decoded = decodeArchiveCursor(cursor)
@@ -176,7 +193,8 @@ export async function readArchivedChatPage(
     start = decoded
   } else {
     start = { key: Number.MAX_SAFE_INTEGER, seq: Number.MAX_SAFE_INTEGER }
-    for (const row of live) if (before(row, start)) start = { key: row.key, seq: row.seq }
+    const oldest = workspace.getOldestLoopOrderKey()
+    if (oldest && before(oldest, start)) start = oldest
   }
   // A snapshot can hold rows before `start` only if its first archived seq is
   // at or before start.key (a row's key never exceeds its seq).
@@ -186,7 +204,7 @@ export async function readArchivedChatPage(
 
   assertSafeBrotliRuntime()
   const limit = Math.min(Math.max(opts.limit ?? ARCHIVE_PAGE_ROWS, 1), 500)
-  const liveSeqs = new Set(live.map((row) => row.seq))
+  const liveSeqs = new Set(workspace.listLoopSeqs())
   const rows = new Map<number, ArchivedRow>()
   let page: ArchivedRow[] | undefined
   let moreRows = false

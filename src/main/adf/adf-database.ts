@@ -4311,9 +4311,12 @@ export class AdfDatabase {
     return stmts.list.all(...sources) as Array<{ id: number; start_seq: number; end_seq: number; size_bytes: number }>
   }
 
-  /** Each live row of a loop: its seq and display-order key (ord when set, else seq). */
-  getLoopOrderKeys(loop: string): Array<{ seq: number; key: number }> {
-    return this.db.prepare('SELECT seq, COALESCE(ord, seq) AS key FROM adf_loop WHERE loop = ?').all(loop) as Array<{ seq: number; key: number }>
+  getOldestLoopOrderKey(loop: string): { seq: number; key: number } | undefined {
+    return this.db.prepare('SELECT seq, COALESCE(ord, seq) AS key FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq), seq LIMIT 1').get(loop) as { seq: number; key: number } | undefined
+  }
+
+  listLoopSeqs(loop: string): number[] {
+    return this.db.prepare('SELECT seq FROM adf_loop WHERE loop = ?').pluck().all(loop) as number[]
   }
 
   // ===========================================================================
