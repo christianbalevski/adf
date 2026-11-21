@@ -1722,7 +1722,7 @@
         -
           label: "ADF Studio Documentation"
 
-## llm requests (3)
+## llm requests (2)
 #1:
   messages:
     -
@@ -1733,15 +1733,6 @@
   system: ""
   tools: []
 #2:
-  messages:
-    -
-      role: "user"
-      text: "hi"
-  model: "parity-model"
-  stream: false
-  system: ""
-  tools: []
-#3:
   messages:
     -
       role: "user"
