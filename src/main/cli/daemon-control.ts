@@ -302,10 +302,9 @@ export interface EnsureOptions extends StartOptions {
  */
 export async function ensureDaemon(url: string, options: EnsureOptions = {}): Promise<StartResult | null> {
   const env = options.env ?? process.env
-  const fetchImpl = options.fetch ?? fetch
   const target = daemonTarget(url)
-  if (await isHealthy(target.url, fetchImpl)) return null
   if (!target.loopback || !isLocalDaemonUrl(target.url, env) || options.disabled || env.ADF_NO_AUTOSTART === '1') return null
+  if (await isHealthy(target.url, options.fetch ?? fetch)) return null
   return await startDaemon(target, options)
 }
 

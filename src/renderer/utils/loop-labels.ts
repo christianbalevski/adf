@@ -112,35 +112,28 @@ export const MERGED_CONTEXT_SEPARATOR = '\n\n────────\n\n'
  *   "Added by Claude Code · n" row holding every block.
  * Anything else passes through.
  */
-export function mergeContextRows(entries: AgentLogEntry[]): AgentLogEntry[] {
-  const out: AgentLogEntry[] = []
-  for (const entry of entries) {
-    const prev = out[out.length - 1]
-    if (
-      entry.type === 'context' && entry.metadata?.category === 'provider_context'
-      && prev?.type === 'context' && prev.metadata?.category === 'provider_context'
-      && prev.metadata?.addedBy === entry.metadata?.addedBy
-    ) {
-      const count = typeof prev.metadata.mergedCount === 'number' ? prev.metadata.mergedCount : 1
-      out[out.length - 1] = {
-        ...prev,
-        content: `${prev.content}${MERGED_CONTEXT_SEPARATOR}${entry.content}`,
-        metadata: { ...prev.metadata, mergedCount: count + 1 },
-      }
-      continue
+export function mergeContextRow(prev: AgentLogEntry | undefined, entry: AgentLogEntry): AgentLogEntry | undefined {
+  if (
+    entry.type === 'context' && entry.metadata?.category === 'provider_context'
+    && prev?.type === 'context' && prev.metadata?.category === 'provider_context'
+    && prev.metadata?.addedBy === entry.metadata?.addedBy
+  ) {
+    const count = typeof prev.metadata.mergedCount === 'number' ? prev.metadata.mergedCount : 1
+    return {
+      ...prev,
+      content: `${prev.content}${MERGED_CONTEXT_SEPARATOR}${entry.content}`,
+      metadata: { ...prev.metadata, mergedCount: count + 1 },
     }
-    if (
-      entry.type === 'context' && entry.metadata?.category === 'dynamic_instructions'
-      && prev?.type === 'context' && prev.metadata?.category === 'system_prompt'
-    ) {
-      out[out.length - 1] = {
-        ...prev,
-        content: `System prompt\n\n${prev.content}\n\nDynamic instructions\n\n${entry.content}`,
-        metadata: { ...prev.metadata, category: 'instructions' },
-      }
-      continue
-    }
-    out.push(entry)
   }
-  return out
+  if (
+    entry.type === 'context' && entry.metadata?.category === 'dynamic_instructions'
+    && prev?.type === 'context' && prev.metadata?.category === 'system_prompt'
+  ) {
+    return {
+      ...prev,
+      content: `System prompt\n\n${prev.content}\n\nDynamic instructions\n\n${entry.content}`,
+      metadata: { ...prev.metadata, category: 'instructions' },
+    }
+  }
+  return undefined
 }

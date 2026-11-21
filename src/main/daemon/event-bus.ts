@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { UmbilicalEvent } from '../runtime/umbilical-bus'
+import { daemonEventFrame } from './sse-wire'
 
 /**
  * Daemon-side wrapper around the canonical umbilical envelope.
@@ -13,7 +14,7 @@ export interface DaemonEventEnvelope {
   event: UmbilicalEvent
 }
 
-export type DaemonEventListener = (envelope: DaemonEventEnvelope) => void
+export type DaemonEventListener = (envelope: DaemonEventEnvelope, getFrame: () => string) => void
 
 export class DaemonEventBus {
   /**
@@ -44,9 +45,13 @@ export class DaemonEventBus {
       }
     }
 
+    // Share one lazy encoding during live fan-out. The ring keeps only the
+    // envelope, so replay doesn't retain an extra copy of every payload.
+    let frame: string | undefined
+    const getFrame = () => frame ??= daemonEventFrame(envelope)
     for (const listener of this.listeners) {
       try {
-        listener(envelope)
+        listener(envelope, getFrame)
       } catch {
         // A bad subscriber should not break daemon event publication.
       }

@@ -22,8 +22,9 @@
  *
  * Kept free of electron imports so it can be unit tested under plain Node.
  */
-import { execFileSync } from 'child_process'
+import { execFile } from 'child_process'
 import { homedir } from 'os'
+import { promisify } from 'node:util'
 
 export const PATH_START_MARKER = '__ADF_LOGIN_ENV_START__'
 export const PATH_END_MARKER = '__ADF_LOGIN_ENV_END__'
@@ -38,14 +39,14 @@ function fallbackDirs(platform: NodeJS.Platform, home: string): string[] {
 
 const DEFAULT_TIMEOUT_MS = 5000
 
-export type LoginShellExec = (shell: string, args: string[], timeoutMs: number) => string
+export type LoginShellExec = (shell: string, args: string[], timeoutMs: number) => string | Promise<string>
 
 export interface ResolveLoginShellPathOptions {
   shell: string
   currentPath: string
   platform: NodeJS.Platform
   timeoutMs?: number
-  /** Injectable for tests; defaults to a synchronous execFile of the shell. */
+  /** Injectable for tests; defaults to running the shell asynchronously. */
   exec?: LoginShellExec
   /** Injectable for tests; defaults to os.homedir(). */
   home?: string
@@ -105,16 +106,20 @@ export function fallbackPath(currentPath: string, platform: NodeJS.Platform, hom
   return [...current, ...extra].join(':')
 }
 
-const defaultExec: LoginShellExec = (shell, args, timeoutMs) =>
-  execFileSync(shell, args, {
+const execFileAsync = promisify(execFile)
+const defaultExec: LoginShellExec = async (shell, args, timeoutMs) => {
+  const run = execFileAsync(shell, args, {
     encoding: 'utf-8',
     timeout: timeoutMs,
-    // No stdin: an rc file that prompts (oh-my-zsh update, etc.) gets EOF
-    // instead of blocking until the timeout.
-    stdio: ['ignore', 'pipe', 'ignore'],
+    killSignal: 'SIGKILL',
+    windowsHide: true,
   })
+  // An rc file that prompts gets EOF rather than waiting for input.
+  run.child.stdin?.end()
+  return (await run).stdout
+}
 
-export function resolveLoginShellPath(opts: ResolveLoginShellPathOptions): LoginShellPathResult {
+export async function resolveLoginShellPath(opts: ResolveLoginShellPathOptions): Promise<LoginShellPathResult> {
   const exec = opts.exec ?? defaultExec
   const fallback = (reason: string): LoginShellPathResult => ({
     source: 'fallback',
@@ -125,9 +130,9 @@ export function resolveLoginShellPath(opts: ResolveLoginShellPathOptions): Login
   try {
     // Separate flags rather than -ilc: bash, zsh, fish and nushell all accept
     // `-i -l -c`, but not all of them parse the combined form.
-    output = exec(opts.shell, ['-i', '-l', '-c', loginShellScript()], opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
+    output = await exec(opts.shell, ['-i', '-l', '-c', loginShellScript()], opts.timeoutMs ?? DEFAULT_TIMEOUT_MS)
   } catch (err) {
-    // execFileSync throws on a non-zero exit and on timeout, but whatever the
+    // execFile rejects on a non-zero exit and on timeout, but whatever the
     // shell printed is still on the error.
     const stdout = (err as { stdout?: unknown }).stdout
     const salvaged = typeof stdout === 'string' ? parseLoginShellPath(stdout) : null

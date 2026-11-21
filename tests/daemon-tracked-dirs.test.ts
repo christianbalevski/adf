@@ -295,9 +295,11 @@ describe('daemon tracked folders API', () => {
     expect((await server.inject({ method: 'POST', url: '/tracked-dirs', payload: { path: b } })).statusCode).toBe(201)
 
     const peek = vi.spyOn(AdfDatabase, 'peekBootStatusDetailed')
+    const listAgents = vi.spyOn(runtime, 'listAgents')
     try {
       const res = await server.inject({ method: 'GET', url: '/tracked-dirs/agents/all' })
       expect(res.statusCode).toBe(200)
+      expect(listAgents).toHaveBeenCalledTimes(1)
       const body = res.json()
       expect(body.folders.map((f: { path: string }) => f.path)).toEqual([a, b])
       expect(body.folders[0]).toEqual(expect.objectContaining({ exists: true, agentCount: 2, loadedCount: 1 }))
@@ -313,6 +315,7 @@ describe('daemon tracked folders API', () => {
       expect(peek).not.toHaveBeenCalled()
     } finally {
       peek.mockRestore()
+      listAgents.mockRestore()
     }
     // Reading never leaves sidecars next to a file that is not loaded.
     expect(existsSync(join(b, 'agent-3.adf-wal'))).toBe(false)

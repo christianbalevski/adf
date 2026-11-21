@@ -185,6 +185,8 @@ describe('daemon HIL approval API (Studio parity)', () => {
 
     const rt = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/tasks?status=pending_approval` })).json().tasks
     expect(rt).toHaveLength(3)
+    const limited = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/tasks?status=pending_approval&limit=1` })).json().tasks
+    expect(limited).toEqual([rt[0]])
   })
 
   it('approve-all approves gated requests and skips protection overrides', async () => {

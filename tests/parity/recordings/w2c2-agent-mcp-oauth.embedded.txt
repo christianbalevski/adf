@@ -998,7 +998,7 @@
 #4 shell.openExternal:
   - "https://127.0.0.1:<FAKE_MCP_PORT>/authorize?response_type=code&client_id=parity-client&code_challenge=<pkce-challenge#1>&code_challenge_method=S256&redirect_uri=http%3A%2F%2F127.0.0.1%3A<oauth-callback-port>%2Fcallback&state=<oauth-state#1>&resource=http%3A%2F%2F127.0.0.1%3A<FAKE_MCP_PORT>%2Foauth-mcp"
 
-## llm requests (4)
+## llm requests (3)
 #1:
   messages:
     -
@@ -1009,15 +1009,6 @@
   system: ""
   tools: []
 #2:
-  messages:
-    -
-      role: "user"
-      text: "hi"
-  model: "parity-model"
-  stream: false
-  system: ""
-  tools: []
-#3:
   messages:
     -
       role: "user"
@@ -1283,7 +1274,7 @@
     - "sys_delete_meta"
     - "sys_fetch"
     - "mcp_restart"
-#4:
+#3:
   messages:
     -
       role: "user"

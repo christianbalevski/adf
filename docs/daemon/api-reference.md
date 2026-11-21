@@ -3291,7 +3291,7 @@ Chat turns, event triggers and the agent's message inbox / outbox.
 | DELETE | [`/agents/{id}/chat`](#op-clearagentchat) | Clear a loop's persisted chat / loop history |
 | GET | [`/agents/{id}/chat/archived`](#op-getagentchatarchived) | Archived chat history of a loop |
 | POST | [`/agents/{id}/trigger`](#op-triggeragent) | Queue an ADF event dispatch |
-| GET | [`/agents/{id}/inbox`](#op-getagentinbox) | List inbox messages |
+| GET | [`/agents/{id}/inbox`](#op-getagentinbox) | List inbox messages or count them |
 | DELETE | [`/agents/{id}/inbox`](#op-clearagentinbox) | Delete all inbox messages |
 | GET | [`/agents/{id}/outbox`](#op-getagentoutbox) | List outbox messages |
 
@@ -3553,7 +3553,7 @@ Example 202 (`application/json`):
 
 ### GET `/agents/{id}/inbox`
 
-**List inbox messages**
+**List inbox messages or count them**
 
 Operation `getAgentInbox` · bearer token
 
@@ -3563,12 +3563,13 @@ Operation `getAgentInbox` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `status` | query | `"unread"` \| `"read"` \| `"archived"` |  | Only this status |
+| `countOnly` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Return the count of matching inbox messages without their contents. Use 1 or true to enable it. An omitted status counts the whole inbox. |
 
 **Responses**
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [InboxResponse](#schema-inboxresponse) | Messages |
+| 200 | [InboxResponse](#schema-inboxresponse) \| [InboxCountResponse](#schema-inboxcountresponse) | Messages by default, or the matching message count when countOnly is enabled |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
@@ -20636,6 +20637,15 @@ Whose runtime identity the daemon uses. `adopted`: ADF Studio's, from a verified
 | `received_at` | integer | yes |  |
 | `status` | `"unread"` \| `"read"` \| `"archived"` | yes |  |
 | `original_message` | string |  |  |
+
+<a id="schema-inboxcountresponse"></a>
+
+### InboxCountResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes | Agent id |
+| `count` | integer | yes |  |
 
 <a id="schema-inboxresponse"></a>
 

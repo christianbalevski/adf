@@ -1,6 +1,8 @@
 import { createHash, randomBytes } from 'node:crypto'
 import { readFile, realpath } from 'node:fs/promises'
-import { extname, isAbsolute, relative, resolve } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
+import { promisify } from 'node:util'
+import { gzip } from 'node:zlib'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { ServerResponse } from 'node:http'
 import { isLoopbackName, type DaemonRequestGuard } from '../request-guard'
@@ -27,6 +29,18 @@ const MAX_SESSIONS = 128
 const MAX_TABS = 16
 const MAX_PENDING_BYTES = 1024 * 1024
 const CLIENT_ID = /^[a-zA-Z0-9_-]{16,128}$/
+const BUILD_ASSET = /^assets\/[^/]+-[a-zA-Z0-9_-]{8}\.(?:js|css|wasm|woff2?)$/
+const gzipBytes = promisify(gzip)
+
+function acceptsGzip(header: string | undefined): boolean {
+  if (!header) return false
+  return header.split(',').some(value => {
+    const [encoding, ...params] = value.split(';')
+    if (encoding.trim().toLowerCase() !== 'gzip') return false
+    const quality = params.map(param => param.trim()).find(param => /^q\s*=/i.test(param))
+    return quality === undefined || Number(quality.slice(quality.indexOf('=') + 1)) > 0
+  })
+}
 
 interface TabEntry {
   generation: string
@@ -295,7 +309,18 @@ export function registerWebStudio(server: FastifyInstance, guard: DaemonRequestG
       const contentType = MIME[extname(file)]
       if (!contentType) return reject(reply, 404, 'Not found.', 'not_found')
       const bytes = await readFile(file)
-      return reply.type(contentType).send(bytes)
+      reply.type(contentType)
+      if (BUILD_ASSET.test(path) && path === rel.split(sep).join('/')) {
+        reply.header('Cache-Control', 'private, max-age=31536000, immutable')
+        if (bytes.length >= 1024 && /\.(?:js|css|wasm)$/.test(path)) {
+          reply.header('Vary', 'Accept-Encoding')
+          if (acceptsGzip(request.headers['accept-encoding'])) {
+            const compressed = await gzipBytes(bytes)
+            return reply.header('Content-Encoding', 'gzip').send(compressed)
+          }
+        }
+      }
+      return reply.send(bytes)
     } catch { return reject(reply, 404, 'Not found.', 'not_found') }
   })
   function permitLogin(request: FastifyRequest, reply: FastifyReply): boolean {

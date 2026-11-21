@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 // Subscription connectors are built without signing in; never reach a real token store.
 vi.mock('../../../src/main/providers/chatgpt-subscription/auth-manager', () => ({
-  getChatGptAuthManager: () => ({ getValidAccessToken: async () => 'token-1', getAccountId: async () => 'account-1' }),
+  getChatGptAuthManager: () => ({ getRequestAuth: async () => ({ accessToken: 'token-1', accountId: 'account-1' }) }),
 }))
 vi.mock('../../../src/main/providers/grok-subscription/auth-manager', () => ({
   getGrokAuthManager: () => ({ getValidAccessToken: async () => 'token-1' }),

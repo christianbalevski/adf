@@ -237,6 +237,32 @@ describe('AgentExecutor — automatic provider-error recovery', () => {
     clearAllUmbilicalBuses()
   })
 
+  it('reuses successful startup validation only for the exact provider instance', async () => {
+    const { filePath, workspace } = makeWorkspace('startup-provider')
+    const provider = new FlakyProvider(0)
+    const validated = vi.spyOn(provider, 'validateConfig')
+    expect(await provider.validateConfig()).toEqual({ valid: true })
+
+    const agent = await buildAgent(workspace, filePath, provider)
+    try {
+      agent.executor.confirmProviderValidation(provider)
+      await agent.executor.executeTurn(chatDispatch())
+      expect(validated).toHaveBeenCalledOnce()
+      expect(provider.createMessageCalls).toBe(1)
+
+      // Same model and provider ids, but a fresh instance may use another key.
+      const replacement = new FlakyProvider(0)
+      const replacementValidation = vi.spyOn(replacement, 'validateConfig')
+      agent.executor.updateProvider(replacement)
+      agent.executor.confirmProviderValidation(provider)
+      await agent.executor.executeTurn(chatDispatch())
+      expect(replacementValidation).toHaveBeenCalledOnce()
+      expect(replacement.createMessageCalls).toBe(1)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
   it('retries a transient provider error with backoff and recovers', async () => {
     const { filePath, workspace } = makeWorkspace('recovers')
     const provider = new FlakyProvider(2)

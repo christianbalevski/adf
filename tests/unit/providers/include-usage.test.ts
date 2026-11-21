@@ -55,15 +55,19 @@ describe('openai-compatible providers request streaming usage', () => {
   })
 
   it('sets includeUsage on the param-injected custom provider', () => {
-    createProvider(agent([{ key: 'top_k', value: '40' }]), settings)
+    createProvider(agent([{ key: 'top_k', value: '40' }, { key: 'seed', value: 'null' }]), settings)
     const opts = captured[captured.length - 1]
     expect(opts.includeUsage).toBe(true)
-    expect(typeof opts.fetch).toBe('function')
+    const transform = opts.transformRequestBody as (body: Record<string, unknown>) => Record<string, unknown>
+    expect(transform({ seed: 0, top_k: 30, stream: true })).toEqual({ top_k: 40, stream: true })
   })
 
   it('sets includeUsage on the grok subscription provider', () => {
-    createGrokSubscriptionProvider({ getValidAccessToken: async () => 'token' })
-    expect(captured[captured.length - 1].includeUsage).toBe(true)
+    createGrokSubscriptionProvider({ getValidAccessToken: async () => 'token' }, { reasoning_effort: 'high' })
+    const opts = captured[captured.length - 1]
+    expect(opts.includeUsage).toBe(true)
+    const transform = opts.transformRequestBody as (body: Record<string, unknown>) => Record<string, unknown>
+    expect(transform({ reasoning_effort: 'low', stream: true })).toEqual({ reasoning_effort: 'high', stream: true })
   })
 })
 

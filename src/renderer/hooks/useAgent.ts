@@ -7,13 +7,14 @@ import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES, type AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
-import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload, ToolApprovalResolvedPayload } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ChatAppendedPayload, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload, ToolApprovalResolvedPayload } from '../../shared/types/ipc.types'
+import { LOCAL_RUNTIME } from '../../shared/runtime-tag'
 import { classifyInjectedText, detectTriggerType, parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
 import type { AskQuestion } from '../../shared/utils/ask-form'
 import { findApprovalTargetEntry } from './approval-target'
-import { interruptedBlockIndexes, pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
+import { interruptedBlockIndexes, lacksSeq, pendingBlockIndexes, pendingToolResultIndexes } from './live-seq'
 import { deliverQueuedMessages } from '../utils/queued-delivery'
 import { openAgentKey, openApi, useOpenRuntime } from '../utils/runtime-api'
 import { captureAgentView, isCurrentAgentView } from '../utils/agent-view'
@@ -28,11 +29,9 @@ import { captureAgentView, isCurrentAgentView } from '../utils/agent-view'
 function findLastStreamingEntry(log: AgentLogEntry[], type: 'text' | 'thinking'): number {
   const last = log.length > 0 ? log[log.length - 1] : undefined
   if (!last || last.type !== type) return -1
-  // A quiet-turn marker is an empty terminal text entry standing in for a turn
-  // that produced nothing. A LATER (e.g. self-scheduled successor) turn's deltas
-  // must not merge into it (B16), or "ended quietly" silently becomes that
-  // turn's output. Treat it as a boundary: start a fresh entry instead.
-  if (last.metadata?.quietTurn) return -1
+  // A persisted block or a quiet-turn marker ends the stream, even when
+  // an autonomous loop immediately opens another block of the same type.
+  if (!lacksSeq(last) || last.metadata?.quietTurn) return -1
   return log.length - 1
 }
 
@@ -113,7 +112,8 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
   /**
    * The assistant row that produced the text/thinking blocks currently at the
    * tail has just been persisted — give those entries its seq, the same one
-   * `parseLoopToDisplay` gives them on reload. Metadata only; nothing redraws.
+   * `parseLoopToDisplay` gives them on reload. A text row can use the stamp to
+   * finish painting its Markdown.
    */
   const stampStreamedBlocks = (seq: unknown, loop: string): void => {
     if (typeof seq !== 'number') return
@@ -486,6 +486,20 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         const payload = event.payload as { content: string; revision?: number; writer?: ResourceWriter | null }
         // W3-F: the revision and writer reach the README tab, which keeps unsaved text and names the writer.
         useDocumentStore.getState().setDocumentContent(payload.content, payload.revision !== undefined ? { revision: payload.revision, writer: payload.writer } : undefined)
+        break
+      }
+
+      case 'chat_appended': {
+        const { filePath, entry } = event.payload as ChatAppendedPayload
+        if (view.filePath !== filePath || view.runtimeId !== LOCAL_RUNTIME) break
+        // The open-file batch may already include this append. Compare the
+        // persisted tail cursor; a compaction summary can carry a newer seq
+        // at the head, but every direct append is written at the tail.
+        const seq = entry.metadata?.seq
+        const tail = findLastIndex(slice.log, (item) => typeof item.metadata?.seq === 'number')
+        const tailSeq = slice.log[tail]?.metadata?.seq
+        if (typeof seq !== 'number' || (typeof tailSeq === 'number' && seq <= tailSeq)) break
+        agentStore.addLogEntry(entry, loop)
         break
       }
 

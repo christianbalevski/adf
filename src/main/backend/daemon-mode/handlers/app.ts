@@ -159,17 +159,15 @@ export const APP_HANDLERS: DaemonHandlerTable = {
    */
   [IPC.TOOLS_DESCRIPTIONS]: async (ctx) => {
     const client = await ctx.ready()
-    const definitions = await client.request<Record<string, unknown>>('GET', '/runtime/tools/descriptions')
     const agentId = ctx.session.agentId
-    if (!agentId) return definitions
-    let own: AgentToolsResult
-    try {
-      own = await client.request<AgentToolsResult>('GET', `/agents/${enc(agentId)}/tools`)
-    } catch (err) {
-      if (isNotFound(err)) return definitions
-      throw err
-    }
-    for (const tool of own.tools) {
+    const [definitions, own] = await Promise.all([
+      client.request<Record<string, unknown>>('GET', '/runtime/tools/descriptions'),
+      agentId ? client.request<AgentToolsResult>('GET', `/agents/${enc(agentId)}/tools`).catch(err => {
+        if (isNotFound(err)) return null
+        throw err
+      }) : null,
+    ])
+    for (const tool of own?.tools ?? []) {
       if (definitions[tool.name]) continue
       if (!tool.schema || Object.keys(tool.schema).length === 0) continue
       definitions[tool.name] = { name: tool.name, description: tool.description, input_schema: tool.schema }

@@ -97,6 +97,15 @@ export interface DecoratedRuntime extends DiscoveredRuntime {
   is_self_owned: boolean
 }
 
+interface FleetPeerObservation {
+  url: string
+  runtimeDid?: string
+  ownerDid?: string
+  nextRefreshAt: number
+  pending: boolean
+  value?: DecoratedRuntime
+}
+
 interface RuntimeMeta {
   runtime_alias?: string
   owner_did?: string
@@ -114,6 +123,7 @@ const NETWORK_CHECK_EVERY = 5
 const DEMAND_MS = 60_000
 const PEERS_DEBOUNCE_MS = 250
 const MAX_PEERS_WAIT_MS = 5_000
+const FLEET_PEER_REFRESH_MS = 5_000
 
 export class RuntimeDiscovery {
   private readonly opts: RuntimeDiscoveryOptions
@@ -137,6 +147,7 @@ export class RuntimeDiscovery {
   private startedIface: string | undefined = undefined
   private readonly peersListeners = new Set<() => void>()
   private peersTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly fleetPeerObservations = new Map<string, FleetPeerObservation>()
   private readonly runtimeMetaCache = new Map<string, { expiresAt: number; meta: RuntimeMeta | null }>()
   private readonly verifyMemo = new Map<string, { at: number; value: boolean }>()
   private readonly onMeshEvent = (event: MeshEvent): void => {
@@ -290,55 +301,87 @@ export class RuntimeDiscovery {
       try { await this.tailnet?.sweepNow() } catch { /* results below reflect whatever we have */ }
       this.directoryCache.invalidate()
       this.runtimeMetaCache.clear()
+      this.fleetPeerObservations.clear()
     } else {
       this.tailnet?.ensureFresh()
     }
     const ourOwnerDid = this.opts.getOwnerDid()
-    return Promise.all(mdns.getDiscoveredRuntimes().map(async (peer) => {
-      const [cards, meta] = await Promise.all([
-        this.directoryCache.fetch(peer.url),
-        this.fetchRuntimeMeta(peer.url),
-      ])
-      // Owner identity is opt-in on the peer; when shared it ships a
-      // delegation so the owner→runtime link is VERIFIED, not taken on trust.
-      let ownerVerified = false
-      let isSelf = false
-      if (meta?.owner_did && meta.owner_delegation && peer.runtime_did) {
-        const del = meta.owner_delegation
-        const runtimeDid = peer.runtime_did
-        ownerVerified =
-          del.role === 'runtime' &&
-          del.issuer === meta.owner_did &&
-          del.subject === runtimeDid &&
-          this.memoVerify(['att', del, runtimeDid], () => verifyAttestation(del, { expectedSubject: runtimeDid }))
-        isSelf = ownerVerified && !!ourOwnerDid && meta.owner_did === ourOwnerDid
+    return Promise.all(mdns.getDiscoveredRuntimes().map(peer => this.decoratePeer(peer, ourOwnerDid)))
+  }
+
+  /** Fleet snapshots show discovered stations immediately and enrich each independently. */
+  getFleetPeers(): DecoratedRuntime[] {
+    const mdns = this.mdns
+    if (!mdns) return []
+    this.tailnet?.ensureFresh()
+    const ownerDid = this.opts.getOwnerDid()
+    const now = Date.now()
+    const observations = this.fleetPeerObservations
+    for (const id of observations.keys()) {
+      if (!mdns.getDiscovered(id)) observations.delete(id)
+    }
+    return mdns.getDiscoveredRuntimes().map(peer => {
+      let observation = observations.get(peer.runtime_id)
+      if (!observation || observation.url !== peer.url || observation.runtimeDid !== peer.runtime_did || observation.ownerDid !== ownerDid) {
+        observation = { url: peer.url, runtimeDid: peer.runtime_did, ownerDid, nextRefreshAt: 0, pending: false }
+        observations.set(peer.runtime_id, observation)
       }
-      // The same trust judgment agent_discover applies to remote cards.
-      const decorated = (cards as AlfAgentCard[] | null)?.map((card) => {
-        const cardVerified = !!card.did && !!card.signature &&
-          this.memoVerify(['card', card], () => verifyCardSignature(card))
-        const ownerAtt = cardVerified
-          ? (card.attestations ?? []).find((a) => a.role === 'owner' &&
-              this.memoVerify(['att', a, card.did], () => verifyAttestation(a, { expectedSubject: card.did })))
-          : undefined
-        return {
-          ...card,
-          card_verified: cardVerified,
-          owner_attested: !!ownerAtt,
-          ...(ownerAtt ? { attested_owner_did: ownerAtt.issuer } : {}),
-        }
-      })
+      if (!observation.pending && now >= observation.nextRefreshAt) {
+        const entry = observation
+        entry.pending = true
+        entry.nextRefreshAt = now + FLEET_PEER_REFRESH_MS
+        void this.decoratePeer(peer, ownerDid).then(value => { entry.value = value }).catch(() => {}).finally(() => {
+          entry.pending = false
+        })
+      }
+      return observation.value ? { ...observation.value, ...peer } : { ...peer, owner_verified: false, is_self_owned: false }
+    })
+  }
+
+  private async decoratePeer(peer: DiscoveredRuntime, ourOwnerDid?: string): Promise<DecoratedRuntime> {
+    const [cards, meta] = await Promise.all([
+      this.directoryCache.fetch(peer.url),
+      this.fetchRuntimeMeta(peer.url),
+    ])
+    // Owner identity is opt-in on the peer; when shared it ships a
+    // delegation so the owner→runtime link is VERIFIED, not taken on trust.
+    let ownerVerified = false
+    let isSelf = false
+    if (meta?.owner_did && meta.owner_delegation && peer.runtime_did) {
+      const del = meta.owner_delegation
+      const runtimeDid = peer.runtime_did
+      ownerVerified =
+        del.role === 'runtime' &&
+        del.issuer === meta.owner_did &&
+        del.subject === runtimeDid &&
+        this.memoVerify(['att', del, runtimeDid], () => verifyAttestation(del, { expectedSubject: runtimeDid }))
+      isSelf = ownerVerified && !!ourOwnerDid && meta.owner_did === ourOwnerDid
+    }
+    // The same trust judgment agent_discover applies to remote cards.
+    const decorated = (cards as AlfAgentCard[] | null)?.map((card) => {
+      const cardVerified = !!card.did && !!card.signature &&
+        this.memoVerify(['card', card], () => verifyCardSignature(card))
+      const ownerAtt = cardVerified
+        ? (card.attestations ?? []).find((a) => a.role === 'owner' &&
+            this.memoVerify(['att', a, card.did], () => verifyAttestation(a, { expectedSubject: card.did })))
+        : undefined
       return {
-        ...peer,
-        agent_count: decorated ? decorated.length : undefined,
-        agents: decorated ?? undefined,
-        runtime_alias: meta?.runtime_alias,
-        owner_alias: meta?.owner_alias,
-        owner_did: meta?.owner_did,
-        owner_verified: ownerVerified,
-        is_self_owned: isSelf,
+        ...card,
+        card_verified: cardVerified,
+        owner_attested: !!ownerAtt,
+        ...(ownerAtt ? { attested_owner_did: ownerAtt.issuer } : {}),
       }
-    }))
+    })
+    return {
+      ...peer,
+      agent_count: decorated ? decorated.length : undefined,
+      agents: decorated ?? undefined,
+      runtime_alias: meta?.runtime_alias,
+      owner_alias: meta?.owner_alias,
+      owner_did: meta?.owner_did,
+      owner_verified: ownerVerified,
+      is_self_owned: isSelf,
+    }
   }
 
   private async refreshOnce(): Promise<void> {
@@ -373,6 +416,7 @@ export class RuntimeDiscovery {
     service.on('expired', (peer: DiscoveredRuntime) => {
       mesh.emitRuntimeExpired(peer)
       this.directoryCache.invalidate(peer.url)
+      this.fleetPeerObservations.delete(peer.runtime_id)
     })
     service.on('unavailable', ({ reason }: { reason: string }) => {
       this.mdnsUnavailable = true
@@ -432,6 +476,7 @@ export class RuntimeDiscovery {
     this.opts.mesh.setMdnsService(null)
     if (service) this.notifyPeers()
     this.directoryCache.invalidate()
+    this.fleetPeerObservations.clear()
     if (service) {
       try { await service.stop() } catch (err) { console.error('[Discovery] mDNS stop failed:', err) }
     }

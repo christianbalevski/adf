@@ -15,6 +15,7 @@ import { CHATGPT_SUBSCRIPTION_MEDIA, createChatGPTSubscriptionProvider } from '.
 import { getGrokAuthManager } from './grok-subscription/auth-manager'
 import { GROK_SUBSCRIPTION_MEDIA, createGrokSubscriptionProvider } from './grok-subscription'
 import { createClaudeSubscriptionProvider } from './claude-subscription'
+import { applyProviderBodyParams } from './provider-body-params'
 
 /**
  * Pool AI SDK provider instances by key to reuse HTTP connections.
@@ -92,15 +93,7 @@ function createParamInjector(extraParams: Record<string, unknown>): typeof globa
   return async (input, init) => {
     if (init?.body && typeof init.body === 'string') {
       try {
-        const body = JSON.parse(init.body)
-        // Merge extra params — null values remove keys
-        for (const [k, v] of Object.entries(extraParams)) {
-          if (v === null) {
-            delete body[k]
-          } else {
-            body[k] = v
-          }
-        }
+        const body = applyProviderBodyParams(JSON.parse(init.body), extraParams)
         init = { ...init, body: JSON.stringify(body) }
       } catch {
         // Not JSON — pass through unchanged
@@ -413,8 +406,7 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
     return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type, reasoningStyle: 'openrouter', promptCaching, media: OPENROUTER_MEDIA })
   }
 
-  // When extra params are needed, create a fresh provider with custom fetch
-  // so the param injector is scoped to this specific provider instance
+  // Scope the SDK's pre-serialization hook to this provider instance.
   if (hasExtraParams) {
     const provider = createOpenAICompatible({
       name: providerKey,
@@ -422,7 +414,7 @@ function buildProvider(config: AgentConfig, providerKey: string, cfg: ProviderCo
       apiKey: cfg.apiKey || undefined,
       // See getOpenAICompatibleProvider — required for streaming usage.
       includeUsage: true,
-      fetch: createParamInjector(extraParams)
+      transformRequestBody: body => applyProviderBodyParams(body, extraParams)
     })
     const model = provider(modelId) as LanguageModel
     return new AiSdkProvider(model, displayName, modelId, delayMs, { providerId: providerKey, providerType: cfg.type })

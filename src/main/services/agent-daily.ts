@@ -223,6 +223,44 @@ function firstAuditIdSince(q: Sql, at: number): number | null {
 
 type AuditRow = { id: number; source: string; start_seq: unknown; end_seq: unknown; entry_count: unknown; created_at: unknown }
 
+function coveredArchives(archives: AuditRow[]): Set<number> {
+  const rangesByLoop = new Map<string, { id: number; start: number; end: number }[]>()
+  for (const archive of archives) {
+    const start = num(archive.start_seq)
+    const end = num(archive.end_seq)
+    if (start === null || end === null) continue
+    const loop = loopOfSource(archive.source)
+    const range = { id: archive.id, start, end }
+    const ranges = rangesByLoop.get(loop)
+    if (ranges) ranges.push(range)
+    else rangesByLoop.set(loop, [range])
+  }
+
+  const covered = new Set<number>()
+  for (const ranges of rangesByLoop.values()) {
+    if (ranges.length < 2) continue
+    const starts = [...new Set(ranges.map(range => range.start))].sort((a, b) => a - b)
+    const ranks = new Map(starts.map((start, i) => [start, i + 1]))
+    // Walk newest first. A Fenwick tree records the largest later end across
+    // each prefix of starts, so only later ranges starting <= this one count.
+    const maxEnds = new Float64Array(starts.length + 1).fill(-Infinity)
+    for (let i = ranges.length - 1; i >= 0; i--) {
+      const { id, start, end } = ranges[i]
+      const rank = ranks.get(start)!
+      for (let j = rank; j > 0; j -= j & -j) {
+        if (maxEnds[j] >= end) {
+          covered.add(id)
+          break
+        }
+      }
+      for (let j = rank; j < maxEnds.length; j += j & -j) {
+        maxEnds[j] = Math.max(maxEnds[j], end)
+      }
+    }
+  }
+  return covered
+}
+
 /**
  * Archived loop rows that can fall inside the window, as spans of time.
  * adf_audit holds no per-message times without decompressing `data`, so
@@ -261,16 +299,16 @@ export function readArchiveSpans(q: Sql, since: number): ArchiveSpan[] {
 
   const spans: ArchiveSpan[] = []
   const prevCreated = new Map<string, number>()
-  archives.forEach((a, i) => {
+  const covered = coveredArchives(archives)
+  archives.forEach(a => {
     const loop = loopOfSource(a.source)
     const created = num(a.created_at) ?? 0
     const prev = prevCreated.get(loop)
     prevCreated.set(loop, created)
-    if (created < since) return
+    if (created < since || covered.has(a.id)) return
     const startSeq = num(a.start_seq)
     const endSeq = num(a.end_seq)
     const hasRange = startSeq !== null && endSeq !== null
-    if (hasRange && archives.slice(i + 1).some((b) => loopOfSource(b.source) === loop && num(b.start_seq) !== null && num(b.start_seq)! <= startSeq && (num(b.end_seq) ?? -Infinity) >= endSeq)) return
     let count = num(a.entry_count) ?? 0
     if (hasRange) count -= liveInRange(loop, startSeq, endSeq)
     if (count <= 0) return

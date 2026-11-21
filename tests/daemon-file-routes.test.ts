@@ -1173,7 +1173,8 @@ describe('daemon file routes: re-review fixes', () => {
     expect(source).toMatch(/const trackedDirWatcher = new TrackedDirWatcher\(\{\s*runtime,\s*settings,\s*onTrackedDirectoriesChanged: \(dirs\) => meshManager\.setTrackedDirectories\(dirs\),/)
     // Other route deps may follow it (remoteAccess): the watcher must still be the routes' own.
     expect(source).toMatch(/routes: \{[^}]*\}\), trackedDirWatcher(, \w+)* \}/)
-    expect(source).toMatch(/onShutdown: \[\s*\(\) => trackedDirWatcher\.close\(\),/)
+    const shutdownHooks = source.match(/onShutdown: \[([\s\S]*?)^\s*],/m)?.[1]
+    expect(shutdownHooks).toMatch(/^\s*\(\) => trackedDirWatcher\.close\(\),/m)
   })
 })
 

@@ -69,6 +69,8 @@ export interface DaemonProcessConfig {
   execPath: string
   /** Base environment of the child (default process.env). See buildDaemonEnv. */
   env?: NodeJS.ProcessEnv
+  /** Environment discovery may run alongside Studio boot; await it only for a spawn. */
+  environmentReady?: Promise<void>
 }
 
 export interface DaemonProcessDeps {
@@ -383,6 +385,7 @@ export class DaemonProcessController {
   async spawn(onProgress?: (text: string) => void, retried = false, startedBy: DaemonStartedBy = 'studio'): Promise<DaemonHandle> {
     const { paths } = this
     await mkdir(dirname(paths.logFile), { recursive: true })
+    await this.config.environmentReady
     const env = buildDaemonEnv(this.env, {
       settingsPath: this.config.settingsPath,
       pidFile: paths.pidFile,

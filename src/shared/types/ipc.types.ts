@@ -1,4 +1,4 @@
-import type { AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { AgentTemplate, DisplayEntry, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { LoopMedia } from './media.types'
 import type { AgentRegistryEntry } from '../schemas/agent-registry.schema'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
@@ -21,6 +21,8 @@ export interface AgentExecutionEvent {
     | 'autosaved'
     | 'document_updated'
     | 'chat_updated'
+    /** Embedded Studio delivered a Fleet message directly to an offline agent's loop. */
+    | 'chat_appended'
     | 'inter_agent_message'
     | 'tool_approval_request'
     | 'tool_approval_resolved'
@@ -50,6 +52,12 @@ export interface AgentExecutionEvent {
 /** `adf_file_created` on AGENT_EVENT: the file sys_create_adf wrote, when its result names it. */
 export interface AdfFileCreatedPayload {
   filePath?: string
+}
+
+/** A committed display entry in the embedded foreground transcript. */
+export interface ChatAppendedPayload {
+  filePath: string
+  entry: DisplayEntry
 }
 
 /**
@@ -500,9 +508,10 @@ export interface ContextBreakdownToolGroup {
 }
 
 /**
- * Per-request context token breakdown for a running executor. Expensive parts
- * (system prompt, tool schemas) are measured when the executor's caches
- * rebuild; message/dynamic figures are cheap estimates computed at read time.
+ * Per-request context token breakdown for a running executor. Prompt and
+ * tool totals are measured on cache rebuild. Layer and file figures are
+ * cached on the first diagnostic read. Message and dynamic figures are
+ * estimated at read time.
  */
 /**
  * Price of each system prompt layer, measured in rendered form ({{path}}
@@ -570,7 +579,7 @@ export interface ResponseMetadataPayload {
 
 /**
  * Payload of the 'chat_updated' agent event: the loop's display entries were
- * rebuilt wholesale (compaction, clear, direct append repaint). When the
+ * rebuilt wholesale (compaction, clear, or resync). When the
  * rebuild changed the context size, `contextBaseline` carries the new
  * post-rebuild estimate (see ContextBaseline) so the renderer resets its
  * gauge to it instead of keeping the pre-compaction figure until the next

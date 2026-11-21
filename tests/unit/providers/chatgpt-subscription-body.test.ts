@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import type { LanguageModelV3CallOptions } from '@ai-sdk/provider'
 import {
   createChatGPTSubscriptionProvider,
   describeCodexRequest,
@@ -154,13 +155,13 @@ describe('patchCodexRequestBody', () => {
 async function captureWireBody(
   text: string,
   instructions?: string,
-  extraParams?: Record<string, unknown>
+  extraParams?: Record<string, unknown>,
+  options?: Pick<LanguageModelV3CallOptions, 'prompt' | 'maxOutputTokens'>,
 ): Promise<string> {
   const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
   vi.stubGlobal('fetch', fetchSpy)
   const { provider, beginRequest } = createChatGPTSubscriptionProvider({
-    getValidAccessToken: async () => 'test-token',
-    getAccountId: () => 'test-account',
+    getRequestAuth: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
   }, extraParams)
   // Production path: instructions are bound to THIS request via a private
   // header id, the way AiSdkProvider passes them.
@@ -169,6 +170,7 @@ async function captureWireBody(
   try {
     await expect(provider.responses('gpt-5.4').doStream({
       prompt: [{ role: 'user', content: [{ type: 'text', text }] }],
+      ...options,
       headers: scope.headers,
     })).rejects.toThrow('request captured')
   } finally {
@@ -266,6 +268,40 @@ describe('wire-byte identity', () => {
       expect(await captureWireBody(...args)).toBe(wire)
     })
   }
+
+  function imagePrompt(text: string): Pick<LanguageModelV3CallOptions, 'prompt' | 'maxOutputTokens'> {
+    return {
+      maxOutputTokens: 4096,
+      prompt: [
+        { role: 'system', content: SYSTEM },
+        { role: 'user', content: [
+          { type: 'file', data: new Uint8Array(256 * 1024).fill(1), mediaType: 'image/png' },
+          { type: 'text', text },
+          { type: 'file', data: new Uint8Array(256 * 1024).fill(255), mediaType: 'image/jpeg' },
+        ] },
+        { role: 'user', content: [{ type: 'text', text: 'Dynamic instructions for this turn' }] },
+      ],
+    }
+  }
+
+  it('matches the full patch path with large images, dynamic instructions and repaired text', async () => {
+    const options = imagePrompt('truncated ' + HALF_ROCKET)
+    const fast = await captureWireBody('', SYSTEM, undefined, options)
+    // Supplying empty raw parameters uses the full patch path without overrides.
+    const full = await captureWireBody('', SYSTEM, {}, options)
+    expect(fast).toBe(full)
+    expect(fast).toContain('truncated �')
+    expect(fast).toContain('Dynamic instructions for this turn')
+    expect(fast).not.toContain('max_output_tokens')
+    expect(fast).not.toContain('__ADF_CODEX_IMAGE_')
+  })
+
+  it('preserves text that coincides with an image placeholder', async () => {
+    const options = imagePrompt('__ADF_CODEX_IMAGE_0__')
+    const wire = await captureWireBody('', SYSTEM, undefined, options)
+    expect(wire).toBe(await captureWireBody('', SYSTEM, {}, options))
+    expect(wire).toContain('"text":"__ADF_CODEX_IMAGE_0__"')
+  })
 
   it('never puts a bare \\udXXX escape on the wire', async () => {
     for (const { args } of CASES) {

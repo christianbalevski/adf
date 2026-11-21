@@ -3449,7 +3449,7 @@
         -
           label: "ADF Studio Documentation"
 
-## llm requests (7)
+## llm requests (6)
 #1:
   messages:
     -
@@ -3460,15 +3460,6 @@
   system: ""
   tools: []
 #2:
-  messages:
-    -
-      role: "user"
-      text: "hi"
-  model: "parity-model"
-  stream: false
-  system: ""
-  tools: []
-#3:
   messages:
     -
       role: "user"
@@ -3741,7 +3732,7 @@
     - "sys_set_meta"
     - "sys_delete_meta"
     - "sys_fetch"
-#4:
+#3:
   messages:
     -
       role: "user"
@@ -3750,7 +3741,7 @@
   stream: false
   system: ""
   tools: []
-#5:
+#4:
   messages:
     -
       role: "user"
@@ -3963,7 +3954,7 @@
     
     Your name is \"agent-2\". Provider: parity-llm. Model: parity-model. DID: 5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e02.
   tools: []
-#6:
+#5:
   messages:
     -
       role: "user"
@@ -4242,7 +4233,7 @@
     - "sys_set_meta"
     - "sys_delete_meta"
     - "sys_fetch"
-#7:
+#6:
   messages:
     -
       role: "user"

@@ -243,6 +243,17 @@ describe('compacted history', () => {
     expect(spans.map((s) => s.count)).toEqual([5, 1])
   })
 
+  it('only suppresses ranges contained by a later archive of the same loop', () => {
+    const { ws, q } = agent()
+    archive(ws, { start: 10, end: 20, count: 11, t: at(2, 6) })
+    archive(ws, { start: 11, end: 26, count: 16, t: at(2, 7) })
+    archive(ws, { start: 4, end: 18, count: 15, t: at(2, 8) })
+    archive(ws, { loop: 'critic', start: 1, end: 50, count: 50, t: at(2, 9) })
+    archive(ws, { start: 8, end: 20, count: 13, t: at(2, 10) })
+    archive(ws, { start: 7, end: null, count: 2, t: at(2, 11) })
+    expect(readArchiveSpans(q, windowStartMs(NOW)).map((span) => span.count)).toEqual([16, 15, 50, 13, 2])
+  })
+
   it('never selects adf_audit.data', () => {
     const { ws, q, sqls } = agent()
     row(ws, { seq: 1, t: at(3, 10) })

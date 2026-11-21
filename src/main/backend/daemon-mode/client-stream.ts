@@ -243,6 +243,7 @@ export function clientApiMismatchMessage(daemonVersion: unknown, clientApiVersio
 }
 
 export interface DaemonClientSessionOptions {
+  clientName?: string
   /** Studio's version (POST /client/sessions `version`). */
   version: string
   /** §8.3: the daemon stops when this session expires and no other is open (local mode, keepDaemonRunning off). */
@@ -314,7 +315,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
           listener?.onFatal?.(message)
           return null
         }
-        const created = await client.createClientSession({ client: STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed, ...(options.pid ? { pid: options.pid } : {}) })
+        const created = await client.createClientSession({ client: options.clientName ?? STUDIO_CLIENT_NAME, version: options.version, exitDaemonWhenClosed: options.exitDaemonWhenClosed, ...(options.pid ? { pid: options.pid } : {}) })
         log.log(`[Backend] Client session ${created.sessionId} opened${options.exitDaemonWhenClosed ? ' (the daemon stops when it expires and no other client is open)' : ''}`)
         return created.sessionId
       } catch (err) {

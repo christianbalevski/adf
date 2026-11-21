@@ -19,6 +19,7 @@ import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../uti
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
 import { buildAgentCard, verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
+import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import type { AlfPipelineContext, AlfPipelineResult } from '../services/alf-pipeline'
 import type { AgentMessage } from '../../shared/types/message.types'
 import type { AgentExecutor } from './agent-executor'
@@ -161,6 +162,11 @@ function importDirName(message: AlfMessage): string {
  * When mesh is enabled, registered agents get communication tools
  * (send_message, list_agents) and can exchange messages via the MessageBus.
  */
+export interface MeshInboxUpdate {
+  filePath: string
+  workspace: Pick<AdfWorkspace, 'getInbox' | 'getInboxCounts'>
+}
+
 export class MeshManager extends EventEmitter {
   private messageBus: MessageBus
   private registeredAgents: Map<string, RegisteredAgent> = new Map()
@@ -646,10 +652,7 @@ export class MeshManager extends EventEmitter {
       status: 'unread'
     })
 
-    // Emit inbox_updated so renderer can refresh
-    const unread = reg.workspace.getInbox('unread')
-    const read = reg.workspace.getInbox('read')
-    this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+    this.emit('inbox_updated', { filePath, workspace: reg.workspace } satisfies MeshInboxUpdate)
 
     // Notify renderer for foreground agents
     if (reg.isForeground) {
@@ -697,10 +700,7 @@ export class MeshManager extends EventEmitter {
       status: 'unread'
     })
 
-    // Emit inbox_updated so renderer can refresh
-    const unread = reg.workspace.getInbox('unread')
-    const read = reg.workspace.getInbox('read')
-    this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+    this.emit('inbox_updated', { filePath, workspace: reg.workspace } satisfies MeshInboxUpdate)
 
     // Record the message in the loop NOW — the trigger turn may run much
     // later (busy agent, hold) or never (on_inbox disabled/filtered), and the
@@ -855,10 +855,7 @@ export class MeshManager extends EventEmitter {
         threadId: flattened.thread_id
       })
 
-      // Emit inbox_updated so renderer can refresh
-      const unread = recipientReg.workspace.getInbox('unread')
-      const read = recipientReg.workspace.getInbox('read')
-      this.emit('inbox_updated', { filePath: recipientFilePath, inbox: [...unread, ...read] })
+      this.emit('inbox_updated', { filePath: recipientFilePath, workspace: recipientReg.workspace } satisfies MeshInboxUpdate)
       this.emitAgentIncoming(recipientFilePath, String(senderDid ?? 'unknown'), recipientReg.handle, content)
 
       // Fleet map: draw the incoming trace from the sender's base station.
@@ -1215,10 +1212,7 @@ export class MeshManager extends EventEmitter {
         // Update outbox: delivered (local, no status_code)
         senderReg.workspace.updateOutboxStatus(outboxId, 'delivered', Date.now())
 
-        // Emit inbox_updated so renderer can refresh
-        const unread = recipientLocal.workspace.getInbox('unread')
-        const read = recipientLocal.workspace.getInbox('read')
-        this.emit('inbox_updated', { filePath: recipientLocal.filePath, inbox: [...unread, ...read] })
+        this.emit('inbox_updated', { filePath: recipientLocal.filePath, workspace: recipientLocal.workspace } satisfies MeshInboxUpdate)
         this.emitAgentIncoming(recipientLocal.filePath, senderHandle, recipientLocal.handle, content)
 
         // Fire on_inbox trigger
@@ -1915,58 +1909,11 @@ export class MeshManager extends EventEmitter {
    */
   getRecentTools(limit = 5): Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]> {
     const result: Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]> = {}
-
     for (const [filePath, reg] of this.registeredAgents) {
-      try {
-        const totalCount = reg.workspace.getLoopCount()
-        // Read the last ~30 entries to find enough tool calls
-        const offset = Math.max(0, totalCount - 30)
-        const entries = offset > 0
-          ? reg.workspace.getLoopPaginated(30, offset)
-          : reg.workspace.getLoop()
-
-        // Track tool_use_id → { name, args, timestamp } for matching with results
-        const toolUseMap = new Map<string, { name: string; args?: string; timestamp: number }>()
-        const tools: { name: string; args?: string; isError?: boolean; timestamp: number }[] = []
-
-        for (const entry of entries) {
-          for (const block of entry.content_json) {
-            if (block.type === 'tool_use' && block.name && block.id) {
-              let args: string | undefined
-              if (block.input) {
-                try {
-                  const input = block.input as Record<string, unknown>
-                  if (typeof input._reason === 'string' && input._reason) {
-                    args = input._reason
-                  } else {
-                    const str = typeof block.input === 'string' ? block.input : JSON.stringify(block.input)
-                    args = str.length > 40 ? str.slice(0, 40) + '...' : str
-                  }
-                } catch { /* ignore */ }
-              }
-              toolUseMap.set(block.id, { name: block.name, args, timestamp: entry.created_at })
-            } else if (block.type === 'tool_result' && block.tool_use_id) {
-              const matched = toolUseMap.get(block.tool_use_id)
-              if (matched) {
-                tools.push({ ...matched, isError: !!block.is_error })
-                toolUseMap.delete(block.tool_use_id)
-              }
-            }
-          }
-        }
-
-        // Any unmatched tool_use (still in progress) — add without result
-        for (const pending of toolUseMap.values()) {
-          tools.push(pending)
-        }
-
-        result[filePath] = tools.slice(-limit)
-      } catch (err) {
-        console.error(`[Mesh] getRecentTools error for ${filePath}:`, err)
-        result[filePath] = []
-      }
+      result[filePath] = readRecentToolsFromWorkspace(reg.workspace, limit, error => {
+        console.error(`[Mesh] getRecentTools error for ${filePath}:`, error)
+      })
     }
-
     return result
   }
 
@@ -2450,10 +2397,7 @@ export class MeshManager extends EventEmitter {
           status: 'read'  // outgoing messages are pre-read
         })
 
-        // Emit inbox_updated so renderer can refresh
-        const unread = reg.workspace.getInbox('unread')
-        const read = reg.workspace.getInbox('read')
-        this.emit('inbox_updated', { filePath: fromFilePath, inbox: [...unread, ...read] })
+        this.emit('inbox_updated', { filePath: fromFilePath, workspace: reg.workspace } satisfies MeshInboxUpdate)
 
         // Auto-mark the replied-to message as handled
         if (replyTo) {
@@ -2470,9 +2414,7 @@ export class MeshManager extends EventEmitter {
     if (!msg || msg.status !== 'unread') return
     workspace.updateInboxStatus(msg.id, 'read')
     if (filePath) {
-      const unread = workspace.getInbox('unread')
-      const read = workspace.getInbox('read')
-      this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+      this.emit('inbox_updated', { filePath, workspace: workspace } satisfies MeshInboxUpdate)
     }
   }
 

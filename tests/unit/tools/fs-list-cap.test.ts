@@ -1,6 +1,9 @@
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { describe, it, expect, vi } from 'vitest'
 import { FsListTool } from '../../../src/main/tools/built-in/fs-list.tool'
-import type { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
+import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 
 /**
  * fs_list used to serialize EVERY file in the ADF into the model's context.
@@ -13,7 +16,12 @@ function workspaceWith(n: number, prefix = 'data/'): AdfWorkspace {
     path: `${prefix}f${i}.txt`, size: 10, mime_type: 'text/plain',
     protection: null, created_at: 1, updated_at: 1
   }))
-  return { listFiles: () => files } as unknown as AdfWorkspace
+  return {
+    listFilePage: (prefix: string | undefined, limit: number | undefined) => {
+      const matches = prefix ? files.filter((file) => file.path.startsWith(prefix)) : files
+      return { files: matches.slice(0, limit), total: matches.length }
+    }
+  } as unknown as AdfWorkspace
 }
 
 async function getLsHandler() {
@@ -47,6 +55,40 @@ describe('fs_list truncation', () => {
   it('counts only files matching the prefix', async () => {
     const r = await new FsListTool().execute({ prefix: 'other/' }, workspaceWith(750))
     expect(JSON.parse(r.content)).toHaveLength(0)
+  })
+
+  it('preserves literal prefix matching, insertion order, and exact counts on SQLite', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'adf-list-files-'))
+    const ws = AdfWorkspace.create(join(dir, 'agent.adf'), { name: 'list-files' })
+    try {
+      const paths = Array.from({ length: 530 }, (_, i) => `data/_%[${530 - i}]`)
+      const specialPaths = [
+        'data/_%[', 'DATA/_%[0]', 'data/XX[0]', 'data/_%x[0]',
+        'emoji/😀', 'emoji/😁', 'emoji/𝄞', 'path\0with-nul', 'path-after',
+        '\uD7FFitem', '\uE000item', '\u{10FFFF}end', 'x\u{10FFFF}end',
+      ]
+      const db = ws.getDatabase()
+      db.transaction(() => {
+        for (const path of [...paths, ...specialPaths]) db.writeFile(path, Buffer.from('x'))
+      })
+      const effectiveListing = ws.listFiles()
+      const tool = new FsListTool()
+      for (const prefix of ['data/_%[', 'emoji/\uD83D', 'emoji/😀', 'path\0', '\uD7FF', '\u{10FFFF}', 'x\u{10FFFF}', 'absent']) {
+        const expected = effectiveListing.filter((file) => file.path.startsWith(prefix)).map((file) => file.path)
+        const full = await tool.execute({ prefix, _full: true }, ws)
+        expect(JSON.parse(full.content).map((file: { path: string }) => file.path)).toEqual(expected)
+        const capped = await tool.execute({ prefix }, ws)
+        expect(JSON.parse(capped.content.split('\n')[0]).map((file: { path: string }) => file.path)).toEqual(expected.slice(0, 500))
+        if (expected.length > 500) expect(capped.content).toContain(`--- TRUNCATED at 500 files (${expected.length} match prefix "${prefix}") ---`)
+        else expect(capped.content).not.toContain('TRUNCATED')
+      }
+      const capped = await tool.execute({}, ws)
+      expect(JSON.parse(capped.content.split('\n')[0]).map((file: { path: string }) => file.path)).toEqual(effectiveListing.slice(0, 500).map((file) => file.path))
+      expect(capped.content).toContain(`--- TRUNCATED at 500 files (${effectiveListing.length} match) ---`)
+    } finally {
+      ws.close()
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })
 

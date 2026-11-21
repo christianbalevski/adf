@@ -65,6 +65,11 @@ import {
   toLlmCallEventData,
 } from './llm-call-metadata'
 
+interface SystemPromptDiagnostics {
+  promptParts: SystemPromptParts
+  injectedFiles: ContextBreakdownFileEntry[]
+}
+
 /** `hil.requested` fields telling an owner surface (daemon/TUI) whether
  *  "Always approve" is offered — snake_case like the rest of the payload. The
  *  server re-checks on the always-approve call; this is only the affordance. */
@@ -592,6 +597,11 @@ export class AgentExecutor extends EventEmitter {
   private provider: LLMProvider | null
   private toolRegistry: ToolRegistry
   private session: AgentSession
+  private readonly checkedToolPairs = new WeakMap<LLMMessage[], {
+    count: number
+    uses: Set<string>
+    results: Set<string>
+  }>()
   private config: AgentConfig
   private basePrompt: string
   /** Settings' app system prompt, read each turn: an edit applies at the next turn (setBasePromptSource). */
@@ -785,11 +795,8 @@ export class AgentExecutor extends EventEmitter {
      *  follows the provider at rebuild — a provider swap without a config
      *  change keeps the old figure, which is an acceptable approximation. */
     promptTokens: number
-    /** Per-layer prices (base+sections / runtime blocks / instructions), each
-     *  measured whether or not the current composition mode includes it. */
-    promptParts: SystemPromptParts
-    /** Per-file share of promptTokens for {{path}} injections (rendered form). */
-    injectedFiles: ContextBreakdownFileEntry[]
+    /** Measured on the first diagnostic read of this prompt snapshot. */
+    diagnostics: SystemPromptDiagnostics | (() => SystemPromptDiagnostics)
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
   /** One dynamic-instruction count, shared by preflight and diagnostics. */
@@ -932,7 +939,7 @@ export class AgentExecutor extends EventEmitter {
     const support = this.mediaSupport()
     const { messages } = projectMessageMedia(this.session.getMessages(), support)
     const files = projectFileRefs(messages, this.mediaSizeLimits(), support, requestMediaLimit(this.config.context))
-    return getTokenCounterService().estimateMessagesTokens(files.messages)
+    return getTokenCounterService().estimateAppendOnlyMessagesTokens(files.messages)
   }
 
   /**
@@ -973,7 +980,9 @@ export class AgentExecutor extends EventEmitter {
     try {
       this.buildSystemPrompt()
       this.buildToolSnapshot()
-      if (!this.systemPromptCache || !this.toolSnapshotCache) return null
+      const prompt = this.systemPromptCache
+      if (!prompt || !this.toolSnapshotCache) return null
+      if (typeof prompt.diagnostics === 'function') prompt.diagnostics = prompt.diagnostics()
       const tc = getTokenCounterService()
       const workspace = this.session.getWorkspace()
       const rows = workspace.getAssistantTokenRows()
@@ -1002,9 +1011,9 @@ export class AgentExecutor extends EventEmitter {
       const since = tc.estimateMessagesTokensSplit(messages.slice(replyTokens !== undefined ? cut + 1 : cut), reasoningBySeq)
       if (replyTokens !== undefined) since.reported += replyTokens
       const breakdown = assembleContextBreakdown({
-        systemPromptTokens: this.systemPromptCache.promptTokens,
-        systemPromptParts: this.systemPromptCache.promptParts,
-        injectedFiles: this.systemPromptCache.injectedFiles,
+        systemPromptTokens: prompt.promptTokens,
+        systemPromptParts: prompt.diagnostics.promptParts,
+        injectedFiles: prompt.diagnostics.injectedFiles,
         toolGroups: this.toolSnapshotCache.toolGroups,
         toolsTotalTokens: this.toolSnapshotCache.toolsTotalTokens,
         dynamicInstructionsTokens: this.countDynamicInstructionTokens(this.currentDynamicInstructions),
@@ -1372,6 +1381,11 @@ export class AgentExecutor extends EventEmitter {
     // New provider instance — must re-validate on the next turn.
     this.providerValidated = false
     this.providerChangeListener?.(provider)
+  }
+
+  /** Reuse a successful startup preflight for the exact provider it checked. */
+  confirmProviderValidation(provider: LLMProvider): void {
+    if (this.provider === provider) this.providerValidated = true
   }
 
   private providerChangeListener: ((provider: LLMProvider) => void) | null = null
@@ -2501,6 +2515,7 @@ export class AgentExecutor extends EventEmitter {
       let continueLoop = true
       let activeTurns = 0
       this.compactionFailedThisTurn = false
+      let attemptedEmergencyCompaction = false
       const maxActiveTurns = this.config.limits?.max_active_turns ?? null
       // Track target state from sys_set_state tool
       let targetState: string | null = null
@@ -2607,8 +2622,8 @@ export class AgentExecutor extends EventEmitter {
         // provider.validateConfig() instead, cache the result, and surface a clear,
         // actionable error if the credentials don't work.
         //
-        // Steady-state cost: one tiny request after agent-start (or after the user
-        // updates the provider config / a prior turn returned an auth-class error).
+        // Steady-state cost: one tiny request unless startup already checked this
+        // provider; changing the provider or an auth error clears the result.
         // No per-turn latency once validated.
         if (!this.providerValidated && this.provider) {
           const validation = await this.provider.validateConfig()
@@ -2669,10 +2684,13 @@ export class AgentExecutor extends EventEmitter {
           // During the memory-flush grace turn the preflight compacts only at
           // an emergency bound above the normal threshold, so the nudge turn
           // isn't immediately killed by the same threshold that triggered it.
-          const preflightBound = this.memoryFlushNudgeIssued
-            ? Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
-            : compactThreshold
-          if (preflightTokens >= preflightBound && this.provider) {
+          const emergencyBound = Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
+          const preflightBound = this.memoryFlushNudgeIssued ? emergencyBound : compactThreshold
+          const atEmergencyBound = preflightTokens >= emergencyBound
+          // Try again only if this turn reaches the emergency bound for the first time.
+          if (preflightTokens >= preflightBound && this.provider &&
+              (!this.compactionFailedThisTurn || (atEmergencyBound && !attemptedEmergencyCompaction))) {
+            attemptedEmergencyCompaction ||= atEmergencyBound
             this.emitEvent({
               type: 'context_injected',
               payload: { category: 'status', content: 'Compacting conversation history (context limit reached)…' },
@@ -2699,35 +2717,7 @@ export class AgentExecutor extends EventEmitter {
         // reset landed mid-turn) and repair them instead of letting the provider
         // reject the request. Repair only when an orphan exists — it replaces
         // the array reference, which invalidates the incremental conversion cache.
-        {
-          const msgs = this.session.getMessages()
-          const toolUseIds = new Set<string>()
-          const toolResultIds = new Set<string>()
-          for (const m of msgs) {
-            if (!Array.isArray(m.content)) continue
-            for (const b of m.content) {
-              if (b.type === 'tool_use' && b.id) toolUseIds.add(b.id)
-              else if (b.type === 'tool_result' && b.tool_use_id) toolResultIds.add(b.tool_use_id)
-            }
-          }
-          let hasOrphan = false
-          for (const m of msgs) {
-            if (!Array.isArray(m.content)) continue
-            for (const b of m.content) {
-              if (b.type === 'tool_result' && b.tool_use_id && !toolUseIds.has(b.tool_use_id)) {
-                hasOrphan = true
-                console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${b.tool_use_id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
-              } else if (b.type === 'tool_use' && b.id && !toolResultIds.has(b.id)) {
-                hasOrphan = true
-                console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${b.id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
-              }
-            }
-          }
-          if (hasOrphan) {
-            try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
-            this.session.repairToolPairing()
-          }
-        }
+        this.checkToolPairing()
 
         // A mid-turn external reset (clear chat / mesh session reset) can leave
         // the history empty after repair. Sending zero messages is a guaranteed
@@ -5565,6 +5555,46 @@ export class AgentExecutor extends EventEmitter {
     return true
   }
 
+  private checkToolPairing(): void {
+    const messages = this.session.getMessages()
+    // AgentSession appends in place and replaces the array whenever it rewrites
+    // a prefix. The checked prefix has no orphans, so only new blocks need to
+    // be checked against the IDs from the prefix plus the new suffix.
+    const scan = this.checkedToolPairs.get(messages) ?? { count: 0, uses: new Set<string>(), results: new Set<string>() }
+    for (let index = scan.count; index < messages.length; index++) {
+      const { content } = messages[index]
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type === 'tool_use' && block.id) scan.uses.add(block.id)
+        else if (block.type === 'tool_result' && block.tool_use_id) scan.results.add(block.tool_use_id)
+      }
+    }
+
+    let hasOrphan = false
+    for (let index = scan.count; index < messages.length; index++) {
+      const { content } = messages[index]
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type === 'tool_result' && block.tool_use_id && !scan.uses.has(block.tool_use_id)) {
+          hasOrphan = true
+          console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${block.tool_use_id}, msgIndex=${index}/${messages.length}) — repairing`)
+        } else if (block.type === 'tool_use' && block.id && !scan.results.has(block.id)) {
+          hasOrphan = true
+          console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${block.id}, msgIndex=${index}/${messages.length}) — repairing`)
+        }
+      }
+    }
+
+    if (hasOrphan) {
+      this.checkedToolPairs.delete(messages)
+      try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
+      this.session.repairToolPairing()
+    } else {
+      scan.count = messages.length
+      this.checkedToolPairs.set(messages, scan)
+    }
+  }
+
   /**
    * Estimate the token size of the request that is ABOUT to be sent, so the
    * loop can compact *before* the call instead of letting the provider reject
@@ -6305,6 +6335,11 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private buildSystemPrompt(): string {
+    const live = this.basePromptSource?.()
+    if (typeof live === 'string' && live !== this.basePrompt) {
+      this.basePrompt = live
+      this.systemPromptMemo = null
+    }
     // Short-circuit for the steady state: nothing that feeds the prompt has
     // moved since the last build, so re-deriving the cache key (assemblePrompt,
     // a placeholder scan, a char-loop hash over every injected file and a
@@ -6350,8 +6385,6 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private assembleSystemPrompt(): string {
-    const live = this.basePromptSource?.()
-    if (typeof live === 'string') this.basePrompt = live
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
@@ -6508,41 +6541,34 @@ export class AgentExecutor extends EventEmitter {
       const autonomousText = this.config.autonomous
         ? (this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
         : ''
-      let promptTokens = this.countPromptTokens(cachedPrompt)
-      if (autonomousText.trim() && !bare) {
-        promptTokens += this.countPromptTokens(SEP + autonomousText)
-      }
+      const autonomousSuffix = autonomousText.trim() ? SEP + autonomousText : ''
+      const countTokens = getTokenCounterService().bindTokenizer(this.tokenizerProviderId())
+      const sentAutonomousTokens = bare ? undefined : countTokens(autonomousSuffix)
+      const promptTokens = countTokens(cachedPrompt) + (sentAutonomousTokens ?? 0)
+      const snapshot = this.injectedFileSnapshots ?? new Map<string, string>()
 
-      // Per-layer prices for the composition receipt. Each layer is measured
-      // in its rendered form (placeholders resolved), whether or not the
-      // current mode includes it, so the panel can show what switching would
-      // cost. Layers omitted from the prompt resolve against a throwaway copy
-      // of the session snapshot — the real snapshot only ever holds files
-      // that reached the prompt (that is what injectedFilesHash promises).
-      const measureLayer = (text: string): number => {
-        if (!text.trim()) return 0
-        const ws = this.session.getWorkspace()
-        const scratch = new Map(this.injectedFileSnapshots ?? [])
-        return this.countPromptTokens(resolveInjectedFiles(text, (p) => ws.readFile(p), scratch))
-      }
-      const promptParts: SystemPromptParts = {
-        base_and_sections: measureLayer(fullSections),
-        runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) +
-          (autonomousText.trim() ? this.countPromptTokens(SEP + autonomousText) : 0),
-        instructions: measureLayer(instructionsBlock),
-      }
-
-      // Cache the result
       this.systemPromptCache = {
         injectedFilesHash,
         configHash,
         cachedPrompt,
         promptTokens,
-        promptParts,
-        injectedFiles: measureInjectedFiles(
-          this.injectedFileSnapshots ?? new Map(),
-          (text) => this.countPromptTokens(text)
-        )
+        diagnostics: () => {
+          const workspace = this.session.getWorkspace()
+          // Price every layer in its rendered form. Off-mode placeholder
+          // reads stay in this copy and never change the sent prompt.
+          const scratch = new Map(snapshot)
+          const measureLayer = (text: string): number => text.trim()
+            ? countTokens(resolveInjectedFiles(text, (path) => workspace.readFile(path), scratch))
+            : 0
+          return {
+            promptParts: {
+              base_and_sections: measureLayer(fullSections),
+              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + (sentAutonomousTokens ?? countTokens(autonomousSuffix)),
+              instructions: measureLayer(instructionsBlock),
+            },
+            injectedFiles: measureInjectedFiles(snapshot, countTokens),
+          }
+        },
       }
     }
 

@@ -63,4 +63,25 @@ describe.skipIf(skipAll)('addTimer loop stamp', () => {
     const id = scoped.addTimer({ mode: 'once', at: soon() }, soon(), 'p', ['agent'])
     expect(loopOf(id)).toBe('critic')
   })
+
+  it('sees newly due timers after a quiet poll, including writes from another connection', () => {
+    const now = Date.now() - 1_000
+    const first = ws!.addTimer({ mode: 'once', at: now }, now)
+    expect(ws!.getDueTimers().map(timer => timer.id)).toContain(first)
+    const t = ws!.getDueTimers().find(x => x.id === first)!
+    expect(ws!.claimTimer(first, t.next_wake_at, t.run_count, null, Date.now())).toBe(true)
+    expect(ws!.getDueTimers()).toEqual([])
+    expect(ws!.getDueTimers()).toEqual([])
+
+    const other = AdfWorkspace.open(testFile)
+    try {
+      const second = other.addTimer({ mode: 'once', at: now }, now)
+      expect(ws!.getDueTimers().map(timer => timer.id)).toEqual([second])
+      const u = other.getDueTimers().find(x => x.id === second)!
+      expect(other.claimTimer(second, u.next_wake_at, u.run_count, null, Date.now())).toBe(true)
+      expect(ws!.getDueTimers()).toEqual([])
+    } finally {
+      other.close()
+    }
+  })
 })

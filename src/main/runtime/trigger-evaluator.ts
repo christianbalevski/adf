@@ -31,6 +31,8 @@ const TIMER_POLL_INTERVAL_MS = 5000
 
 /** Max product of line counts before we skip diff computation to avoid perf issues. */
 const DIFF_MAX_COMPLEXITY = 1_000_000
+// Also bound one-sided edits whose line product may still be small.
+const DIFF_MAX_LINES = 10_000
 
 /**
  * Compute a unified diff between two strings (line-based LCS).
@@ -39,10 +41,11 @@ const DIFF_MAX_COMPLEXITY = 1_000_000
 function computeUnifiedDiff(filePath: string, before: string, after: string): string | null {
   if (before === after) return ''
 
-  const oldLines = before.split('\n')
-  const newLines = after.split('\n')
+  const oldLines = before.split('\n', DIFF_MAX_LINES + 1)
+  const newLines = after.split('\n', DIFF_MAX_LINES + 1)
 
-  if (oldLines.length * newLines.length > DIFF_MAX_COMPLEXITY) return null
+  if (oldLines.length + newLines.length > DIFF_MAX_LINES ||
+      oldLines.length * newLines.length > DIFF_MAX_COMPLEXITY) return null
 
   // LCS via DP
   const m = oldLines.length, n = newLines.length
@@ -58,16 +61,17 @@ function computeUnifiedDiff(filePath: string, before: string, after: string): st
   let i = m, j = n
   while (i > 0 || j > 0) {
     if (i > 0 && j > 0 && oldLines[i - 1] === newLines[j - 1]) {
-      ops.unshift([' ', oldLines[i - 1]])
+      ops.push([' ', oldLines[i - 1]])
       i--; j--
     } else if (j > 0 && (i === 0 || dp[i][j - 1] >= dp[i - 1][j])) {
-      ops.unshift(['+', newLines[j - 1]])
+      ops.push(['+', newLines[j - 1]])
       j--
     } else {
-      ops.unshift(['-', oldLines[i - 1]])
+      ops.push(['-', oldLines[i - 1]])
       i--
     }
   }
+  ops.reverse()
 
   // Find indices of changed lines
   const changes: number[] = []
@@ -97,10 +101,9 @@ function computeUnifiedDiff(filePath: string, before: string, after: string): st
   // Emit unified diff
   const result: string[] = [`--- a/${filePath}`, `+++ b/${filePath}`]
 
+  let oldLine = 1, newLine = 1, next = 0
   for (const [start, end] of hunks) {
-    // Compute old/new line numbers at hunk start
-    let oldLine = 1, newLine = 1
-    for (let k = 0; k < start; k++) {
+    for (let k = next; k < start; k++) {
       if (ops[k][0] !== '+') oldLine++
       if (ops[k][0] !== '-') newLine++
     }
@@ -116,6 +119,9 @@ function computeUnifiedDiff(filePath: string, before: string, after: string): st
 
     result.push(`@@ -${oldLine},${oldCount} +${newLine},${newCount} @@`)
     result.push(...lines)
+    oldLine += oldCount
+    newLine += newCount
+    next = end + 1
   }
 
   return result.join('\n')
@@ -188,11 +194,8 @@ export class TriggerEvaluator extends EventEmitter {
   // Inbox interval timers: delayed-fire (start timer on first event, fire at end of window)
   private inboxIntervalTimers = new Map<string, NodeJS.Timeout>()
 
-  // File-change diff: stores the "before" content per file path for the duration of a debounce window
-  private fileChangeSnapshots = new Map<string, string>()
-
-  // File-change debounce: stores latest FileChangeEventData per debounce key for diff recomputation
-  private debouncedFileContent = new Map<string, FileChangeEventData>()
+  // The latest path and its starting text for each pending file-change target.
+  private debouncedFiles = new Map<string, { path: string; before?: string }>()
 
   constructor(config: AgentConfig) {
     super()
@@ -448,10 +451,19 @@ export class TriggerEvaluator extends EventEmitter {
     event: AdfEvent<T>,
     filterData: Record<string, unknown> = {},
     skipSystemScope?: boolean,
-    skipAgentScope?: boolean
+    skipAgentScope?: boolean,
+    fileChange?: { content?: string; previousContent?: string }
   ): void {
     const cfg = this.getTriggerConfig(triggerType)
     if (!cfg?.enabled) return
+    let eventWithDiff: AdfEvent<T> | undefined
+    const dispatchEvent = () => {
+      if (fileChange?.previousContent === undefined || fileChange.content === undefined) return event
+      return eventWithDiff ??= {
+        ...event,
+        data: { ...event.data, diff: computeUnifiedDiff(filterData.path as string, fileChange.previousContent, fileChange.content) },
+      }
+    }
 
     const targets = cfg.targets ?? []
     for (let i = 0; i < targets.length; i++) {
@@ -487,23 +499,21 @@ export class TriggerEvaluator extends EventEmitter {
           if (unreadCount === 0) return
         }
         this.emitTriggerFired(triggerType, target)
-        this.emit('trigger', createDispatch(event, target))
+        this.emit('trigger', createDispatch(dispatchEvent(), target))
       }
 
       if (target.debounce_ms) {
         if (isFileChange && event.type === 'file_change') {
-          // File-change debounce: recompute diff from snapshot when debounce fires
-          const filePath = (event.data as FileChangeEventData).path
-          // Store latest event content for diff recomputation
-          this.debouncedFileContent.set(`${key}:${filePath}`, (event.data as FileChangeEventData))
+          const latestData = event.data as FileChangeEventData
+          const filePath = latestData.path
+          const pending = this.debouncedFiles.get(key)
+          const snapshot = (pending?.path === filePath ? pending.before : undefined) ?? fileChange?.previousContent
+          this.debouncedFiles.set(key, { path: filePath, before: snapshot })
           this.applyDebounce(key, target.debounce_ms, () => {
-            const latestData = this.debouncedFileContent.get(`${key}:${filePath}`)
-            this.debouncedFileContent.delete(`${key}:${filePath}`)
-            const snapshot = this.fileChangeSnapshots.get(filePath)
-            this.fileChangeSnapshots.delete(filePath)
+            this.debouncedFiles.delete(key)
 
             // Get current file content for diff
-            const currentContent = this.workspace?.readFile(filePath)
+            const currentContent = snapshot === undefined ? undefined : this.workspace?.readFile(filePath)
             if (snapshot !== undefined && currentContent != null) {
               const diff = computeUnifiedDiff(filePath, snapshot, currentContent)
               // Create updated event with recomputed diff
@@ -513,13 +523,13 @@ export class TriggerEvaluator extends EventEmitter {
                 source: event.source,
                 data: {
                   path: filePath,
-                  mime_type: meta?.mime_type ?? latestData?.mime_type ?? null,
-                  size: meta?.size ?? latestData?.size ?? 0,
-                  protection: meta?.protection ?? latestData?.protection ?? 'none',
-                  authorized: meta?.authorized ?? latestData?.authorized ?? false,
-                  created_at: meta?.created_at ?? latestData?.created_at ?? '',
-                  updated_at: meta?.updated_at ?? latestData?.updated_at ?? '',
-                  operation: latestData?.operation ?? 'modified',
+                  mime_type: meta?.mime_type ?? latestData.mime_type,
+                  size: meta?.size ?? latestData.size,
+                  protection: meta?.protection ?? latestData.protection,
+                  authorized: meta?.authorized ?? latestData.authorized,
+                  created_at: meta?.created_at ?? latestData.created_at,
+                  updated_at: meta?.updated_at ?? latestData.updated_at,
+                  operation: latestData.operation,
                   diff,
                 },
               })
@@ -540,7 +550,7 @@ export class TriggerEvaluator extends EventEmitter {
           this.applyInterval(key, target.interval_ms, doEmit, triggerType)
         }
       } else if (target.batch_ms) {
-        this.applyBatch(key, target.batch_ms, event as AnyAdfEvent, (items) => {
+        this.applyBatch(key, target.batch_ms, dispatchEvent() as AnyAdfEvent, (items) => {
           this.lastTriggerAt = Date.now()
           // Agent-scope inbox batch: skip if all handled
           if (isInbox && target.scope === 'agent') {
@@ -589,17 +599,10 @@ export class TriggerEvaluator extends EventEmitter {
       updated_at: string
     } | null
   }): void {
-    // Capture snapshot on first change in a debounce window
-    if (previousContent !== undefined && !this.fileChangeSnapshots.has(path)) {
-      this.fileChangeSnapshots.set(path, previousContent)
-    }
+    if (!this.getTriggerConfig('on_file_change')?.enabled) return
 
     // Build FileChangeEventData from file metadata
     const meta = options?.metadata ?? this.workspace?.getFileMeta(path)
-    let diff: string | null = null
-    if (previousContent !== undefined && content !== undefined) {
-      diff = computeUnifiedDiff(path, previousContent, content)
-    }
 
     const event = createEvent({
       type: 'file_change' as const,
@@ -613,10 +616,10 @@ export class TriggerEvaluator extends EventEmitter {
         created_at: meta?.created_at ?? '',
         updated_at: meta?.updated_at ?? '',
         operation: operation as 'created' | 'modified' | 'deleted',
-        diff,
+        diff: null,
       },
     })
-    this.evaluateTargets('on_file_change', event, { path })
+    this.evaluateTargets('on_file_change', event, { path }, undefined, undefined, { content, previousContent })
   }
 
   private isSelfGeneratedFileEvent(event: Pick<AdfEvent, 'source'>): boolean {
@@ -1119,8 +1122,7 @@ export class TriggerEvaluator extends EventEmitter {
     this.batchQueues.clear()
 
     // Clear file-change diff snapshots
-    this.fileChangeSnapshots.clear()
-    this.debouncedFileContent.clear()
+    this.debouncedFiles.clear()
 
     // Stop timer polling and release workspace reference
     this.stopTimerPolling()

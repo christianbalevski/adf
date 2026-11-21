@@ -135,21 +135,23 @@ export class DbQueryTool implements Tool {
     const MAX_ROWS = 500
 
     try {
-      const rows = workspace.querySQL(sql, params)
+      const fullRows = _full ? workspace.querySQL(sql, params) : null
+      const { rows, total } = fullRows
+        ? { rows: fullRows, total: fullRows.length }
+        : workspace.querySQLPreview(sql, params, MAX_ROWS)
       emitUmbilicalEvent({
         event_type: 'db.read',
-        payload: { sql, params: params ?? [], row_count: rows.length }
+        payload: { sql, params: params ?? [], row_count: total }
       })
       if (rows.length === 0) {
         return { content: '[]', isError: false }
       }
-      if (!_full && rows.length > MAX_ROWS) {
-        const truncated = rows.slice(0, MAX_ROWS)
+      if (total > rows.length) {
         return {
           content: [
-            JSON.stringify(truncated, blobReplacer, 2),
+            JSON.stringify(rows, blobReplacer, 2),
             ``,
-            `--- TRUNCATED at ${MAX_ROWS} rows (query returned ${rows.length} rows) ---`,
+            `--- TRUNCATED at ${MAX_ROWS} rows (query returned ${total} rows) ---`,
             `Add LIMIT to your query, or use _full: true from code execution to get all rows.`
           ].join('\n'),
           isError: false

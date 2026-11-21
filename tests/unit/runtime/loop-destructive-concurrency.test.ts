@@ -198,6 +198,81 @@ describe('archive retry cap', () => {
 })
 
 describe('pre-destructive backup', () => {
+  it('prepares main-loop compaction during backup and re-reads changes from another connection before committing', async () => {
+    const old = ws.appendToLoop('user', text('old'))
+    const keep = ws.appendToLoop('assistant', text('keep'))
+    const db = rawDb(ws)
+    const backup = db.backupBeforeDestructive.bind(db)
+    const backupGate = Promise.withResolvers<void>()
+    const snapshotRead = Promise.withResolvers<void>()
+    vi.spyOn(db, 'backupBeforeDestructive').mockImplementation(async () => {
+      await backupGate.promise
+      return backup()
+    })
+    const read = db.getLoopEntries.bind(db)
+    const readSpy = vi.spyOn(db, 'getLoopEntries').mockImplementation((...args) => {
+      const rows = read(...args)
+      snapshotRead.resolve()
+      return rows
+    })
+    const remove = db.deleteLoopBySeqs.bind(db)
+    const deleteSpy = vi.spyOn(db, 'deleteLoopBySeqs').mockImplementation((...args) => {
+      const copy = new Database(`${filePath}.bak`, { readonly: true, fileMustExist: true })
+      try {
+        expect(copy.pragma('integrity_check', { simple: true })).toBe('ok')
+        expect(copy.prepare('SELECT content_json FROM adf_loop ORDER BY seq').pluck().all()).toEqual([
+          JSON.stringify(text('edited in a second connection')), JSON.stringify(text('keep')),
+        ])
+      } finally {
+        copy.close()
+      }
+      return remove(...args)
+    })
+
+    const compaction = ws.compactLoop([keep], { content: text('[Loop Compacted] summary') })
+    try {
+      await snapshotRead.promise
+      expect(deleteSpy).not.toHaveBeenCalled()
+      const other = new Database(filePath)
+      try {
+        other.prepare('UPDATE adf_loop SET content_json = ? WHERE seq = ?').run(JSON.stringify(text('edited in a second connection')), old)
+      } finally {
+        other.close()
+      }
+    } finally {
+      backupGate.resolve()
+      await compaction
+    }
+    expect(readSpy).toHaveBeenCalledTimes(2)
+    expect(deleteSpy).toHaveBeenCalledOnce()
+    const [audit] = ws.listAudits().filter(a => a.source === 'loop:main')
+    expect(ws.readAudit(audit.id)).toEqual([expect.objectContaining({ content_json: text('edited in a second connection') })])
+    expect(existsSync(`${filePath}.bak`)).toBe(false)
+  })
+
+  it('honors audit policy changes while compaction backup is pending', async () => {
+    ws.appendToLoop('user', text('old'))
+    const db = rawDb(ws)
+    const backupGate = Promise.withResolvers<string>()
+    const backupStarted = Promise.withResolvers<void>()
+    vi.spyOn(db, 'backupBeforeDestructive').mockImplementation(() => {
+      backupStarted.resolve()
+      return backupGate.promise
+    })
+    const compaction = ws.compactLoop([], { content: text('[Loop Compacted] summary') })
+    try {
+      await backupStarted.promise
+      const config = ws.getAgentConfig()
+      config.context.audit.loop = false
+      ws.setAgentConfig(config)
+    } finally {
+      backupGate.resolve(`${filePath}.bak`)
+      await compaction
+    }
+    expect(ws.listAudits().filter(a => a.source === 'loop:main')).toEqual([])
+    expect(ws.getLoop()).toHaveLength(1)
+  })
+
   it('produces a consistent, openable database (online backup, not a file copy)', async () => {
     ws.appendToLoop('user', text('one'))
     ws.appendToLoop('assistant', text('two'))

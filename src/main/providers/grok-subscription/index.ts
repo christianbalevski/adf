@@ -1,5 +1,6 @@
 import { IMAGE_ONLY_MEDIA } from '../media-capabilities'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
+import { applyProviderBodyParams } from '../provider-body-params'
 
 // OAuth access tokens are accepted by the normal xAI API (api:access scope) —
 // same base URL as API-key usage. Never send the OAuth bearer anywhere else.
@@ -23,23 +24,7 @@ export function createGrokSubscriptionProvider(authManager: {
     const headers = new Headers(init?.headers)
     headers.set('Authorization', `Bearer ${token}`)
 
-    // Inject user-defined extra params (e.g. reasoning_effort) — null deletes a key.
-    let patchedInit = init
-    if (extraParams && init?.body && typeof init.body === 'string') {
-      try {
-        const body = JSON.parse(init.body)
-        for (const [k, v] of Object.entries(extraParams)) {
-          if (v === null) {
-            delete body[k]
-          } else {
-            body[k] = v
-          }
-        }
-        patchedInit = { ...init, body: JSON.stringify(body) }
-      } catch { /* not JSON, pass through */ }
-    }
-
-    const response = await globalThis.fetch(input, { ...patchedInit, headers })
+    const response = await globalThis.fetch(input, { ...init, headers })
 
     if (!response.ok) {
       try {
@@ -63,6 +48,7 @@ export function createGrokSubscriptionProvider(authManager: {
     // stream_options.include_usage — without it xAI streams carry no usage
     // chunk and every turn falls back to a char-based token estimate.
     includeUsage: true,
+    ...(extraParams ? { transformRequestBody: body => applyProviderBodyParams(body, extraParams) } : {}),
     fetch: customFetch
   })
 

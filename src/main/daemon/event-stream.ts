@@ -1,6 +1,6 @@
 import type { ServerResponse } from 'node:http'
 import type { DaemonEventBus, DaemonEventEnvelope } from './event-bus'
-import { safeJsonStringify, sseControl } from './sse-wire'
+import { daemonEventFrame, sseControl } from './sse-wire'
 
 type EventSink = Pick<ServerResponse, 'write' | 'once' | 'removeListener' | 'destroy' | 'destroyed'>
 
@@ -29,10 +29,10 @@ export function streamDaemonEvents(bus: DaemonEventBus, sink: EventSink, options
     }
     return true
   }
-  const send = (envelope: DaemonEventEnvelope): boolean => {
+  const send = (envelope: DaemonEventEnvelope, getFrame?: () => string): boolean => {
     cursor = envelope.cursor
     if (agentId && envelope.event.agent_id !== agentId) return true
-    return write(`id: ${envelope.cursor}\nevent: ${envelope.event.event_type}\ndata: ${safeJsonStringify(envelope)}\n\n`)
+    return write(getFrame ? getFrame() : daemonEventFrame(envelope))
   }
   const replay = (): void => {
     if (closed || paused || sink.destroyed) return
@@ -53,8 +53,8 @@ export function streamDaemonEvents(bus: DaemonEventBus, sink: EventSink, options
     }
     replay()
   }
-  const unsubscribe = bus.subscribe((envelope) => {
-    if (!closed && !paused && !sink.destroyed) send(envelope)
+  const unsubscribe = bus.subscribe((envelope, getFrame) => {
+    if (!closed && !paused && !sink.destroyed) send(envelope, getFrame)
   })
   const heartbeat = setInterval(() => {
     if (!closed && !paused && !sink.destroyed) write(`: heartbeat ${Date.now()}\n\n`)

@@ -17,6 +17,7 @@ import { resolveMcpRequestHeaders } from './mcp-spawn-utils'
 import { hostLinkedFileReader, loadLinkedImages, type McpLinkedFileReader } from './mcp-linked-files'
 import { execFile } from 'child_process'
 import { killTree } from '../utils/child-registry'
+import { withDeadline } from '../utils/concurrency'
 import { egressFetch, MCP_HTTP_EGRESS } from '../utils/guarded-fetch'
 // UnauthorizedError is a runtime value (re-exported from the SDK via the same
 // CJS shim this file uses); AdfOAuthClientProvider is type-only here.
@@ -107,8 +108,8 @@ export interface McpConnectOptions {
   /**
    * Stops this connect: an attempt in flight closes the client and transport
    * it opened (the server process with them) at once instead of when its
-   * connect settles, and no retry follows. The daemon's registration-test
-   * cancel passes it; Studio passes none.
+   * connect settles, and no retry follows. The caller can tie it to
+   * registration-test cancellation or the owning runtime's lifetime.
    */
   signal?: AbortSignal
 }
@@ -128,6 +129,9 @@ interface McpManagedServer {
   healthCheckTimer?: ReturnType<typeof setInterval>
   /** Pending background retry after a failed connection attempt. */
   retryTimer?: ReturnType<typeof setTimeout>
+  /** Ends the pending handshake or discovery, and waits for its transport to close. */
+  cancelAttempt?: () => Promise<void>
+  disconnecting?: boolean
   /** Whether the server should auto-restart on unexpected disconnection */
   autoRestart: boolean
   /** Preserved connect options for auto-restart with external transport. */
@@ -152,6 +156,7 @@ export interface McpClientManagerEvents {
  */
 export class McpClientManager extends EventEmitter {
   private servers = new Map<string, McpManagedServer>()
+  private disconnectEpoch = 0
   private scratchDir: string | undefined
 
   constructor(
@@ -192,6 +197,7 @@ export class McpClientManager extends EventEmitter {
    * Returns null on failure (graceful degradation).
    */
   async connect(serverConfig: McpServerConfig, options?: McpConnectOptions): Promise<McpToolInfo[] | null> {
+    if (options?.signal?.aborted) return null
     // Skip command check when an external transport is provided (e.g. container)
     // — the command is embedded in the transport, not in the server config
     // Refused before any attempt: recorded as the server's error state, so
@@ -212,11 +218,12 @@ export class McpClientManager extends EventEmitter {
       return null
     }
 
-    if (options?.signal?.aborted) return null
-
-    // If already managed, disconnect first
-    if (this.servers.has(serverConfig.name)) {
+    // A cleanup may start while this replacement is waiting for an older
+    // connection to close. It also belongs to the generation being stopped.
+    const epoch = this.disconnectEpoch
+    while (this.servers.has(serverConfig.name)) {
       await this.disconnect(serverConfig.name)
+      if (options?.signal?.aborted || epoch !== this.disconnectEpoch) return null
     }
 
     const managed: McpManagedServer = {
@@ -276,20 +283,38 @@ export class McpClientManager extends EventEmitter {
     const timeoutMs = connectTimeoutForAttempt(retryIndex)
     let client: Client | null = null
     let transport: InstanceType<typeof StdioClientTransport> | InstanceType<typeof StreamableHTTPClientTransport> | Transport | null = null
-    // A cancelled connect (connectOptions.signal) counts as stale: nothing is
-    // assigned or retried, and what the attempt opened is closed at once.
     const signal = managed.connectOptions?.signal
-    const isStale = () => this.servers.get(managed.config.name) !== managed || !managed.autoRestart || !!signal?.aborted
+    let wasCancelled = false
+    const noLongerOwned = () => wasCancelled || !!signal?.aborted || this.servers.get(managed.config.name) !== managed
+    const isStale = () => noLongerOwned() || !managed.autoRestart
+    let finishCancellation!: () => void
+    const cancelled = new Promise<null>((resolve) => { finishCancellation = () => resolve(null) })
+    let finishAttempt!: () => void
+    const finished = new Promise<void>((resolve) => { finishAttempt = resolve })
+    let cleanup: Promise<void> | undefined
+    const closeAttempt = (): Promise<void> => cleanup ??= this.abandonAttempt(client, transport)
+    const cancelAttempt = (): Promise<void> => {
+      wasCancelled = true
+      finishCancellation()
+      void closeAttempt()
+      return finished
+    }
     const onAbort = (): void => {
       this.addLog(managed, 'system', 'Connect cancelled — closing the server it started')
-      void this.abandonAttempt(client, transport)
+      void cancelAttempt()
     }
-    if (signal?.aborted) return null
+    const releaseAttempt = () => {
+      if (managed.cancelAttempt === cancelAttempt) managed.cancelAttempt = undefined
+      signal?.removeEventListener('abort', onAbort)
+    }
+    if (isStale() || managed.cancelAttempt) return null
+    managed.cancelAttempt = cancelAttempt
     signal?.addEventListener('abort', onAbort, { once: true })
 
     try {
       managed.status = 'connecting'
       this.emitStatusChange(managed)
+      if (isStale()) return null
 
       if (managed.connectOptions?.externalTransport) {
         // Use pre-built transport (e.g. PodmanStdioTransport for container execution)
@@ -358,26 +383,17 @@ export class McpClientManager extends EventEmitter {
         version: '0.1.0'
       })
 
-      // Connect with timeout
-      await new Promise<void>((resolve, reject) => {
-        const timer = setTimeout(() => reject(new Error(`Connection timeout (${timeoutMs / 1000}s) — set ADF_MCP_CONNECT_TIMEOUT_MS to raise`)), timeoutMs)
-        client!.connect(transport!).then(
-          () => { clearTimeout(timer); resolve() },
-          (err) => { clearTimeout(timer); reject(err) }
-        )
-      })
-
-      // The entry may have been disconnected/replaced during the (long)
-      // connect await — abandon rather than assign to a disposed entry.
-      if (isStale()) {
-        await this.abandonAttempt(client, transport)
+      const initialized = await withDeadline(Promise.race([client.connect(transport), cancelled]), timeoutMs)
+      if (initialized.timedOut) throw new Error(`Connection timeout (${timeoutMs / 1000}s) — set ADF_MCP_CONNECT_TIMEOUT_MS to raise`)
+      if (initialized.value === null || isStale()) {
+        await closeAttempt()
         return null
       }
 
-      const result = await client.listTools()
+      const result = await Promise.race([client.listTools(), cancelled])
 
-      if (isStale()) {
-        await this.abandonAttempt(client, transport)
+      if (!result || isStale()) {
+        await closeAttempt()
         return null
       }
 
@@ -387,6 +403,9 @@ export class McpClientManager extends EventEmitter {
         input_schema: (t.inputSchema ?? {}) as Record<string, unknown>
       }))
 
+      // Transfer ownership before emitting: a listener can disconnect
+      // synchronously and should close the published connection only once.
+      releaseAttempt()
       managed.client = client
       managed.transport = transport
       managed.status = 'connected'
@@ -420,7 +439,7 @@ export class McpClientManager extends EventEmitter {
       return tools
     } catch (error) {
       // Clean up failed attempt — close both client and transport to prevent orphan processes
-      await this.abandonAttempt(client, transport)
+      await closeAttempt()
 
       // Disconnected/replaced mid-attempt: the entry is gone — no status
       // mutation, no retry scheduling, no events for a disposed server.
@@ -445,8 +464,9 @@ export class McpClientManager extends EventEmitter {
         // (keep the DCR client registration) so the next connect re-runs the
         // interactive sign-in instead of re-attaching the rejected token.
         try {
-          await this.oauthProviderFactory?.(managed.config)?.invalidateCredentials?.('tokens')
+          await Promise.race([this.oauthProviderFactory?.(managed.config)?.invalidateCredentials?.('tokens'), cancelled])
         } catch { /* best-effort; a locked/absent store just means nothing to clear */ }
+        if (noLongerOwned()) return null
         managed.status = 'error'
         managed.error = 'Authorization required — sign in from Settings'
         managed.client = null
@@ -468,7 +488,7 @@ export class McpClientManager extends EventEmitter {
       managed.serverVersion = undefined
       this.emitStatusChange(managed)
 
-      if (scheduleRetryOnFailure) {
+      if (scheduleRetryOnFailure && !isStale()) {
         if (retryIndex < MAX_RETRIES - 1) {
           this.scheduleBackgroundRetry(managed, retryIndex + 1)
         } else {
@@ -477,7 +497,8 @@ export class McpClientManager extends EventEmitter {
       }
       return null
     } finally {
-      signal?.removeEventListener('abort', onAbort)
+      releaseAttempt()
+      finishAttempt()
     }
   }
 
@@ -498,10 +519,11 @@ export class McpClientManager extends EventEmitter {
     const exitedBeforeClose = child != null && (child.exitCode !== null || child.signalCode !== null)
     if (!exitedBeforeClose) await this.sweepPidTreeNow(this.stdioTransportPid(transport))
     if (client) {
-      try { client.onclose = () => {}; await client.close() } catch { /* ignore */ }
+      client.onclose = () => {}
+      await withDeadline(Promise.resolve().then(() => client.close()).catch(() => {}), 4000)
     }
     if (transport) {
-      try { await transport.close() } catch { /* ignore */ }
+      await withDeadline(Promise.resolve().then(() => transport.close()).catch(() => {}), 1000)
     }
   }
 
@@ -582,6 +604,7 @@ export class McpClientManager extends EventEmitter {
    * Start periodic health checks for a connected server.
    */
   private startHealthCheck(managed: McpManagedServer): void {
+    if (this.servers.get(managed.config.name) !== managed || managed.status !== 'connected' || !managed.client || !managed.autoRestart) return
     this.stopHealthCheck(managed)
     managed.healthCheckTimer = setInterval(async () => {
       if (managed.status !== 'connected' || !managed.client) return
@@ -740,6 +763,7 @@ export class McpClientManager extends EventEmitter {
 
     this.addLog(managed, 'system', 'Manual restart requested')
     await this.closeConnection(managed)
+    if (managed.disconnecting || this.servers.get(serverName) !== managed || managed.connectOptions?.signal?.aborted) return null
     managed.restartCount = 0
     managed.autoRestart = true
 
@@ -756,9 +780,11 @@ export class McpClientManager extends EventEmitter {
   async disconnect(serverName: string): Promise<void> {
     const managed = this.servers.get(serverName)
     if (managed) {
+      managed.disconnecting = true
       managed.autoRestart = false
       this.stopHealthCheck(managed)
       await this.closeConnection(managed)
+      if (this.servers.get(serverName) !== managed) return
       managed.status = 'stopped'
       this.emitStatusChange(managed)
       this.addLog(managed, 'system', 'Disconnected')
@@ -770,6 +796,7 @@ export class McpClientManager extends EventEmitter {
    * Disconnect all servers. Called on agent stop.
    */
   async disconnectAll(): Promise<void> {
+    this.disconnectEpoch++
     const names = Array.from(this.servers.keys())
     await Promise.allSettled(names.map((name) => this.disconnect(name)))
   }
@@ -880,12 +907,16 @@ export class McpClientManager extends EventEmitter {
 
   private async closeConnection(managed: McpManagedServer): Promise<void> {
     const { client, transport } = managed
-    // Detach up front: a second (concurrent or repeated) call no-ops, and any
-    // pending background retry is cancelled.
+    const pending = managed.cancelAttempt?.()
+    // Detach the connected pair up front so only one caller closes it.
+    // Concurrent callers can share the pending attempt's cleanup.
     managed.client = null
     managed.transport = null
     this.clearRetryTimer(managed)
-    if (!client && !transport) return
+    if (!client && !transport) {
+      await pending
+      return
+    }
 
     // Capture the child pid before close() — the transport drops it afterwards.
     // Also note whether the child had ALREADY exited: Windows recycles pids,

@@ -3,9 +3,8 @@
  * pre-flight overhead fix. Token counting is injected as a pre-bound function
  * (provider-specific tokenizer) so these stay side-effect-free and testable.
  *
- * Cost discipline: callers invoke these only when the corresponding executor
- * cache (system prompt / tool snapshot) is REBUILT — never per turn — because
- * real tokenizers over a 40k-token MCP schema payload are not free.
+ * Tool figures are measured on a tool snapshot rebuild. Per-file prompt
+ * figures are measured on the first diagnostic read of a prompt snapshot.
  */
 
 import { renderInjectedFile } from './prompt-file-injection'

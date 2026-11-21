@@ -5,7 +5,7 @@
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { runCli, type CliIo } from '../src/main/cli'
 import {
   daemonPaths,
@@ -84,10 +84,12 @@ describe('ADF Studio check', () => {
 describe('ensureDaemon', () => {
   it('does nothing when the daemon answers, for remote URLs and when disabled', async () => {
     const up = (async () => json({ ok: true })) as typeof fetch
-    expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: up })).toBeNull()
-    expect(await ensureDaemon('http://10.1.2.3:7385', { fetch: down as typeof fetch })).toBeNull()
-    expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: down as typeof fetch, disabled: true })).toBeNull()
-    expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: down as typeof fetch, env: { ADF_NO_AUTOSTART: '1' } })).toBeNull()
+    const unexpectedFetch = vi.fn(down)
+    expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: up, env: {} })).toBeNull()
+    expect(await ensureDaemon('http://10.1.2.3:7385', { fetch: unexpectedFetch, env: {} })).toBeNull()
+    expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: unexpectedFetch, env: {}, disabled: true })).toBeNull()
+    expect(await ensureDaemon('http://127.0.0.1:7385', { fetch: unexpectedFetch, env: { ADF_NO_AUTOSTART: '1' } })).toBeNull()
+    expect(unexpectedFetch).not.toHaveBeenCalled()
   })
 
   it('never starts a daemon on a tunnelled loopback port; the default port, ADF_DAEMON_PORT and adf-started ports are local', async () => {
@@ -178,5 +180,13 @@ describe('adf starts the daemon before it needs it', () => {
     const failed = io(async () => { throw Object.assign(new Error('ADF Studio is running.'), { advice: 'Quit ADF Studio, then run adf again.' }) })
     expect(await runCli(['agents'], failed.value)).toBe(1)
     expect(failed.err()).toContain('ADF Studio is running.\nQuit ADF Studio, then run adf again.')
+  })
+
+  it('validates commands and TUI flags before checking daemon readiness', async () => {
+    const a = io(async () => null, async () => { throw new Error('unexpected network request') })
+    expect(await runCli(['unknown-command'], a.value)).toBe(2)
+    expect(await runCli(['status'], a.value)).not.toBe(0)
+    expect(await runCli(['tui', '--view'], a.value)).toBe(2)
+    expect(a.urls).toEqual([])
   })
 })

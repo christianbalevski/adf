@@ -10,6 +10,7 @@ import { DaemonClient } from '../../src/main/tui/api/client'
 import { createTuiStore, type TuiStore } from '../../src/main/tui/state/store'
 import { transcriptKey } from '../../src/main/tui/state/types'
 import fleet from '../../src/main/tui/views/fleet/index'
+import { readFleetData, refreshFleetData } from '../../src/main/tui/views/fleet/data'
 import type { ViewDefinition } from '../../src/main/tui/views/types'
 import { startMockDaemon, AGENT_1_ID, type MockDaemon } from './fixtures/mock-daemon'
 import { createFleetFetch, AGENT_3_ID, type FleetMock } from './fixtures/fleet-mock'
@@ -97,6 +98,39 @@ describe('fleet view', () => {
     expect(frame).toContain('mock/mock-model')
     expect(frame).toMatch(/every 1h in 1h/)
     expect(frame).toContain('talks to you (owner thread)')
+  })
+
+  it('keeps fleet counts from the current daemon when an old poll completes late', async () => {
+    const other = await startMockDaemon()
+    const old = createFleetFetch(mock, { unread: { 'agent-1': 8 } })
+    const next = createFleetFetch(other, { unread: { 'agent-1': 2 } })
+    const entered = Promise.withResolvers<void>()
+    const pending = Promise.withResolvers<void>()
+    const fetch: typeof globalThis.fetch = async (input, init) => {
+      const url = new URL(String(input))
+      if (url.origin === other.url) return next.fetch(input, init)
+      if (url.pathname.endsWith('/inbox')) {
+        entered.resolve()
+        await pending.promise
+      }
+      return old.fetch(input, init)
+    }
+    store = createTuiStore({ client: new DaemonClient({ baseUrl: mock.url, fetch }), live: false })
+    ui = renderTui(<App store={store} theme={createTheme({ mono: true })} views={[fleet, chatStub]} builtins={[]} />, { columns: 130, rows: 34 })
+    try {
+      await store.start()
+      const oldRefresh = refreshFleetData(store, AGENT_1_ID)
+      await entered.promise
+      await store.actions.setDaemonUrl(other.url)
+      await ui.waitFor(() => readFleetData(store).agents[AGENT_1_ID]?.unread === 2)
+      pending.resolve()
+      await oldRefresh
+      expect(readFleetData(store).agents[AGENT_1_ID]?.unread).toBe(2)
+    } finally {
+      pending.resolve()
+      await store.close()
+      await other.close()
+    }
   })
 
   it('shows a running inner loop with a spinner and counts it as busy', async () => {

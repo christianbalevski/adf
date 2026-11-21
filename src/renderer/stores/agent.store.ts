@@ -145,6 +145,8 @@ export interface LoopSlice {
    *  tool pairing, activity grouping) can key on this and stay untouched by the
    *  ~20 deltas/s a live answer produces. */
   structuralVersion: number
+  /** Replaced when the projected prefix can no longer be reused. */
+  logAppendGeneration: object
   /** Loop rows in the DB older than the loaded window (0 = fully loaded). */
   earlierCount: number
   archive: LoopArchive
@@ -176,6 +178,7 @@ function emptySlice(): LoopSlice {
     log: [],
     logVersion: 0,
     structuralVersion: 0,
+    logAppendGeneration: {},
     earlierCount: 0,
     archive: freshArchive(),
     pendingApprovals: new Map(),
@@ -251,13 +254,9 @@ interface AgentStoreState extends LoopSlice {
    * Stamp `metadata.seq` (the adf_loop row a live-appended entry ended up in)
    * on entries that do not have one yet.
    *
-   * Deliberately invisible: no renderer reads `seq`, so this mutates the
-   * existing entry objects in place and bumps NEITHER version. Going through
-   * `updateEntryAt` would rewrite `metadata`, which `isContentOnlyDelta`
-   * (correctly) treats as structural — every streamed block would then force a
-   * whole-log regroup (tool pairing, activity grouping, the result filter) for
-   * a pagination cursor nothing draws. `handleLoadOlder` reads the store
-   * imperatively via getState(), so it sees the stamp without a re-render.
+   * The cursor is stamped in place, without a structural version bump.
+   * A stamp on the trailing text block also signals that its Markdown stream
+   * has finished, so bump its log version to flush the final render.
    */
   stampSeq: (indexes: number[], seq: number, loop?: string) => void
   setLog: (log: AgentLogEntry[], earlierCount?: number, loop?: string) => void
@@ -330,15 +329,17 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
    * to the pre-loops behaviour); anything else patches `sideLoops[loop]` and
    * leaves main's fields untouched.
    */
-  const patchSlice = (loop: string | undefined, patch: (slice: LoopSlice) => Partial<LoopSlice>): void => {
+  const patchSlice = (loop: string | undefined, patch: (slice: LoopSlice) => Partial<LoopSlice>, append = false): void => {
     const s = get()
+    const current = isMainLoop(loop) ? s : s.sideLoops[loop!] ?? emptySlice()
+    const next = patch(current)
+    if (!append && next.structuralVersion !== undefined) next.logAppendGeneration = {}
     if (isMainLoop(loop)) {
-      set(patch(s) as Partial<AgentStoreState>)
+      set(next as Partial<AgentStoreState>)
       return
     }
     const name = loop!
-    const current = s.sideLoops[name] ?? emptySlice()
-    set({ sideLoops: { ...s.sideLoops, [name]: { ...current, ...patch(current) } } })
+    set({ sideLoops: { ...s.sideLoops, [name]: { ...current, ...next } } })
   }
 
   return {
@@ -350,6 +351,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     log: [],
     logVersion: 0,
     structuralVersion: 0,
+    logAppendGeneration: {},
     earlierCount: 0,
     archive: freshArchive(),
     sideLoops: {},
@@ -379,7 +381,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       log: [...s.log, entry],
       logVersion: s.logVersion + 1,
       structuralVersion: s.structuralVersion + 1
-    })),
+    }), true),
     settleOwnerCommand: (entry, loop) => patchSlice(loop, (s) => ({
       log: [...s.log.filter((old) => typeof old.metadata?.seq === 'number' ||
         (old.metadata?.ownerCommand as { id?: string } | undefined)?.id !== (entry.metadata?.ownerCommand as { id?: string } | undefined)?.id), entry],
@@ -406,18 +408,21 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
       const updated = { ...entry }
       mutator(updated)
       s.log[index] = updated
-      return isContentOnlyDelta(entry, updated)
+      return index === s.log.length - 1 && isContentOnlyDelta(entry, updated)
         ? { logVersion: s.logVersion + 1 }
         : { logVersion: s.logVersion + 1, structuralVersion: s.structuralVersion + 1 }
     }),
     stampSeq: (indexes, seq, loop) => {
       if (indexes.length === 0) return
       const slice = selectLoopSlice(get(), loop)
+      let completedText = false
       for (const index of indexes) {
         const entry = slice.log[index]
         if (!entry || typeof entry.metadata?.seq === 'number') continue
         entry.metadata = { ...entry.metadata, seq }
+        if (index === slice.log.length - 1 && entry.type === 'text') completedText = true
       }
+      if (completedText) patchSlice(loop, (s) => ({ logVersion: s.logVersion + 1 }))
     },
     setLog: (log, earlierCount, loop) => patchSlice(loop, (s) => ({
       log,

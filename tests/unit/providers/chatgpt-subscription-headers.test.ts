@@ -8,8 +8,7 @@ describe('ChatGPT subscription request headers', () => {
     const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
     vi.stubGlobal('fetch', fetchSpy)
     const { provider, setInstructions } = createChatGPTSubscriptionProvider({
-      getValidAccessToken: async () => 'test-token',
-      getAccountId: () => 'test-account',
+      getRequestAuth: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
     })
     setInstructions('Reply briefly.')
 

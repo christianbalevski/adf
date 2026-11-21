@@ -313,37 +313,43 @@ function prepareVideoMessages(messages: CoreMessage[], model: LanguageModel, med
   // input: a raw video_url part there is a provider 400, not a video.
   const noVideo = !media.video || /^(anthropic|openai)\./.test(target.provider)
   const bypass = !noVideo && typeof target.transformRequestBody === 'function'
-  const videos = new Map<string, string>()
-  let hasVideo = false
-  const projected = messages.map(message => {
-    if (message.role !== 'user' || !Array.isArray(message.content)) return message
-    let changed = false
-    const content = message.content.map(part => {
+  let videos: Map<string, string> | undefined
+  let projected: CoreMessage[] | undefined
+  for (let messageIndex = 0; messageIndex < messages.length; messageIndex++) {
+    const message = messages[messageIndex]
+    if (message.role !== 'user' || !Array.isArray(message.content)) continue
+    let content: typeof message.content | undefined
+    for (let partIndex = 0; partIndex < message.content.length; partIndex++) {
+      const part = message.content[partIndex]
       const video = part as unknown as { type: string; url?: string }
-      if (video.type !== '__adf_video' || typeof video.url !== 'string') return part
-      changed = hasVideo = true
+      if (video.type !== '__adf_video' || typeof video.url !== 'string') continue
+      // The executor normally filters unsupported history video. Direct calls
+      // such as model_invoke still get a clear error before anything is sent.
+      if (noVideo) throw new Error(`Video input is not supported by this provider (${target.provider}).`)
+      content ??= message.content.slice()
       if (bypass) {
         // The marker exists only during SDK validation and is replaced before
         // HTTP serialization. A unique marker cannot match ordinary user text.
         const marker = `__adf_video_${randomUUID()}__`
+        videos ??= new Map()
         videos.set(marker, video.url)
-        return { type: 'text', text: marker, providerOptions: part.providerOptions }
+        content[partIndex] = { type: 'text', text: marker, providerOptions: part.providerOptions }
+      } else {
+        content[partIndex] = {
+          type: 'file',
+          data: /^https?:\/\//.test(video.url) ? new URL(video.url) : video.url,
+          mediaType: video.url.match(/^data:(video\/[^;,]+)/)?.[1] ?? 'video/mp4',
+          providerOptions: part.providerOptions,
+        }
       }
-      return {
-        type: 'file',
-        data: /^https?:\/\//.test(video.url) ? new URL(video.url) : video.url,
-        mediaType: video.url.match(/^data:(video\/[^;,]+)/)?.[1] ?? 'video/mp4',
-        providerOptions: part.providerOptions,
-      }
-    })
-    return changed ? { ...message, content } as CoreMessage : message
-  })
-  if (!hasVideo) return { messages, model }
-  // The executor leaves history video out of turns for these providers
-  // (effectiveMediaSupport); a direct call such as model_invoke gets this
-  // plain error before anything is sent.
-  if (noVideo) throw new Error(`Video input is not supported by this provider (${target.provider}).`)
-  if (bypass) return { messages: projected, model: wrapModelWithVideo(model, videos) }
+    }
+    if (content) {
+      projected ??= messages.slice()
+      projected[messageIndex] = { ...message, content }
+    }
+  }
+  if (!projected) return { messages, model }
+  if (videos) return { messages: projected, model: wrapModelWithVideo(model, videos) }
 
   // OpenRouter accepts video URLs directly, but its supportedUrls declaration
   // omits video. Avoid the SDK downloading a remote video before serialization.
