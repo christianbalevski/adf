@@ -613,6 +613,7 @@ export class AdfDatabase {
     getTotalChanges?: Database.Statement
     expireTimer?: Database.Statement
     readFile?: Database.Statement
+    fileContentEquals?: Database.Statement
     writeFile?: Database.Statement
     updateFile?: Database.Statement
     deleteFile?: Database.Statement
@@ -3441,6 +3442,9 @@ export class AdfDatabase {
     this.stmts.readFile = this.db.prepare(
       'SELECT content, mime_type, size, protection, authorized, created_at, updated_at FROM adf_files WHERE path = ?'
     )
+    this.stmts.fileContentEquals = this.db.prepare(
+      'SELECT CASE WHEN length(content) = ? THEN content = ? ELSE 0 END AS same FROM adf_files WHERE path = ?'
+    )
     this.stmts.writeFile = this.db.prepare(`
       INSERT INTO adf_files (path, content, mime_type, size, protection, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -4846,6 +4850,12 @@ export class AdfDatabase {
   }
 
   /** Existence without reading the BLOB — the row's content can be megabytes. */
+  /** null means the path is free. Compare BLOB bytes inside SQLite. */
+  fileContentEquals(path: string, content: Buffer): boolean | null {
+    const result = this.stmts.fileContentEquals!.get(content.length, content, path) as { same: number } | undefined
+    return result ? result.same === 1 : null
+  }
+
   fileExists(path: string): boolean {
     return this.stmts.fileExists!.get(path) !== undefined
   }

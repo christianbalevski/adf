@@ -2122,12 +2122,12 @@ export class AdfWorkspace {
   writeFileBufferUnique(relativePath: string, content: Buffer, mimeType?: string): string {
     for (let n = 1; ; n++) {
       const candidate = numberedPath(relativePath, n)
-      const existing = this.db.readFile(candidate)
-      if (!existing) {
+      const same = this.db.fileContentEquals(candidate, content)
+      if (same === null) {
         this.writeFileBuffer(candidate, content, mimeType)
         return candidate
       }
-      if (existing.content.equals(content)) return candidate
+      if (same) return candidate
     }
   }
 
@@ -2301,14 +2301,16 @@ export class AdfWorkspace {
 
   renameFolder(oldPrefix: string, newPrefix: string): number {
     const prefix = oldPrefix.endsWith('/') ? oldPrefix : `${oldPrefix}/`
-    // Every moved file's BLOB is read only to feed the change events; with no
-    // sink registered the rename is a single UPDATE and nothing else.
+    // Only small text snapshots can be included in file-change events.
     const notify = !!this.onFileChangeCallback
     const moved = this.listFiles()
       .filter(file => file.path.startsWith(prefix))
       .map(file => ({
         path: file.path,
-        content: notify ? this.db.readFile(file.path)?.content : undefined,
+        content: notify && file.size <= AdfWorkspace.MAX_DIFF_BYTES &&
+          this.isTextLikeMimeType(file.mime_type ?? this.getMimeType(file.path))
+          ? this.db.readFile(file.path)?.content
+          : undefined,
         metadata: notify ? this.getFileMeta(file.path) : null
       }))
     const replacementPrefix = newPrefix.endsWith('/') ? newPrefix : `${newPrefix}/`
