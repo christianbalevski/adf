@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -290,6 +290,37 @@ const BIG = { image: 1_000_000, audio: 1_000_000, video: 1_000_000 }
 const refMessage = (path: string, size = PNG.length): LLMMessage => ({ role: 'user', content: [{ type: 'file_ref', file_ref: { path, mime_type: 'image/png', size } }] })
 
 describe('size and request limits', () => {
+  it.each([
+    { reason: 'unsupported', placeholder: mediaPlaceholder('video') },
+    { reason: 'oversize', placeholder: '[video not sent: old.mp4 is 12.0 MB, over the 1.0 KB limit]' },
+    { reason: 'outside the request window', placeholder: '[video not sent: old.mp4, outside the request media limit (1 file, 20.0 MB)]' },
+  ])('omits $reason video from the preflight compaction estimate', async ({ reason, placeholder }) => {
+    const provider = new ScriptedProvider()
+    const agent = makeAgent(provider, { tools: false })
+    const config = agent.executor.getConfig()
+    agent.executor.updateConfig({
+      ...config,
+      model: { ...config.model, multimodal: { image: true, audio: false, video: reason !== 'unsupported' } },
+      context: { ...config.context, compact_threshold: 30_000, ...(reason === 'outside the request window' ? { max_request_media_files: 1 } : {}) },
+      limits: { ...config.limits, ...(reason === 'oversize' ? { max_video_size_bytes: 1_024 } : {}) },
+    })
+    const size = 12 * 1024 * 1024
+    agent.workspace.writeFileBuffer('old.mp4', Buffer.alloc(size), 'video/mp4')
+    const ref = { path: 'old.mp4', mime_type: 'video/mp4', size }
+    agent.session.addMessage({ role: 'user', content: [{ type: 'file_ref', file_ref: ref }] })
+    const readFile = vi.spyOn(agent.workspace, 'readFileBuffer')
+
+    const content: ContentBlock[] = [{ type: 'text', text: 'continue' }]
+    if (reason === 'outside the request window') content.push({ type: 'image_url', image_url: { url: PNG_URI } })
+    await agent.executor.executeTurn(chat(content))
+
+    expect(provider.requests).toHaveLength(1)
+    expect(provider.last()).toContain(placeholder)
+    expect(readFile).not.toHaveBeenCalledWith('old.mp4')
+    expect(storedRefs(agent)).toContainEqual(ref)
+    if (reason === 'outside the request window') expect(provider.last()).toContain(PNG_URI)
+  })
+
   it('a reference over the per-file limit is a placeholder with the reason', async () => {
     const registry = new FileRefRegistry()
     const messages = [refMessage('big.png', 2_000)]
