@@ -158,7 +158,8 @@ const grepHandler: CommandHandler = {
     const onlyMatching = !!ctx.flags.o
     const listFiles = !!ctx.flags.l
     const quiet = !!ctx.flags.q
-    const maxCount = typeof ctx.flags.m === 'string' ? parseInt(ctx.flags.m, 10) : Infinity
+    const requestedCount = typeof ctx.flags.m === 'string' ? parseInt(ctx.flags.m, 10) : Infinity
+    const maxCount = quiet || listFiles ? Math.min(1, requestedCount) : requestedCount
     const afterCtx = typeof ctx.flags.A === 'string' ? parseInt(ctx.flags.A, 10) : 0
     const beforeCtx = typeof ctx.flags.B === 'string' ? parseInt(ctx.flags.B, 10) : 0
     const aroundCtx = typeof ctx.flags.C === 'string' ? parseInt(ctx.flags.C, 10) : 0
@@ -248,9 +249,10 @@ const grepHandler: CommandHandler = {
     if (recursive || fileArgs.length > 1 || (fileArgs.length === 1 && (listFiles || recursive))) {
       const startPath = vfsPath(fileArgs[0] ?? '')
       const all = ctx.workspace.listFiles()
+      const explicitPaths = recursive ? null : new Set(fileArgs.map(vfsPath))
       let files = recursive
         ? (startPath ? all.filter(f => f.path.startsWith(startPath)) : all)
-        : all.filter(f => fileArgs.map(vfsPath).includes(f.path))
+        : all.filter(f => explicitPaths?.has(f.path))
       if (includeRe) files = files.filter(f => includeRe.test(f.path.split('/').pop() ?? f.path))
       if (excludeRe) files = files.filter(f => !excludeRe.test(f.path.split('/').pop() ?? f.path))
 
@@ -268,6 +270,7 @@ const grepHandler: CommandHandler = {
         const sel = await select(lines, content?.length ?? 0)
         if ('failure' in sel) return sel.failure
         const fileMatches = sel.idx.length
+        if (quiet && fileMatches > 0) return { exit_code: 0, stdout: '', stderr: '' }
         if (fileMatches > 0) anyMatch = true
         if (!listFiles && !quiet && !count) {
           for (let k = 0; k < sel.idx.length; k++) {
@@ -280,7 +283,7 @@ const grepHandler: CommandHandler = {
         if (count) counts.push(`${withName ? `${file.path}:` : ''}${fileMatches}`)
         if (fileMatches > 0) matchedFiles.push(file.path)
       }
-      if (quiet) return { exit_code: anyMatch ? 0 : 1, stdout: '', stderr: '' }
+      if (quiet) return { exit_code: 1, stdout: '', stderr: '' }
       if (listFiles) return matchedFiles.length > 0 ? ok(matchedFiles.join('\n')) : { exit_code: 1, stdout: '', stderr: '' }
       if (count) return { exit_code: anyMatch ? 0 : 1, stdout: counts.join('\n'), stderr: '' }
       // Exit tracks line selection (anyMatch), not emitted pieces — so `-o` on a
