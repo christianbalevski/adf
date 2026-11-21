@@ -44,6 +44,18 @@ describe('db access hardening (real sqlite)', () => {
       expect(r.content).toContain('hello')
     })
 
+    it('keeps the exact row count after the preview cap and preserves explicit full results', async () => {
+      const sql = 'WITH RECURSIVE seq(n) AS (VALUES(1) UNION ALL SELECT n + 1 FROM seq WHERE n < 503) SELECT n, body FROM seq, local_notes ORDER BY n'
+      const preview = await query.execute({ sql }, ws)
+      expect(preview.isError).toBe(false)
+      const [visible, footer] = (preview.content as string).split('\n\n')
+      expect(JSON.parse(visible)).toHaveLength(500)
+      expect(footer).toContain('query returned 503 rows')
+
+      const full = await query.execute({ sql, _full: true }, ws)
+      expect(JSON.parse(full.content as string)).toHaveLength(503)
+    })
+
     it('blocks quoted table name reaching adf_identity', async () => {
       const r = await query.execute({ sql: "SELECT * FROM 'adf_identity'" }, ws)
       rejected(r)

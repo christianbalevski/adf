@@ -2726,6 +2726,10 @@ export class AdfWorkspace {
     return this.db.querySQL(sql, params)
   }
 
+  querySQLPreview(sql: string, params: unknown[] | undefined, limit: number): { rows: unknown[]; total: number } {
+    return this.db.querySQLPreview(sql, params, limit)
+  }
+
   /**
    * Static analysis of the objects a statement resolves to (see
    * AdfDatabase.analyzeStatement). Used by db_query/db_execute to enforce

@@ -5017,6 +5017,19 @@ export class AdfDatabase {
     return params ? stmt.all(...params) : stmt.all()
   }
 
+  /** Count the full read result while retaining only the rows shown to the caller. */
+  querySQLPreview(sql: string, params: unknown[] | undefined, limit: number): { rows: unknown[]; total: number } {
+    const stmt = this.db.prepare(sql)
+    if (!stmt.readonly) throw new Error('Query preview requires a read-only statement')
+    const rows: unknown[] = []
+    let total = 0
+    for (const row of stmt.iterate(...(params ?? []))) {
+      if (total < limit) rows.push(row)
+      total++
+    }
+    return { rows, total }
+  }
+
   /**
    * Execute a write SQL statement. Only for local_* tables (enforced by tool).
    */
