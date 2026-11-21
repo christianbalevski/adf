@@ -395,6 +395,15 @@ export async function scanTrackedTree(
   return { path: dir, files: await walk(dir, depthOffset) }
 }
 
+async function loadedFolderAgents(runtime: RuntimeService): Promise<Map<string, { id: string; name: string }>> {
+  const loaded = new Map<string, { id: string; name: string }>()
+  for (const agent of runtime.listAgents()) {
+    if (!agent.filePath) continue
+    try { loaded.set(await realpath(agent.filePath), { id: agent.id, name: agent.name }) } catch { /* path gone */ }
+  }
+  return loaded
+}
+
 /**
  * Each .adf under `dir` (the autostart scan's walk) and where it stands.
  * `failures` (filePath -> error) carries load errors from an autostart pass
@@ -405,14 +414,10 @@ async function folderAgents(
   settings: TrackedDirsSettings,
   dir: string,
   maxDepth: number,
-  failures: Map<string, string> = new Map(),
+  options: { failures?: ReadonlyMap<string, string>; loaded?: ReadonlyMap<string, { id: string; name: string }> } = {},
 ): Promise<FolderAgent[]> {
   if (!await isDirectoryAsync(dir)) return []
-  const loaded = new Map<string, { id: string; name: string }>()
-  for (const agent of runtime.listAgents()) {
-    if (!agent.filePath) continue
-    try { loaded.set(await realpath(agent.filePath), { id: agent.id, name: agent.name }) } catch { /* path gone */ }
-  }
+  const loaded = options.loaded ?? await loadedFolderAgents(runtime)
   const reviewedRaw = settings.get('reviewedAgents')
   const describeFile = (filePath: string, peek: PeekResult): FolderAgent => {
     const fallbackName = basename(filePath, '.adf')
@@ -420,7 +425,7 @@ async function folderAgents(
     const key = filePath
     const running = loaded.get(key)
     if (running) loadFailures.delete(key)
-    const failure = failures.get(filePath) ?? loadFailures.get(key)
+    const failure = options.failures?.get(filePath) ?? loadFailures.get(key)
     const boot = peek.status
     if (!boot || !peek.config) {
       if (running) return { filePath, name: running.name, agentId: running.id, status: 'loaded', autostart: false, reviewed: true }
@@ -471,8 +476,11 @@ export async function listFolderAgents(runtime: RuntimeService, settings: Tracke
 export async function listTrackedAgents(runtime: RuntimeService, settings: TrackedDirsSettings): Promise<TrackedAgentsList> {
   const maxDepth = maxDepthOf(settings)
   const folders: TrackedAgentsList['folders'] = []
-  for (const dir of storedDirs(settings)) {
-    const agents = await folderAgents(runtime, settings, dir, maxDepth)
+  const dirs = storedDirs(settings)
+  if (dirs.length === 0) return { maxDepth, folders }
+  const loaded = await loadedFolderAgents(runtime)
+  for (const dir of dirs) {
+    const agents = await folderAgents(runtime, settings, dir, maxDepth, { loaded })
     folders.push({
       path: dir,
       exists: await isDirectoryAsync(dir),
@@ -554,7 +562,7 @@ export async function trackDir(
     absorbed,
     autostart,
     needsReview: autostart.skipped.filter(s => s.reason === 'unreviewed'),
-    agents: await folderAgents(runtime, settings, dir, maxDepth, failures),
+    agents: await folderAgents(runtime, settings, dir, maxDepth, { failures }),
   }
 }
 
