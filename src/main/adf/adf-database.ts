@@ -413,6 +413,39 @@ export type AssistantTokenRows = ReadonlyArray<Readonly<{ seq: number; tokens: R
 const MAX_CACHED_USAGE_ROWS = 10_000
 const MAX_CACHED_USAGE_CHARS = 512 * 1024
 
+const INBOX_READ_COLUMNS = `id, message_id, "from", "to", reply_to, network, thread_id, parent_id,
+  subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner,
+  card, return_path, source, source_context, sent_at, received_at, status`
+
+const FILE_LIST_COLUMNS = 'path, mime_type, size, protection, authorized, created_at, updated_at'
+
+interface FileListRow {
+  path: string
+  mime_type: string | null
+  size: number
+  protection: FileProtectionLevel
+  authorized: number
+  created_at: string
+  updated_at: string
+}
+
+type FileListEntry = Omit<FileListRow, 'mime_type' | 'authorized'> & {
+  mime_type?: string
+  authorized: boolean
+}
+
+/** Exclusive upper bound for a literal prefix in SQLite's UTF-8 BINARY order. */
+function filePrefixUpperBound(prefix: string): string | undefined {
+  const points = Array.from(prefix)
+  while (points.length) {
+    const point = points.pop()!.codePointAt(0)!
+    if (point < 0x10ffff) {
+      const next = point === 0xd7ff ? 0xe000 : point + 1
+      return points.join('') + String.fromCodePoint(next)
+    }
+  }
+}
+
 // =============================================================================
 // AdfDatabase Class
 // =============================================================================
@@ -421,6 +454,7 @@ export class AdfDatabase {
   private db: Database.Database
   private filePath: string
   private closed = false
+  private readonly usesUtf8: boolean
   private assistantTokenCache: {
     loop: string
     revision: number
@@ -550,6 +584,9 @@ export class AdfDatabase {
     getAssistantTokenRows?: Database.Statement
     getInboxMessages?: Database.Statement
     getInboxByStatus?: Database.Statement
+    readInboxByStatus?: Database.Statement
+    readInboxLimited?: Database.Statement
+    readInboxLimitedWithOriginal?: Database.Statement
     getInboxMessageById?: Database.Statement
     getInboxCounts?: Database.Statement
     getInboxCountByStatus?: Database.Statement
@@ -637,6 +674,7 @@ export class AdfDatabase {
   private constructor(db: Database.Database, filePath: string) {
     this.db = db
     this.filePath = filePath
+    this.usesUtf8 = db.pragma('encoding', { simple: true }) === 'UTF-8'
     AdfDatabase.incrementOpen(filePath)
     try {
       this.applyPragmas()
@@ -3291,6 +3329,18 @@ export class AdfDatabase {
     this.stmts.getInboxByStatus = this.db.prepare(
       'SELECT * FROM adf_inbox WHERE status = ? ORDER BY received_at DESC'
     )
+    this.stmts.readInboxByStatus = this.db.prepare(
+      `SELECT ${INBOX_READ_COLUMNS} FROM adf_inbox WHERE status = ? ORDER BY received_at DESC, rowid`
+    )
+    // Sort only row IDs and timestamps before reading the selected payloads.
+    // The existing status index returns equal timestamps in rowid order.
+    const readInboxLimited = (columns: string) => this.db.prepare(
+      `SELECT ${columns} FROM adf_inbox
+       WHERE rowid IN (SELECT rowid FROM adf_inbox WHERE status = ? ORDER BY received_at DESC, rowid LIMIT ?)
+       ORDER BY received_at DESC, rowid`
+    )
+    this.stmts.readInboxLimited = readInboxLimited(INBOX_READ_COLUMNS)
+    this.stmts.readInboxLimitedWithOriginal = readInboxLimited('*')
     this.stmts.getInboxMessageById = this.db.prepare('SELECT * FROM adf_inbox WHERE id = ?')
     // Counting/grouping statements: callers that only need tallies must never
     // pull `content`/`attachments` (base64 blobs) back through JS.
@@ -3386,7 +3436,7 @@ export class AdfDatabase {
     `)
     this.stmts.deleteFile = this.db.prepare("DELETE FROM adf_files WHERE path = ? AND protection = 'none'")
     this.stmts.listFiles = this.db.prepare(
-      'SELECT path, mime_type, size, protection, authorized, created_at, updated_at FROM adf_files'
+      `SELECT ${FILE_LIST_COLUMNS} FROM adf_files`
     )
     this.stmts.fileExists = this.db.prepare('SELECT 1 FROM adf_files WHERE path = ?')
     // Canonical primary doc is README.md; fall back to legacy document.md for
@@ -4329,6 +4379,23 @@ export class AdfDatabase {
     return rows.map((row) => this.rowToInboxMessage(row))
   }
 
+  readInboxMessages(status: InboxStatus, limit: number | undefined, includeOriginal: boolean): InboxMessage[] {
+    // Preserve the tool's previous truthy check and Array.slice coercion.
+    // Zero is unlimited, a positive fraction rounds down, and a negative
+    // limit drops that many rows from the end.
+    const end = limit ? Math.trunc(limit) : Infinity
+    let rows: Array<Record<string, unknown>>
+    if (end >= 0 && Number.isSafeInteger(end)) {
+      const stmt = includeOriginal ? this.stmts.readInboxLimitedWithOriginal! : this.stmts.readInboxLimited!
+      rows = stmt.all(status, end) as typeof rows
+    } else {
+      const stmt = includeOriginal ? this.stmts.getInboxByStatus! : this.stmts.readInboxByStatus!
+      rows = stmt.all(status) as typeof rows
+      if (end < 0) rows = rows.slice(0, end)
+    }
+    return rows.map((row) => this.rowToInboxMessage(row))
+  }
+
   getInboxMessageById(id: string): InboxMessage | null {
     const row = this.stmts.getInboxMessageById!.get(id) as Record<string, unknown> | undefined
     return row ? this.rowToInboxMessage(row) : null
@@ -4757,26 +4824,12 @@ export class AdfDatabase {
     return { ...row, authorized: !!row.authorized }
   }
 
-  listFiles(): Array<{
-    path: string
-    mime_type?: string
-    size: number
-    protection: FileProtectionLevel
-    authorized: boolean
-    created_at: string
-    updated_at: string
-  }> {
-    const rows = this.stmts.listFiles!.all() as Array<{
-      path: string
-      mime_type: string | null
-      size: number
-      protection: FileProtectionLevel
-      authorized: number
-      created_at: string
-      updated_at: string
-    }>
+  listFiles(): FileListEntry[] {
+    return this.fileListEntries(this.stmts.listFiles!.all())
+  }
 
-    return rows.map((row) => ({
+  private fileListEntries(rows: unknown[]): FileListEntry[] {
+    return (rows as FileListRow[]).map((row) => ({
       path: row.path,
       mime_type: row.mime_type ?? undefined,
       size: row.size,
@@ -4785,6 +4838,37 @@ export class AdfDatabase {
       created_at: row.created_at,
       updated_at: row.updated_at
     }))
+  }
+
+  /** Read only the requested metadata rows, with the exact match count for the footer. */
+  listFilePage(prefix: string | undefined, limit: number | undefined): { files: FileListEntry[]; total: number } {
+    if ((!prefix && limit === undefined) ||
+        (prefix && (!this.usesUtf8 || Buffer.from(prefix).toString('utf8') !== prefix))) {
+      // A UTF-16 prefix can end part-way through a surrogate pair. Compare
+      // those prefixes in JS because binding them as UTF-8 loses information.
+      const matches = prefix ? this.listFiles().filter((row) => row.path.startsWith(prefix)) : this.listFiles()
+      return { files: matches.slice(0, limit), total: matches.length }
+    }
+
+    const upper = prefix && filePrefixUpperBound(prefix)
+    const bounds = prefix ? (upper === undefined ? [prefix] : [prefix, upper]) : []
+    const where = prefix ? (bounds.length === 1 ? 'WHERE path >= ?' : 'WHERE path >= ? AND path < ?') : ''
+    const maxRows = limit === undefined ? -1 : limit + 1
+    // The inner query uses the path index for the range and sorts only rowids.
+    // Rowid order matches the unfiltered table scan used by listFiles().
+    const query = prefix
+      ? `SELECT ${FILE_LIST_COLUMNS} FROM adf_files
+          WHERE rowid IN (SELECT rowid FROM adf_files ${where} ORDER BY rowid LIMIT ?)
+          ORDER BY rowid`
+      : `SELECT ${FILE_LIST_COLUMNS} FROM adf_files ORDER BY rowid LIMIT ?`
+    return this.transaction(() => {
+      const rows = this.db.prepare(query).all(...bounds, maxRows)
+      if (limit === undefined || rows.length <= limit) {
+        return { files: this.fileListEntries(rows), total: rows.length }
+      }
+      const { total } = this.db.prepare(`SELECT COUNT(*) AS total FROM adf_files ${where}`).get(...bounds) as { total: number }
+      return { files: this.fileListEntries(rows.slice(0, limit)), total }
+    })
   }
 
   renameFile(oldPath: string, newPath: string): boolean {
