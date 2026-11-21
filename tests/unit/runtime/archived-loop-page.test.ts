@@ -1,10 +1,11 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
-import { brotliCompressSync } from 'zlib'
+import { brotliCompressSync, constants as zlibConstants } from 'zlib'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
+import type { LoopEntryRow } from '../../../src/main/adf/adf-database'
 import { readArchivedChatPage, ARCHIVE_MAX_SNAPSHOT_BYTES } from '../../../src/main/adf/archived-loop-page'
 
 let rootDir: string
@@ -48,7 +49,68 @@ function db(workspace: AdfWorkspace): AdfDatabase {
   return (workspace as unknown as { db: AdfDatabase }).db
 }
 
+function archive(rows: LoopEntryRow[], workspace = ws): number {
+  const seqs = rows.map((row) => row.seq)
+  const json = Buffer.from(JSON.stringify(rows))
+  return db(workspace).insertAudit('loop:main', {
+    startSeq: Math.min(...seqs),
+    endSeq: Math.max(...seqs),
+    entryCount: rows.length,
+    sizeBytes: json.length,
+    data: brotliCompressSync(json, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } }),
+  })
+}
+
+function row(seq: number, label = `r${seq}`, ord?: number): LoopEntryRow {
+  return { seq, ord, role: 'user', content_json: text(label), created_at: 1 }
+}
+
 describe('readArchivedChatPage', () => {
+  it('seeks successive pages in one decoded snapshot, including a display-order tie at the cursor', async () => {
+    const oldAudit = archive([row(1)])
+    const source = Array.from({ length: 600 }, (_, i) => row(i + 2))
+    const summary = row(605, 'summary', 402)
+    const recentAudit = archive([summary, ...source.slice().reverse()])
+    const getBlob = vi.spyOn(ws, 'getAuditBlob')
+
+    const first = await readArchivedChatPage(ws, null)
+    expect(first.uiLog).toHaveLength(200)
+    expect(first.cursor).toBe('402:605')
+    expect(first.uiLog[0].content).toBe('summary')
+    expect(first.hasMore).toBe(true)
+    expect(getBlob.mock.calls).toEqual([[recentAudit]])
+
+    const second = await readArchivedChatPage(ws, first.cursor)
+    expect(second.uiLog).toHaveLength(200)
+    expect(second.uiLog.at(-1)?.content).toBe('r402')
+    expect(second.cursor).toBe('203:203')
+    expect(second.hasMore).toBe(true)
+    expect(getBlob.mock.calls).toEqual([[recentAudit]])
+
+    const third = await readArchivedChatPage(ws, second.cursor)
+    expect(third.uiLog).toHaveLength(200)
+    expect(third.cursor).toBe('3:3')
+    expect(third.hasMore).toBe(true)
+    expect(getBlob.mock.calls).toEqual([[recentAudit]])
+
+    const last = await readArchivedChatPage(ws, third.cursor)
+    expect(contents(last)).toEqual(['r1', 'r2'])
+    expect(last.hasMore).toBe(false)
+    expect(getBlob.mock.calls).toEqual([[recentAudit], [oldAudit]])
+  })
+
+  it('uses the oldest copy in an overlapping snapshot even if its display key changed', async () => {
+    const earliest = archive([row(10), row(20, 'original', 12)])
+    archive([row(20, 'changed'), row(30)])
+    const first = await readArchivedChatPage(ws, null, { limit: 2 })
+    expect(contents(first)).toEqual(['original', 'r30'])
+    expect(first.uiLog[0].id).toMatch(new RegExp(`^audit-${earliest}-`))
+    expect(first.cursor).toBe('12:20')
+    const second = await readArchivedChatPage(ws, first.cursor, { limit: 2 })
+    expect(contents(second)).toEqual(['r10'])
+    expect(second.hasMore).toBe(false)
+  })
+
   it('pages successive compactions in display order with summaries before their tails', async () => {
     ws.appendToLoop('user', text('first-1'))
     ws.appendToLoop('assistant', text('first-2'))
