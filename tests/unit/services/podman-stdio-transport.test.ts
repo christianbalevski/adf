@@ -4,6 +4,7 @@ import { existsSync, readFileSync, statSync } from 'fs'
 import { describe, expect, it, vi } from 'vitest'
 import { spawn } from 'child_process'
 import { PodmanStdioTransport } from '../../../src/main/services/podman-stdio-transport'
+import { setManagedBrowserEnsurer } from '../../../src/main/services/managed-browser-hook'
 
 vi.mock('child_process', async (importOriginal) => {
   const actual = await importOriginal<typeof import('child_process')>()
@@ -18,6 +19,22 @@ const baseOpts = {
   cwd: '/workspace',
   env: { HOME: '/workspace/agent-1/home', FOO: 'bar', ELECTRON_RUN_AS_NODE: '1' },
 }
+
+it('does not spawn if closed while waiting for the managed browser', async () => {
+  let browserReady!: () => void
+  setManagedBrowserEnsurer(() => new Promise<void>((resolve) => { browserReady = resolve }))
+  const transport = new PodmanStdioTransport({ ...baseOpts })
+  const before = vi.mocked(spawn).mock.calls.length
+  try {
+    const starting = transport.start()
+    await transport.close()
+    browserReady()
+    await expect(starting).rejects.toThrow('Podman transport closed before start')
+    expect(spawn).toHaveBeenCalledTimes(before)
+  } finally {
+    setManagedBrowserEnsurer(null)
+  }
+})
 
 describe('PodmanStdioTransport exec args', () => {
   it('wraps the command in an sh PID-capture wrapper preserving argv', () => {

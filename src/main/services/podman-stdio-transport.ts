@@ -98,6 +98,7 @@ export class PodmanStdioTransport implements Transport {
   private _useWrapper = true
   /** Set by close() so a process exit during teardown never triggers fallback. */
   private _closing = false
+  private _closeGeneration = 0
   /** Bounded early-stderr capture used to classify a fast exec failure. */
   private _earlyStderr = ''
   /** Serialized outbound messages retained until the server proves alive, so
@@ -150,7 +151,9 @@ export class PodmanStdioTransport implements Transport {
     // browser that cannot open fails the spawn with the reason, instead of a
     // server that later dies on an opaque CDP connection error.
     if (attachesToManagedBrowser(this._opts.args)) {
+      const generation = this._closeGeneration
       await ensureManagedBrowserForSpawn(this._opts.containerName)
+      if (generation !== this._closeGeneration) throw new Error('Podman transport closed before start')
     }
 
     return new Promise<void>((resolve, reject) => {
@@ -266,6 +269,7 @@ export class PodmanStdioTransport implements Transport {
   }
 
   async close(): Promise<void> {
+    this._closeGeneration++
     this._closing = true
     // The env-file is the defined session teardown point. podman read the file
     // at every exec launch already (spawn + any respawn), so removing it now is
