@@ -208,50 +208,46 @@ export function requestMediaFloor(candidates: readonly Pick<Candidate, 'bytes'>[
   return start
 }
 
-interface Cached {
-  length: number
-  generation: number
-  /** Size limits and media support the cached messages were built for. */
-  signature: string
-  floor: number
-  messages: LLMMessage[]
+interface FileRefProjection extends FileRefResolution {
+  hasMedia: boolean
 }
 
-const resolutions = new WeakMap<LLMMessage[], Cached>()
+interface CachedProjection extends FileRefProjection {
+  length: number
+  signature: string
+  floor: number
+}
+
+const projections = new WeakMap<LLMMessage[], CachedProjection>()
+const resolutions = new WeakMap<LLMMessage[], { length: number; registry: FileRefRegistry; generation: number; messages: LLMMessage[] }>()
 
 const yieldToEventLoop = (): Promise<void> => new Promise(resolve => setImmediate(resolve))
 
 /**
- * Replace every file reference in `messages` with the file's media, or with a
- * placeholder: `[deleted: name]` for a deleted or missing file, and a reason
- * for a kind this model does not take, a file over its size limit or one
- * outside the request media limit. A reference in a user message (an
- * attachment, not a tool result) is preceded by `attachmentLabel`. Never
- * throws for a missing file; never changes `messages`.
- *
- * Reads happen only on a cache miss, one file at a time with a yield to the
- * event loop before each read.
+ * Apply the request media policy using reference metadata. Retained file refs
+ * stand in for their media for token estimation, and resolveFileRefs loads
+ * only those refs for the provider request.
  */
-export async function resolveFileRefs(
+export function projectFileRefs(
   messages: LLMMessage[],
-  registry: FileRefRegistry,
-  readFile: ReadFileBytes,
   limits: MediaSizeLimits,
   support: MediaSupport,
   requestLimit: RequestMediaLimit = DEFAULT_REQUEST_MEDIA_LIMIT,
-): Promise<FileRefResolution> {
-  const prior = resolutions.get(messages)
-  const priorLength = prior && prior.length <= messages.length ? prior.length : 0
+): FileRefProjection {
+  const signature = `${limits.image}|${limits.audio}|${limits.video}|${+support.image}${+support.audio}${+support.video}|${requestLimit.files}|${requestLimit.bytes}`
+  const cached = projections.get(messages)
+  const prior = cached && cached.signature === signature && cached.length <= messages.length ? cached : undefined
+  if (prior?.length === messages.length) return prior
+  const priorLength = prior?.length ?? 0
 
-  // One pass over the history, no reads: which references a request may
-  // carry (the candidates, which decide the window) and which are over their
-  // size limit.
+  // Scan the metadata for candidates (which determine the media window) and
+  // count omissions. A cached prefix with no refs can be skipped entirely.
   const candidates: Candidate[] = []
   const unsupported: MediaCounts = {}
   const oversize: MediaCounts = {}
   let candidatesBeforePrior = 0
   let anyRef = false
-  for (let i = 0; i < messages.length; i++) {
+  for (let i = prior?.messages === messages ? priorLength : 0; i < messages.length; i++) {
     if (i === priorLength) candidatesBeforePrior = candidates.length
     const content = messages[i].content
     if (!Array.isArray(content)) continue
@@ -265,28 +261,23 @@ export async function resolveFileRefs(
       else candidates.push({ kind, bytes: block.file_ref.size })
     }
   }
-  if (priorLength === messages.length) candidatesBeforePrior = candidates.length
-  if (!anyRef) return { messages, notSent: null }
+  if (!anyRef) {
+    const projection = { length: messages.length, signature, floor: 0, messages, hasMedia: false, notSent: null }
+    projections.set(messages, projection)
+    return projection
+  }
 
   const floor = requestMediaFloor(candidates, requestLimit)
   const overLimit: MediaCounts = {}
   for (let i = 0; i < floor; i++) overLimit[candidates[i].kind] = (overLimit[candidates[i].kind] ?? 0) + 1
 
-  const generation = registry.generation
-  const signature = `${limits.image}|${limits.audio}|${limits.video}|${+support.image}${+support.audio}${+support.video}|${requestLimit.files}|${requestLimit.bytes}`
-  let cached = prior
-  let candidateIndex = candidatesBeforePrior
-  if (!cached || priorLength !== cached.length || cached.generation !== generation || cached.signature !== signature || cached.floor !== floor) {
-    cached = { length: 0, generation, signature, floor, messages: [] }
-    resolutions.set(messages, cached)
-    candidateIndex = 0
-  }
-
-  for (let i = cached.length; i < messages.length; i++) {
+  const reuse = prior && prior.messages !== messages && prior.floor === floor
+  const projected = reuse ? prior.messages : []
+  let candidateIndex = reuse ? candidatesBeforePrior : 0
+  for (let i = projected.length; i < messages.length; i++) {
     const message = messages[i]
     if (!Array.isArray(message.content) || !message.content.some(isFileRefBlock)) {
-      cached.messages.push(message)
-      cached.length = i + 1
+      projected.push(message)
       continue
     }
     const content: ContentBlock[] = []
@@ -298,33 +289,80 @@ export async function resolveFileRefs(
         continue
       }
       const ref = block.file_ref
-      const kind = fileRefKind(ref)
       if (ref.deleted) {
         content.push({ type: 'text', text: deletedFilePlaceholder(ref) })
         continue
       }
       if (attached) content.push({ type: 'text', text: attachmentLabel(ref) })
-      if (!kind) {
-        // Not model media: the label is the whole of it.
-      } else if (!support[kind]) {
+      const kind = fileRefKind(ref)
+      if (!kind) continue
+      if (!support[kind]) {
         content.push({ type: 'text', text: mediaPlaceholder(kind) })
       } else if (ref.size > limits[kind]) {
         content.push({ type: 'text', text: oversizePlaceholder(ref, kind, ref.size, limits[kind]) })
       } else if (candidateIndex++ < floor) {
         content.push({ type: 'text', text: overLimitPlaceholder(ref, kind, requestLimit) })
       } else {
+        content.push(block)
+      }
+    }
+    projected.push({ ...message, content })
+  }
+
+  const anyOmitted = [unsupported, oversize, overLimit].some(counts => Object.keys(counts).length > 0)
+  const projection = {
+    length: messages.length, signature, floor, messages: projected, hasMedia: floor < candidates.length,
+    notSent: anyOmitted ? { unsupported, oversize, overLimit } : null,
+  }
+  projections.set(messages, projection)
+  return projection
+}
+
+/**
+ * Load the media selected by projectFileRefs, one file at a time with a yield
+ * to the event loop before each read. Cache the resolved prefix until the
+ * projected history or any of the files it carried changes.
+ */
+export async function resolveFileRefs(
+  messages: LLMMessage[],
+  registry: FileRefRegistry,
+  readFile: ReadFileBytes,
+  limits: MediaSizeLimits,
+  support: MediaSupport,
+  requestLimit: RequestMediaLimit = DEFAULT_REQUEST_MEDIA_LIMIT,
+): Promise<FileRefResolution> {
+  const { messages: projected, hasMedia, notSent } = projectFileRefs(messages, limits, support, requestLimit)
+  if (!hasMedia) return { messages: projected, notSent }
+
+  let cached = resolutions.get(projected)
+  const generation = registry.generation
+  if (!cached || cached.length > projected.length || cached.registry !== registry || cached.generation !== generation) {
+    cached = { length: 0, registry, generation, messages: [] }
+    resolutions.set(projected, cached)
+  }
+  for (let i = cached.length; i < projected.length; i++) {
+    const message = projected[i]
+    if (!Array.isArray(message.content) || !message.content.some(isFileRefBlock)) {
+      cached.messages.push(message)
+    } else {
+      const content: ContentBlock[] = []
+      for (const block of message.content) {
+        if (!isFileRefBlock(block)) {
+          content.push(block)
+          continue
+        }
+        const ref = block.file_ref
+        const kind = fileRefKind(ref)!
         const payload = await loadPayload(registry, readFile, ref, kind)
         if (!payload) content.push({ type: 'text', text: deletedFilePlaceholder(ref) })
         else if (payload.size > limits[kind]) content.push({ type: 'text', text: oversizePlaceholder(ref, kind, payload.size, limits[kind]) })
         else content.push(mediaBlock(kind, ref, payload))
       }
+      cached.messages.push({ ...message, content })
     }
-    cached.messages.push({ ...message, content })
     cached.length = i + 1
   }
-
-  const any = [unsupported, oversize, overLimit].some(counts => Object.keys(counts).length > 0)
-  return { messages: cached.messages, notSent: any ? { unsupported, oversize, overLimit } : null }
+  return { messages: cached.messages, notSent }
 }
 
 async function loadPayload(registry: FileRefRegistry, readFile: ReadFileBytes, ref: FileRef, kind: MediaKind): Promise<MediaPayload | null> {

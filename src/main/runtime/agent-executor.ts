@@ -8,7 +8,7 @@ import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
 import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, mediaRefusals, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
 import type { LoopMedia } from '../../shared/types/media.types'
-import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
+import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, projectFileRefs, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
 import { attachmentsOf, fileRefKind, fileRefText, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
 import type { FileRefRegistry } from '../adf/file-ref-registry'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
@@ -908,8 +908,14 @@ export class AgentExecutor extends EventEmitter {
    * tool-heavy agent and make the post-compaction gauge lie small.
    */
   private estimateSessionRequestTokens(): number {
-    const messages = getTokenCounterService().estimateMessagesTokens(this.session.getMessages())
-    return messages + this.getFixedOverheadTokens()
+    return this.estimateRequestMessageTokens() + this.getFixedOverheadTokens()
+  }
+
+  private estimateRequestMessageTokens(): number {
+    const support = this.mediaSupport()
+    const { messages } = projectMessageMedia(this.session.getMessages(), support)
+    const files = projectFileRefs(messages, this.mediaSizeLimits(), support, requestMediaLimit(this.config.context))
+    return getTokenCounterService().estimateMessagesTokens(files.messages)
   }
 
   /**
@@ -2491,10 +2497,9 @@ export class AgentExecutor extends EventEmitter {
       // prior turn exists. Reading the newest loop row's usage here was the
       // bug: after a voluntary compaction that row honestly reports the
       // pre-compaction context, which re-triggered compaction on a tiny loop.
-      const tokenCounter = getTokenCounterService()
       const compactThreshold = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100000
       let chatTokens = this.readContextBaselineTokens()
-        ?? tokenCounter.estimateMessagesTokens(this.session.getMessages())
+        ?? this.estimateRequestMessageTokens()
 
       let continueLoop = true
       let activeTurns = 0
@@ -2768,13 +2773,14 @@ export class AgentExecutor extends EventEmitter {
         // Media the model cannot take becomes placeholder text in this request
         // only; the session keeps the original for a model that can. File
         // references left after that load their bytes from Files.
-        const media = projectMessageMedia(request.messages, this.mediaSupport())
+        const mediaSupport = this.mediaSupport()
+        const media = projectMessageMedia(request.messages, mediaSupport)
         const files = await resolveFileRefs(
           media.messages,
           this.fileRefRegistry(),
           path => this.session.getWorkspace().readFileBuffer(path),
           this.mediaSizeLimits(),
-          this.mediaSupport(),
+          mediaSupport,
           requestMediaLimit(this.config.context),
         )
         if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
@@ -5449,8 +5455,7 @@ export class AgentExecutor extends EventEmitter {
    * the turn it just preserved.
    */
   private estimatePreflightTokens(baselineTokens: number, dynamicInstructions?: string): number {
-    const tc = getTokenCounterService()
-    const estimated = tc.estimateMessagesTokens(this.session.getMessages())
+    const estimated = this.estimateRequestMessageTokens()
     // Fixed overhead (system prompt + tool schemas + this turn's dynamic
     // instructions) goes on the char-estimate side ONLY: baselineTokens is the
     // last call's real API input+output, which already includes that overhead —
@@ -5765,7 +5770,7 @@ export class AgentExecutor extends EventEmitter {
         this.addRuntimeNotice(`[System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.`)
       }
       this.emitRuntimeEvent('loop.compaction_failed', { reason: detail, trigger: reason })
-      return tokenCounter.estimateMessagesTokens(this.session.getMessages())
+      return this.estimateRequestMessageTokens()
     }
     this.lastCompactionFailureDetail = undefined
 
