@@ -1,4 +1,6 @@
 // JSON for daemon SSE frames (`GET /events`, the client session stream).
+
+import type { DaemonEventEnvelope } from './event-bus'
 //
 // What the wire preserves, compared with Electron IPC (structured clone),
 // which is what embedded Studio sends the renderer:
@@ -73,6 +75,10 @@ function tolerantReplacer(): (this: unknown, key: string, value: unknown) => unk
 /** A named control frame (`stream.hello`, `stream.gap`): no `id:` line, so the resume cursor is unchanged. */
 export function sseControl(name: string, data: Record<string, unknown>): string {
   return `event: ${name}\ndata: ${safeJsonStringify(data)}\n\n`
+}
+
+export function daemonEventFrame(envelope: DaemonEventEnvelope): string {
+  return `id: ${envelope.cursor}\nevent: ${envelope.event.event_type}\ndata: ${safeJsonStringify(envelope)}\n\n`
 }
 
 /**
