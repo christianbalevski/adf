@@ -97,19 +97,16 @@ protocol.registerSchemesAsPrivileged([
 // Fix PATH for packaged macOS/Linux apps launched from Finder/desktop.
 // GUI apps inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that
 // doesn't include Node.js, Homebrew, nvm, etc.
-// Logged after the main log file is installed so the reason reaches main.log.
-let loginShellPathNote: string | null = null
-if (app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux')) {
-  const resolved = resolveLoginShellPath({
+const loginShellPathReady = app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux')
+  ? resolveLoginShellPath({
     shell: process.env.SHELL || '/bin/zsh',
     currentPath: process.env.PATH ?? '',
     platform: process.platform
+  }).then(resolved => {
+    process.env.PATH = resolved.path
+    if (resolved.source === 'fallback') console.warn(`[App] Login-shell PATH unavailable (${resolved.reason}); using fallback PATH`)
   })
-  process.env.PATH = resolved.path
-  if (resolved.source === 'fallback') {
-    loginShellPathNote = `[App] Login-shell PATH unavailable (${resolved.reason}); using fallback PATH`
-  }
-}
+  : undefined
 
 // Support custom user data directory for running multiple instances
 // Usage: ADF_INSTANCE=2 npm run dev
@@ -134,7 +131,6 @@ console.log(
   `[App] ADF Studio ${app.getVersion()} starting — pid=${process.pid} packaged=${app.isPackaged} ` +
   `electron=${process.versions.electron} log=${mainLogPath ?? '(unavailable)'}`
 )
-if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
@@ -868,6 +864,7 @@ app.whenReady().then(async () => {
   const migration: RemoteModeMigration | null = await migrateRemoteModeInstall(backend, getUserDataPath(), savedCache.get(), console, { savedUnreadable: savedCache.unreadable })
   if (backend.mode === 'embedded') {
     try {
+      await loginShellPathReady
       embeddedIpc = await import('./ipc')
     } catch (err) {
       // A static import that threw here would have failed the main script:
@@ -890,6 +887,7 @@ app.whenReady().then(async () => {
         userDataDir,
         execPath: process.execPath,
         daemonEntry: join(__dirname, 'daemon.js'),
+        environmentReady: loginShellPathReady,
         onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
       }),
       hooks: {
