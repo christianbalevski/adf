@@ -166,6 +166,33 @@ describe('AgentExecutor — compaction summarizer failure', () => {
     }
   })
 
+  it('tries emergency compaction once when subsequent tool rounds stay over the emergency threshold', async () => {
+    const { filePath, workspace } = makeWorkspace('emergency-retry')
+    const provider = new EmptySummaryProvider()
+    const createMessage = provider.createMessage.bind(provider)
+    let normalCalls = 0
+    provider.createMessage = async (opts) => {
+      const result = await createMessage(opts)
+      if (result.content.length === 0 || ++normalCalls > 2) return result
+      return {
+        ...result,
+        stop_reason: 'tool_use',
+        content: [{ type: 'tool_use', id: `read-${normalCalls}`, name: 'fs_read', input: { path: 'missing.txt' } }],
+      }
+    }
+    const agent = await new AgentRuntimeBuilder().build({
+      workspace, filePath, provider,
+      config: { ...workspace.getAgentConfig(), context: { compact_threshold: 2000 } },
+    })
+    try {
+      await agent.executor.executeTurn(chatDispatch('Read the workspace. '.repeat(1000)))
+      expect(normalCalls).toBe(3)
+      expect(provider.compactionCalls).toBe(1)
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
+
   it.each(['max_tokens', 'tool_use'] as const)('preserves history when a nonempty briefing stops with %s', async (stopReason) => {
     const { filePath, workspace } = makeWorkspace(`unfinished-${stopReason}`)
     const provider = new EmptySummaryProvider()

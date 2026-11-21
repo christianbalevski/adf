@@ -4,7 +4,7 @@ import { AgentExecutor } from '../../../src/main/runtime/agent-executor'
 /** The app system prompt from Settings applies at the next turn, not the next start. */
 describe('AgentExecutor base prompt source', () => {
   function assemble(executor: AgentExecutor): string {
-    return (executor as unknown as { assembleSystemPrompt(): string }).assembleSystemPrompt()
+    return (executor as unknown as { buildSystemPrompt(): string }).buildSystemPrompt()
   }
 
   it('reads the settings value each turn; a non-string keeps the start value', () => {
