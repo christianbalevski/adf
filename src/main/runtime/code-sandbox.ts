@@ -215,8 +215,13 @@ const SATURATION_LOG_INTERVAL_MS = 30_000
 interface AdmissionWaiter {
   ephemeral: boolean
   resolve: () => void
-  reject: (err: Error) => void
-  timer: NodeJS.Timeout
+  cleanup: () => void
+}
+
+interface WorkerCreation {
+  promise: Promise<WorkerEntry>
+  controller: AbortController
+  callers: number
 }
 
 interface AdfCallMessage {
@@ -273,7 +278,7 @@ export class CodeSandboxService {
   private workers: Map<string, WorkerEntry> = new Map()
   /** In-flight worker creations, so concurrent execute() calls share one worker
    *  instead of each building their own and the loser leaking. */
-  private creating: Map<string, Promise<WorkerEntry>> = new Map()
+  private creating: Map<string, WorkerCreation> = new Map()
   private execCounter = 0
   private stdlibBasePath: string | null = null
   private stdlibModules: string[] = []
@@ -434,35 +439,12 @@ export class CodeSandboxService {
     if (options?.agent) this.registerSandbox(options.agent, agentId)
 
     let entry: WorkerEntry
-    const creation = this.getOrCreateWorker(agentId, ephemeral, effectiveTimeout)
     try {
-      if (!options?.signal) {
-        entry = await creation
-      } else {
-        let onAbort: (() => void) | undefined
-        const aborted = new Promise<never>((_, reject) => {
-          onAbort = () => reject(Object.assign(new Error('Execution cancelled'), { code: 'ABORTED' }))
-          options.signal!.addEventListener('abort', onAbort, { once: true })
-        })
-        try {
-          entry = await Promise.race([creation, aborted])
-        } finally {
-          if (onAbort) options.signal.removeEventListener('abort', onAbort)
-        }
-      }
+      entry = await this.getOrCreateWorker(agentId, ephemeral, effectiveTimeout, options?.signal)
     } catch (err) {
       if (options?.signal?.aborted) {
-        // If creation won the race after cancellation, reap its unique worker;
-        // otherwise this no-op leaves the shared service untouched.
-        if (options.terminateOnAbort) {
-          void creation.then(() => this.destroyWorker(agentId), () => {})
-        }
         return { stdout: '', error: 'Execution cancelled', errorCode: 'ABORTED' }
       }
-      // No worker at all — a boot failure or the global gate giving up. Report
-      // it as a result rather than throwing: every caller already handles a
-      // failed CodeResult, and half of them would turn a throw into a crash.
-      if (!this.workers.has(agentId)) this.unregisterSandbox(agentId)
       return {
         stdout: '',
         error: err instanceof Error ? err.message : String(err),
@@ -491,7 +473,6 @@ export class CodeSandboxService {
     // see ExecuteOptions.handlerAuthorized for why those differ.
     const isAuthorized = options?.handlerAuthorized ?? toolConfig?.isAuthorized ?? false
     entry.authLevels.add(isAuthorized)
-    entry.inflight++
 
     const result = await new Promise<CodeResult>((resolve) => {
       let timer: NodeJS.Timeout
@@ -558,6 +539,8 @@ export class CodeSandboxService {
     entry.lastUsed = Date.now()
     if (entry.pendingDestroy && entry.inflight <= 0 && this.workers.get(agentId) === entry) {
       this.destroyWorker(agentId)
+    } else if (entry.inflight === 0 && !entry.ephemeral && this.waiters.length > 0) {
+      this.pumpWaiters()
     }
 
     return result
@@ -598,6 +581,7 @@ export class CodeSandboxService {
       entry.pendingDestroy = true
       return
     }
+    this.cancelCreation(agentId, new SandboxUnavailableError('Sandbox worker terminated', 'SANDBOX_TERMINATED'))
     this.destroyWorker(agentId)
   }
 
@@ -625,13 +609,8 @@ export class CodeSandboxService {
     // Fail anything queued on the gate first: on shutdown or mesh disable it
     // would otherwise sit there until its own timeout for a worker that is
     // never coming.
-    for (const waiter of this.waiters.splice(0)) {
-      clearTimeout(waiter.timer)
-      waiter.reject(new SandboxUnavailableError(
-        'Sandbox service shut down while waiting for a worker',
-        'SANDBOX_TERMINATED'
-      ))
-    }
+    const error = new SandboxUnavailableError('Sandbox service shut down while waiting for a worker', 'SANDBOX_TERMINATED')
+    for (const agentId of this.creating.keys()) this.cancelCreation(agentId, error)
     for (const agentId of Array.from(this.workers.keys())) {
       this.destroyWorker(agentId)
     }
@@ -697,37 +676,48 @@ export class CodeSandboxService {
 
   /** Hand a permit back. Idempotent — destroyWorker() and the exit event both
    *  land on the same entry. */
-  private release(entry: WorkerEntry): void {
+  private release(entry: WorkerEntry, pump = true): void {
     if (entry.released) return
     entry.released = true
-    if (entry.ephemeral) this.coldCount = Math.max(0, this.coldCount - 1)
-    else this.warmCount = Math.max(0, this.warmCount - 1)
-    this.pumpWaiters()
+    this.returnPermit(entry.ephemeral, pump)
+  }
+
+  private returnPermit(ephemeral: boolean, pump = true): void {
+    if (ephemeral) this.coldCount--
+    else this.warmCount--
+    if (pump) this.pumpWaiters()
   }
 
   /** Wait for a permit, up to `waitMs`. Blocks rather than dropping: dropping
    *  here as well as in the dispatch queue would make loss un-attributable. */
-  private admit(ephemeral: boolean, waitMs: number): Promise<void> {
+  private admit(ephemeral: boolean, waitMs: number, signal: AbortSignal): Promise<void> {
     this.sweepIdle()
     if (this.tryReserve(ephemeral)) return Promise.resolve()
 
     return new Promise<void>((resolve, reject) => {
+      const remove = (error: Error) => {
+        const index = this.waiters.indexOf(waiter)
+        if (index !== -1) this.waiters.splice(index, 1)
+        waiter.cleanup()
+        reject(error)
+      }
+      const onAbort = () => remove(signal.reason)
+      const timer = setTimeout(() => remove(new SandboxUnavailableError(
+        `No sandbox worker available within ${waitMs}ms — the global worker ceiling ` +
+        `(${ephemeral ? `${this.maxColdWorkers} concurrent lambda` : `${this.maxWarmWorkers} resident`} ` +
+        'sandboxes) is saturated. Raise it in Settings › Packages if this is steady state.',
+        'SANDBOX_BUSY'
+      )), waitMs)
       const waiter: AdmissionWaiter = {
         ephemeral,
         resolve,
-        reject,
-        timer: setTimeout(() => {
-          const i = this.waiters.indexOf(waiter)
-          if (i >= 0) this.waiters.splice(i, 1)
-          reject(new SandboxUnavailableError(
-            `No sandbox worker available within ${waitMs}ms — the global worker ceiling ` +
-            `(${ephemeral ? `${this.maxColdWorkers} concurrent lambda` : `${this.maxWarmWorkers} resident`} ` +
-            'sandboxes) is saturated. Raise it in Settings › Packages if this is steady state.',
-            'SANDBOX_BUSY'
-          ))
-        }, waitMs)
+        cleanup: () => {
+          clearTimeout(timer)
+          signal.removeEventListener('abort', onAbort)
+        }
       }
       this.waiters.push(waiter)
+      signal.addEventListener('abort', onAbort, { once: true })
       this.noteSaturation()
     })
   }
@@ -738,7 +728,7 @@ export class CodeSandboxService {
       const waiter = this.waiters[i]
       if (this.tryReserve(waiter.ephemeral)) {
         this.waiters.splice(i, 1)
-        clearTimeout(waiter.timer)
+        waiter.cleanup()
         waiter.resolve()
       } else {
         i++
@@ -751,7 +741,7 @@ export class CodeSandboxService {
   private sweepIdle(): void {
     const now = Date.now()
     for (const [id, entry] of Array.from(this.workers)) {
-      if (entry.inflight > 0) continue
+      if (entry.inflight > 0 || this.creating.has(id)) continue
       const ttl = entry.ephemeral ? COLD_IDLE_TTL_MS : WARM_IDLE_TTL_MS
       if (now - entry.lastUsed >= ttl) this.destroyWorker(id)
     }
@@ -763,14 +753,16 @@ export class CodeSandboxService {
     let oldestId: string | undefined
     let oldest = Infinity
     for (const [id, entry] of this.workers) {
-      if (entry.ephemeral || entry.inflight > 0) continue
+      if (entry.ephemeral || entry.inflight > 0 || this.creating.has(id)) continue
       if (entry.lastUsed < oldest) {
         oldest = entry.lastUsed
         oldestId = id
       }
     }
     if (oldestId === undefined) return false
-    this.destroyWorker(oldestId)
+    // The caller is taking this permit. Pumping here could reserve it for a
+    // queued caller before tryReserve increments the count, even reentrantly.
+    this.destroyWorker(oldestId, false)
     return true
   }
 
@@ -803,30 +795,92 @@ export class CodeSandboxService {
   private getOrCreateWorker(
     agentId: string,
     ephemeral: boolean,
-    timeoutMs: number
+    timeoutMs: number,
+    signal?: AbortSignal
   ): Promise<WorkerEntry> {
-    const existing = this.workers.get(agentId)
-    if (existing && existing.worker) return Promise.resolve(existing)
+    let creation = this.creating.get(agentId)
+    if (!creation) {
+      const existing = this.workers.get(agentId)
+      if (existing) {
+        existing.inflight++
+        return Promise.resolve(existing)
+      }
 
-    const inflight = this.creating.get(agentId)
-    if (inflight) return inflight
+      const controller = new AbortController()
+      const promise = this.admit(ephemeral, Math.min(timeoutMs, ADMISSION_MAX_WAIT_MS), controller.signal)
+        .then(() => {
+          if (controller.signal.aborted) {
+            // Admission may have granted the slot in the same turn as the abort.
+            this.returnPermit(ephemeral)
+            throw controller.signal.reason
+          }
+          return this.createWorker(agentId, ephemeral)
+        })
+      creation = { promise, controller, callers: 0 }
+      this.creating.set(agentId, creation)
+    }
+    return this.joinCreation(agentId, creation, signal)
+  }
 
-    // Only a genuinely new worker needs a permit; reuse and join do not.
-    const creation = this.admit(ephemeral, Math.min(timeoutMs, ADMISSION_MAX_WAIT_MS))
-      .then(() => this.createWorker(agentId, ephemeral))
-    this.creating.set(agentId, creation)
-    // Only the originator clears the join entry; joiners hold `creation` itself.
-    return creation.finally(() => {
-      if (this.creating.get(agentId) === creation) this.creating.delete(agentId)
+  private joinCreation(agentId: string, creation: WorkerCreation, signal?: AbortSignal): Promise<WorkerEntry> {
+    creation.callers++
+    return new Promise((resolve, reject) => {
+      let waiting = true
+      const leave = (): boolean => {
+        if (!waiting) return false
+        waiting = false
+        creation.callers--
+        signal?.removeEventListener('abort', onAbort)
+        return true
+      }
+      const cleanup = () => {
+        if (creation.callers !== 0 || this.creating.get(agentId) !== creation) return
+        this.creating.delete(agentId)
+        if (!this.workers.has(agentId)) this.unregisterSandbox(agentId)
+      }
+      const onAbort = () => {
+        if (!leave()) return
+        const error = new SandboxUnavailableError('Execution cancelled', 'ABORTED')
+        if (creation.callers === 0 && this.creating.get(agentId) === creation) {
+          this.cancelCreation(agentId, error)
+          const entry = this.workers.get(agentId)
+          if (entry?.inflight === 0) this.destroyWorker(agentId)
+        }
+        reject(error)
+      }
+      void creation.promise.then(entry => {
+        if (!leave()) return
+        // Pin before clearing the creation record. Admission cannot evict
+        // the worker between assignment and the execution's await resuming.
+        entry.inflight++
+        cleanup()
+        resolve(entry)
+      }, err => {
+        if (!leave()) return
+        cleanup()
+        reject(err)
+      })
+      signal?.addEventListener('abort', onAbort, { once: true })
+      if (signal?.aborted) onAbort()
     })
   }
 
+  private cancelCreation(agentId: string, error: SandboxUnavailableError): void {
+    const creation = this.creating.get(agentId)
+    if (!creation) return
+    this.creating.delete(agentId)
+    if (!this.workers.has(agentId)) this.unregisterSandbox(agentId)
+    creation.controller.abort(error)
+  }
+
   private async createWorker(agentId: string, ephemeral: boolean): Promise<WorkerEntry> {
-    const readPaths = this.readPaths()
+    let readPaths: string[]
     let worker: RemoteWorker
     try {
+      readPaths = this.readPaths()
       worker = getSandboxHost(readPaths).spawnWorker()
     } catch (err) {
+      this.returnPermit(ephemeral)
       throw new SandboxUnavailableError(
         `Sandbox host unavailable: ${err instanceof Error ? err.message : String(err)}`,
         'SANDBOX_TERMINATED'
@@ -1029,7 +1083,7 @@ export class CodeSandboxService {
     return last
   }
 
-  private destroyWorker(agentId: string): void {
+  private destroyWorker(agentId: string, pump = true): void {
     const entry = this.workers.get(agentId)
     if (entry) {
       this.workers.delete(agentId)
@@ -1038,7 +1092,7 @@ export class CodeSandboxService {
       // terminate() is async; settle now so nothing waits for the exit event,
       // and hand the admission permit back immediately so a queued execution
       // starts now rather than when the OS gets round to reaping the thread.
-      this.release(entry)
+      this.release(entry, pump)
       this.settleWorkerPending(entry, 'Sandbox worker terminated')
     }
   }
