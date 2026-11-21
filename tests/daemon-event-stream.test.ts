@@ -24,6 +24,22 @@ function publish(bus: DaemonEventBus, agentId = 'a'): void {
 }
 
 describe('daemon event stream backpressure', () => {
+  it('encodes a live event once for matching readers and skips unmatched events', () => {
+    const bus = new DaemonEventBus()
+    const first = new Sink()
+    const second = new Sink()
+    attach(bus, first, { agentId: 'a' })
+    attach(bus, second, { agentId: 'a' })
+    const toJSON = vi.fn().mockReturnValue({ text: 'hello' })
+    const event = { seq: 0, event_type: 'test.event', source: 'test', timestamp: 0, agent_id: 'b', payload: { toJSON } }
+    bus.publish(event)
+    expect(toJSON).not.toHaveBeenCalled()
+    bus.publish({ ...event, agent_id: 'a' })
+    expect(toJSON).toHaveBeenCalledOnce()
+    expect(first.chunks[1]).toBe(second.chunks[1])
+    expect(first.chunks[1]).toContain('"text":"hello"')
+  })
+
   it('pauses frames and heartbeats, then resumes buffered events once and in order', () => {
     vi.useFakeTimers()
     const bus = new DaemonEventBus(10)
