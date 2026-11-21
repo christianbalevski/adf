@@ -144,6 +144,18 @@
       ]
     },
     {
+      "name": "save-system-prompt",
+      "description": "Save the runtime-provided part of your system prompt (the host's base prompt and tool-guidance sections) into your own files while you still run on that host, and optionally switch to that saved copy. Use before the agent file moves to another computer or runtime, or when the owner wants the agent's prompt pinned to the version it has now.",
+      "path": "skills/save-system-prompt/SKILL.md",
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/save-system-prompt/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/save-system-prompt.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/save-system-prompt/scripts/save-system-prompt.js"
+        }
+      ]
+    },
+    {
       "name": "skill-loader",
       "description": "Install, repair, or maintain a file-backed ADF skill catalog entirely in agent space. Use when an agent needs to discover first-party or installed SKILL.md packages, keep skills-registry.json current, enable or disable skills, or configure startup and file-change indexer triggers.",
       "path": "skills/skill-loader/SKILL.md",
