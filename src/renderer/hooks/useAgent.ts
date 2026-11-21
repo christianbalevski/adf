@@ -7,7 +7,8 @@ import { useDocumentStore } from '../stores/document.store'
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { AGENT_STATES, type AgentConfig } from '../../shared/types/adf-v02.types'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
-import type { AgentExecutionEvent, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload, ToolApprovalResolvedPayload } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, ChatAppendedPayload, LoopSeqPayload, ResponseMetadataPayload, ToolApprovalRequestPayload, ToolApprovalResolvedPayload } from '../../shared/types/ipc.types'
+import { LOCAL_RUNTIME } from '../../shared/runtime-tag'
 import { classifyInjectedText, detectTriggerType, parseLoopSendStamp } from '../../shared/utils/loop-parser'
 import { shouldRefreshDocument } from '../../shared/utils/document-target'
 import { nanoid } from 'nanoid'
@@ -485,6 +486,20 @@ export function createAgentEventHandler(): (event: AgentExecutionEvent) => void 
         const payload = event.payload as { content: string; revision?: number; writer?: ResourceWriter | null }
         // W3-F: the revision and writer reach the README tab, which keeps unsaved text and names the writer.
         useDocumentStore.getState().setDocumentContent(payload.content, payload.revision !== undefined ? { revision: payload.revision, writer: payload.writer } : undefined)
+        break
+      }
+
+      case 'chat_appended': {
+        const { filePath, entry } = event.payload as ChatAppendedPayload
+        if (view.filePath !== filePath || view.runtimeId !== LOCAL_RUNTIME) break
+        // The open-file batch may already include this append. Compare the
+        // persisted tail cursor; a compaction summary can carry a newer seq
+        // at the head, but every direct append is written at the tail.
+        const seq = entry.metadata?.seq
+        const tail = findLastIndex(slice.log, (item) => typeof item.metadata?.seq === 'number')
+        const tailSeq = slice.log[tail]?.metadata?.seq
+        if (typeof seq !== 'number' || (typeof tailSeq === 'number' && seq <= tailSeq)) break
+        agentStore.addLogEntry(entry, loop)
         break
       }
 

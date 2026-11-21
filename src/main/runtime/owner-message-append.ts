@@ -9,13 +9,14 @@
  * it cannot start the agent while the row is written.
  */
 import { AdfWorkspace } from '../adf/adf-workspace'
+import type { LoopEntry } from '../../shared/types/adf-v02.types'
 import type { AgentLeaseRegistry } from './agent-lease'
 
 export async function appendOwnerMessageUnderLease(
   leases: AgentLeaseRegistry | null,
   filePath: string,
   text: string,
-  opts: { workspace?: AdfWorkspace } = {},
+  opts: { workspace?: AdfWorkspace; onCommitted?: (row: LoopEntry) => void } = {},
 ): Promise<{ ok: true } | { ok: false; error: string }> {
   const releaseProbe = leases?.addHostedPathsProbe(() => [filePath])
   try {
@@ -23,7 +24,11 @@ export async function appendOwnerMessageUnderLease(
     if (lease && !lease.ok) return { ok: false, error: lease.message }
     const workspace = opts.workspace ?? AdfWorkspace.open(filePath)
     try {
-      workspace.appendToLoop('user', [{ type: 'text', text }])
+      const content: LoopEntry['content_json'] = [{ type: 'text', text }]
+      const createdAt = Date.now()
+      const seq = workspace.appendToLoop('user', content, undefined, undefined, createdAt)
+      // Notify in commit order, before the asynchronous lease cleanup.
+      opts.onCommitted?.({ seq, role: 'user', content_json: content, created_at: createdAt })
     } finally {
       if (!opts.workspace) workspace.close()
     }
