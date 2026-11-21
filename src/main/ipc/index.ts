@@ -4818,6 +4818,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       ],
     })
     const newExecutor = assembled.executor
+    newExecutor.confirmProviderValidation(provider)
     const newTriggerEvaluator = assembled.triggerEvaluator
     let lastAgentName = config.name
     const foregroundHost: AgentHostBindings = {
