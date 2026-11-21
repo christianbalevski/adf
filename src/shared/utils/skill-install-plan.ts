@@ -14,9 +14,10 @@
  *
  * Bounds and preconditions are decided by the batch itself
  * (validateAtomicBatch inside AdfWorkspace.writeFilesAtomic). The protocol
- * only stops early on the batch's own bounds (batchBoundsProblem), so a
- * package past them is not fetched in full first. Hosts inject their I/O; the renderer's `checkpoint` stops
- * the protocol when the view it started in is gone.
+ * stops early on the batch's own bounds (batchBoundsProblem). Each window
+ * starts a few independent reads and consumes them in input order. Hosts
+ * inject their I/O; the renderer's `checkpoint` stops the protocol when the
+ * view it started in is gone.
  */
 
 import type { FileProtectionLevel } from '../types/adf-v02.types'
@@ -107,29 +108,48 @@ export interface PackageIo {
 /** A resource to install: fetched from `raw_url`, or already in hand (a local package). */
 export type PackageResource = { path: string; raw_url: string } | { path: string; contentBase64: string; size: number }
 
+const READ_CONCURRENCY = 4
+
+/** Start a bounded window and yield in order so failures and limits stay deterministic. */
+async function* readPackageItems<Item, Value>(items: Item[], read: (item: Item) => Value | Promise<Value>) {
+  for (let offset = 0; offset < items.length; offset += READ_CONCURRENCY) {
+    const pending = items.slice(offset, offset + READ_CONCURRENCY).map(async (item) => {
+      try {
+        return { ok: true as const, item, value: await read(item) }
+      } catch (error) {
+        // A caller can stop partway through a window. Capture every rejection
+        // immediately and report it only when its turn arrives.
+        return { ok: false as const, error }
+      }
+    })
+    for (const reading of pending) {
+      const result = await reading
+      if (!result.ok) throw result.error
+      yield result
+    }
+  }
+}
+
 /** The read protocol, once: fetch, list, read revisions, plan. Nothing is written. */
 export async function preparePackageWrite(io: PackageIo, name: string, manifest: string, resources: PackageResource[]): Promise<PackageWritePlan> {
   const stop = () => io.checkpoint?.() ?? null
-  // An early stop on the batch's own bounds: nothing past them is fetched (the batch still decides).
   const tooLarge = (problem: string): PackageWritePlan => ({ ok: false, error: `The package is past what one install writes: ${problem}. Nothing was written.` })
-  const counted = batchBoundsProblem(resources.length + 1, 0)
-  if (counted) return tooLarge(counted)
   let total = new TextEncoder().encode(manifest).length
+  const initialBounds = batchBoundsProblem(resources.length + 1, total)
+  if (initialBounds) return tooLarge(initialBounds)
+
   const prepared: PreparedPackageFile[] = []
-  for (const resource of resources) {
-    let file: PreparedPackageFile
-    if (!('raw_url' in resource)) file = resource
-    else {
-      const fetched = await io.fetchBytes(resource.raw_url)
-      const stopped = stop()
-      if (stopped) return { ok: false, error: stopped }
-      if (!fetched.ok) return { ok: false, error: `${resource.path}: ${fetched.error || 'fetch failed'}. Nothing was written.` }
-      file = { path: resource.path, contentBase64: fetched.contentBase64, size: fetched.size }
-    }
-    total += file.size
+  const resourceReads = readPackageItems(resources, (resource) => (
+    'raw_url' in resource ? io.fetchBytes(resource.raw_url) : { ok: true as const, ...resource }
+  ))
+  for await (const { item: resource, value: fetched } of resourceReads) {
+    const stopped = stop()
+    if (stopped) return { ok: false, error: stopped }
+    if (!fetched.ok) return { ok: false, error: `${resource.path}: ${fetched.error || 'fetch failed'}. Nothing was written.` }
+    total += fetched.size
     const over = batchBoundsProblem(0, total)
     if (over) return tooLarge(over)
-    prepared.push(file)
+    prepared.push({ path: resource.path, contentBase64: fetched.contentBase64, size: fetched.size })
   }
   const listed = await io.listFiles()
   const listStopped = stop()
@@ -137,9 +157,10 @@ export async function preparePackageWrite(io: PackageIo, name: string, manifest:
   const directory = `skills/${name}/`
   const targets = new Set([...prepared.map((r) => `${directory}${r.path}`), `${directory}SKILL.md`])
   const existing = new Map<string, ExistingPackageFile>()
-  for (const file of listed) {
-    if (!targets.has(file.path)) continue
-    const revision = file.protection === 'read_only' ? undefined : await io.readRevision(file.path)
+  const revisionReads = readPackageItems(listed.filter((file) => targets.has(file.path)), (file) => (
+    file.protection === 'read_only' ? undefined : io.readRevision(file.path)
+  ))
+  for await (const { item: file, value: revision } of revisionReads) {
     const stopped = stop()
     if (stopped) return { ok: false, error: stopped }
     existing.set(file.path, { protection: file.protection, ...(typeof revision === 'number' ? { revision } : {}) })
