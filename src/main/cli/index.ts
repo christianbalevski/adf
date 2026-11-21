@@ -73,7 +73,11 @@ interface CliOptions {
   token?: string
   /** io.env, else process.env: every lookup of the URL, the token and the local proof reads it. */
   env: NodeJS.ProcessEnv
+  ensureReady?: () => Promise<void>
 }
+
+/** A readiness helper already reported the failure and its recovery advice. */
+class DaemonNotReady extends Error {}
 
 interface ParsedArgs {
   command: string
@@ -157,6 +161,14 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
   const tuiArgv = tuiInvocation(argv)
   if (tuiArgv) {
     const wantsHelp = tuiArgv.includes('--help') || tuiArgv.includes('-h')
+    if (!wantsHelp) {
+      const { parseTuiArgs, tuiUsage } = await import('../tui/index')
+      try { parseTuiArgs(tuiArgv) }
+      catch (err) {
+        io.stderr(`${err instanceof Error ? err.message : String(err)}\n\n${tuiUsage()}\n`)
+        return 2
+      }
+    }
     let tuiUrl = ''
     try {
       if (!wantsHelp) tuiUrl = urlFromArgv(tuiArgv, io.env ?? process.env)
@@ -210,9 +222,14 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
     io.stderr(`${err instanceof Error ? err.message : String(err)}\n\n${usage()}\n`)
     return 2
   }
-  if (talksToDaemon && !(await pinnedRemoteOk(io, options.daemonUrl, !!options.token))) return 1
-  // pair / remotes talk to other computers or read local files: they never start this machine's daemon.
-  if (talksToDaemon && !(await daemonReady(io, options.daemonUrl)).ok) return 1
+  if (talksToDaemon) {
+    let ready: Promise<void> | undefined
+    const prepare = async () => {
+      if (!(await pinnedRemoteOk(io, options.daemonUrl, !!options.token)) ||
+          !(await daemonReady(io, options.daemonUrl)).ok) throw new DaemonNotReady()
+    }
+    options.ensureReady = () => ready ??= prepare()
+  }
 
   try {
     switch (command) {
@@ -316,7 +333,7 @@ export async function runCli(argv = process.argv.slice(2), io: CliIo = defaultIo
         return 2
     }
   } catch (err) {
-    io.stderr(`${err instanceof Error ? err.message : String(err)}\n`)
+    if (!(err instanceof DaemonNotReady)) io.stderr(`${err instanceof Error ? err.message : String(err)}\n`)
     return 1
   }
 }
@@ -379,6 +396,7 @@ function authHeader(options: CliOptions): Record<string, string> {
 }
 
 async function requestJson(io: CliIo, options: CliOptions, path: string, init?: RequestInit): Promise<JsonValue> {
+  await options.ensureReady?.()
   let response: Response
   try {
     response = await io.fetch(`${options.daemonUrl}${path}`, {
@@ -814,6 +832,7 @@ async function postAndPrint(
 }
 
 async function streamEvents(io: CliIo, options: CliOptions, args: string[]): Promise<number> {
+  await options.ensureReady?.()
   const agent = args[0]
   const path = agent ? `/events?agentId=${enc(agent)}` : '/events'
   const response = await io.fetch(`${options.daemonUrl}${path}`, {
