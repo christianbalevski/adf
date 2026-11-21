@@ -482,6 +482,27 @@ describe('PodmanService lifecycle hardening', () => {
     expect(exec0).toHaveBeenCalledTimes(2)
   })
 
+  it('shares an in-flight mkdir only for the same container run', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    let releaseFirst!: (result: { code: number; stdout: string; stderr: string }) => void
+    const firstExec = new Promise<{ code: number; stdout: string; stderr: string }>(resolve => { releaseFirst = resolve })
+    const exec0 = vi.fn().mockReturnValueOnce(firstExec).mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+
+    const first = service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    const shared = service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    await Promise.resolve()
+    expect(exec0).toHaveBeenCalledTimes(1)
+
+    ;(service as any).invalidateContainer('adf-mcp')
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    releaseFirst({ code: 1, stdout: '', stderr: 'container is not running' })
+    await Promise.all([first, shared])
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    expect(exec0).toHaveBeenCalledTimes(2)
+  })
+
   it('pendingStarts resolves only after in-flight starts settle', async () => {
     const service = new PodmanService()
     let release!: () => void
