@@ -5,7 +5,7 @@ import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store
 import { useAgentStore } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useJumpToAgent } from '../../hooks/useJumpToAgent'
-import { runtimeDown, runtimeLabel, runtimeRemote, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
+import { runtimeDown, runtimeLabel, runtimeName, runtimeRemote, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
 import { RemoteMark } from '../common/RemoteMark'
 import { apiFor } from '../../utils/runtime-api'
 import { noticeKey } from '../../../shared/runtime-tag'
@@ -244,7 +244,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
           </span>
         )}
         <span className={`shrink-0 text-[10px] font-medium ${outcome.tone}`}>{outcome.label}</span>
-        <span className="ml-auto shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
+        <span title={new Date(entry.resolvedAt).toISOString()} className="ml-auto shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
           {relativeAge(entry.resolvedAt, now)} ago
         </span>
       </div>
@@ -263,19 +263,47 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
 export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } = {}) {
   const approvals = useApprovalsStore((s) => s.approvals)
   const history = useApprovalsStore((s) => s.history)
+  const page = useApprovalsStore((s) => s.historyPage)
+  const historyLoading = useApprovalsStore((s) => s.historyLoading)
+  const historyError = useApprovalsStore((s) => s.historyError)
+  const browseHistory = useApprovalsStore((s) => s.browseHistory)
+  const recentHistory = useApprovalsStore((s) => s.showRecentHistory)
   const panelOpen = useApprovalsStore((s) => s.panelOpen)
   const togglePanel = useApprovalsStore((s) => s.togglePanel)
   const setPanelOpen = useApprovalsStore((s) => s.setPanelOpen)
   const jumpToAgent = useJumpToAgent()
   const containerRef = useRef<HTMLDivElement>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [clearing, setClearing] = useState(false)
+  const [clearError, setClearError] = useState<string | null>(null)
+  const historyTargets = [...new Set(history.map((entry) => entry.runtimeId ?? 'local'))]
+
+  const clearHistory = async () => {
+    setClearing(true)
+    setClearError(null)
+    recentHistory()
+    // The bell merges several runtimes. Each one owns its own durable history
+    // and broadcasts its successful clear to every connected client.
+    const results = await Promise.allSettled(historyTargets.map(async (runtimeId) => {
+      const clear = approvalsBridge(runtimeId)?.clearNotificationHistory
+      if (!clear) throw new Error('This runtime does not support clearing notification history.')
+      const result = await clear()
+      if (!result.success) throw new Error(result.error ?? 'Could not clear notification history.')
+    }))
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') {
+      const detail = failure.reason instanceof Error ? failure.reason.message : 'Check your runtime connections and try again.'
+      setClearError(`Could not clear all history. ${detail}`)
+    }
+    setClearing(false)
+  }
   // The approval whose full request is open in the modal, by its key across runtimes (noticeKey).
   const [inspectingId, setInspectingId] = useState<string | null>(null)
   const inspecting = inspectingId ? approvals.find((a) => noticeKey(a.runtimeId, a.id) === inspectingId) ?? null : null
   const inspectingRef = useRef(false)
   inspectingRef.current = inspecting !== null
 
-  // Answered anywhere: the modal closes and the row shows under Recent.
+  // Answered anywhere: the modal closes and the row shows under History.
   useEffect(() => {
     if (inspectingId && !inspecting) setInspectingId(null)
   }, [inspectingId, inspecting])
@@ -349,6 +377,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
 
       {panelOpen && (
         <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float`}>
+          {(clearError || historyError) && <div role="alert" className="px-3 py-2 text-xs text-[var(--adf-ui-danger)]">{clearError || historyError}</div>}
           {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
               No notifications
@@ -367,14 +396,31 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
               )}
               {history.length > 0 && (
                 <>
-                  <div className="px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
-                    Recent
+                  <div className="flex items-center justify-between px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
+                    <span>{page ? `History${historyTargets.length > 1 ? ` · ${runtimeName(page.runtimeId)}` : ''}` : 'Recent'}</span>
+                    <button type="button" onClick={() => void clearHistory()} disabled={clearing} className="text-[var(--adf-ui-accent)] hover:underline disabled:opacity-50">
+                      {clearing ? 'Clearing…' : 'Clear history'}
+                    </button>
                   </div>
-                  {history.map((entry) => (
+                  {(page ? page.history.map((entry) => ({ ...entry, runtimeId: page.runtimeId === 'local' ? undefined : page.runtimeId })) : history).map((entry, index) => (
                     // Resolved ids repeat across a session (a re-registered
                     // request, an agent restarted at ask_1), so the row needs a
                     // key that includes WHEN it ended.
-                    <ResolvedRow key={`${noticeKey(entry.runtimeId, entry.id)}@${entry.resolvedAt}`} entry={entry} now={now} />
+                    <ResolvedRow key={`${noticeKey(entry.runtimeId, entry.id)}@${entry.resolvedAt}:${index}`} entry={entry} now={now} />
+                  ))}
+                  {page ? (
+                    <div className="flex items-center justify-between px-3 py-2 text-xs text-[var(--adf-ui-accent)]">
+                      <button type="button" onClick={recentHistory} className="hover:underline">Back to recent</button>
+                      {page.nextBefore !== null && (
+                        <button type="button" disabled={historyLoading} onClick={() => void browseHistory(page.runtimeId, page.nextBefore!)} className="hover:underline disabled:opacity-50">
+                          {historyLoading ? 'Loading…' : 'Older notifications'}
+                        </button>
+                      )}
+                    </div>
+                  ) : historyTargets.map((runtimeId) => (
+                    <button key={runtimeId} type="button" disabled={historyLoading || clearing} onClick={() => void browseHistory(runtimeId)} className="block w-full px-3 py-2 text-xs text-[var(--adf-ui-accent)] hover:underline disabled:opacity-50">
+                      {historyLoading ? 'Loading…' : `Browse history${historyTargets.length > 1 ? ` · ${runtimeName(runtimeId)}` : ''}`}
+                    </button>
                   ))}
                 </>
               )}

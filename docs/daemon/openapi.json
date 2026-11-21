@@ -10769,7 +10769,7 @@
           "Tasks & approvals"
         ],
         "summary": "Approvals hub snapshot",
-        "description": "Every pending approval and ask across loaded agents and loops (oldest first), plus the recently resolved ones of this daemon run. Raw tool input is omitted; fetch it with GET /approvals/input.",
+        "description": "Every pending approval and ask across loaded agents and loops (oldest first), plus the 50 most recent resolved notifications (newest first). Older history is retained across restarts and fetched through GET /approvals/history until manually cleared. Requests interrupted by a runtime restart are recorded as expired. Raw tool input is omitted; fetch it with GET /approvals/input.",
         "operationId": "getApprovals",
         "responses": {
           "200": {
@@ -10788,6 +10788,47 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           }
+        }
+      }
+    },
+    "/approvals/history": {
+      "get": {
+        "tags": ["Tasks & approvals"],
+        "summary": "Browse notification history",
+        "description": "Returns at most 50 resolved notifications, newest first. Omit before for the newest page; pass the returned nextBefore to read older entries. The cursor counts from the oldest end, so newly resolved notifications do not shift older pages. Discard cursors when history is cleared; Studio resets browsing on the next live snapshot.",
+        "operationId": "getNotificationHistory",
+        "parameters": [{
+          "name": "before",
+          "in": "query",
+          "description": "The previous page's nextBefore cursor.",
+          "schema": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+        }],
+        "responses": {
+          "200": {
+            "description": "History page",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationHistoryPage" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks & approvals"],
+        "summary": "Clear notification history",
+        "description": "Permanently clears this runtime's resolved notification history for all connected clients. Pending approvals and asks remain actionable. Returns success: false if the cleared history could not be saved.",
+        "operationId": "clearNotificationHistory",
+        "responses": {
+          "200": {
+            "description": "Clear result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessErrorResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
         }
       }
     },
@@ -28998,6 +29039,22 @@
           }
         ]
       },
+      "NotificationHistoryPage": {
+        "type": "object",
+        "required": ["history", "nextBefore"],
+        "properties": {
+          "history": {
+            "type": "array",
+            "maxItems": 50,
+            "items": { "$ref": "#/components/schemas/ResolvedNotification" }
+          },
+          "nextBefore": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Cursor for the next older page, or null when there are no older entries."
+          }
+        }
+      },
       "NotificationsSnapshot": {
         "type": "object",
         "required": [
@@ -29017,7 +29074,7 @@
             "items": {
               "$ref": "#/components/schemas/ResolvedNotification"
             },
-            "description": "Newest first, capped at 50, this daemon run only"
+            "description": "At most 50 most recent entries, newest first. Older persisted entries are fetched through GET /approvals/history."
           }
         }
       },

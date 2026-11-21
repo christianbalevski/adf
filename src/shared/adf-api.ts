@@ -121,6 +121,8 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
 
   // Global approvals menu (all agents + loops, foreground and background)
   listPendingNotifications: () => ipcRenderer.invoke(IPC.APPROVALS_LIST),
+  clearNotificationHistory: () => ipcRenderer.invoke(IPC.APPROVALS_CLEAR_HISTORY),
+  getNotificationHistory: (before?: number) => ipcRenderer.invoke(IPC.APPROVALS_HISTORY, before),
   resolvePendingApproval: (filePath: string, approvalId: string, approved: boolean, feedback?: string) =>
     ipcRenderer.invoke(IPC.APPROVALS_RESOLVE, { filePath, approvalId, approved, feedback }),
   // B8: fetch one pending approval's raw tool input on demand (broadcast omits it).

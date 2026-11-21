@@ -80,7 +80,7 @@ async function freePort(): Promise<number> {
   })
 }
 
-interface Run { code: number | null; output: string; fallbackBytes: Buffer; secretFile: string }
+interface Run { code: number | null; output: string; fallbackBytes: Buffer; secretFile: string; notificationFile: string; notificationBytes: Buffer }
 
 /**
  * Start the daemon with `vars` and wait until it exits or prints `until`
@@ -96,6 +96,12 @@ async function runDaemon(vars: Record<string, string> | ((root: string) => Recor
   for (const d of [userData, home, temp]) mkdirSync(d, { recursive: true })
   const settingsFile = join(userData, 'adf-settings.json')
   writeFileSync(settingsFile, JSON.stringify({ meshEnabled: false, updateChecksEnabled: false, remoteCatalogsEnabled: false, providerChecksEnabled: false }))
+  const notificationFile = `${settingsFile}.notifications.json`
+  writeFileSync(notificationFile, JSON.stringify({ pending: [{
+    id: 'live-approval', kind: 'approval', requestId: 'live-approval', filePath: '/agent.adf',
+    agentName: 'agent', loop: 'main', preview: 'A live request', requestedAt: Date.now(),
+  }], history: [] }))
+  const notificationBytes = readFileSync(notificationFile)
   const secretFile = join(userData, 'owner-secrets.json')
   const mnemonic = generateMnemonic()
   const file = new FileSecretBackend(secretFile)
@@ -147,7 +153,7 @@ async function runDaemon(vars: Record<string, string> | ((root: string) => Recor
     child.once('error', (error) => { clearTimeout(timer); fail(error) })
   })
   await terminateChild(child)
-  return { code, output, fallbackBytes, secretFile, mnemonic }
+  return { code, output, fallbackBytes, secretFile, mnemonic, notificationFile, notificationBytes }
 }
 
 function expectRefusedStart(run: Run & { mnemonic: string }, message: string): void {
@@ -157,12 +163,25 @@ function expectRefusedStart(run: Run & { mnemonic: string }, message: string): v
   expect(run.output).not.toContain('Owner identity:')
   expect(run.output).not.toContain('Uncaught exception')
   expect(readFileSync(run.secretFile).equals(run.fallbackBytes)).toBe(true)
+  expect(readFileSync(run.notificationFile).equals(run.notificationBytes)).toBe(true)
   expect(existsSync(`${run.secretFile}.tmp`)).toBe(false)
   expect(run.output).not.toContain(PASSPHRASE)
   expect(run.output).not.toContain(run.mnemonic)
 }
 
 describe('daemon start with ADF_SECRET_STORE=keychain', () => {
+  it('a refused second daemon leaves the running daemon notification history untouched', async () => {
+    const run = await runDaemon((root) => {
+      const pidFile = join(root, 'daemon.pid')
+      writeFileSync(pidFile, JSON.stringify({ pid: process.pid, startedAt: Date.now() }))
+      return { ADF_KEYCHAIN: '0', ADF_DAEMON_PIDFILE: pidFile }
+    })
+    expect(run.code, run.output).toBe(1)
+    expect(run.output).toContain(`ADF daemon already running as PID ${process.pid}`)
+    expect(run.output).not.toContain('Listening on')
+    expect(readFileSync(run.notificationFile).equals(run.notificationBytes)).toBe(true)
+  }, 60_000)
+
   it('ADF_KEYCHAIN=0 conflicts: exit code 1 before listening, fallback file untouched', async () => {
     const run = await runDaemon({ ADF_SECRET_STORE: 'keychain', ADF_KEYCHAIN: '0' })
     expectRefusedStart(run, 'ADF_SECRET_STORE=keychain conflicts with ADF_KEYCHAIN=0')

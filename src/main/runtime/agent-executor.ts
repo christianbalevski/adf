@@ -8,7 +8,7 @@ import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
 import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, mediaRefusals, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
 import type { LoopMedia } from '../../shared/types/media.types'
-import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
+import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, projectFileRefs, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
 import { attachmentsOf, fileRefKind, fileRefText, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
 import type { FileRefRegistry } from '../adf/file-ref-registry'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
@@ -134,6 +134,9 @@ const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read',
  * write-isolated bookkeeping; per-loop recovery is a later wave.
  */
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+
+/** Last sentence of an over-cap notice when there is no code route to name. */
+const NARROW_RESULT = 'Request a smaller or more specific result.'
 // Sent when a turn answering an owner chat is about to end with nothing the
 // owner can see (only thinking, or a bare state change). Written to the loop
 // like any other model input.
@@ -922,8 +925,14 @@ export class AgentExecutor extends EventEmitter {
    * tool-heavy agent and make the post-compaction gauge lie small.
    */
   private estimateSessionRequestTokens(): number {
-    const messages = getTokenCounterService().estimateMessagesTokens(this.session.getMessages())
-    return messages + this.getFixedOverheadTokens()
+    return this.estimateRequestMessageTokens() + this.getFixedOverheadTokens()
+  }
+
+  private estimateRequestMessageTokens(): number {
+    const support = this.mediaSupport()
+    const { messages } = projectMessageMedia(this.session.getMessages(), support)
+    const files = projectFileRefs(messages, this.mediaSizeLimits(), support, requestMediaLimit(this.config.context))
+    return getTokenCounterService().estimateMessagesTokens(files.messages)
   }
 
   /**
@@ -2485,10 +2494,9 @@ export class AgentExecutor extends EventEmitter {
       // prior turn exists. Reading the newest loop row's usage here was the
       // bug: after a voluntary compaction that row honestly reports the
       // pre-compaction context, which re-triggered compaction on a tiny loop.
-      const tokenCounter = getTokenCounterService()
       const compactThreshold = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100000
       let chatTokens = this.readContextBaselineTokens()
-        ?? tokenCounter.estimateMessagesTokens(this.session.getMessages())
+        ?? this.estimateRequestMessageTokens()
 
       let continueLoop = true
       let activeTurns = 0
@@ -2762,13 +2770,14 @@ export class AgentExecutor extends EventEmitter {
         // Media the model cannot take becomes placeholder text in this request
         // only; the session keeps the original for a model that can. File
         // references left after that load their bytes from Files.
-        const media = projectMessageMedia(request.messages, this.mediaSupport())
+        const mediaSupport = this.mediaSupport()
+        const media = projectMessageMedia(request.messages, mediaSupport)
         const files = await resolveFileRefs(
           media.messages,
           this.fileRefRegistry(),
           path => this.session.getWorkspace().readFileBuffer(path),
           this.mediaSizeLimits(),
-          this.mediaSupport(),
+          mediaSupport,
           requestMediaLimit(this.config.context),
         )
         if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
@@ -2961,6 +2970,26 @@ export class AgentExecutor extends EventEmitter {
               timestamp: Date.now()
             })
 
+            // Guard: reject tool calls not in the enabled set. Runs before the
+            // `ask` intercept so a disabled ask is refused like any other tool.
+            if (!toolSnapshot.enabledNames.has(toolBlock.name)) {
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolBlock.id,
+                content: `Tool "${toolBlock.name}" is not enabled. Check your agent configuration to enable it.`,
+                is_error: true
+              })
+              this.emitEvent({
+                type: 'tool_call_result',
+                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
+                timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
+              })
+              continue
+            }
+
             // Ask tool: intercept and block until human responds
             if (toolBlock.name === 'ask') {
               const parsed = AskInputSchema.safeParse(toolBlock.input)
@@ -3006,25 +3035,6 @@ export class AgentExecutor extends EventEmitter {
               })
               // `ask` is intercepted before the registry, so emit its tool.* pair here.
               this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, { content, isError: false })
-              continue
-            }
-
-            // Guard: reject tool calls not in the enabled set
-            if (!toolSnapshot.enabledNames.has(toolBlock.name)) {
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolBlock.id,
-                content: `Tool "${toolBlock.name}" is not enabled. Check your agent configuration to enable it.`,
-                is_error: true
-              })
-              this.emitEvent({
-                type: 'tool_call_result',
-                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
-                timestamp: Date.now()
-              })
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
-                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
-              })
               continue
             }
 
@@ -5133,7 +5143,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       filteredResult = rawResult
     }
-    const result = this.enforceToolResultLimit(filteredResult, toolName)
+    const result = this.enforceToolResultLimit(filteredResult, toolName, this.toolResultRemedy(toolName))
 
     // Build adf-file:// URL for the renderer image preview
     let eventImageUrl: string | undefined
@@ -5300,7 +5310,21 @@ export class AgentExecutor extends EventEmitter {
     }
   }
 
-  private enforceToolResultLimit(result: ToolResult, toolName: string): ToolResult {
+  /** What the agent can do to get at a tool result that was over the cap. */
+  private toolResultRemedy(toolName: string): string {
+    // Name the code route only for a result that isn't the agent's own code
+    // (sys_code, sys_lambda), when sys_code is enabled and registered (it isn't
+    // on a host without a sandbox service), and when inline code may make the
+    // call: inline code is refused a tool that any declaration marks restricted,
+    // as the turn's dedupe reads it. Any other refusal the gate gives says why.
+    const declaration = (name: string) => this.config.tools.find(t => t.name === name)
+    if (toolName === 'sys_code' || toolName === 'sys_lambda') return NARROW_RESULT
+    if (!declaration('sys_code')?.enabled || !this.toolRegistry.get('sys_code')) return NARROW_RESULT
+    if (this.config.tools.some(t => t.name === toolName && t.restricted)) return NARROW_RESULT
+    return `Calls made from code are not capped: if running it again is safe, try it from sys_code (\`await adf[${JSON.stringify(toolName)}]({...})\` with the same arguments, without \`_async\`) and return only the part you need.`
+  }
+
+  private enforceToolResultLimit(result: ToolResult, toolName: string, remedy = NARROW_RESULT): ToolResult {
     const maxTokens = this.config.limits?.max_tool_result_tokens ?? 16000
     const content = result.content
 
@@ -5330,7 +5354,7 @@ export class AgentExecutor extends EventEmitter {
       content:
         `[TRUNCATED] Tool "${toolName}" returned ~${tokenCount.toLocaleString()} tokens ` +
         `(limit: ${maxTokens.toLocaleString()}). The full result was discarded to protect the context window. ` +
-        `Request a smaller or more specific result.\n\n` +
+        `${remedy}\n\n` +
         preview
     }
   }
@@ -5566,8 +5590,7 @@ export class AgentExecutor extends EventEmitter {
    * the turn it just preserved.
    */
   private estimatePreflightTokens(baselineTokens: number, dynamicInstructions?: string): number {
-    const tc = getTokenCounterService()
-    const estimated = tc.estimateMessagesTokens(this.session.getMessages())
+    const estimated = this.estimateRequestMessageTokens()
     // Fixed overhead (system prompt + tool schemas + this turn's dynamic
     // instructions) goes on the char-estimate side ONLY: baselineTokens is the
     // last call's real API input+output, which already includes that overhead —
@@ -5882,7 +5905,7 @@ export class AgentExecutor extends EventEmitter {
         this.addRuntimeNotice(`[System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.`)
       }
       this.emitRuntimeEvent('loop.compaction_failed', { reason: detail, trigger: reason })
-      return tokenCounter.estimateMessagesTokens(this.session.getMessages())
+      return this.estimateRequestMessageTokens()
     }
     this.lastCompactionFailureDetail = undefined
 

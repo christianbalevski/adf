@@ -1777,6 +1777,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   openFileHook = hooks.openFile ?? null
   autostartSkippedReason = hooks.skipBootAutostart ?? null
   settings = new SettingsService()
+  approvalHub.initializePersistence(join(getUserDataPath(), 'notification-history.embedded.json'))
   initApplicationMenu(settings)
 
   // This process is a runtime host: register it and the foreground's leases.
@@ -5176,6 +5177,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // callback bound to its own executor, so a background agent's approval — which
   // has no in-chat card rendered anywhere — resolves identically).
   ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<NotificationsSnapshot> => approvalHub.fullSnapshot())
+  ipcMain.handle(IPC.APPROVALS_HISTORY, async (_event, before?: number) => approvalHub.historyPage(before))
+  ipcMain.handle(IPC.APPROVALS_CLEAR_HISTORY, async () => approvalHub.clearHistory())
   // Pulled once by the renderer after its reveal listener registers; clears.
   ipcMain.handle(IPC.APPROVALS_GET_PENDING_REVEAL, (): ApprovalRevealPayload | null => {
     const payload = pendingApprovalReveal
@@ -8424,6 +8427,7 @@ const CLEANUP_TEARDOWN_BUDGET_MS = 6_000
  */
 export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void> {
   console.log('[Cleanup] Session ending — fast durability flush...')
+  approvalHub.flushPersistence()
   RuntimeGate.beginTeardown()
   podmanService.beginShutdown()
   try { getTokenUsageService().flush() }
@@ -8455,6 +8459,7 @@ export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void>
  */
 export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }): Promise<void> {
   console.log('[Cleanup] App quitting — cleaning up all processes...')
+  approvalHub.flushPersistence()
 
   // ---- Phase 1: fast, must-complete (data durability) ----
   // Latch the gate + podman for the rest of the process lifetime: a stray
@@ -8514,6 +8519,7 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   }
 
   // ---- Phase 3: workspace close + sweeps (synchronous, unconditional) ----
+  approvalHub.flushPersistence()
   // A phase-2 timeout can leave teardown unfinished with loop entries still
   // buffered in memory — flush them before the DB closes. No-op when phase 2
   // completed (teardown flushed via abort() and nulled currentSession).

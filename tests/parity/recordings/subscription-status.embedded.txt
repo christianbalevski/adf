@@ -175,6 +175,7 @@ d user-data/chatgpt-subscription/
 d user-data/crashes/
 d user-data/grok-subscription/
 d user-data/logs/
+f user-data/notification-history.embedded.json
 d user-data/templates/
 
 ## state: user-data/adf-settings.json
@@ -497,6 +498,11 @@ adf-settings.json:
   uiFontSystemDefaultApplied: true
   uiScale: 1
   updateChecksEnabled: false
+
+## state: user-data/notification-history.embedded.json
+notification-history.embedded.json:
+  history: []
+  pending: []
 
 ## state: leases/hosts/<pid:this-process>.json
 hosts/<pid:this-process>.json:

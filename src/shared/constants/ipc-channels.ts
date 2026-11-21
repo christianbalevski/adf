@@ -74,6 +74,8 @@ export const IPC = {
   // foreground and background (src/main/runtime/approval-hub.ts).
   // CHANGED carries a full snapshot; there is no incremental protocol.
   APPROVALS_LIST: 'adf:approvals:list',
+  APPROVALS_CLEAR_HISTORY: 'adf:approvals:clear-history',
+  APPROVALS_HISTORY: 'adf:approvals:history',
   APPROVALS_RESOLVE: 'adf:approvals:resolve',
   APPROVALS_CHANGED: 'adf:approvals:changed',
   // On-demand fetch of one pending approval's raw tool input (B8): the broadcast

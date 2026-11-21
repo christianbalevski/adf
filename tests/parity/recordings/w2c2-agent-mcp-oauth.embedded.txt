@@ -723,16 +723,12 @@
   history:
     -
       agentName: "agent-1"
-      alwaysApproveBlockedReason: "One-time approval only for this request"
-      canAlwaysApprove: false
       filePath: "<ROOT>/agents/agent-1.adf"
       id: "<ROOT>/agents/agent-1.adf|main|<task-id#1>"
       kind: "approval"
       loop: "main"
       outcome: "approved"
       preview: "{\"server\":\"docs\",\"url\":\"<32 chars>\"}"
-      protection: undefined
-      reason: "restricted"
       requestId: "<task-id#1>"
       requestedAt: "<t>"
       resolvedAt: "<t>"
@@ -1594,6 +1590,7 @@ d user-data/
 f user-data/adf-settings.json
 d user-data/crashes/
 d user-data/logs/
+f user-data/notification-history.embedded.json
 d user-data/templates/
 f user-data/token-usage.json
 
@@ -1920,6 +1917,23 @@ adf-settings.json:
   uiFontSystemDefaultApplied: true
   uiScale: 1
   updateChecksEnabled: false
+
+## state: user-data/notification-history.embedded.json
+notification-history.embedded.json:
+  history:
+    -
+      agentName: "agent-1"
+      filePath: "<ROOT>/agents/agent-1.adf"
+      id: "<ROOT>/agents/agent-1.adf|main|<task-id#1>"
+      kind: "approval"
+      loop: "main"
+      outcome: "approved"
+      preview: "{\"server\":\"docs\",\"url\":\"<32 chars>\"}"
+      requestId: "<task-id#1>"
+      requestedAt: "<t>"
+      resolvedAt: "<t>"
+      toolName: "mcp_oauth_signin"
+  pending: []
 
 ## state: user-data/token-usage.json
 token-usage.json:
