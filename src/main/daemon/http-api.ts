@@ -165,6 +165,8 @@ export interface DaemonNetworkService {
   getLanAddresses?(): unknown
   /** `force` (the refresh button) waits for a full scan. */
   getDiscoveredRuntimes?(args?: { force?: boolean }): Promise<unknown[]> | unknown[]
+  /** Fleet-map observations available immediately, with enrichment refreshed in the background. */
+  getFleetPeers?(): unknown[]
   /** The discovery feed (remote-access.md §5.1): every ADF computer found, with its mesh and remote access. */
   getPeers?(args: { waitMs?: number }): Promise<unknown[]>
 }

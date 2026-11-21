@@ -72,7 +72,15 @@ export interface AgentVitalsDeps {
   getLiveExecStates(): Array<{ filePath: string; state: AgentState }>
   /** Workspaces already open in this process. Later entries win (foreground last). */
   getOpenWorkspaces(): Array<{ filePath: string; workspace: VitalsWorkspace }>
+  getFleetLiveSnapshot?(): FleetLiveSnapshot
   now?(): number
+}
+
+export interface FleetLiveSnapshot {
+  meshAgents: MeshAgentStatus[]
+  liveExecStates: ReturnType<AgentVitalsDeps['getLiveExecStates']>
+  openWorkspaces: ReturnType<AgentVitalsDeps['getOpenWorkspaces']>
+  getContextGauge(canonicalPath: string): ReturnType<AgentVitalsDeps['getContextGauge']>
 }
 
 /**
@@ -782,12 +790,23 @@ export class AgentVitalsService {
   // Fleet map: live mesh agents plus on-disk .adf files in tracked
   // directories that have no running executor ("ghost" nodes). Works even
   // with the mesh disabled — every on-disk agent is then a ghost.
-  async getFleetStatus(): Promise<FleetStatusResult> {
+  async getFleetStatus(liveSnapshot = this.deps.getFleetLiveSnapshot?.()): Promise<FleetStatusResult> {
     const deps = this.deps
     const running = deps.isMeshRunning()
+    const paths = new Map<string, string>()
+    const canonical = (filePath: string): string => {
+      const cached = paths.get(filePath)
+      if (cached !== undefined) return cached
+      const path = canonicalizePath(filePath)
+      paths.set(filePath, path)
+      return path
+    }
+    const contextGauge = (filePath: string) => liveSnapshot
+      ? liveSnapshot.getContextGauge(canonical(filePath))
+      : deps.getContextGauge(filePath)
 
-    const agents: FleetAgentStatus[] = deps.getLiveMeshAgents().map((a) => {
-      const ctx = deps.getContextGauge(a.filePath)
+    const agents: FleetAgentStatus[] = (liveSnapshot?.meshAgents ?? deps.getLiveMeshAgents()).map((a) => {
+      const ctx = contextGauge(a.filePath)
       return {
         ...a,
         online: true,
@@ -799,17 +818,15 @@ export class AgentVitalsService {
       }
     })
 
-    const trackedDirs = deps.getTrackedDirectories()
+    const trackedDirs = deps.getTrackedDirectories().map(dir => ({ dir, path: canonical(dir) }))
     const maxDepth = deps.getMaxScanDepth()
-    const seen = new Set(agents.map((a) => canonicalizePath(a.filePath)))
+    const seen = new Set(agents.map((a) => canonical(a.filePath)))
 
     // Longest-prefix tracked-dir match, mirroring MeshManager.findTrackedDirRoot.
-    const findGhostTrackedDirRoot = (filePath: string): string | undefined => {
-      const canonFile = canonicalizePath(filePath)
+    const findGhostTrackedDirRoot = (canonFile: string): string | undefined => {
       let longestMatch: string | undefined
       let longestLen = -1
-      for (const dir of trackedDirs) {
-        const canonDir = canonicalizePath(dir)
+      for (const { dir, path: canonDir } of trackedDirs) {
         if (containsPath(canonDir, canonFile) && canonDir.length > longestLen) {
           longestMatch = dir
           longestLen = canonDir.length
@@ -830,14 +847,14 @@ export class AgentVitalsService {
     // read out of the database it already has open, so the poll never reopens a
     // file whose mtime is changing under it anyway.
     const liveExecStates = new Map<string, AgentState>()
-    for (const s of deps.getLiveExecStates()) liveExecStates.set(canonicalizePath(s.filePath), s.state)
+    for (const s of liveSnapshot?.liveExecStates ?? deps.getLiveExecStates()) liveExecStates.set(canonical(s.filePath), s.state)
     const liveWorkspaces = new Map<string, VitalsWorkspace>()
-    for (const w of deps.getOpenWorkspaces()) liveWorkspaces.set(canonicalizePath(w.filePath), w.workspace)
+    for (const w of liveSnapshot?.openWorkspaces ?? deps.getOpenWorkspaces()) liveWorkspaces.set(canonical(w.filePath), w.workspace)
 
-    for (const dir of trackedDirs) {
+    for (const { dir } of trackedDirs) {
       const filePaths = await deps.listAdfFiles(dir, maxDepth)
       for (const filePath of filePaths) {
-        const canon = canonicalizePath(filePath)
+        const canon = canonical(filePath)
         if (seen.has(canon)) continue
         seen.add(canon)
         const openWorkspace = liveWorkspaces.get(canon)
@@ -845,7 +862,7 @@ export class AgentVitalsService {
         if (!meta) continue
         const live = liveExecStates.get(canon)
         const isLive = live !== undefined && live !== 'off'
-        const ctx = isLive ? deps.getContextGauge(filePath) : undefined
+        const ctx = isLive ? contextGauge(filePath) : undefined
         agents.push({
           filePath,
           handle: meta.handle || deriveHandle(filePath),
@@ -857,7 +874,7 @@ export class AgentVitalsService {
           state: isLive ? live : 'off',
           status: meta.status ?? undefined,
           model: meta.model ?? undefined,
-          trackedDirRoot: findGhostTrackedDirRoot(filePath),
+          trackedDirRoot: findGhostTrackedDirRoot(canon),
           createdAt: meta.createdAt ?? undefined,
           participating: false,
           online: isLive,
