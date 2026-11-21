@@ -2962,6 +2962,26 @@ export class AgentExecutor extends EventEmitter {
               timestamp: Date.now()
             })
 
+            // Guard: reject tool calls not in the enabled set. Runs before the
+            // `ask` intercept so a disabled ask is refused like any other tool.
+            if (!toolSnapshot.enabledNames.has(toolBlock.name)) {
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolBlock.id,
+                content: `Tool "${toolBlock.name}" is not enabled. Check your agent configuration to enable it.`,
+                is_error: true
+              })
+              this.emitEvent({
+                type: 'tool_call_result',
+                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
+                timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
+              })
+              continue
+            }
+
             // Ask tool: intercept and block until human responds
             if (toolBlock.name === 'ask') {
               const parsed = AskInputSchema.safeParse(toolBlock.input)
@@ -3007,25 +3027,6 @@ export class AgentExecutor extends EventEmitter {
               })
               // `ask` is intercepted before the registry, so emit its tool.* pair here.
               this.emitSyntheticToolEvents('ask', toolBlock.id, toolBlock.input, { content, isError: false })
-              continue
-            }
-
-            // Guard: reject tool calls not in the enabled set
-            if (!toolSnapshot.enabledNames.has(toolBlock.name)) {
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolBlock.id,
-                content: `Tool "${toolBlock.name}" is not enabled. Check your agent configuration to enable it.`,
-                is_error: true
-              })
-              this.emitEvent({
-                type: 'tool_call_result',
-                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
-                timestamp: Date.now()
-              })
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
-                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
-              })
               continue
             }
 
