@@ -33,12 +33,16 @@ vi.mock('imapflow', async () => {
     public connect = vi.fn(async () => {})
     public getMailboxLock = vi.fn(async () => ({ release: () => {} }))
     public messageFlagsAdd = vi.fn(async () => true)
-    public fetch = vi.fn(async function* () {
+    public fetch = vi.fn(async function* (range: unknown, query: { source?: boolean }) {
       if (globalThis.__emailCatchupMocks.fetchImpl) {
         yield* globalThis.__emailCatchupMocks.fetchImpl()
         return
       }
-      for (const m of globalThis.__emailCatchupMocks.fetchMessages) yield m
+      const uids = typeof range === 'string' ? new Set(range.split(',').map(Number)) : null
+      for (const message of globalThis.__emailCatchupMocks.fetchMessages) {
+        if (uids && !uids.has(message.uid)) continue
+        yield query.source ? message : { uid: message.uid, envelope: message.envelope }
+      }
     })
 
     get mailbox() {
@@ -233,16 +237,15 @@ describe('EmailAdapter fetch reentrancy', () => {
     release()
     await Promise.all([first, second])
 
-    // Exactly one additional fetch — the concurrent call was skipped, so the
-    // message was ingested once, not twice.
-    expect(client.fetch).toHaveBeenCalledTimes(2)
+    // One metadata pass and one body fetch. The concurrent call was skipped.
+    expect(client.fetch).toHaveBeenCalledTimes(3)
     expect(ctx.ingest).toHaveBeenCalledTimes(1)
 
     // The guard releases: a later sequential call fetches again.
     globalThis.__emailCatchupMocks.fetchImpl = null
     globalThis.__emailCatchupMocks.fetchMessages = []
     await invoke.fetchUnseen.call(adapter)
-    expect(client.fetch).toHaveBeenCalledTimes(3)
+    expect(client.fetch).toHaveBeenCalledTimes(4)
     await adapter.stop()
   })
 })
@@ -301,6 +304,8 @@ describe('EmailAdapter catch-up phase', () => {
     // Only the ingested messages were flagged \Seen — capped-out ones stay
     // UNSEEN so the next cycle picks them up.
     const client = imapClientOf(adapter)
+    expect(client.fetch).toHaveBeenNthCalledWith(1, { seen: false }, { envelope: true, uid: true })
+    expect(client.fetch).toHaveBeenNthCalledWith(2, '1,2', expect.objectContaining({ source: true }), { uid: true })
     expect(client.messageFlagsAdd).toHaveBeenCalledTimes(1)
     expect(client.messageFlagsAdd).toHaveBeenCalledWith('1,2', ['\\Seen'], { uid: true })
     await adapter.stop()
@@ -324,6 +329,7 @@ describe('EmailAdapter catch-up phase', () => {
 
     // The aged-out message is untouched in the mailbox.
     const client = imapClientOf(adapter)
+    expect(client.fetch).toHaveBeenNthCalledWith(2, '2', expect.objectContaining({ source: true }), { uid: true })
     expect(client.messageFlagsAdd).toHaveBeenCalledTimes(1)
     expect(client.messageFlagsAdd).toHaveBeenCalledWith('2', ['\\Seen'], { uid: true })
     await adapter.stop()
