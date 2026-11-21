@@ -19,6 +19,7 @@ import { buildAlfMessage, tombstoneMessage, flattenMessageToInbox } from '../uti
 import { AlfPipeline, createDefaultPipeline } from '../services/alf-pipeline'
 import { buildAgentCard, verifyCardSignature } from '../services/mesh-server'
 import { verifyAttestation } from '../services/attestation.service'
+import { readRecentToolsFromWorkspace } from '../services/recent-tools'
 import type { AlfPipelineContext, AlfPipelineResult } from '../services/alf-pipeline'
 import type { AgentMessage } from '../../shared/types/message.types'
 import type { AgentExecutor } from './agent-executor'
@@ -1915,58 +1916,11 @@ export class MeshManager extends EventEmitter {
    */
   getRecentTools(limit = 5): Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]> {
     const result: Record<string, { name: string; args?: string; isError?: boolean; timestamp: number }[]> = {}
-
     for (const [filePath, reg] of this.registeredAgents) {
-      try {
-        const totalCount = reg.workspace.getLoopCount()
-        // Read the last ~30 entries to find enough tool calls
-        const offset = Math.max(0, totalCount - 30)
-        const entries = offset > 0
-          ? reg.workspace.getLoopPaginated(30, offset)
-          : reg.workspace.getLoop()
-
-        // Track tool_use_id → { name, args, timestamp } for matching with results
-        const toolUseMap = new Map<string, { name: string; args?: string; timestamp: number }>()
-        const tools: { name: string; args?: string; isError?: boolean; timestamp: number }[] = []
-
-        for (const entry of entries) {
-          for (const block of entry.content_json) {
-            if (block.type === 'tool_use' && block.name && block.id) {
-              let args: string | undefined
-              if (block.input) {
-                try {
-                  const input = block.input as Record<string, unknown>
-                  if (typeof input._reason === 'string' && input._reason) {
-                    args = input._reason
-                  } else {
-                    const str = typeof block.input === 'string' ? block.input : JSON.stringify(block.input)
-                    args = str.length > 40 ? str.slice(0, 40) + '...' : str
-                  }
-                } catch { /* ignore */ }
-              }
-              toolUseMap.set(block.id, { name: block.name, args, timestamp: entry.created_at })
-            } else if (block.type === 'tool_result' && block.tool_use_id) {
-              const matched = toolUseMap.get(block.tool_use_id)
-              if (matched) {
-                tools.push({ ...matched, isError: !!block.is_error })
-                toolUseMap.delete(block.tool_use_id)
-              }
-            }
-          }
-        }
-
-        // Any unmatched tool_use (still in progress) — add without result
-        for (const pending of toolUseMap.values()) {
-          tools.push(pending)
-        }
-
-        result[filePath] = tools.slice(-limit)
-      } catch (err) {
-        console.error(`[Mesh] getRecentTools error for ${filePath}:`, err)
-        result[filePath] = []
-      }
+      result[filePath] = readRecentToolsFromWorkspace(reg.workspace, limit, error => {
+        console.error(`[Mesh] getRecentTools error for ${filePath}:`, error)
+      })
     }
-
     return result
   }
 

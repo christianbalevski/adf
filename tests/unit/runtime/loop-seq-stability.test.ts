@@ -131,6 +131,32 @@ describe('seq stability (seq = identity, ord = position)', () => {
     expect(ws.getLoopCountBefore(s2)).toBe(1)
   })
 
+  it('reads the newest display rows within one loop after compaction', async () => {
+    ws.appendToLoop('user', text('old'))
+    const firstKept = ws.appendToLoop('assistant', text('keep-1'))
+    const lastKept = ws.appendToLoop('user', text('keep-2'))
+    await ws.compactLoop([firstKept, lastKept], { content: text('summary') })
+    const other = ws.forLoop('critic')
+    const otherSeq = other.appendToLoop('user', text('separate stream'))
+
+    expect(ws.getLoopTail(2).map(entry => entry.seq)).toEqual([firstKept, lastKept])
+    expect(ws.getLoopTail(3).map(entry => entry.content_json[0].text)).toEqual(['summary', 'keep-1', 'keep-2'])
+    expect(other.getLoopTail(2).map(entry => entry.seq)).toEqual([otherSeq])
+    expect(ws.getLoopBefore(otherSeq, 2)).toEqual([])
+    expect(ws.getLoopCountBefore(otherSeq)).toBe(0)
+  })
+
+  it('uses seq as a tiebreaker for entries at the same display position', async () => {
+    await ws.replaceLoop([
+      { role: 'user', content: text('first'), seq: 1 },
+      { role: 'assistant', content: text('second'), seq: 2, ord: 1 },
+      { role: 'user', content: text('third'), seq: 3, ord: 1 },
+    ])
+    expect(ws.getLoopTail(2).map(entry => entry.seq)).toEqual([2, 3])
+    expect(ws.getLoopBefore(2, 3).map(entry => entry.seq)).toEqual([1])
+    expect(ws.getLoopCountBefore(2)).toBe(1)
+  })
+
   // Regressions from the adversarial review.
 
   it('audit seq ranges stay min/max even when an ord\'d summary inverts display order', async () => {

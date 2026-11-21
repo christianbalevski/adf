@@ -541,6 +541,7 @@ export class AdfDatabase {
     setConfig?: Database.Statement
     getLoopEntries?: Database.Statement
     getLoopEntriesLimited?: Database.Statement
+    getLoopEntriesTail?: Database.Statement
     getLoopEntriesBefore?: Database.Statement
     getLoopCountBefore?: Database.Statement
     appendLoopEntry?: Database.Statement
@@ -3251,24 +3252,28 @@ export class AdfDatabase {
     this.stmts.getLoopEntriesLimited = this.db.prepare(
       'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq) ASC, seq ASC LIMIT ? OFFSET ?'
     )
+    this.stmts.getLoopEntriesTail = this.db.prepare(
+      'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq) DESC, seq DESC LIMIT ?'
+    )
     // Keyset paging: callers pass a raw seq cursor, but rows are ordered by
     // COALESCE(ord, seq) — an ord'd summary has key << seq, so comparing the
     // raw seq against keys would re-serve already-displayed rows and inflate
     // counts. Resolve the cursor row's own key (with seq tiebreak) in SQL.
     // The cursor row is constrained to the same stream, so a seq belonging to
     // another loop resolves to an empty page instead of paging across streams.
+    // Give the stream index a bound on the position before testing ties by seq.
     this.stmts.getLoopEntriesBefore = this.db.prepare(`
       SELECT l.seq, l.role, l.content_json, l.model, l.tokens, l.created_at, l.ord FROM adf_loop l, adf_loop c
       WHERE c.seq = ? AND l.loop = ? AND c.loop = l.loop
-        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq)
-             OR (COALESCE(l.ord, l.seq) = COALESCE(c.ord, c.seq) AND l.seq < c.seq))
+        AND COALESCE(l.ord, l.seq) <= COALESCE(c.ord, c.seq)
+        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq) OR l.seq < c.seq)
       ORDER BY COALESCE(l.ord, l.seq) DESC, l.seq DESC LIMIT ?`
     )
     this.stmts.getLoopCountBefore = this.db.prepare(`
       SELECT COUNT(*) as count FROM adf_loop l, adf_loop c
       WHERE c.seq = ? AND l.loop = ? AND c.loop = l.loop
-        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq)
-             OR (COALESCE(l.ord, l.seq) = COALESCE(c.ord, c.seq) AND l.seq < c.seq))`
+        AND COALESCE(l.ord, l.seq) <= COALESCE(c.ord, c.seq)
+        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq) OR l.seq < c.seq)`
     )
     // Nullable explicit seq: NULL lets AUTOINCREMENT assign; an explicit seq
     // above sqlite_sequence raises it (no future collisions), below leaves it.
@@ -3956,6 +3961,12 @@ export class AdfDatabase {
     }
 
     return rows.map((row) => this.rowToLoopEntry(row))
+  }
+
+  /** Read the newest rows by display order using the loop index in reverse. */
+  getLoopEntriesTail(loop: string, limit: number): LoopEntryRow[] {
+    const rows = this.stmts.getLoopEntriesTail!.all(loop, limit) as Parameters<AdfDatabase['rowToLoopEntry']>[0][]
+    return rows.reverse().map((row) => this.rowToLoopEntry(row))
   }
 
   /**
