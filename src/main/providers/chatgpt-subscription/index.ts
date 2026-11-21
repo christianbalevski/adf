@@ -206,8 +206,7 @@ interface RequestEntry {
 }
 
 export function createChatGPTSubscriptionProvider(authManager: {
-  getValidAccessToken: () => Promise<string>
-  getAccountId: () => string | undefined
+  getRequestAuth: () => Promise<{ accessToken: string; accountId?: string }>
 }, extraParams?: Record<string, unknown>) {
   // Per-request state (instructions in, response metadata out), keyed by the id
   // on INSTRUCTIONS_ID_HEADER. Provider instances are SHARED (main turn, side
@@ -234,9 +233,9 @@ export function createChatGPTSubscriptionProvider(authManager: {
   const extraParamsMayNeedRepair = extraParams !== undefined && mayNeedSurrogateRepair(JSON.stringify(extraParams))
 
   const customFetch: typeof globalThis.fetch = async (input, init) => {
-    let token: string
+    let auth: Awaited<ReturnType<typeof authManager.getRequestAuth>>
     try {
-      token = await authManager.getValidAccessToken()
+      auth = await authManager.getRequestAuth()
     } catch (err) {
       console.error(`[ChatGPT Fetch] Failed to get access token:`, err)
       throw err
@@ -251,10 +250,9 @@ export function createChatGPTSubscriptionProvider(authManager: {
       ? requestsById.get(requestId)?.instructions
       : legacyInstructions
 
-    headers.set('Authorization', `Bearer ${token}`)
-    const accountId = authManager.getAccountId()
-    if (accountId) {
-      headers.set('ChatGPT-Account-ID', accountId)
+    headers.set('Authorization', `Bearer ${auth.accessToken}`)
+    if (auth.accountId) {
+      headers.set('ChatGPT-Account-ID', auth.accountId)
     }
     // Subscription models require the Codex client identity and a compatible
     // `version` header. Too old a version fails with a misleading 400: on

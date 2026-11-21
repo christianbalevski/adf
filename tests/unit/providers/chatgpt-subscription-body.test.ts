@@ -159,8 +159,7 @@ async function captureWireBody(
   const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
   vi.stubGlobal('fetch', fetchSpy)
   const { provider, beginRequest } = createChatGPTSubscriptionProvider({
-    getValidAccessToken: async () => 'test-token',
-    getAccountId: () => 'test-account',
+    getRequestAuth: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
   }, extraParams)
   // Production path: instructions are bound to THIS request via a private
   // header id, the way AiSdkProvider passes them.
