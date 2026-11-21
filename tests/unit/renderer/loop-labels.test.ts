@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { MERGED_CONTEXT_SEPARATOR, contextLabel, describeWake, mergeContextRows } from '../../../src/renderer/utils/loop-labels'
+import { MERGED_CONTEXT_SEPARATOR, contextLabel, describeWake } from '../../../src/renderer/utils/loop-labels'
+import { TranscriptProjection } from '../../../src/renderer/utils/transcript-projection'
 import { useAgentStore, type AgentLogEntry } from '../../../src/renderer/stores/agent.store'
 import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
 import { parseLoopToDisplay } from '../../../src/shared/utils/loop-parser'
@@ -33,6 +34,12 @@ describe('contextLabel', () => {
     expect(contextLabel(context('a', { category: 'instructions' }))).toBe('Instructions updated')
   })
 })
+
+function mergeContextRows(rows: AgentLogEntry[]): AgentLogEntry[] {
+  const projection = new TranscriptProjection()
+  projection.append(rows)
+  return projection.items.flatMap(item => item.kind === 'activity' ? item.entries : [item.entry])
+}
 
 describe('mergeContextRows', () => {
   it('joins a system prompt and the dynamic instructions after it into one row', () => {
