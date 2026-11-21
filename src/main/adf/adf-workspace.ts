@@ -1866,6 +1866,10 @@ export class AdfWorkspace {
     return this.db.getInboxMessages(status)
   }
 
+  readInbox(status: InboxStatus, limit: number | undefined, includeOriginal: boolean): InboxMessage[] {
+    return this.db.readInboxMessages(status, limit, includeOriginal)
+  }
+
   getInboxMessageById(id: string): InboxMessage | null {
     return this.db.getInboxMessageById(id)
   }
@@ -2263,6 +2267,10 @@ export class AdfWorkspace {
       created_at: f.created_at,
       updated_at: f.updated_at
     }))
+  }
+
+  listFilePage(prefix: string | undefined, limit: number | undefined): ReturnType<AdfDatabase['listFilePage']> {
+    return this.db.listFilePage(prefix, limit)
   }
 
   fileExists(relativePath: string): boolean {
