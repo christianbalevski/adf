@@ -1769,9 +1769,12 @@ export class AdfWorkspace {
     return Buffer.isBuffer(row.data) ? row.data : Buffer.from(row.data)
   }
 
-  /** This loop's live rows: seq and display-order key (ord when set, else seq). */
-  getLoopOrderKeys(): Array<{ seq: number; key: number }> {
-    return this.db.getLoopOrderKeys(this.boundLoop)
+  getOldestLoopOrderKey(): { seq: number; key: number } | undefined {
+    return this.db.getOldestLoopOrderKey(this.boundLoop)
+  }
+
+  listLoopSeqs(): number[] {
+    return this.db.listLoopSeqs(this.boundLoop)
   }
 
   /**
