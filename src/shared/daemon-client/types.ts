@@ -615,6 +615,9 @@ export type {
 } from '../../main/daemon/client-sessions'
 
 /** POST /client/sessions. `exitDaemonWhenClosed`: the daemon stops when this session expires and no other is open (§8.3). */
+/** Browser Studio follows coalesced workspace invalidations for inbox changes. */
+export const BROWSER_STUDIO_CLIENT = 'browser-studio'
+
 export interface ClientSessionInput {
   client: string
   version: string

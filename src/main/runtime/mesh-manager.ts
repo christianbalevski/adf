@@ -162,6 +162,11 @@ function importDirName(message: AlfMessage): string {
  * When mesh is enabled, registered agents get communication tools
  * (send_message, list_agents) and can exchange messages via the MessageBus.
  */
+export interface MeshInboxUpdate {
+  filePath: string
+  workspace: Pick<AdfWorkspace, 'getInbox' | 'getInboxCounts'>
+}
+
 export class MeshManager extends EventEmitter {
   private messageBus: MessageBus
   private registeredAgents: Map<string, RegisteredAgent> = new Map()
@@ -647,10 +652,7 @@ export class MeshManager extends EventEmitter {
       status: 'unread'
     })
 
-    // Emit inbox_updated so renderer can refresh
-    const unread = reg.workspace.getInbox('unread')
-    const read = reg.workspace.getInbox('read')
-    this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+    this.emit('inbox_updated', { filePath, workspace: reg.workspace } satisfies MeshInboxUpdate)
 
     // Notify renderer for foreground agents
     if (reg.isForeground) {
@@ -698,10 +700,7 @@ export class MeshManager extends EventEmitter {
       status: 'unread'
     })
 
-    // Emit inbox_updated so renderer can refresh
-    const unread = reg.workspace.getInbox('unread')
-    const read = reg.workspace.getInbox('read')
-    this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+    this.emit('inbox_updated', { filePath, workspace: reg.workspace } satisfies MeshInboxUpdate)
 
     // Record the message in the loop NOW — the trigger turn may run much
     // later (busy agent, hold) or never (on_inbox disabled/filtered), and the
@@ -856,10 +855,7 @@ export class MeshManager extends EventEmitter {
         threadId: flattened.thread_id
       })
 
-      // Emit inbox_updated so renderer can refresh
-      const unread = recipientReg.workspace.getInbox('unread')
-      const read = recipientReg.workspace.getInbox('read')
-      this.emit('inbox_updated', { filePath: recipientFilePath, inbox: [...unread, ...read] })
+      this.emit('inbox_updated', { filePath: recipientFilePath, workspace: recipientReg.workspace } satisfies MeshInboxUpdate)
       this.emitAgentIncoming(recipientFilePath, String(senderDid ?? 'unknown'), recipientReg.handle, content)
 
       // Fleet map: draw the incoming trace from the sender's base station.
@@ -1216,10 +1212,7 @@ export class MeshManager extends EventEmitter {
         // Update outbox: delivered (local, no status_code)
         senderReg.workspace.updateOutboxStatus(outboxId, 'delivered', Date.now())
 
-        // Emit inbox_updated so renderer can refresh
-        const unread = recipientLocal.workspace.getInbox('unread')
-        const read = recipientLocal.workspace.getInbox('read')
-        this.emit('inbox_updated', { filePath: recipientLocal.filePath, inbox: [...unread, ...read] })
+        this.emit('inbox_updated', { filePath: recipientLocal.filePath, workspace: recipientLocal.workspace } satisfies MeshInboxUpdate)
         this.emitAgentIncoming(recipientLocal.filePath, senderHandle, recipientLocal.handle, content)
 
         // Fire on_inbox trigger
@@ -2404,10 +2397,7 @@ export class MeshManager extends EventEmitter {
           status: 'read'  // outgoing messages are pre-read
         })
 
-        // Emit inbox_updated so renderer can refresh
-        const unread = reg.workspace.getInbox('unread')
-        const read = reg.workspace.getInbox('read')
-        this.emit('inbox_updated', { filePath: fromFilePath, inbox: [...unread, ...read] })
+        this.emit('inbox_updated', { filePath: fromFilePath, workspace: reg.workspace } satisfies MeshInboxUpdate)
 
         // Auto-mark the replied-to message as handled
         if (replyTo) {
@@ -2424,9 +2414,7 @@ export class MeshManager extends EventEmitter {
     if (!msg || msg.status !== 'unread') return
     workspace.updateInboxStatus(msg.id, 'read')
     if (filePath) {
-      const unread = workspace.getInbox('unread')
-      const read = workspace.getInbox('read')
-      this.emit('inbox_updated', { filePath, inbox: [...unread, ...read] })
+      this.emit('inbox_updated', { filePath, workspace: workspace } satisfies MeshInboxUpdate)
     }
   }
 

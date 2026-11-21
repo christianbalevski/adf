@@ -8,6 +8,7 @@ import { DaemonConnection } from '../../backend/daemon-mode/connection'
 import { followConnectionTurns } from '../../backend/daemon-mode/connection-turns'
 import { DaemonModeSession } from '../../backend/daemon-mode/session'
 import { createDaemonClientSession } from '../../backend/daemon-mode/client-stream'
+import { BROWSER_STUDIO_CLIENT } from '../../../shared/daemon-client/types'
 import { EventBridge } from '../../backend/daemon-mode/event-bridge'
 import { findRunningAgent, type DaemonModeContext } from '../../backend/daemon-mode/context'
 import { DAEMON_MODE_HANDLERS, DAEMON_MODE_SEND_HANDLERS } from '../../backend/daemon-mode/handlers'
@@ -46,7 +47,7 @@ export async function createWebTab(options: WebTabOptions): Promise<WebTab> {
     description: 'Browser Studio',
   }))
   const client: DaemonClient = await connection.client()
-  const cs = createDaemonClientSession(client, { version: options.version, exitDaemonWhenClosed: false })
+  const cs = createDaemonClientSession(client, { clientName: BROWSER_STUDIO_CLIENT, version: options.version, exitDaemonWhenClosed: false })
   const sessionClient = async () => {
     const id = await cs.ready!()
     if (closed || !id) throw new Error('Studio is not connected to the ADF daemon. Reload Studio after it reconnects.')
