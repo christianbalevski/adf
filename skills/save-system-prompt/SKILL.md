@@ -3,7 +3,8 @@ name: save-system-prompt
 description: Save the runtime-provided part of your system prompt (the host's base prompt and tool-guidance sections) into your own files while you still run on that host, and optionally switch to that saved copy. Use before the agent file moves to another computer or runtime, or when the owner wants the agent's prompt pinned to the version it has now.
 adf: ">=0.2"
 requires:
-  tools: [sys_lambda, db_query, fs_read, fs_write, sys_get_config, sys_update_config]---
+  tools: [sys_lambda, db_query, fs_read, fs_write, sys_get_config, sys_update_config]
+---
 
 # Save System Prompt
 
