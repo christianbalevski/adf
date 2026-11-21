@@ -5,6 +5,7 @@ import type { DisplayEntry } from '../../shared/types/adf-v02.types'
 import { assertSafeBrotliRuntime } from '../utils/brotli-runtime-guard'
 import type { AdfWorkspace } from './adf-workspace'
 import type { AdfDatabase, LoopEntryRow } from './adf-database'
+import { archiveBefore as before, archivePosition as keyOf, indexArchiveRows, isArchiveRow, type ArchivePosition as Position, type ArchiveRows } from './archive-snapshot-index'
 
 const brotliDecompressAsync = promisify(brotliDecompress)
 
@@ -18,6 +19,7 @@ export const ARCHIVE_PAGE_ROWS = 200
 export const ARCHIVE_MAX_SNAPSHOT_BYTES = 128 * 1024 * 1024
 /** Decoded snapshots kept for the next page (audit rows never change). */
 const CACHE_MAX_BYTES = 64 * 1024 * 1024
+const LARGE_CACHE_IDLE_MS = 2 * 60_000
 
 /** Studio's DOC_GET_CHAT_ARCHIVED: one page of a loop's archived history. */
 export interface ArchivedChatPage {
@@ -31,12 +33,14 @@ export interface ArchivedChatPage {
   unreadable: number
 }
 
-interface Position { key: number; seq: number }
-type ArchivedRow = { row: LoopEntryRow; auditId: number }
-type Snapshot = { rows: LoopEntryRow[]; seekable: boolean; bytes: number }
+type ArchivedRow = Position & { snapshot: Snapshot; index: number; auditId: number }
+type Snapshot = ArchiveRows & { seekable: boolean }
 
-const cache = new Map<string, Snapshot>()
+const cache = new Map<string, { snapshot: Snapshot; bytes: number }>()
 let cacheBytes = 0
+// A single large index holds decoded bytes and offsets, never the parsed
+// snapshot. Keep it separate so small overlapping audits cannot evict it.
+let largeCache: { id: string; snapshot: Snapshot; timer: NodeJS.Timeout } | undefined
 const pending = new Map<string, Promise<Snapshot | null>>()
 const workspaceIds = new WeakMap<AdfDatabase, number>()
 let nextWorkspaceId = 0
@@ -52,15 +56,18 @@ function snapshotKey(workspace: AdfWorkspace, auditId: number): string {
 }
 
 function cacheGet(id: string): Snapshot | undefined {
+  if (largeCache?.id === id) {
+    largeCache.timer.refresh()
+    return largeCache.snapshot
+  }
   const hit = cache.get(id)
   if (hit) { cache.delete(id); cache.set(id, hit) }
-  return hit
+  return hit?.snapshot
 }
 
-function cachePut(id: string, snapshot: Snapshot): void {
-  if (snapshot.bytes > CACHE_MAX_BYTES) return
-  cache.set(id, snapshot)
-  cacheBytes += snapshot.bytes
+function cachePut(id: string, snapshot: Snapshot, bytes: number): void {
+  cache.set(id, { snapshot, bytes })
+  cacheBytes += bytes
   for (const [oldId, old] of cache) {
     if (cacheBytes <= CACHE_MAX_BYTES) break
     cache.delete(oldId)
@@ -68,22 +75,16 @@ function cachePut(id: string, snapshot: Snapshot): void {
   }
 }
 
-const isRow = (e: unknown): e is LoopEntryRow => {
-  const r = e as Partial<LoopEntryRow> | null
-  return !!r && typeof r.seq === 'number' && (r.role === 'user' || r.role === 'assistant') && Array.isArray(r.content_json)
+function keepLargeIndex(id: string, snapshot: Snapshot): void {
+  if (largeCache) clearTimeout(largeCache.timer)
+  const timer = setTimeout(() => { largeCache = undefined }, LARGE_CACHE_IDLE_MS).unref()
+  largeCache = { id, snapshot, timer }
 }
 
 /** Display order of loop rows: ord when set (a compaction summary sorts before its tail), then seq. */
+const comparePositions = (a: Position, b: Position): number => before(a, b) ? -1 : before(b, a) ? 1 : 0
 const rowKey = (row: LoopEntryRow): number => row.ord ?? row.seq
-const keyOf = (row: LoopEntryRow): Position => ({ key: rowKey(row), seq: row.seq })
-const before = (a: Position, b: Position): boolean => a.key < b.key || (a.key === b.key && a.seq < b.seq)
-const compareRows = (a: LoopEntryRow, b: LoopEntryRow): number => {
-  const aKey = rowKey(a)
-  const bKey = rowKey(b)
-  if (aKey < bKey || (aKey === bKey && a.seq < b.seq)) return -1
-  if (bKey < aKey || (aKey === bKey && b.seq < a.seq)) return 1
-  return 0
-}
+const compareRows = (a: LoopEntryRow, b: LoopEntryRow): number => rowKey(a) - rowKey(b) || a.seq - b.seq
 
 /** Writer snapshots are already ordered and unique. Keep imported duplicates in their original order. */
 function orderSnapshot(rows: LoopEntryRow[]): boolean {
@@ -100,21 +101,22 @@ function orderSnapshot(rows: LoopEntryRow[]): boolean {
 }
 
 /** First row at or above the cursor in an ordered snapshot. */
-function seekSnapshot(rows: LoopEntryRow[], start: Position): number {
+function seekSnapshot(snapshot: Snapshot, start: Position): number {
   let lo = 0
-  let hi = rows.length
+  let hi = snapshot.length
   while (lo < hi) {
     const mid = lo + Math.floor((hi - lo) / 2)
-    if (before(keyOf(rows[mid]), start)) lo = mid + 1
+    if (before(snapshot.positionAt(mid), start)) lo = mid + 1
     else hi = mid
   }
   return lo
 }
 
-function newestRows(rows: LoopEntryRow[], until: number, liveSeqs: ReadonlySet<number>, cap: number): LoopEntryRow[] {
-  const newest: LoopEntryRow[] = []
+function newestRows(snapshot: Snapshot, auditId: number, until: number, liveSeqs: ReadonlySet<number>, cap: number): ArchivedRow[] {
+  const newest: ArchivedRow[] = []
   for (let i = until - 1; i >= 0 && newest.length < cap; i--) {
-    if (!liveSeqs.has(rows[i].seq)) newest.push(rows[i])
+    const position = snapshot.positionAt(i)
+    if (!liveSeqs.has(position.seq)) newest.push({ ...position, snapshot, index: i, auditId })
   }
   return newest
 }
@@ -151,10 +153,18 @@ async function loadSnapshot(workspace: AdfWorkspace, meta: { id: number; size_by
   try {
     // Off the event loop (zlib threadpool), unlike the sync decode used inside transactions.
     const json = await brotliDecompressAsync(blob, { maxOutputLength: ARCHIVE_MAX_SNAPSHOT_BYTES })
+    if (json.length > CACHE_MAX_BYTES) {
+      const indexed = await indexArchiveRows(json)
+      if (indexed) {
+        const snapshot = { ...indexed, seekable: true }
+        keepLargeIndex(cacheId, snapshot)
+        return snapshot
+      }
+    }
     const parsed = JSON.parse(json.toString('utf-8')) as unknown
-    const rows = (Array.isArray(parsed) ? parsed : []).filter(isRow)
-    const snapshot = { rows, seekable: orderSnapshot(rows), bytes: json.length }
-    cachePut(cacheId, snapshot)
+    const rows = (Array.isArray(parsed) ? parsed : []).filter(isArchiveRow)
+    const snapshot = { length: rows.length, seekable: orderSnapshot(rows), positionAt: (i: number) => keyOf(rows[i]), rowAt: (i: number) => rows[i] }
+    if (json.length <= CACHE_MAX_BYTES) cachePut(cacheId, snapshot, json.length)
     return snapshot
   } catch (error) {
     console.warn(`[archived-loop-page] audit ${meta.id} unreadable:`, error instanceof Error ? error.message : error)
@@ -215,47 +225,47 @@ export async function readArchivedChatPage(
     // snapshot's end_seq: once `limit` rows newer than this snapshot's newest
     // are collected, it and every later candidate can only add older rows.
     if (rows.size >= limit) {
-      const ordered = [...rows.values()].sort((a, b) => compareRows(a.row, b.row))
-      if (rowKey(ordered[ordered.length - limit].row) > meta.end_seq) break
+      const ordered = [...rows.values()].sort(comparePositions)
+      if (ordered[ordered.length - limit].key > meta.end_seq) break
     }
     visited++
     const snapshot = await readSnapshot(workspace, meta)
     if (!snapshot) { unreadable++; continue }
-    const until = snapshot.seekable ? seekSnapshot(snapshot.rows, start) : snapshot.rows.length
+    const until = snapshot.seekable ? seekSnapshot(snapshot, start) : snapshot.length
     if (rows.size === 0 && snapshot.seekable && Number.isInteger(limit)) {
-      const newest = newestRows(snapshot.rows, until, liveSeqs, limit + 1)
+      const newest = newestRows(snapshot, meta.id, until, liveSeqs, limit + 1)
       const following = candidates[visited]
       // One snapshot supplies this page if it is the last candidate or the
       // normal end_seq cutoff would stop before the next candidate.
-      if (!following || (newest.length >= limit && rowKey(newest[limit - 1]) > following.end_seq)) {
-        page = newest.slice(0, limit).reverse().map((row) => ({ row, auditId: meta.id }))
+      if (!following || (newest.length >= limit && newest[limit - 1].key > following.end_seq)) {
+        page = newest.slice(0, limit).reverse()
         moreRows = newest.length > limit
         break
       }
     }
     for (let i = 0; i < until; i++) {
-      const row = snapshot.rows[i]
-      if (liveSeqs.has(row.seq) || (!snapshot.seekable && !before(keyOf(row), start))) continue
-      const seen = rows.get(row.seq)
+      const position = snapshot.positionAt(i)
+      if (liveSeqs.has(position.seq) || (!snapshot.seekable && !before(position, start))) continue
+      const seen = rows.get(position.seq)
       // A seq archived twice: keep the earliest snapshot's copy (the row as
       // written, before a rebuild stripped it).
-      if (!seen || meta.id < seen.auditId) rows.set(row.seq, { row, auditId: meta.id })
+      if (!seen || meta.id < seen.auditId) rows.set(position.seq, { ...position, snapshot, index: i, auditId: meta.id })
     }
   }
 
   if (!page) {
-    const ordered = [...rows.values()].sort((a, b) => compareRows(a.row, b.row))
+    const ordered = [...rows.values()].sort(comparePositions)
     page = ordered.slice(Math.max(0, ordered.length - limit))
     moreRows = ordered.length > limit
   }
   if (page.length === 0) return { ...empty, unreadable }
-  const next = keyOf(page[0].row)
+  const next = page[0]
   const hasMore = moreRows || candidates.slice(visited).some((meta) => meta.start_seq <= next.key)
 
   // One parse for the page, so a tool_result finds its call's name; ids are
   // re-keyed by the source snapshot (seqs can repeat across snapshots).
-  const auditBySeq = new Map(page.map(({ row, auditId }) => [row.seq, auditId]))
-  const uiLog = parseLoopToDisplay(page.map(({ row }) => row)).map((entry) => {
+  const auditBySeq = new Map(page.map(({ seq, auditId }) => [seq, auditId]))
+  const uiLog = parseLoopToDisplay(page.map(({ snapshot, index }) => snapshot.rowAt(index))).map((entry) => {
     const seq = entry.metadata?.seq as number | undefined
     return {
       ...entry,
