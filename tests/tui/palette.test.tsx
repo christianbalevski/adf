@@ -231,6 +231,7 @@ describe('palette + help against the mock daemon', () => {
       await tui.waitFor(() => store.getState().agentOrder.length === 1)
       expect(store.getState().agents[AGENT_2_ID]).toBeUndefined()
     } finally {
+      await store.close()
       await other.close()
     }
   }, 20000)

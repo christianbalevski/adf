@@ -122,7 +122,7 @@ describe('scratch-dir', () => {
   })
 
   describe('purgeStaleProcessDirs', () => {
-    it('removes dirs for dead PIDs and leaves current process dir alone', () => {
+    it('removes dirs for dead PIDs and leaves current process dir alone', async () => {
       // Create a dir for the current (live) process — should survive
       const liveDir = scratchRootPath()
       mkdirSync(liveDir, { recursive: true })
@@ -133,7 +133,7 @@ describe('scratch-dir', () => {
       mkdirSync(deadDir, { recursive: true })
       writeFileSync(join(deadDir, 'stale.txt'), 'data')
 
-      purgeStaleProcessDirs()
+      await purgeStaleProcessDirs()
 
       // Current process dir untouched
       expect(existsSync(liveDir)).toBe(true)
@@ -141,12 +141,12 @@ describe('scratch-dir', () => {
       expect(existsSync(deadDir)).toBe(false)
     })
 
-    it('ignores non-scratch entries in temp dir', () => {
+    it('ignores non-scratch entries in temp dir', async () => {
       // Create something that looks like it could be confused
       const unrelatedDir = join(MOCK_TEMP, 'adf-instance-test')
       mkdirSync(unrelatedDir, { recursive: true })
 
-      purgeStaleProcessDirs()
+      await purgeStaleProcessDirs()
 
       expect(existsSync(unrelatedDir)).toBe(true)
     })

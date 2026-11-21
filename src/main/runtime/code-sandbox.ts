@@ -222,6 +222,7 @@ interface WorkerCreation {
   promise: Promise<WorkerEntry>
   controller: AbortController
   callers: number
+  pendingDestroy?: boolean
 }
 
 interface AdfCallMessage {
@@ -576,12 +577,18 @@ export class CodeSandboxService {
    * If executions are in-flight, defers destruction until they complete.
    */
   destroy(agentId: string): void {
+    const creation = this.creating.get(agentId)
+    if (creation) {
+      // These executions were accepted but their shared worker is still
+      // starting. Retire it after they finish just like a ready worker.
+      creation.pendingDestroy = true
+      return
+    }
     const entry = this.workers.get(agentId)
     if (entry && entry.inflight > 0) {
       entry.pendingDestroy = true
       return
     }
-    this.cancelCreation(agentId, new SandboxUnavailableError('Sandbox worker terminated', 'SANDBOX_TERMINATED'))
     this.destroyWorker(agentId)
   }
 
@@ -595,11 +602,14 @@ export class CodeSandboxService {
    */
   destroyForAgent(agentId: string): void {
     const derived = this.agentSandboxes.get(agentId)
-    if (derived) {
-      for (const id of Array.from(derived)) this.destroy(id)
-      this.agentSandboxes.delete(agentId)
+    const error = new SandboxUnavailableError('Sandbox worker terminated', 'SANDBOX_TERMINATED')
+    const ids = new Set(derived)
+    ids.add(agentId)
+    for (const id of ids) {
+      this.cancelCreation(id, error)
+      this.destroy(id)
     }
-    this.destroy(agentId)
+    this.agentSandboxes.delete(agentId)
   }
 
   /**
@@ -853,6 +863,7 @@ export class CodeSandboxService {
         // Pin before clearing the creation record. Admission cannot evict
         // the worker between assignment and the execution's await resuming.
         entry.inflight++
+        entry.pendingDestroy ||= creation.pendingDestroy === true
         cleanup()
         resolve(entry)
       }, err => {
