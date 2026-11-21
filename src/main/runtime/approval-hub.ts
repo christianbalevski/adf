@@ -174,9 +174,10 @@ export class ApprovalHub {
   /** Called once by the runtime host, before any executors start. */
   initializePersistence(path: string): void {
     if (this.store) return
+    let history: ResolvedNotification[]
     try {
       const store = new NotificationStore(path)
-      const history = store.load()
+      history = store.load()
       this.history = this.history.concat(history)
       this.store = store
       this.persistenceUnavailable = false
@@ -187,7 +188,8 @@ export class ApprovalHub {
     }
     this.persistenceDirty = true
     this.flushPersistence()
-    this.notify(false)
+    // Only restored history changes what subscribers already hold.
+    if (history.length > 0) this.notify(false)
   }
 
   /** Shutdown/OS session-end durability hook, also used by the coalesced flush. */

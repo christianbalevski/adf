@@ -441,6 +441,50 @@ export const GAP_ALLOWLIST: readonly GapEntry[] = [
     },
   },
   {
+    id: 'mode:notification-history-file',
+    ws: 'mode',
+    scenarios: [...ALL, ...MESH],
+    path: 'state: user-data/adf-settings.json.notifications.json (the daemon\'s notification history)',
+    what: 'Each runtime host keeps its own notification history: the daemon next to its settings file (`<settings>.notifications.json`), embedded Studio in notification-history.embedded.json. Contents MUST match.',
+    apply(d, e) {
+      const daemonName = 'adf-settings.json.notifications.json'
+      const embeddedName = 'notification-history.embedded.json'
+      if (!(daemonName in d.state.userDataJson) || !(embeddedName in e.state.userDataJson)) return 0
+      d.state.userDataJson[embeddedName] = d.state.userDataJson[daemonName]
+      delete d.state.userDataJson[daemonName]
+      d.state.userDataJson = Object.fromEntries(Object.keys(d.state.userDataJson).sort().map((k) => [k, d.state.userDataJson[k]]))
+      // Put the line where the embedded tree has it, after the same predecessor.
+      const tree = d.state.tree.filter((l) => l !== `f user-data/${daemonName}`)
+      const at = e.state.tree.indexOf(`f user-data/${embeddedName}`)
+      const before = at > 0 ? e.state.tree[at - 1] : undefined
+      const insertAt = before ? tree.indexOf(before) + 1 : -1
+      if (insertAt <= 0) throw new Error('parity gaps: notification history file has no matching place in the daemon tree')
+      tree.splice(insertAt, 0, `f user-data/${embeddedName}`)
+      d.state.tree = tree
+      return 1
+    },
+  },
+  {
+    id: 'mode:agent-oauth-authorize-history',
+    ws: 'mode',
+    scenarios: AGENT_OAUTH,
+    path: 'state: user-data notification history: the completed mcp_oauth_authorize receipt, and the normalized times of the receipts before it',
+    what: 'The daemon\'s mcp_oauth_authorize request (mode:agent-oauth-authorize-request) is kept in notification history like any other request. Because a later receipt exists, the earlier receipts\' times normalize as `<t:earlier>`.',
+    apply(d, e) {
+      const name = 'notification-history.embedded.json'
+      type Receipt = Record<string, unknown>
+      const mine = d.state.userDataJson[name] as { history?: Receipt[] } | undefined
+      const base = e.state.userDataJson[name] as { history?: Receipt[] } | undefined
+      if (!mine?.history || !base?.history) return 0
+      const kept = mine.history.filter((r) => !(r.toolName === 'mcp_oauth_authorize' && r.outcome === 'completed'))
+      if (mine.history.length - kept.length !== 1 || kept.length !== base.history.length) return 0
+      const times = kept.map((r, i) => ({ ...r, requestedAt: base.history![i].requestedAt, resolvedAt: base.history![i].resolvedAt }))
+      if (!same(times, base.history)) return 0
+      d.state.userDataJson[name] = { ...mine, history: times }
+      return 1
+    },
+  },
+  {
     id: 'mode:client-defaults-unwritten',
     ws: 'mode',
     scenarios: [...ALL, ...MESH],
