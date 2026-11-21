@@ -42,6 +42,13 @@ function localEnv(withToken = true): { env: NodeJS.ProcessEnv; dir: string } {
   return { env: { ADF_DAEMON_SETTINGS: join(dir, 'adf-settings.json') }, dir }
 }
 
+it.each([{ count: 0 }, { messages: [] }])('reads an inbox count from either daemon response in one request (%o)', async (answer) => {
+  const fetch: typeof globalThis.fetch = vi.fn(async () => Response.json(answer))
+  const client = new SharedDaemonClient({ baseUrl: 'http://127.0.0.1:7385', fetch })
+  expect(await client.inboxCount('planner', 'unread')).toBe(0)
+  expect(fetch).toHaveBeenCalledExactlyOnceWith('http://127.0.0.1:7385/agents/planner/inbox?status=unread&countOnly=1', expect.any(Object))
+})
+
 describe('token scope', () => {
   const creds = (token: string): DaemonCredentials => ({ token: () => token, localProof: () => ({ 'X-ADF-Local-Proof': 'proof' }) })
 

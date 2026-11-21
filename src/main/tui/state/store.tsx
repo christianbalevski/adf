@@ -183,6 +183,8 @@ export type Outcome<T> =
 export interface TuiStore {
   /** The current daemon client (replaced by `actions.setDaemonUrl`). */
   readonly client: DaemonClient
+  /** True for requests from the same daemon, even after the session header changes. */
+  isCurrentClient(client: DaemonClient): boolean
   readonly actions: TuiActions
   getState(): TuiState
   dispatch(action: TuiAction): void
@@ -201,6 +203,7 @@ export interface TuiStore {
 export interface CreateStoreOptions {
   client: DaemonClient
   initialView?: string
+  initialAgent?: { identifier: string; loop?: string }
   /** Subscribe to live events. Default true. */
   live?: boolean
   /**
@@ -243,6 +246,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   let current = new WeakSet<DaemonClient>([client])
   const pageSize = options.pageSize ?? 100
   let state = initialState(client.baseUrl, options.initialView)
+  let initialAgent = options.initialAgent
   // Explicit selection changes invalidate a pending start's auto-selection;
   // reducer reconciliation from a tracked path to a loaded ID does not.
   let selectionRevision = 0
@@ -362,6 +366,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       client = next
       plain = next
       current = new WeakSet([next])
+      initialAgent = undefined
       historyGenerations.clear()
       dispatch({ type: 'daemon/switch', url: next.baseUrl })
       toast(`Switched from ${previous} to ${next.baseUrl} — agents on the old daemon keep running`, 'success', 6000)
@@ -375,8 +380,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
         const agents = await c.agents()
         if (stale(c)) return
         dispatch({ type: 'daemon/reachable', reachable: true })
-        dispatch({ type: 'agents/loaded', agents })
-        await Promise.all(agents.map(agent => actions.refreshAgent(agent.id)))
+        const requested = selectionRevision === 0 ? initialAgent : undefined
+        initialAgent = undefined
+        const match = requested && agents.find(({ id, handle, name }) =>
+          requested.identifier === id || requested.identifier === handle || requested.identifier === name)
+        dispatch({ type: 'agents/loaded', agents, initialSelection: match ? { agentId: match.id, loop: requested?.loop } : undefined })
+        if (requested && !match) toast(`No loaded agent "${requested.identifier}"`, 'warn')
+        const initialHistory = match && actions.ensureTranscript(match.id, selectedLoopOf(match.id))
+        await Promise.all([initialHistory, ...agents.map(agent => actions.refreshAgent(agent.id))])
+        if (stale(c)) return
         const selected = state.selectedAgentId
         if (selected && !isTrackedKey(selected)) await actions.ensureTranscript(selected, selectedLoopOf(selected))
       } catch (err) {
@@ -1323,6 +1335,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   return {
     get client() { return client },
+    isCurrentClient: c => !stale(c),
     actions,
     getState,
     dispatch,

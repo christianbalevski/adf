@@ -1281,6 +1281,18 @@ describe('daemon HTTP API', () => {
       status: 'unread',
       source: 'telegram',
     })
+    seeded.workspace.addToInbox({
+      from: 'telegram:user',
+      content: 'already read',
+      received_at: Date.now(),
+      status: 'read',
+    })
+    seeded.workspace.appendToLoop('user', [{ type: 'text', text: 'older' }], 'old', { input: 50, output: 5 })
+    const keptSeq = seeded.workspace.appendToLoop('assistant', [{ type: 'text', text: 'recent' }], 'recent', { input: 10, output: 2, cache_read: 3 })
+    await seeded.workspace.compactLoop([keptSeq], { content: [{ type: 'text', text: 'summary' }], model: 'summary', tokens: { input: 8, output: 4 } })
+    const legacySeq = seeded.workspace.appendToLoop('assistant', [{ type: 'text', text: 'legacy' }], 'legacy')
+    seeded.workspace.getDatabase().executeSQL('UPDATE adf_loop SET tokens = ? WHERE seq = ?', ['123', legacySeq])
+    seeded.workspace.forLoop('critic').appendToLoop('assistant', [{ type: 'text', text: 'other loop' }], 'other', { input: 100, output: 10 })
     seeded.workspace.addToOutbox({
       from: 'resource-agent',
       to: 'telegram:user',
@@ -1350,6 +1362,26 @@ describe('daemon HTTP API', () => {
       agentId: ref.id,
       messages: [expect.objectContaining({ content: 'hello inbox', source: 'telegram' })],
     }))
+    const unreadCount = await server.inject({ method: 'GET', url: '/agents/resource-agent/inbox?status=unread&countOnly=1' })
+    expect(unreadCount.statusCode).toBe(200)
+    expect(unreadCount.json()).toEqual({ agentId: ref.id, count: 1 })
+    const inboxCount = await server.inject({ method: 'GET', url: '/agents/resource-agent/inbox?countOnly=true' })
+    expect(inboxCount.json()).toEqual({ agentId: ref.id, count: 2 })
+    expect((await server.inject({ method: 'GET', url: '/agents/resource-agent/inbox?countOnly=yes' })).statusCode).toBe(400)
+
+    const fullHistory = vi.spyOn(runtime.getAgentWorkspace(ref.id)!.workspace, 'getLoop')
+    const persistedUsage = await server.inject({ method: 'GET', url: '/agents/resource-agent/usage' })
+    expect(persistedUsage.statusCode).toBe(200)
+    expect(fullHistory).not.toHaveBeenCalled()
+    expect(persistedUsage.json()).toMatchObject({
+      loopRows: 3, usageRows: 2,
+      totals: { input: 18, output: 6, cacheRead: 3, cacheWrite: 0, total: 24 },
+      byModel: [
+        { model: 'summary', rows: 1, total: 12 },
+        { model: 'recent', rows: 1, total: 12 },
+      ],
+    })
+    fullHistory.mockRestore()
 
     const outbox = await server.inject({ method: 'GET', url: '/agents/resource-agent/outbox?status=pending' })
     expect(outbox.statusCode).toBe(200)

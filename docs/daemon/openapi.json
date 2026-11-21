@@ -2595,7 +2595,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "List inbox messages",
+        "summary": "List inbox messages or count them",
         "operationId": "getAgentInbox",
         "parameters": [
           {
@@ -2614,15 +2614,37 @@
                 "archived"
               ]
             }
+          },
+          {
+            "name": "countOnly",
+            "in": "query",
+            "required": false,
+            "description": "Return the count of matching inbox messages without their contents. Use 1 or true to enable it. An omitted status counts the whole inbox.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Messages",
+            "description": "Messages by default, or the matching message count when countOnly is enabled",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InboxResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/InboxResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InboxCountResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -23309,6 +23331,24 @@
           },
           "original_message": {
             "type": "string"
+          }
+        }
+      },
+      "InboxCountResponse": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "count"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "description": "Agent id",
+            "example": "Xk3v9QpLm2"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
           }
         }
       },

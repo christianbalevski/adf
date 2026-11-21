@@ -1598,6 +1598,10 @@ export class AdfWorkspace {
     return this.db.getLoopCount(this.boundLoop)
   }
 
+  getLoopUsageRows(): ReturnType<AdfDatabase['getLoopUsageRows']> {
+    return this.db.getLoopUsageRows(this.boundLoop)
+  }
+
   /** True when the row with this seq is still in the loop. */
   hasLoopSeq(seq: number): boolean {
     return this.db.hasLoopSeq(this.boundLoop, seq)
@@ -1885,6 +1889,10 @@ export class AdfWorkspace {
    */
   getInboxCounts(): { unread: number; read: number; archived: number; total: number } {
     return this.db.getInboxCounts()
+  }
+
+  getInboxCount(status?: InboxStatus): number {
+    return status ? this.db.getInboxCount(status) : this.db.getInboxCounts().total
   }
 
   /** Unread tallies by sender and by source, plus the oldest arrival time. */

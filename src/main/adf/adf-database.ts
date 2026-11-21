@@ -582,6 +582,7 @@ export class AdfDatabase {
     appendLoopEntry?: Database.Statement
     clearLoop?: Database.Statement
     getLoopCount?: Database.Statement
+    getLoopUsageRows?: Database.Statement
     getLastAssistantTokens?: Database.Statement
     getAssistantTokenRows?: Database.Statement
     getInboxMessages?: Database.Statement
@@ -3324,6 +3325,9 @@ export class AdfDatabase {
     )
     this.stmts.clearLoop = this.db.prepare('DELETE FROM adf_loop WHERE loop = ?')
     this.stmts.getLoopCount = this.db.prepare('SELECT COUNT(*) as count FROM adf_loop WHERE loop = ?')
+    this.stmts.getLoopUsageRows = this.db.prepare(
+      'SELECT model, tokens FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq), seq'
+    )
     this.stmts.getLastAssistantTokens = this.db.prepare(
       'SELECT tokens FROM adf_loop WHERE loop = ? AND role = \'assistant\' AND tokens IS NOT NULL ORDER BY COALESCE(ord, seq) DESC, seq DESC LIMIT 1'
     )
@@ -4142,6 +4146,12 @@ export class AdfDatabase {
   getLoopCount(loop: string): number {
     const row = this.stmts.getLoopCount!.get(loop) as { count: number }
     return row.count
+  }
+
+  /** Usage for every role in display order, including compaction summaries. */
+  getLoopUsageRows(loop: string): Array<Pick<LoopEntryRow, 'model' | 'tokens'>> {
+    const rows = this.stmts.getLoopUsageRows!.all(loop) as Array<{ model: string | null; tokens: string | null }>
+    return rows.map(row => ({ model: row.model ?? undefined, tokens: AdfDatabase.parseLoopTokens(row.tokens) }))
   }
 
   /**

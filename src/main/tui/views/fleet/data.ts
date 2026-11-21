@@ -51,17 +51,22 @@ function write(store: TuiStore, patch: (data: FleetData) => FleetData) {
 }
 
 function createPoller(store: TuiStore): Poller {
-  const client = store.client
+  let lastClient = store.client
   let stopped = false
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  const clearPending = () => {
+    for (const t of timers.values()) clearTimeout(t)
+    timers.clear()
+  }
 
   const refreshAgent = async (agentId: string) => {
+    const client = store.client
     const [timerList, inbox, usage] = await Promise.all([
       client.timers(agentId).then(r => r.timers).catch(() => undefined),
-      client.inbox(agentId, 'unread').then(r => r.messages.length).catch(() => undefined),
+      client.inboxCount(agentId, 'unread').catch(() => undefined),
       client.agentUsage(agentId).then(r => r.totals?.total).catch(() => undefined),
     ])
-    if (stopped) return
+    if (stopped || !store.isCurrentClient(client)) return
     write(store, data => ({
       ...data,
       agents: { ...data.agents, [agentId]: { timers: timerList, unread: inbox, usageTotal: usage, at: Date.now() } },
@@ -74,11 +79,12 @@ function createPoller(store: TuiStore): Poller {
   }
 
   const refreshRuntime = async () => {
+    const client = store.client
     try {
       const runtime = await client.runtime()
-      if (!stopped) write(store, data => ({ ...data, runtime, runtimeError: undefined, runtimeAt: Date.now() }))
+      if (!stopped && store.isCurrentClient(client)) write(store, data => ({ ...data, runtime, runtimeError: undefined, runtimeAt: Date.now() }))
     } catch (err) {
-      if (!stopped) write(store, data => ({ ...data, runtimeError: err instanceof Error ? err.message : String(err), runtimeAt: Date.now() }))
+      if (!stopped && store.isCurrentClient(client)) write(store, data => ({ ...data, runtimeError: err instanceof Error ? err.message : String(err), runtimeAt: Date.now() }))
     }
   }
 
@@ -89,16 +95,25 @@ function createPoller(store: TuiStore): Poller {
   }
 
   let lastOrder = store.getState().agentOrder
-  let lastEvent = store.getState().lastEvents[store.getState().lastEvents.length - 1]
+  let lastEvent = store.getState().lastEvents.at(-1)
   const unsubscribe = store.subscribe(() => {
     const state = store.getState()
+    if (!store.isCurrentClient(lastClient)) {
+      lastClient = store.client
+      lastOrder = state.agentOrder
+      lastEvent = state.lastEvents.at(-1)
+      clearPending()
+      write(store, () => EMPTY)
+      void refreshRuntime()
+      return
+    }
     if (state.agentOrder !== lastOrder) {
       const known = new Set(lastOrder)
       lastOrder = state.agentOrder
       for (const id of state.agentOrder) if (!known.has(id)) later(`agent:${id}`, () => { void refresh(id) })
     }
     const events = state.lastEvents
-    const newest = events[events.length - 1]
+    const newest = events.at(-1)
     if (newest === lastEvent) return
     let i = events.length - 1
     while (i >= 0 && events[i] !== lastEvent) i--
@@ -127,8 +142,7 @@ function createPoller(store: TuiStore): Poller {
       unsubscribe()
       clearInterval(agentTick)
       clearInterval(runtimeTick)
-      for (const t of timers.values()) clearTimeout(t)
-      timers.clear()
+      clearPending()
     },
   }
 }

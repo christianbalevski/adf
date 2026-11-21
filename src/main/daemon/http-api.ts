@@ -1914,12 +1914,17 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.get<{ Params: AgentIdParams; Querystring: ResourceStatusQuery }>('/agents/:id/inbox', async (request, reply) => {
+  server.get<{ Params: AgentIdParams; Querystring: ResourceStatusQuery & { countOnly?: string } }>('/agents/:id/inbox', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const status = request.query.status
     if (status !== undefined && !isInboxStatus(status)) {
       return badRequest(reply, 'status must be one of: unread, read, archived')
     }
+    const countOnly = request.query.countOnly
+    if (countOnly !== undefined && !['1', '0', 'true', 'false'].includes(countOnly)) {
+      return badRequest(reply, 'countOnly must be 1, 0, true or false')
+    }
+    if (countOnly === '1' || countOnly === 'true') return runtime.getAgentInboxCount(request.params.id, status)
     return runtime.getAgentInbox(request.params.id, status)
   })
 
