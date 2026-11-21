@@ -24,8 +24,8 @@ export interface TranscriptActivity {
   kind: 'activity'
   id: string
   entries: AgentLogEntry[]
-  hasImage: boolean
   revision: number
+  itemIndex: number
 }
 
 function isStatusChange(entry: AgentLogEntry): boolean {
@@ -49,7 +49,7 @@ type PendingCall = { entry: AgentLogEntry; index: number }
 export class TranscriptProjection {
   readonly items: DisplayItem[] = []
   readonly visible: AgentLogEntry[] = []
-  readonly largeGroups: number[] = []
+  readonly imageGroups = new Set<TranscriptActivity>()
   private readonly itemStarts: number[] = []
   private readonly mergedInto = new Map<string, string>()
   private readonly groupByEntry = new Map<string, TranscriptActivity>()
@@ -112,11 +112,13 @@ export class TranscriptProjection {
     const start = this.itemStarts[itemIndex]
     for (let i = itemIndex; i < this.items.length; i++) {
       const item = this.items[i]
-      if (item.kind === 'activity') for (const entry of item.entries) this.groupByEntry.delete(entry.id)
+      if (item.kind !== 'activity') continue
+      this.imageGroups.delete(item)
+      this.groupByEntry.delete(item.id)
+      for (const entry of item.entries) this.groupByEntry.delete(entry.id)
     }
     this.items.length = itemIndex
     this.itemStarts.length = itemIndex
-    while (this.largeGroups.length && this.largeGroups.at(-1)! >= itemIndex) this.largeGroups.pop()
     const tail = this.tailEntry()
     this.tailIsCollapsible = tail !== undefined && isCollapsible(tail, this.findPair)
     return start
@@ -151,7 +153,7 @@ export class TranscriptProjection {
     const group = this.groupFor(pending.entry.id)
     if (group) {
       group.revision++
-      if (entry.metadata?.imageUrl) group.hasImage = true
+      if (entry.metadata?.imageUrl) this.imageGroups.add(group)
     }
     if (entry.metadata?.isError === false && isStatusChange(pending.entry)) return pending.index
   }
@@ -173,8 +175,7 @@ export class TranscriptProjection {
     group.entries.push(entry)
     group.revision++
     this.groupByEntry.set(entry.id, group)
-    if (this.findPair(entry.id)?.result?.metadata?.imageUrl) group.hasImage = true
-    if (group.entries.length === WINDOW_ACTIVITY_STEPS) this.largeGroups.push(this.items.length - 1)
+    if (this.findPair(entry.id)?.result?.metadata?.imageUrl) this.imageGroups.add(group)
   }
 
   private display(entry: AgentLogEntry, index: number): void {
@@ -191,10 +192,12 @@ export class TranscriptProjection {
     if (collapsible && this.tailIsCollapsible && tail) {
       if (tail.kind === 'activity') this.addActivityEntry(tail, entry)
       else {
-        const group: TranscriptActivity = { kind: 'activity', id: `activity:${tail.id}`, entries: [], hasImage: false, revision: 0 }
+        const itemIndex = this.items.length - 1
+        const group: TranscriptActivity = { kind: 'activity', id: `activity:${tail.id}`, entries: [], revision: 0, itemIndex }
         this.addActivityEntry(group, tail.entry)
         this.addActivityEntry(group, entry)
-        this.items[this.items.length - 1] = group
+        this.groupByEntry.set(group.id, group)
+        this.items[itemIndex] = group
       }
     } else {
       this.itemStarts.push(index)
@@ -208,7 +211,6 @@ function isDisplayEntry(entry: AgentLogEntry): boolean {
   return entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)
 }
 
-export const WINDOW_ACTIVITY_STEPS = 64
 type ActivityWindow = { start: number; group: TranscriptActivity; extraBefore: number; length: number }
 
 export interface TranscriptRow {
@@ -223,24 +225,24 @@ export function createTranscriptRows(
   archive: TranscriptProjection,
   live: TranscriptProjection,
   archiveEnd: DisplayItem,
-  expanded: (group: TranscriptActivity) => boolean,
+  expanded: ReadonlySet<TranscriptActivity>,
 ) {
   const archiveCount = archive.items.length ? archive.items.length + 1 : 0
   const itemAt = (index: number) => index >= archiveCount
     ? live.items[index - archiveCount]
     : archive.items[index] ?? archiveEnd
   const windows: ActivityWindow[] = []
-  let extra = 0
-  const addWindows = (projection: TranscriptProjection, offset: number) => {
-    for (const index of projection.largeGroups) {
-      const group = projection.items[index]
-      if (group.kind !== 'activity' || !expanded(group)) continue
-      windows.push({ start: index + offset + extra, group, extraBefore: extra, length: group.entries.length })
-      extra += group.entries.length
-    }
+  for (const group of expanded) {
+    const start = archive.items[group.itemIndex] === group ? group.itemIndex : group.itemIndex + archiveCount
+    windows.push({ start, group, extraBefore: 0, length: group.entries.length })
   }
-  addWindows(archive, 0)
-  addWindows(live, archiveCount)
+  windows.sort((a, b) => a.start - b.start)
+  let extra = 0
+  for (const window of windows) {
+    window.start += extra
+    window.extraBefore = extra
+    extra += window.length
+  }
 
   const windowAt = (index: number): ActivityWindow | undefined => {
     let left = 0

@@ -78,18 +78,18 @@ describe('transcript projection', () => {
     const other = projection.groupFor('other1')!
     const revision = group.revision
     const otherRevision = other.revision
-    expect(group.hasImage).toBe(false)
+    expect(projection.imageGroups.has(group)).toBe(false)
     projection.append([...log, row('image', 'tool_result', { tool_use_id: 'image', imageUrl: 'adf-file:///image.png' })])
     expect(projection.groupFor(first.id)).toBe(group)
-    expect(group.hasImage).toBe(true)
+    expect(projection.imageGroups.has(group)).toBe(true)
     expect(group.revision).toBeGreaterThan(revision)
     expect(other.revision).toBe(otherRevision)
   })
 
-  it('maps only expanded large groups to viewport rows across the archive boundary', () => {
+  it('maps expanded groups to viewport rows across the archive boundary', () => {
     const archive = project([row('arch-opening'), ...Array.from({ length: 90 }, (_, i) => row(`arch-${i}`, 'thinking'))])
     const live = project([row('opening'), ...Array.from({ length: 120 }, (_, i) => row(`live-${i}`, 'thinking')), row('last')])
-    const all = createTranscriptRows(archive, live, boundary, () => true)
+    const all = createTranscriptRows(archive, live, boundary, new Set([archive.groupFor('arch-0')!, live.groupFor('live-0')!]))
     expect(all.count).toBe(216)
     expect(all.rowAt(0)?.key).toBe('arch-opening')
     expect(all.rowAt(1)).toMatchObject({ key: 'activity:arch-0', windowed: true })
@@ -99,17 +99,31 @@ describe('transcript projection', () => {
     expect(all.indexOf('live-60')).toBe(155)
     expect(all.rowAt(155)).toMatchObject({ key: 'live-60', child: 60 })
     expect(all.rowAt(215)?.key).toBe('last')
-    const folded = createTranscriptRows(archive, live, boundary, () => false)
+    const folded = createTranscriptRows(archive, live, boundary, new Set())
     expect(folded.count).toBe(6)
     expect(folded.indexOf('live-60')).toBe(4)
     expect(folded.rowAt(4)).toMatchObject({ key: 'activity:live-0' })
+  })
+
+  it('keeps the same child row identity as an expanded activity grows', () => {
+    const archive = project([])
+    const log = Array.from({ length: 63 }, (_, i) => row(`step-${i}`, 'thinking'))
+    const live = project(log)
+    const group = live.groupFor('step-0')!
+    const expanded = new Set([group])
+    const before = createTranscriptRows(archive, live, boundary, expanded).rowAt(1)
+    live.append([...log, row('step-63', 'thinking')])
+    const after = createTranscriptRows(archive, live, boundary, expanded).rowAt(1)
+    expect(before).toMatchObject({ key: 'step-0', child: 0 })
+    expect(after).toEqual(before)
+    expect(after?.item).toBe(group)
   })
 
   it('retains the scroll anchor when a prepended context row absorbs the old top', () => {
     const meta = { category: 'provider_context', addedBy: 'Claude' }
     const top = row('old-top', 'context', meta)
     const prepended = row('prior', 'context', meta)
-    const plan = createTranscriptRows(project([]), project([prepended, top]), boundary, () => false)
+    const plan = createTranscriptRows(project([]), project([prepended, top]), boundary, new Set())
     expect(plan.indexOf('old-top')).toBe(0)
     expect(plan.rowAt(0)?.key).toBe('prior')
   })

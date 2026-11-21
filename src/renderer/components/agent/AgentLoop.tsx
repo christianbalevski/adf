@@ -1135,30 +1135,39 @@ function LoopStream({ loop }: { loop: string }) {
   }, [pendingApprovals, pendingAsks, liveProjection, log, structuralVersion])
   const activeGroup = activity.entryId === null ? undefined : liveProjection.groupFor(activity.entryId)
   const isGroupExpanded = useCallback((group: TranscriptActivity) =>
-    pendingGroups.has(group) || ((group.hasImage || group === activeGroup || expandedActivityGroups.has(group.id))
+    pendingGroups.has(group) || ((group === activeGroup || expandedActivityGroups.has(group.id)
+      || liveProjection.imageGroups.has(group) || archivedProjection.imageGroups.has(group))
       && !collapsedActivityGroups.has(group.id)),
-  [activeGroup, collapsedActivityGroups, expandedActivityGroups, pendingGroups])
-  const rows = useMemo(
-    () => createTranscriptRows(archivedProjection, liveProjection, ARCHIVE_END_ITEM, isGroupExpanded),
-    [archivedProjection, liveProjection, log, structuralVersion, isGroupExpanded]
-  )
+  [activeGroup, archivedProjection, collapsedActivityGroups, expandedActivityGroups, liveProjection, pendingGroups])
+  const rows = useMemo(() => {
+    const expanded = new Set<TranscriptActivity>()
+    const add = (group: TranscriptActivity | undefined) => {
+      if (group && isGroupExpanded(group)) expanded.add(group)
+    }
+    add(activeGroup)
+    pendingGroups.forEach(add)
+    archivedProjection.imageGroups.forEach(add)
+    liveProjection.imageGroups.forEach(add)
+    for (const id of expandedActivityGroups) add(liveProjection.groupFor(id) ?? archivedProjection.groupFor(id))
+    return createTranscriptRows(archivedProjection, liveProjection, ARCHIVE_END_ITEM, expanded)
+  }, [archivedProjection, liveProjection, log, structuralVersion, activeGroup, pendingGroups, expandedActivityGroups, isGroupExpanded])
 
   const getVirtualItemKey = useCallback((index: number) => rows.rowAt(index)?.key ?? index, [rows])
+  // React focus events from an inline approval's portal bubble to the owning
+  // row even when the dialog lives under document.body.
+  const [focusedStep, setFocusedStep] = useState<{ key: string; element: HTMLDivElement } | null>(null)
   const rangeExtractor = useCallback((range: Range) => {
     const indexes = defaultRangeExtractor(range)
-    // Keep an interactive step mounted while it owns keyboard focus, even
-    // when a wheel scroll puts it outside the viewport before a focus event.
-    const focused = document.activeElement?.closest<HTMLElement>('[data-transcript-step]')
-    const key = focused?.dataset.transcriptStep
-    if (!focused || key === undefined || !scrollRef.current?.contains(focused)) return indexes
-    const priorIndex = Number(focused.dataset.index)
+    if (!focusedStep?.element.isConnected) return indexes
+    const { key, element } = focusedStep
+    const priorIndex = Number(element.dataset.index)
     const focusedIndex = rows.rowAt(priorIndex)?.key === key ? priorIndex : rows.indexOf(key)
-    if (focusedIndex >= 0 && !indexes.includes(focusedIndex)) {
+    if (rows.rowAt(focusedIndex)?.key === key && !indexes.includes(focusedIndex)) {
       indexes.push(focusedIndex)
       indexes.sort((a, b) => a - b)
     }
     return indexes
-  }, [rows])
+  }, [rows, focusedStep])
   const virtualizer = useVirtualizer({
     count: rows.count,
     getScrollElement: () => scrollRef.current,
@@ -2230,6 +2239,8 @@ function LoopStream({ loop }: { loop: string }) {
                   }}
                   data-index={virtualItem.index}
                   data-transcript-step={child === undefined ? undefined : row.key}
+                  onFocusCapture={child === undefined ? undefined : event => setFocusedStep({ key: row.key, element: event.currentTarget })}
+                  onBlurCapture={child === undefined ? undefined : () => setFocusedStep(current => current?.key === row.key ? null : current)}
                   ref={virtualizer.measureElement}
                 >
                   {displayItem.kind === 'entry' ? (
@@ -2274,13 +2285,6 @@ function LoopStream({ loop }: { loop: string }) {
                           </span>
                         )}
                       </button>
-                      {activityExpanded && !windowed && (
-                        <div className="border-t border-[var(--rule)] py-0.5">
-                          {displayItem.entries.map((entry) => (
-                            <div key={entry.id}>{renderLogEntry(entry, true)}</div>
-                          ))}
-                        </div>
-                      )}
                      </div>
                     </div>
                   )}
