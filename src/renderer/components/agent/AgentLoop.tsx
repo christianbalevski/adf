@@ -2121,7 +2121,7 @@ function LoopStream({ loop }: { loop: string }) {
     // always reports isError:false — a nonzero exit_code in the result payload.
     const pairedResult = toolPair?.result
     const toolResultIsError = entry.type === 'tool_call' && pairedResult
-      ? isShellFailure((entry.metadata?.name as string | undefined) ?? '', pairedResult.content)
+      ? isShellFailure((entry.metadata?.name as string | undefined) ?? '', pairedResult)
         || ((pairedResult.metadata?.isError as boolean | undefined) ?? null)
       : null
     const askAnswer = entry.metadata?.askAnswer as string | undefined
@@ -2279,7 +2279,7 @@ function LoopStream({ loop }: { loop: string }) {
                   const result = toolPairIndex.get(entry.id)?.result
                   if (!result) return false
                   return result.metadata?.isError === true
-                    || isShellFailure((entry.metadata?.name as string | undefined) ?? '', result.content)
+                    || isShellFailure((entry.metadata?.name as string | undefined) ?? '', result)
                 })
               const activityAccent = activityHasError
                 ? ERROR_TOOL_STYLE
