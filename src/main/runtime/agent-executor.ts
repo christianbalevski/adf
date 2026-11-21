@@ -1358,6 +1358,11 @@ export class AgentExecutor extends EventEmitter {
     this.providerChangeListener?.(provider)
   }
 
+  /** Reuse a successful startup preflight for the exact provider it checked. */
+  confirmProviderValidation(provider: LLMProvider): void {
+    if (this.provider === provider) this.providerValidated = true
+  }
+
   private providerChangeListener: ((provider: LLMProvider) => void) | null = null
 
   /** Called after every updateProvider (one listener; the assembler owns it). */
@@ -2613,8 +2618,8 @@ export class AgentExecutor extends EventEmitter {
         // provider.validateConfig() instead, cache the result, and surface a clear,
         // actionable error if the credentials don't work.
         //
-        // Steady-state cost: one tiny request after agent-start (or after the user
-        // updates the provider config / a prior turn returned an auth-class error).
+        // Steady-state cost: one tiny request unless startup already checked this
+        // provider; changing the provider or an auth error clears the result.
         // No per-turn latency once validated.
         if (!this.providerValidated && this.provider) {
           const validation = await this.provider.validateConfig()
