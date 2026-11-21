@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { TokenCounterService } from '../../../src/main/services/token-counter.service'
+import type { LLMMessage } from '../../../src/shared/types/provider.types'
 
 const tc = new TokenCounterService()
 
@@ -14,6 +15,17 @@ const ROLE_OVERHEAD = tc.estimateMessagesTokens([{ role: 'user', content: [] }])
 const bigBase64 = 'A'.repeat(200_000)
 
 describe('estimateMessagesTokens — multimodal blocks', () => {
+  it('keeps exact rounding as model history appends and measures a replacement afresh', () => {
+    const counter = new TokenCounterService()
+    const messages: LLMMessage[] = []
+    for (const content of ['a', 'bb', [{ type: 'image_url', image_url: { url: 'A'.repeat(101) } }]] as const) {
+      messages.push({ role: 'user', content: typeof content === 'string' ? content : [...content] })
+      expect(counter.estimateAppendOnlyMessagesTokens(messages)).toBe(counter.estimateMessagesTokens(messages))
+    }
+    const replaced: LLMMessage[] = [{ role: 'user', content: 'a' }]
+    expect(counter.estimateAppendOnlyMessagesTokens(replaced)).toBe(counter.estimateMessagesTokens(replaced))
+  })
+
   it('charges image_url data URIs instead of counting them as zero', () => {
     const tokens = estimateBlock({
       type: 'image_url',
