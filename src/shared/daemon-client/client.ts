@@ -802,6 +802,14 @@ export class DaemonClient {
     return this.get(`/agents/${enc(agentId)}/inbox`, { status })
   }
 
+  async inboxCount(agentId: string, status?: InboxStatus): Promise<number> {
+    const result = await this.get<{ count: number } | InboxResult>(
+      `/agents/${enc(agentId)}/inbox`, { status, countOnly: 1 },
+    )
+    // Older daemons ignore countOnly and send their usual filtered messages.
+    return 'count' in result ? result.count : result.messages.length
+  }
+
   clearInbox(agentId: string): Promise<SuccessResult & { deleted: number }> {
     return this.del(`/agents/${enc(agentId)}/inbox`)
   }

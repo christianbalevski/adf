@@ -2925,6 +2925,11 @@ export class RuntimeService extends EventEmitter {
     return { agentId: target.id, messages: target.workspace.getInbox(status) }
   }
 
+  getAgentInboxCount(agentId: string, status?: InboxStatus): { agentId: string; count: number } {
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, count: target.workspace.getInboxCount(status) }
+  }
+
   clearAgentInbox(agentId: string): { agentId: string; success: true; deleted: number } {
     const target = this.requireTarget(agentId)
     const result = target.workspace.deleteInboxByFilter({})
@@ -2989,7 +2994,7 @@ export class RuntimeService extends EventEmitter {
 
   getAgentUsage(agentId: string): RuntimeAgentUsage {
     const target = this.requireTarget(agentId)
-    const { loopRows, usageRows, totals, byModel } = summarizeLoopUsage(target.workspace.getLoop())
+    const { loopRows, usageRows, totals, byModel } = summarizeLoopUsage(target.workspace.getLoopUsageRows())
     return {
       agentId: target.id,
       source: 'adf_loop',
