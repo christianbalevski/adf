@@ -113,8 +113,11 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   // falls through to R4 and shows as `<did#n>`. Also named: the fixture
   // delegation's signature (`<sig:runtime-delegation>`) and the scratch-dir
   // names derived from the pid and each fixture's path (scenario.ts).
+  // Hostnames can be short enough to occur inside unrelated strings, such
+  // as a base64 signature. Normalize them only in lease record fields.
+  const hostnames = new Set(ctx.named.filter((n) => n.name === 'hostname').map((n) => n.value))
   const named = ctx.named
-    .filter((n): n is { value: string; name: string } => typeof n.value === 'string' && n.value.length > 0)
+    .filter((n): n is { value: string; name: string } => n.name !== 'hostname' && typeof n.value === 'string' && n.value.length > 0)
     .sort((a, b) => b.value.length - a.value.length)
   // A lease endpoint is named whole, before R1 rewrites its root: it is
   // `<root>/leases/hosts/<runtimeId>.sock` on macOS and Linux (a named pipe
@@ -246,9 +249,9 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
   // and leases record their holder's `pid`. A pid the harness knows (its
   // own process, a backend's daemon) becomes `<pid:ROLE>` in those file
   // names and in `pid` fields under `state.leases`; any other pid stays raw.
-  // The records' runtimeId, endpoint, machine id and hostname are named by
-  // role through R3 (scenario.ts reads them from the records), and lease file
-  // names (sha256 of an agent's canonical path) become `<lease:agent-n>`.
+  // The records' runtimeId, endpoint and machine id are named by role through
+  // R3. Hostnames are replaced in the fields below. Lease file names (sha256
+  // of an agent's canonical path) become `<lease:agent-n>`.
   const pidName = new Map((ctx.pids ?? []).map((p) => [p.value, p.name]))
   const replaceRegistryPid = (s: string) =>
     s.replace(/\b(hosts|clients)([\\/])(\d+)\.json\b/g, (m, sub: string, sep: string, pid: string) => {
@@ -350,6 +353,7 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     }
     if (typeof value === 'string' && (path.startsWith('state.tree') || path.startsWith('state.leases'))) value = replaceRegistryPid(value)
     if (typeof value === 'string') {
+      if (key === 'hostname' && path.startsWith('state.leases.') && hostnames.has(value)) return '<hostname>'
       const bytes = IDENTITY_VALUE_PATH.test(path) ? BYTES_RE.exec(value) : null
       if (bytes) return `${numbered('key-bytes', bytes[2])} len=${bytes[1]}`
       return replaceString(value, floor, seen)

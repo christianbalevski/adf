@@ -134,6 +134,22 @@ describe('parity harness: normalizer', () => {
     expect(out.pushes.ch).toEqual(['<sig:runtime-delegation>', '<sig:valid#1>', '<sig:INVALID#1>', '<sig:valid#1>', sig('D')])
   })
 
+  it('R13 names hostnames in lease records and leaves their spelling intact inside a signature', () => {
+    const signature = `ed25519:Mac${'A'.repeat(83)}==`
+    const r = rec({ ch: [signature, 'MacOS'] })
+    r.state.leases = { 'hosts/4242.json': { hostname: 'Mac' }, 'other.json': { holder: { hostname: 'elsewhere' } } }
+    const out = normalizeRecording(r, {
+      ...ctx,
+      named: [...ctx.named, { value: 'Mac', name: 'hostname' }],
+      signatures: new Map([[signature, true]]),
+    })
+    expect(out.pushes.ch).toEqual(['<sig:valid#1>', 'MacOS'])
+    expect(out.state.leases).toEqual({
+      'hosts/4242.json': { hostname: '<hostname>' },
+      'other.json': { holder: { hostname: 'elsewhere' } },
+    })
+  })
+
   it('R13 names known host pids in registry file names and lease pid fields only', () => {
     const r = rec()
     r.state = {
