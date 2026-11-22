@@ -66,6 +66,7 @@ const env = {
   PATH: FINDER_PATH,
   // Settings, credentials and scratch dirs stay in the throwaway dir too.
   ADF_USER_DATA_DIR: userData,
+  ADF_LEASE_DIR: join(work, 'leases'),
   ADF_TEMP_DIR: join(work, 'tmp'),
   // Never the developer's keychain: a fresh install mints an owner identity
   // and mirrors it into the shared ADF/owner-mnemonic entry the CLI reads.
