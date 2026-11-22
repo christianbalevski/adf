@@ -70,10 +70,8 @@ jobs:
 
       - name: Install dependencies for Node tests
         id: install
-        run: |
-          # The postinstall targets Electron. The full suite runs under Node.
-          npm ci --ignore-scripts
-          npm rebuild better-sqlite3
+        # better-sqlite3 ships a Node-API prebuild. Skip Electron's postinstall.
+        run: npm ci --ignore-scripts
 
       # Includes lifecycle conformance, route coverage, and the ADF format
       # contract. The dedicated parity job runs tests/parity under Electron.
@@ -120,9 +118,7 @@ jobs:
 
       - name: Install dependencies for Node tests
         id: install
-        run: |
-          npm ci --ignore-scripts
-          npm rebuild better-sqlite3
+        run: npm ci --ignore-scripts
 
       - name: Test
         env:
@@ -138,8 +134,7 @@ jobs:
       # packaged app and drive its main process (cold start, login-shell PATH,
       # window recreation after the last window closes, clean quit). See
       # scripts/electron-smoke.mjs. Unsigned host-arch --dir build: no dmg,
-      # no notarization. Packaging rebuilds better-sqlite3 for Electron, so
-      # these stay last.
+      # no notarization.
       - name: Package the app (unsigned)
         id: package
         if: ${{ !cancelled() && steps.build.outcome == 'success' }}
