@@ -102,54 +102,12 @@ jobs:
           node node_modules/electron/install.js
           xvfb-run -a npm run bench:studio -- --no-sandbox
 
-  # Exercise Darwin-specific paths and launch the unsigned packaged app for
-  # cold start, login-shell PATH, window recreation, and clean quit.
-  verify-macos:
-    runs-on: macos-15
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '^22.23.4'
-          cache: npm
-
-      - name: Install dependencies for Node tests
-        id: install
-        run: npm ci --ignore-scripts
-
-      - name: Test
-        env:
-          PARITY_EXCLUDE: '1'
-        run: npm test
-
-      - name: Build
-        id: build
-        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
-        run: npm run build
-
-      # The Electron runtime paths the unit suite can't reach: launch the
-      # packaged app and drive its main process (cold start, login-shell PATH,
-      # window recreation after the last window closes, clean quit). See
-      # scripts/electron-smoke.mjs. Unsigned host-arch --dir build: no dmg,
-      # no notarization.
-      - name: Package the app (unsigned)
-        id: package
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false
-
-      - name: Electron smoke (packaged app)
-        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
-        run: npm run test:electron-smoke
-
   # Build on each target OS and compare the embedded runtime with the bundled
   # daemon running under Electron-as-Node, as it does in packaged Studio.
   # Both sides load better-sqlite3 under Electron's Node runtime. The harness
   # uses a test keychain. The release workflow explains the Windows runner pin.
+  # macOS also runs the full Node suite and packaged smoke test on this runner,
+  # sharing the build and avoiding a second macOS runner allocation.
   daemon-parity:
     strategy:
       fail-fast: false
@@ -176,13 +134,24 @@ jobs:
             ~/Library/Caches/electron
           key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      - name: Install dependencies with the Electron binary
-        shell: bash
-        run: |
-          npm ci --ignore-scripts
-          node node_modules/electron/install.js
+      - name: Install dependencies
+        id: install
+        run: npm ci --ignore-scripts
+
+      - name: Node tests (macOS)
+        if: runner.os == 'macOS'
+        env:
+          PARITY_EXCLUDE: '1'
+        run: npm test
+
+      - name: Install Electron
+        id: electron
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node node_modules/electron/install.js
 
       - name: Electron runs as Node
+        id: electron-node
+        if: ${{ !cancelled() && steps.electron.outcome == 'success' }}
         shell: bash
         run: |
           case "$RUNNER_OS" in
@@ -193,17 +162,19 @@ jobs:
           echo "ELECTRON=$ELECTRON" >> "$GITHUB_ENV"
           ELECTRON_RUN_AS_NODE=1 "$ELECTRON" -e "require('better-sqlite3')(':memory:').close(); console.log('electron', process.versions.electron, 'node', process.version, 'better-sqlite3 ok')"
 
-      # electron-vite build: out/main/index.js and the daemon, out/main/daemon.js.
       - name: Build
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
 
       # The Gmail and Google Calendar MCP servers Studio ships: bundled, then run
-      # on this OS's Electron binary in Node mode (the other test jobs have no
-      # Electron).
+      # on this OS's Electron binary in Node mode.
       - name: Bundled MCP server on Electron-as-Node
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.electron-node.outcome == 'success' }}
         run: npx vitest run tests/unit/services/bundled-mcp-servers-smoke.test.ts --reporter=verbose
 
       - name: Parity, daemon side required
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.electron-node.outcome == 'success' }}
         shell: bash
         env:
           PARITY_REQUIRE_DAEMON: '1'
@@ -219,3 +190,16 @@ jobs:
           name: parity-daemon-logs-${{ matrix.os }}
           path: ${{ runner.temp }}/parity-daemon-logs
           if-no-files-found: ignore
+
+      # The packaged app exercises macOS window recreation, login-shell PATH,
+      # and clean quit. Package last so the parity suite uses the npm install.
+      - name: Package the app (unsigned macOS)
+        id: package
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.build.outcome == 'success' }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false
+
+      - name: Electron smoke (packaged macOS app)
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: npm run test:electron-smoke
