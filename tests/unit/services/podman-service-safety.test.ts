@@ -860,12 +860,17 @@ describe('PodmanService lifecycle hardening', () => {
 
   it('learns a container is gone from a dead-container exec', async () => {
     const service = new PodmanService()
-    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
-    ;(service as any).exec0 = vi.fn().mockResolvedValue({ code: 1, stdout: '', stderr: 'Error: no container with name or ID "adf-agent-12345678" found: no such container', timedOut: false })
-    ;(service as any)._phases.set('adf-agent-12345678', { phase: 'ready' })
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const name = 'adf-agent-12345678'
+    const missing = { code: 1, stdout: '', stderr: `Error: no container with name or ID "${name}" found: no such container`, timedOut: false }
+    ;(service as any).exec0 = vi.fn().mockResolvedValue(missing)
+    ;(service as any)._phases.set(name, { phase: 'ready' })
+    const phaseChanged = vi.fn()
+    service.on('container-phase', phaseChanged)
 
-    await service.execInContainer('adf-agent-12345678', '/workspace', 'true')
-    await expect(service.containerPhase('adf-agent-12345678')).resolves.toMatchObject({ phase: 'absent' })
+    await expect(service.execInContainer(name, '/workspace', 'true')).resolves.toEqual(missing)
+    expect(phaseChanged).toHaveBeenCalledWith(expect.objectContaining({ containerName: name, phase: 'absent' }))
+    await expect(service.containerPhase(name)).resolves.toEqual({ phase: 'absent' })
   })
 
   it('memoizes browserReady and clears the memo on failure', async () => {

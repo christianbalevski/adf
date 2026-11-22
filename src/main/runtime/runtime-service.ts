@@ -1732,8 +1732,10 @@ export class RuntimeService extends EventEmitter {
     trackedDirs: string[],
     opts: RuntimeAutostartOptions = {},
   ): Promise<RuntimeAutostartReport> {
-    // A Kill during the scan or the starts stops what is left of the autostart.
+    // A scan requested during a Kill must still refuse to start agents if
+    // the Kill finishes before the scan does. Later Kills change the epoch.
     const killEpoch = RuntimeGate.killEpoch
+    const requestedDuringKill = RuntimeGate.killing
     RuntimeGate.resume()
     const files = await this.scanAdfFilesAsync(trackedDirs, opts.maxDepth ?? 5)
     const report: RuntimeAutostartReport = {
@@ -1789,7 +1791,9 @@ export class RuntimeService extends EventEmitter {
       }
 
       try {
-        if (RuntimeGate.killedSince(killEpoch)) throw new RuntimeLoopError(KILL_STOPPED_AUTOSTART, 409, 'kill_in_progress')
+        if (requestedDuringKill || RuntimeGate.killedSince(killEpoch)) {
+          throw new RuntimeLoopError(KILL_STOPPED_AUTOSTART, 409, 'kill_in_progress')
+        }
         // Review verified above — disable loadAgent's own gate so the file is
         // opened exactly once more (the real open): 2 opens per candidate.
         const ref = await this.loadAgent(filePath, { enforceReviewGate: false })
