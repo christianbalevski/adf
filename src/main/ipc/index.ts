@@ -3799,12 +3799,16 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
 
         const displayState = handle.triggerEvaluator.getDisplayState()
+        const recoveryAt = handle.executor.getRecoveryAt()
         return {
           success: true,
           sessionId: capturedSession.getSessionId(),
           agentState: displayState,
+          // In error: when the next recovery attempt may run (absent = parked).
+          ...(recoveryAt !== null ? { recoveryAt } : {}),
           // Side loops keep running across a switch; the view starts from their real states.
           loopStates: handle.loopPool.sideLoopStates(),
+          loopRecoveryAt: handle.loopPool.sideLoopRecoveryAt(),
           // Every loop's: a side loop's card restores into that loop's tab.
           pendingApprovals: approvalExecutors(handle.executor, handle.loopPool)
             .flatMap(({ loop, executor }) => executor.getPendingApprovals().map(approval => ({ ...approval, loop }))),

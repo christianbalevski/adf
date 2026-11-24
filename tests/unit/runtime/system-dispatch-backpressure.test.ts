@@ -444,7 +444,7 @@ describe('one-shot timer whose dispatch is dropped', () => {
 
   function makeTimerWorkspace(timer: Timer) {
     const calls = {
-      expireTimers: [] as number[][],
+      claimTimer: [] as Array<[number, number, number, number | null, number]>,
       advanceTimer: [] as Array<[number, number, number, number]>,
       updateTimer: [] as unknown[][],
       logs: [] as Array<[string, string, string, string | null, string, unknown]>,
@@ -452,7 +452,7 @@ describe('one-shot timer whose dispatch is dropped', () => {
     let served = false
     const workspace = {
       getDueTimers: () => { if (served) return []; served = true; return [timer] },
-      expireTimers: (ids: number[]) => { calls.expireTimers.push(ids); return ids.length },
+      claimTimer: (...args: [number, number, number, number | null, number]) => { calls.claimTimer.push(args); return true },
       advanceTimer: (...args: [number, number, number, number]) => { calls.advanceTimer.push(args); return true },
       updateTimer: (...args: unknown[]) => { calls.updateTimer.push(args); return true },
       insertLog: (...row: [string, string, string, string | null, string, unknown]) => { calls.logs.push(row) },
@@ -489,7 +489,7 @@ describe('one-shot timer whose dispatch is dropped', () => {
     evaluator.stopTimerPolling()
 
     // The tick settles the row before emitting: the one-shot is already spent.
-    expect(calls.expireTimers).toEqual([[7]])
+    expect(calls.claimTimer.map(c => [c[0], c[3]])).toEqual([[7, null]])
     expect(emitted).toHaveLength(1)
 
     // Now drop that exact dispatch.
@@ -545,7 +545,7 @@ describe('one-shot timer whose dispatch is dropped', () => {
     evaluator.startTimerPolling(workspace as never)
     vi.advanceTimersByTime(5_000)
     evaluator.stopTimerPolling()
-    expect(calls.advanceTimer).toHaveLength(1)   // renewed, not expired
+    expect(calls.claimTimer.map(c => [c[0], c[3] !== null])).toEqual([[9, true]])   // renewed, not expired
 
     vi.useRealTimers()
     const queue = new SystemDispatchQueue(() => {})
@@ -558,7 +558,7 @@ describe('one-shot timer whose dispatch is dropped', () => {
     await expect(queue.run(emitted[0], task)).rejects.toBeInstanceOf(SystemDispatchDroppedError)
 
     expect(calls.updateTimer).toHaveLength(0)
-    expect(calls.advanceTimer).toHaveLength(1)   // untouched by the drop
+    expect(calls.advanceTimer).toHaveLength(0)   // untouched by the drop
 
     queue.clear()
     release.forEach((r) => r())

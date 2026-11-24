@@ -28,6 +28,7 @@ import {
   createDispatch,
   createEvent,
   type AdfBatchDispatch,
+  type AdfEvent,
   type AdfEventDispatch,
   type ChatEventData,
 } from '../../shared/types/adf-event.types'
@@ -137,17 +138,18 @@ export interface LoopPoolDeps {
      *  loop (§6.3): a suspended agent is a suspended organism, not a quiet
      *  face with minds still turning behind it. */
     getState: () => string
+    /** Main executor's getModelSeenSeq: the newest row the model has seen. */
+    modelSeenSeq: () => number
   }
 }
 
 /**
  * A kick queued at send time for a wake:true delivery that arrived mid-turn.
  * `injected` records whether the mid-turn context injection was actually made
- * (false in the rare empty-but-busy race); `blocks` only matter for an
- * un-injected entry, whose row is in neither the session nor the injection
- * queue and so must be inlined by the kick itself.
+ * (false in the rare empty-but-busy race). `event` carries `skip_loop_append`
+ * and `loop_seq`, so the kick inlines an un-injected row without a second copy.
  */
-type PendingWake = { blocks: ContentBlock[]; seq?: number; injected: boolean; fromLoop?: string }
+type PendingWake = { event: AdfEvent; seq: number; injected: boolean }
 
 /** Bound on queued kicks per target. A kick is owed per target, not per
  *  message, so anything past a handful is wake-spam (review C3/P2). */
@@ -155,30 +157,35 @@ const PENDING_WAKE_CAP = 16
 
 /** Queue a kick, deduplicating: an injected entry is redundant once ANY entry
  *  is queued (one boundary turn drains every pending injection), so only an
- *  un-injected entry — which carries blocks the kick must inline — always
- *  queues. Returns the (possibly unchanged) queue. */
+ *  un-injected entry, whose row the kick must inline, always queues. */
 function enqueueKick(queue: PendingWake[], entry: PendingWake): void {
   if (entry.injected && queue.length > 0) return
   if (queue.length >= PENDING_WAKE_CAP) return
   queue.push(entry)
 }
 
-/**
- * Which queued kick, if any, must fire at a turn boundary.
- * - An un-injected entry must fire and must carry its own blocks.
- * - Otherwise fire iff a wake injection is still pending (the turn ended before
- *   draining it); the blocks are irrelevant — the kick adds nothing and the
- *   drain delivers (C1). Every injection already drained ⇒ no kick at all.
- */
 /** How long a stop waits for an aborted turn to settle before proceeding. */
 const STOP_SETTLE_TIMEOUT_MS = 30_000
 const STOP_POLL_MS = 25
 
-function pickKickRepresentative(entries: PendingWake[], session: AgentSession): PendingWake | null {
-  const uninjected = entries.find(e => !e.injected)
-  if (uninjected) return uninjected
-  if (session.hasPendingWakeInjection()) return entries[0] ?? null
-  return null
+/**
+ * Which queued kick, if any, must fire at a turn boundary: the first entry
+ * whose row the model has not seen (`seenSeq`, AgentExecutor.getModelSeenSeq).
+ * - A row the running turn already sent to the model owes nothing, whether it
+ *   was injected and drained or rehydrated with the stream (several timers
+ *   firing into an empty session in one tick): kicking would call the model
+ *   with no new input, its prompt ending in its own reply.
+ * - A row the model has not been sent gets one turn, whether its injection
+ *   was dropped because a reload restored the row (H2, a compaction with no
+ *   model call after it) or it was never injected. So does a row whose
+ *   injection is still pending, even below the mark. The kick adds no
+ *   second copy: the executor skips a row already in the session or queued.
+ */
+function pickKickRepresentative(entries: PendingWake[], seenSeq: number, session: AgentSession): PendingWake | null {
+  // A row can sit below the mark and still be unread: its injection is
+  // pending while a row written after it (a failed compaction's notice) was sent.
+  return entries.find(e => e.seq > seenSeq)
+    ?? (session.hasPendingWakeInjection() ? entries[0] ?? null : null)
 }
 
 /** One side loop: its own mind, on the agent's body. */
@@ -300,8 +307,8 @@ export class LoopRuntime {
     return operation
   }
 
-  queueWake(blocks: ContentBlock[], seq: number | undefined, injected: boolean): void {
-    enqueueKick(this.pendingWakes, { blocks, seq, injected })
+  queueWake(event: AdfEvent, seq: number, injected: boolean): void {
+    enqueueKick(this.pendingWakes, { event, seq, injected })
   }
 
   hasPendingWake(): boolean {
@@ -625,58 +632,92 @@ export class LoopPool implements LoopPoolApi {
         // than unbounded: because the row was appended above, the sweep may
         // drop THIS injection and release anyway — a rehydrate replays the row
         // as an ordinary user message (see sweepIdle).
-        this.injectWithoutWake(toLoop, fromLoop, blocks, seq)
+        this.injectWithoutWake(toLoop, `loop:${fromLoop}`, blocks, seq)
         return { delivered: true, woke: false }
       }
 
-      if (toLoop === MAIN_LOOP) {
-        // Main is a peer, not a bus: a loop may wake it. Its executor belongs
-        // to the assembled lifecycle, so the dispatch goes back out through the
-        // host rather than through a runtime the pool owns.
-        if (this.deps.main.isBusy()) {
-          // Inject for mid-turn pickup — main reads it at its next model boundary
-          // (≈ next tool step) if the turn continues — AND queue a kick so that
-          // if the turn ends before that boundary, `consumeMainWake` runs one
-          // more turn to drain it. The kick fires only if the injection is still
-          // pending at the boundary (drained mid-turn ⇒ already read ⇒ no kick).
-          const injected = this.injectWithoutWake(MAIN_LOOP, fromLoop, blocks, seq, true)
-          enqueueKick(this.mainPendingWakes, { blocks, seq, fromLoop, injected })
-          return { delivered: true, woke: false, reason: 'main is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first' }
-        }
-        const value = createDispatch(this.wakeEvent(blocks, seq, fromLoop), { scope: 'agent', loop: MAIN_LOOP })
-        void this.deps.main.dispatch(value).catch(error => {
-          console.error('[LoopPool] Wake turn on main failed:', error)
-        })
-        return { delivered: true, woke: true }
-      }
-
-      if (runtime!.isBusy()) {
-        // Inject for mid-turn pickup (read at the loop's next model boundary if
-        // the turn continues) AND queue a kick, consumed at the turn boundary,
-        // for the case where the turn ends first. NOT a "skip if running" check:
-        // the executor self-schedules successor turns, so reading busy at send
-        // time races the boundary and drops the kick.
-        const injected = this.injectWithoutWake(toLoop, fromLoop, blocks, seq, true)
-        runtime!.queueWake(blocks, seq, injected)
-        return {
-          delivered: true,
-          woke: false,
-          reason: 'that loop is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first',
-        }
-      }
-
-      const woken = this.wakeWith(runtime!, blocks, seq, fromLoop)
-      if (!woken.woke) this.injectWithoutWake(toLoop, fromLoop, blocks, seq)
-      return { delivered: true, woke: woken.woke, ...(woken.reason ? { reason: woken.reason } : {}) }
+      const woken = this.deliverAppended(toLoop, this.wakeEvent(blocks, seq, fromLoop), blocks, seq, `loop:${fromLoop}`)
+      return { delivered: true, ...woken }
     } catch (error) {
       throw poolError('loop_send', error)
     }
   }
 
+  /**
+   * Wake a loop on a row that is ALREADY in its stream (loop_send, a timer the
+   * tick appended). `event` carries `skip_loop_append` + `loop_seq`, so the
+   * executor inlines the row instead of writing it again; its type is kept on
+   * the kick, so a timer stays a timer (auth parking and the recovery budget
+   * apply to it). Busy: inject for mid-turn pickup (read at the next model
+   * boundary) and queue a kick for the case where the turn ends first. Idle:
+   * dispatch, or inject if the router refuses.
+   */
+  deliverAppended(
+    toLoop: string, event: AdfEvent, blocks: ContentBlock[], seq: number, origin: string,
+    onError?: (error: unknown, dispatch: AdfEventDispatch) => void,
+  ): { woke: boolean; reason?: string } {
+    if (toLoop === MAIN_LOOP) {
+      if (this.deps.main.isBusy()) {
+        const injected = this.injectWithoutWake(MAIN_LOOP, origin, blocks, seq, true)
+        enqueueKick(this.mainPendingWakes, { event, seq, injected })
+        return { woke: false, reason: 'main is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first' }
+      }
+      const value = createDispatch(event, { scope: 'agent', loop: MAIN_LOOP })
+      void this.deps.main.dispatch(value).catch(error => {
+        console.error('[LoopPool] Wake turn on main failed:', error)
+        onError?.(error, value)
+      })
+      return { woke: true }
+    }
+    const runtime = this.runtimes.get(toLoop)
+    if (!runtime) return { woke: false, reason: `loop "${toLoop}" is not running` }
+    if (runtime.isBusy()) {
+      // NOT a "skip if running" check: the executor self-schedules successor
+      // turns, so reading busy at send time races the boundary and drops the kick.
+      const injected = this.injectWithoutWake(toLoop, origin, blocks, seq, true)
+      runtime.queueWake(event, seq, injected)
+      return { woke: false, reason: 'that loop is mid-turn; it reads this at its next step, or on a kick turn if the turn ends first' }
+    }
+    const woken = this.wakeWith(runtime, event, onError)
+    if (!woken.woke) {
+      this.logLoop('warn', 'loop_dispatch_dropped', toLoop, `Wake for an appended row (${origin}) was refused: ${woken.reason}. The row is in the stream and queued as context.`)
+      this.injectWithoutWake(toLoop, origin, blocks, seq)
+    }
+    return woken
+  }
+
+  /**
+   * Liveness only: an inner loop is running, enabled, not being stopped, and
+   * its executor is not stopped. Its error state and recovery_at are the
+   * shared rule's (timerFireTime over loopFacts). Main always can.
+   */
+  canReceive(name: string): boolean {
+    if (name === MAIN_LOOP) return true
+    if (this.stopping.has(name)) return false
+    const runtime = this.runtimes.get(name)
+    return !!runtime && runtime.enabled && !runtime.condemned && runtime.executor.getState() !== 'stopped'
+  }
+
+  /** An inner loop's published gate facts (the same ones the UI's store holds). */
+  loopFacts(name: string): { state: string; recoveryAt: number | null } {
+    const executor = this.runtimes.get(name)?.executor
+    return { state: executor?.getState() ?? 'idle', recoveryAt: executor?.getRecoveryAt() ?? null }
+  }
+
+  /** Each live inner loop's published recovery fact, for those in error that may recover (start/re-attach snapshot). */
+  sideLoopRecoveryAt(): Record<string, number> {
+    const out: Record<string, number> = {}
+    for (const runtime of this.runtimes.values()) {
+      const at = runtime.executor.getRecoveryAt()
+      if (at !== null) out[runtime.name] = at
+    }
+    return out
+  }
+
   /** Put an already-persisted row into a live session without a second row.
    *  `loopName` is the TARGET (which session the row lands in); `fromLoop` is the
    *  SENDER and is what the provenance origin must carry (A9). */
-  private injectWithoutWake(loopName: string, fromLoop: string, blocks: ContentBlock[], seq: number, wake = false): boolean {
+  private injectWithoutWake(loopName: string, origin: string, blocks: ContentBlock[], seq: number, wake = false): boolean {
     const session = loopName === MAIN_LOOP
       ? this.deps.main.session
       : this.runtimes.get(loopName)?.session
@@ -689,16 +730,19 @@ export class LoopPool implements LoopPoolApi {
     // only live render. Emitting the SAME stamped text the row holds makes both
     // paths render identically (the renderer reads the `[from loop:…]` stamp
     // off the content in either case). Unconditional so the empty-but-busy
-    // race below does not swallow the card (review C5).
-    this.deps.onLoopEvent({
-      type: 'context_injected',
-      // The row is already persisted, so its seq rides along: the entry the
-      // chat panel appends live then wears the same `metadata.seq` the
-      // rehydrated row does (pagination cursor only; nothing renders it).
-      payload: { category: 'loop', origin: `loop:${fromLoop}`, content: text, delivery: 'next_boundary', seq },
-      timestamp: Date.now(),
-      loop: loopName,
-    })
+    // race below does not swallow the card (review C5). Best-effort: a host
+    // whose render throws must not stop the injection and the kick below.
+    try {
+      this.deps.onLoopEvent({
+        type: 'context_injected',
+        // The row is already persisted, so its seq rides along: the entry the
+        // chat panel appends live then wears the same `metadata.seq` the
+        // rehydrated row does (pagination cursor only; nothing renders it).
+        payload: { category: 'loop', origin, content: text, delivery: 'next_boundary', seq },
+        timestamp: Date.now(),
+        loop: loopName,
+      })
+    } catch { /* render is best-effort */ }
     // Inject only when the session is live. An empty (released) session
     // rehydrates from the stream on its next dispatch and would then hold BOTH
     // the row and this injection. Returns false so a busy-path caller knows the
@@ -708,7 +752,7 @@ export class LoopPool implements LoopPoolApi {
     // `wake` marks a wake:true delivery: read at the next model boundary if the
     // turn continues, else the pool runs one more turn at the boundary to drain
     // it (see consumePendingWake / consumeMainWake).
-    session.queueContextInjection({ role: 'user', text, category: 'loop', origin: `loop:${fromLoop}`, seq, ...(wake ? { wake: true } : {}) })
+    session.queueContextInjection({ role: 'user', text, category: 'loop', origin, seq, ...(wake ? { wake: true } : {}) })
     return true
   }
 
@@ -732,11 +776,12 @@ export class LoopPool implements LoopPoolApi {
   /** Dispatch a turn carrying a row that is ALREADY in the target's stream.
    *  Returns false when the router refused (disabled loop, suspended agent) —
    *  the row is already durable either way. */
-  private wakeWith(runtime: LoopRuntime, blocks: ContentBlock[], seq: number | undefined, fromLoop = 'main'): { woke: boolean; reason?: string } {
-    const value = createDispatch(this.wakeEvent(blocks, seq, fromLoop), { scope: 'agent', loop: runtime.name })
+  private wakeWith(runtime: LoopRuntime, event: AdfEvent, onError?: (error: unknown, dispatch: AdfEventDispatch) => void): { woke: boolean; reason?: string } {
+    const value = createDispatch(event, { scope: 'agent', loop: runtime.name })
     const routed = this.dispatchToLoop(runtime.name, value)
     if (!routed.ok) return { woke: false, reason: routed.reason }
     void routed.done.catch(error => {
+      onError?.(error, value)
       console.error(`[LoopPool] Wake turn on loop "${runtime.name}" failed:`, error)
       this.logLoop('error', 'loop_wake_failed', runtime.name, `Wake turn failed: ${error instanceof Error ? error.message : String(error)}`)
     })
@@ -759,13 +804,13 @@ export class LoopPool implements LoopPoolApi {
       // the drain delivers exactly once.
       const entries = runtime.takeAllPendingWakes()
       if (entries.length === 0) return
-      const rep = pickKickRepresentative(entries, runtime.session)
+      const rep = pickKickRepresentative(entries, runtime.executor.getModelSeenSeq(), runtime.session)
       if (!rep) return   // every injection already drained mid-turn — nothing left to deliver
       // The router decides AFTER the take (the agent can be suspended between
       // the turn boundary and this tick), so a refusal must put the wake back —
       // dropping it here loses the only thing that would ever wake the loop on
       // that row.
-      const woken = this.wakeWith(runtime, rep.blocks, rep.seq)
+      const woken = this.wakeWith(runtime, rep.event)
       if (!woken.woke) runtime.returnPendingWake(rep)
     })
   }
@@ -796,12 +841,9 @@ export class LoopPool implements LoopPoolApi {
       // already drained mid-turn ⇒ no kick.
       const entries = this.mainPendingWakes.splice(0)
       if (entries.length === 0) return
-      const rep = pickKickRepresentative(entries, this.deps.main.session)
+      const rep = pickKickRepresentative(entries, this.deps.main.modelSeenSeq(), this.deps.main.session)
       if (!rep) return
-      const value = createDispatch(
-        this.wakeEvent(rep.blocks, rep.seq, rep.fromLoop ?? MAIN_LOOP),
-        { scope: 'agent', loop: MAIN_LOOP }
-      )
+      const value = createDispatch(rep.event, { scope: 'agent', loop: MAIN_LOOP })
       void this.deps.main.dispatch(value).catch(error => {
         console.error('[LoopPool] Queued wake turn on main failed:', error)
         this.mainPendingWakes.unshift(rep)

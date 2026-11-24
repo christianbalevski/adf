@@ -612,7 +612,6 @@ export class AdfDatabase {
     getDueTimers?: Database.Statement
     getNextTimerWake?: Database.Statement
     getTotalChanges?: Database.Statement
-    expireTimer?: Database.Statement
     readFile?: Database.Statement
     fileContentEquals?: Database.Statement
     writeFile?: Database.Statement
@@ -3436,11 +3435,6 @@ export class AdfDatabase {
     this.stmts.getTotalChanges = this.db.prepare(
       'SELECT total_changes()'
     ).pluck()
-    // Completed timers are flagged, not deleted — they fire one last time
-    // right after settling, so stamp the run onto the row for history.
-    this.stmts.expireTimer = this.db.prepare(
-      'UPDATE adf_timers SET expired = 1, run_count = run_count + 1, last_fired_at = ? WHERE id = ?'
-    )
 
     // Files
     this.stmts.readFile = this.db.prepare(
@@ -4779,6 +4773,23 @@ export class AdfDatabase {
     })
   }
 
+  /**
+   * Settle one due occurrence: expire the row (`nextWakeAt` null) or advance
+   * it, count the run and stamp the fire. Conditional on the row still being
+   * on that occurrence (same wake time and run count, not expired), so of two
+   * runtimes polling one file exactly one claim succeeds.
+   */
+  claimTimer(id: number, expectedNextWakeAt: number, expectedRunCount: number, nextWakeAt: number | null, firedAt: number): boolean {
+    const result = nextWakeAt === null
+      ? this.db.prepare(
+          'UPDATE adf_timers SET expired = 1, run_count = ?, last_fired_at = ? WHERE id = ? AND next_wake_at = ? AND run_count = ? AND expired = 0'
+        ).run(expectedRunCount + 1, firedAt, id, expectedNextWakeAt, expectedRunCount)
+      : this.db.prepare(
+          'UPDATE adf_timers SET next_wake_at = ?, run_count = ?, last_fired_at = ? WHERE id = ? AND next_wake_at = ? AND run_count = ? AND expired = 0'
+        ).run(nextWakeAt, expectedRunCount + 1, firedAt, id, expectedNextWakeAt, expectedRunCount)
+    return result.changes > 0
+  }
+
   /** Active timers whose wake time has passed — the set the evaluator fires. */
   getDueTimers(): Timer[] {
     const now = Date.now()
@@ -4796,21 +4807,6 @@ export class AdfDatabase {
     if (wake.nextWake === undefined || wake.nextWake > now) return []
     const rows = this.stmts.getDueTimers!.all(wake.nextWake, now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
     return rows.map((row) => this.rowToTimer(row))
-  }
-
-  /**
-   * Flag completed timers as expired (kept as history instead of deleted).
-   * Stamps the final run onto each row since expiry coincides with the last fire.
-   */
-  expireTimers(ids: number[], firedAt: number = Date.now()): number {
-    if (ids.length === 0) return 0
-    return this.transaction(() => {
-      let changes = 0
-      for (const id of ids) {
-        changes += this.stmts.expireTimer!.run(firedAt, id).changes
-      }
-      return changes
-    })
   }
 
   // ===========================================================================

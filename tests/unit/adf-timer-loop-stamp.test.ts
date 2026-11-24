@@ -68,7 +68,8 @@ describe.skipIf(skipAll)('addTimer loop stamp', () => {
     const now = Date.now() - 1_000
     const first = ws!.addTimer({ mode: 'once', at: now }, now)
     expect(ws!.getDueTimers().map(timer => timer.id)).toContain(first)
-    ws!.expireTimers([first])
+    const t = ws!.getDueTimers().find(x => x.id === first)!
+    expect(ws!.claimTimer(first, t.next_wake_at, t.run_count, null, Date.now())).toBe(true)
     expect(ws!.getDueTimers()).toEqual([])
     expect(ws!.getDueTimers()).toEqual([])
 
@@ -76,7 +77,8 @@ describe.skipIf(skipAll)('addTimer loop stamp', () => {
     try {
       const second = other.addTimer({ mode: 'once', at: now }, now)
       expect(ws!.getDueTimers().map(timer => timer.id)).toEqual([second])
-      other.expireTimers([second])
+      const u = other.getDueTimers().find(x => x.id === second)!
+      expect(other.claimTimer(second, u.next_wake_at, u.run_count, null, Date.now())).toBe(true)
       expect(ws!.getDueTimers()).toEqual([])
     } finally {
       other.close()

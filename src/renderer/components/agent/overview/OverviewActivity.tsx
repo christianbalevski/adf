@@ -41,6 +41,7 @@ import {
   type WaitingItem
 } from './agent-overview-model'
 import { openApi } from '../../../utils/runtime-api'
+import { useGateFacts, useTimerContext } from '../../../hooks/useTimerContext'
 
 export const readActivity: OverviewReader<AgentActivity> = (filePath, force) => openApi()?.getAgentActivity?.(filePath, { force })
 
@@ -89,7 +90,8 @@ export function Section({ title, aside, children }: { title: string; aside?: Rea
 // =============================================================================
 
 function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
-  const gate = useAgentStore((s) => s.gate)
+  const gate = useGateFacts()
+  const timerCtx = useTimerContext()
   const log = useAgentStore((s) => s.log)
   const structuralVersion = useAgentStore((s) => s.structuralVersion)
   const approvals = useAgentStore((s) => s.pendingApprovals)
@@ -146,7 +148,7 @@ function ComingUp({ activity, now }: { activity: AgentActivity; now: number }) {
                 </span>
               </button>
             ) : (
-              <TimerRow t={r.t} when={wakeCountdown(r.t, gate, now)} />
+              <TimerRow t={r.t} when={wakeCountdown(r.t, gate, now, timerCtx)} />
             )}
           </li>
         ))}

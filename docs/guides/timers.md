@@ -237,11 +237,11 @@ Inner loops themselves are more constrained: a timer set from inside one always 
 
 ## Timer Lifecycle
 
-Timers are polled on a **5-second tick** — the runtime wakes every 5s, collects every row whose `next_wake_at` has passed, settles it, then fires. Two consequences: schedules shorter than 5s are meaningless (the tick is the real floor), and any fire can land up to 5s late.
+Timers are polled on a **5-second tick** — the runtime wakes every 5s, collects every row whose `next_wake_at` has passed, and fires each one that can fire, earliest first. Two consequences: schedules shorter than 5s are meaningless (the tick is the real floor), and any fire can land up to 5s late.
 
 When a timer fires:
 
-1. Due rows are **settled first, before firing** — one-shot/exhausted timers are flagged `expired = 1`; recurring ones have `next_wake_at` advanced in place. (Settling first means a crash mid-fire cannot refire the batch on the next tick.) A row that `on_timer` admits in at least one of its scopes, and that the agent's state blocks in all of those scopes, is not settled; see [Missed Timers](#missed-timers).
+1. A timer with an agent part is **received**: in one database transaction the runtime settles it and writes its payload into the target loop's conversation ([spec §7.7](../../ADF_SPEC_v0.2.md#77-timer-firing)). An idle loop then runs a turn on it. A loop that is mid-turn reads it at its next model step, and runs one more turn only if the turn ends first, so a timer that fires during a turn no longer gets a turn of its own. A timer with no agent part is **settled first, before firing**, so a crash mid-fire cannot refire it. One-shot/exhausted timers are flagged `expired = 1`; recurring ones have `next_wake_at` advanced in place. A timer that cannot fire yet is not settled; see [Missed Timers](#missed-timers).
 2. `run_count` is incremented and `last_fired_at` is updated
 3. Payload is delivered to scope handler(s) that pass the dual-check
 4. **One-time / exhausted timers are NOT deleted** — they are flagged `expired = 1` and kept as history. `getDueTimers` selects only `expired = 0` rows, so an expired timer never fires again.
@@ -263,7 +263,7 @@ If the runtime loads an ADF with past-due timers (e.g., the app was closed), cat
 
 This prevents a flood of catch-up fires. However many intervals were missed, the timer fires once and gets back on schedule from the current time.
 
-The same rule covers a timer the agent's state (its main loop's state) blocks. Agent scope does not fire while the agent is `suspended`, in `error` or `off`, and system scope does not fire while it is `off`. A timer that `on_timer` admits in at least one of its scopes and that comes due while its state blocks all of those scopes is not settled: it stays due and fires on the first tick after the agent's state admits one of those scopes. A released timer is queued like any trigger; if the turn it waits behind ends in error, suspended, hibernate or off, it is lost. A timer with both scopes whose system half can fire does fire then, and is settled, so its agent half is not delivered later; this happens even when the timer has no lambda, so nothing runs.
+The same rule covers a timer that cannot fire yet. A timer with an agent part waits while its loop cannot receive it: the agent is `suspended` or `off`, the agent is in `error` and is not taking a recovery attempt now ([Agent States](agent-states.md#error)), or the timer's loop is disabled or itself in `error` outside its recovery budget. A timer whose loop no longer exists (it was deleted, and the timer was kept because it is locked) is not held: its agent part is dropped and logged as `loop_dispatch_dropped`, and its lambda, if any, runs on schedule. The whole row waits, so a timer with both scopes does not run its lambda either until the agent part can be received; while the agent is merely busy, both parts fire on schedule. No timer is settled while the agent is `off`. A waiting timer is not settled: it stays due and fires once on the first tick it can, so a recurring timer that missed several occurrences catches up once. Two runtimes that open the same file fire each occurrence once.
 
 ## Timer Storage
 

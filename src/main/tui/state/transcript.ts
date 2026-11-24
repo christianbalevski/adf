@@ -488,7 +488,7 @@ export function noticeFor(event: UmbilicalEvent): { text: string; level: 'info' 
     case 'llm.failed':
       return { text: `Model call failed${p.model ? ` (${String(p.model)})` : ''}`, level: 'warn' }
     case 'error.recovery_suppressed':
-      return { text: 'Error recovery suppressed — triggers are being dropped', level: 'warn' }
+      return { text: 'Recovery budget spent: timers stay due and messages stay unread; the next trigger after the cooldown, or a chat message, is the recovery attempt', level: 'warn' }
     case 'chat.discarded': {
       const count = typeof p.count === 'number' ? p.count : 0
       if (count === 0) return null

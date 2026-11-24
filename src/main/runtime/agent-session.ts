@@ -258,6 +258,14 @@ export class AgentSession implements FileRefHolder {
     return pending
   }
 
+  /** A pending injection of this row stops owing a boundary kick (the kick
+   *  was declined). True when such an injection is pending. */
+  unmarkWakeInjection(seq: number): boolean {
+    const pending = this.pendingContextInjections.find(i => i.seq === seq)
+    if (pending) delete pending.wake
+    return pending !== undefined
+  }
+
   getWorkspace(): AdfWorkspace {
     return this.workspace
   }
@@ -279,7 +287,15 @@ export class AgentSession implements FileRefHolder {
    *  keyed rows from the loop first, then the in-memory queue, so a keyed
    *  entry's newest pending value wins the key coalesce instead of being
    *  overwritten by the older persisted one, and unkeyed entries survive
-   *  verbatim with no double delivery.
+   *  verbatim with no double delivery. An undelivered injection whose row
+   *  the restore itself brings back (a row appended to the stream from
+   *  outside the turn: a timer, a loop_send) is dropped: the restored message
+   *  already delivers it.
+   *
+   *  A user row appended from outside the turn can sit between an assistant
+   *  tool_use and its tool_result in the stream. It is moved to just after
+   *  the result, so the provider never sees a call, a user message and then
+   *  the call's result.
    *
    *  Repairs orphaned tool blocks so the API doesn't reject:
    *  - Orphaned tool_result at the start (missing preceding tool_use)
@@ -296,9 +312,46 @@ export class AgentSession implements FileRefHolder {
         this.messages.push(message)
       }
     }
-    for (const injection of undelivered) this.queueContextInjection(injection)
+    const restored = new Set(this.messages.flatMap(m => typeof m.seq === 'number' ? [m.seq] : []))
+    for (const injection of undelivered) {
+      if (injection.seq === undefined || !restored.has(injection.seq)) this.queueContextInjection(injection)
+    }
+    this.moveRowsOutOfToolPairs()
     this.repairOrphanedToolResult()
     this.repairOrphanedToolUse()
+  }
+
+  /** Move user rows without tool results that sit inside an open tool pair
+   *  (after an assistant tool_use, before its results) to just after the last
+   *  result. A pair that never completes keeps them in place (the orphan
+   *  repair below strips the call). */
+  private moveRowsOutOfToolPairs(): void {
+    const out: LLMMessage[] = []
+    let open = new Set<string>()
+    let held: LLMMessage[] = []
+    for (const message of this.messages) {
+      const blocks = Array.isArray(message.content) ? message.content : []
+      const results = blocks.flatMap(b => b.type === 'tool_result' && b.tool_use_id ? [b.tool_use_id] : [])
+      if (open.size > 0 && message.role === 'user' && results.length === 0) {
+        held.push(message)
+        continue
+      }
+      if (message.role === 'assistant') {
+        out.push(...held)
+        held = []
+        open = new Set(blocks.flatMap(b => b.type === 'tool_use' && b.id ? [b.id] : []))
+        out.push(message)
+        continue
+      }
+      out.push(message)
+      for (const id of results) open.delete(id)
+      if (open.size === 0) {
+        out.push(...held)
+        held = []
+      }
+    }
+    out.push(...held)
+    this.messages = out
   }
 
   /** Scan ALL messages for tool_use blocks without matching tool_result

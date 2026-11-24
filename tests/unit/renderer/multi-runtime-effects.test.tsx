@@ -235,6 +235,8 @@ describe('overview next wake reads beyond a full blocked preview', () => {
     const { useAgentStore } = await import('../../../src/renderer/stores/agent.store')
     useDocumentStore.getState().setFilePath(PATH, HOST_1)
     useAgentStore.getState().setState(gate)
+    // A loaded agent: on_timer admits both scopes (timer predictions need the config).
+    useAgentStore.getState().setConfig({ triggers: { on_timer: { enabled: true, targets: [{ scope: 'agent' }, { scope: 'system' }] } } } as never)
     const { readActivity } = await import('../../../src/renderer/components/agent/overview/OverviewActivity')
     overview.reader = readActivity
     overview.activity = {

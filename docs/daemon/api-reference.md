@@ -11601,6 +11601,8 @@ Example 200 (`application/json`):
   "triggers": {
     "agentId": "Xk3v9QpLm2",
     "displayState": "string",
+    "recoveryAt": 0,
+    "loopRecoveryAt": {},
     "configured": [
       {
         "type": "string",
@@ -11670,6 +11672,8 @@ Example 200 (`application/json`):
 {
   "agentId": "Xk3v9QpLm2",
   "displayState": "string",
+  "recoveryAt": 0,
+  "loopRecoveryAt": {},
   "configured": [
     {
       "type": "string",
@@ -11724,6 +11728,8 @@ Example 200 (`application/json`):
 {
   "agentId": "Xk3v9QpLm2",
   "displayState": "string",
+  "recoveryAt": 0,
+  "loopRecoveryAt": {},
   "configured": [
     {
       "type": "string",
@@ -19636,6 +19642,8 @@ A provider carried in the agent's own config. Its API key is a credential (PUT â
 |---|---|---|---|
 | `agentId` | string | yes | Agent id |
 | `displayState` | string \| null | yes |  |
+| `recoveryAt` | integer |  | In `error`: the earliest time (epoch ms) a trigger may run as a recovery attempt, `0` = now. Absent when the agent is parked or not in error. |
+| `loopRecoveryAt` | map<string, integer> |  | The same fact for each inner loop in `error` that is not parked, keyed by loop name. |
 | `configured` | object[] | yes |  |
 | `configured[].type` | string | yes |  |
 | `configured[].enabled` | boolean | yes |  |
@@ -22500,7 +22508,7 @@ One timer due soon, as raw pieces. `system` timers carry `lambda` and `input`; `
 | `scopes` | string[] |  | Every scope the timer fires in (adf_timers.scope); absent from daemons before this field; empty if unreadable |
 | `lambda` | string |  | system: lambda reference, e.g. `lib/sync.ts:run` |
 | `input` | string |  | system: payload passed to the lambda |
-| `loop` | string |  | agent: loop the wake dispatches to (`main` when the timer names none) |
+| `loop` | string |  | The loop the agent part wakes (`main` when the timer names none); carried on every row |
 | `prompt` | string |  | agent: payload the loop wakes with |
 
 <a id="schema-agentactivityday"></a>

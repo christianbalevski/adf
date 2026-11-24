@@ -230,13 +230,13 @@ export interface UpcomingWake {
   /** 'system' runs a lambda; 'agent' wakes a loop. */
   scope: 'system' | 'agent'
   /** Every scope the timer fires in (adf_timers.scope); empty if unreadable.
-   *  Older daemons omit it: read it through wakeFires (trigger-gate). */
+   *  Older daemons omit it: read it through wakeFireTime (trigger-gate). */
   scopes?: string[]
   /** system: lambda reference, e.g. `lib/sync.ts:run`. */
   lambda?: string
   /** system: payload passed to the lambda, as stored (at most UPCOMING_TEXT_MAX chars). */
   input?: string
-  /** agent: loop the wake dispatches to (`main` when the row names none). */
+  /** The loop an agent part wakes (`main` when the row names none); carried on every row. */
   loop?: string
   /** agent: payload the loop wakes with (at most UPCOMING_TEXT_MAX chars). */
   prompt?: string

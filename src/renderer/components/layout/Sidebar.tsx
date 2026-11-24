@@ -99,7 +99,7 @@ async function startAgentsSequentially(
         if (file.filePath === currentFilePath) {
           const result = await openApi().startAgent()
           if (result.success) {
-            useAgentStore.getState().setState(result.agentState ?? 'idle')
+            useAgentStore.getState().setState(result.agentState ?? 'idle', undefined, result.recoveryAt)
           } else {
             reportFailure(`${name} did not start`, result.error)
           }

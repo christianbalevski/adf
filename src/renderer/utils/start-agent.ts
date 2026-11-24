@@ -94,7 +94,7 @@ export async function startForegroundAgent(options: StartForegroundOptions = {})
     }
     if (result?.success) {
       if (stillViewing) {
-        agentStore.setState(result.agentState ?? 'idle')
+        agentStore.setState(result.agentState ?? 'idle', undefined, result.recoveryAt)
         agentStore.setSessionId(result.sessionId ?? null)
         if (announce) {
           agentStore.addLogEntry({

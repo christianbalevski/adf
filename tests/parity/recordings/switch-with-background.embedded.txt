@@ -1546,6 +1546,7 @@
   args: []
   result:
     agentState: "idle"
+    loopRecoveryAt: {}
     loopStates: {}
     pendingApprovals: []
     pendingAsks: []

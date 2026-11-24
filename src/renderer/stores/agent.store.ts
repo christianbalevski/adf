@@ -15,7 +15,7 @@ import type { ApprovalEndedBy, ApprovalMeta } from '../../shared/types/ipc.types
 import type { AskQuestion } from '../../shared/utils/ask-form'
 import type { AskDraft } from '../components/agent/AskForm'
 import { toDisplayState } from '../../shared/utils/display-state'
-import { gateStateOf } from '../../shared/utils/trigger-gate'
+import { gateStateOf, type GateFacts } from '../../shared/utils/trigger-gate'
 
 /** A tool call awaiting HIL approval, with why + whether "Always approve" is allowed. */
 export type PendingApprovalInfo = { requestId: string } & Partial<ApprovalMeta>
@@ -124,9 +124,14 @@ export interface LoopSlice {
   state: AgentState
   /** The state the runtime gates triggers on (gateStateOf): differs from
    *  `state` while a turn waits on an approval or ask (shown as suspended,
-   *  gated as active). Read for main only: the runtime gates timers on
-   *  main's state, so a side loop's `gate` is kept but not read. */
+   *  gated as active). Read for main here; a side loop's facts are read
+   *  through `loopGateFacts` (timer prediction), and its slice field is kept
+   *  for display. */
   gate: string
+  /** In `error`: the recovery fact the executor publishes with state_changed
+   *  (`recovery_at`), which the trigger gate reads with `gate`. null when
+   *  parked or not in error. */
+  recoveryAt: number | null
   log: AgentLogEntry[]
   /** Monotonically increasing counter bumped on every log mutation. Subscribe to
    *  this instead of `log` when you only need to know *something* changed (e.g.
@@ -169,6 +174,7 @@ function emptySlice(): LoopSlice {
   return {
     state: 'idle',
     gate: 'idle',
+    recoveryAt: null,
     log: [],
     logVersion: 0,
     structuralVersion: 0,
@@ -229,8 +235,13 @@ interface AgentStoreState extends LoopSlice {
    */
   viewedLoop: string
 
-  /** An executor or display state: stores its display state and its gate. */
-  setState: (state: string, loop?: string) => void
+  /** Each side loop's gate facts, kept apart from `sideLoops` so a timer
+   *  prediction does not re-render on every side-loop log change. Replaced
+   *  only when a side loop's state changes. */
+  loopGateFacts: Record<string, GateFacts>
+  /** An executor or display state: stores its display state and its gate.
+   *  `recoveryAt` is the `recovery_at` an `error` state_changed carries. */
+  setState: (state: string, loop?: string, recoveryAt?: number | null) => void
   setSessionId: (id: string | null) => void
   addLogEntry: (entry: AgentLogEntry, loop?: string) => void
   settleOwnerCommand: (entry: AgentLogEntry, loop?: string) => void
@@ -334,6 +345,8 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
   return {
     state: 'off',
     gate: 'off',
+    recoveryAt: null,
+    loopGateFacts: {},
     sessionId: null,
     log: [],
     logVersion: 0,
@@ -352,7 +365,12 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
     pendingAsks: new Map(),
     pendingSuspend: null,
 
-    setState: (state, loop) => patchSlice(loop, () => ({ state: toDisplayState(state) as AgentState, gate: gateStateOf(state) })),
+    setState: (state, loop, recoveryAt) => {
+      const gate = gateStateOf(state)
+      const at = gate === 'error' ? recoveryAt ?? null : null
+      patchSlice(loop, () => ({ state: toDisplayState(state) as AgentState, gate, recoveryAt: at }))
+      if (!isMainLoop(loop)) set((s) => ({ loopGateFacts: { ...s.loopGateFacts, [loop!]: { state: gate, recoveryAt: at } } }))
+    },
     setSessionId: (sessionId) => set({ sessionId }),
     // NOT capped with a head-drop. That is a separate decision — but the
     // blocker is gone: "Load earlier" pages by the `seq` of the oldest LOADED
@@ -515,6 +533,7 @@ export const useAgentStore = create<AgentStoreState>((set, get) => {
         ...emptySlice(),
         state: 'off',
         gate: 'off',
+        loopGateFacts: {},
         sessionId: null,
         sideLoops: {},
         config: null,
