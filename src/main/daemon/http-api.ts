@@ -165,6 +165,8 @@ export interface DaemonNetworkService {
   getLanAddresses?(): unknown
   /** `force` (the refresh button) waits for a full scan. */
   getDiscoveredRuntimes?(args?: { force?: boolean }): Promise<unknown[]> | unknown[]
+  /** Fleet-map observations available immediately, with enrichment refreshed in the background. */
+  getFleetPeers?(): unknown[]
   /** The discovery feed (remote-access.md §5.1): every ADF computer found, with its mesh and remote access. */
   getPeers?(args: { waitMs?: number }): Promise<unknown[]>
 }
@@ -1912,12 +1914,17 @@ export function createDaemonHttpApi(
     }
   })
 
-  server.get<{ Params: AgentIdParams; Querystring: ResourceStatusQuery }>('/agents/:id/inbox', async (request, reply) => {
+  server.get<{ Params: AgentIdParams; Querystring: ResourceStatusQuery & { countOnly?: string } }>('/agents/:id/inbox', async (request, reply) => {
     if (!runtime.getAgentOrDocument(request.params.id)) return notFound(reply, `Unknown agent "${request.params.id}"`)
     const status = request.query.status
     if (status !== undefined && !isInboxStatus(status)) {
       return badRequest(reply, 'status must be one of: unread, read, archived')
     }
+    const countOnly = request.query.countOnly
+    if (countOnly !== undefined && !['1', '0', 'true', 'false'].includes(countOnly)) {
+      return badRequest(reply, 'countOnly must be 1, 0, true or false')
+    }
+    if (countOnly === '1' || countOnly === 'true') return runtime.getAgentInboxCount(request.params.id, status)
     return runtime.getAgentInbox(request.params.id, status)
   })
 
@@ -2555,13 +2562,7 @@ export function createDaemonHttpApi(
       const preflight = request.query?.preflight === '1' || request.query?.preflight === 'true'
       // A chat is queued behind this start: the startup turn skips its greeting (Studio's AGENT_START hasUserMessage).
       const hasUserMessage = request.query?.hasUserMessage === '1' || request.query?.hasUserMessage === 'true'
-      let credentialsLocked: string | undefined
-      if (preflight && !runtime.getAgent(request.params.id)) {
-        const check = await runtime.preflightProvider(request.params.id)
-        if (!check.ok) return reply.code(409).send({ error: check.error, code: check.code ?? 'provider_check_failed' })
-        credentialsLocked = check.credentialsLocked
-      }
-      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage, killEpoch })
+      const result = await runtime.startOrLoadAgent(request.params.id, { hasUserMessage, killEpoch, preflight })
       return {
         success: true,
         loaded: result.loaded,
@@ -2569,10 +2570,10 @@ export function createDaemonHttpApi(
         agent: runtime.getAgentStatus(result.ref.id),
         sessionId: runtime.getAgentSessionId(result.ref.id),
         // The provider key is stored but locked: the start went on, unchecked.
-        ...(credentialsLocked ? { preflight: { code: 'credentials_locked', message: credentialsLocked } } : {}),
+        ...(result.credentialsLocked ? { preflight: { code: 'credentials_locked', message: result.credentialsLocked } } : {}),
       }
     } catch (err) {
-      if (err instanceof Error && err.message.includes('unknown agent')) {
+      if (err instanceof Error && !(err instanceof RuntimeLoopError) && err.message.includes('unknown agent')) {
         return notFound(reply, `Unknown agent "${request.params.id}"`)
       }
       return handleRuntimeError(reply, err)

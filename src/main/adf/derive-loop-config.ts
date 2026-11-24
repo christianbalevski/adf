@@ -3,20 +3,15 @@
  *
  * A loop inherits the whole agent and overrides a small delta; it never gets
  * its own identity, credentials or channels. `deriveLoopConfig` is the single
- * place that delta is computed, and — together with the loop-scoped workspace —
- * the place the security model is actually enforced:
+ * place that delta is computed:
  *
  *   - tools          absolute allow-list, intersected with the host's enabled
- *                    set, minus the never-grantable names and every tool the
- *                    host marked `restricted`. No exceptions and no union:
- *                    `loop_send`/`loop_list` pass through this same rule
- *                    (superseding the §7.1 "essentials")
- *   - code_execution the attenuated side-loop profile (§2.2) AND-ed with the
- *                    host's own settings (a loop never gains a method the
- *                    agent has off), with no inherited sandbox packages: the
- *                    section the tool
- *                    allow-list never touched, and the reason a code-capable
- *                    loop is not a skeleton key
+ *                    set. A loop can hold any tool the agent holds, restricted
+ *                    ones included; which ones is main's and the owner's call.
+ *                    No union: `loop_send`/`loop_list` pass through this same
+ *                    rule (superseding the §7.1 "essentials")
+ *   - code_execution inherited from the host as-is (packages included); the
+ *                    owner controls a loop's code by granting sys_code/sys_lambda
  *   - triggers       only the parent targets that name this loop, and never a
  *                    `system`-scope one (§2.3 SEC-2/5)
  *   - loops          always empty — loops do not nest
@@ -25,11 +20,8 @@
  */
 
 import {
-  CODE_EXECUTION_DEFAULTS,
-  LOOP_PROHIBITED_TOOLS,
   hasLoopGoal,
   type AgentConfig,
-  type CodeExecutionConfig,
   type LoopConfig,
   type ToolDeclaration,
   type TriggerConfig,
@@ -66,43 +58,15 @@ export const MAIN_LOOP = 'main'
 export const LOOP_DEFAULT_ON_TOOLS = ['loop_compact', 'loop_clear'] as const
 
 /**
- * The one code_execution profile a side loop ever runs under.
- *
- * Allowed — process the body, invoke models, read envelope *state*, and signal
- * sibling loops (`emit_event` is the inter-loop bus).
- * Denied — `get_identity`/`set_identity` (credential exfil), `task_resolve`
- * (cross-loop task hijack), every `attestation_*` method (signing/holding
- * certs is an identity act), and `network` (egress; opt-in even for main).
- *
- * This lands side-loop code at the same trust level as the existing
- * compute_exec/MCP code-exec escape hatches: code without identity.
- */
-export const SIDE_LOOP_CODE_EXECUTION: CodeExecutionConfig = {
-  model_invoke: true,
-  sys_lambda: true,
-  identity_status: true,
-  loop_inject: true,
-  emit_event: true,
-  get_identity: false,
-  set_identity: false,
-  task_resolve: false,
-  attestation_list: false,
-  attestation_add: false,
-  attestation_issue: false,
-  network: false,
-  restricted_methods: ['attestation_issue']
-}
-
-/**
  * The standing preamble prepended to every side loop's `instructions`.
  *
  * A side loop's model otherwise wakes up holding only its goal, with the tool
  * schemas of an agent it cannot tell it is only a facet of — it will try to
  * answer the human, guard its "own" identity, or narrate status like main does.
  * This is the smallest text that fixes that: who it is, what it is inside of,
- * who owns the outside world, how to reach the rest of itself, and when to stop.
+ * who faces the outside world, how to reach the rest of itself, and when to stop.
  *
- * Deliberately ~170 words: it is re-sent on every turn of every loop, so its
+ * Deliberately ~150 words: it is re-sent on every turn of every loop, so its
  * cost multiplies by loop count. Exported so tests can pin the exact text.
  *
  * `grantedTools` is the loop's effective toolset. The "reach the rest of
@@ -125,16 +89,16 @@ export function buildLoopPreamble(
   }
 
   const reachParagraph = reach.length === 0
-    // Still true, and still the thing the loop most needs to know: nothing it
-    // produces travels on its own.
-    ? 'You have no tool for addressing the other loops. Do your work in your own stream and leave it there. Anything that touches the outside world is main\'s to do.'
+    // The thing a mute loop most needs to know: nothing it produces reaches
+    // another loop on its own.
+    ? 'You have no tool for addressing the other loops. Do your work in your own stream and leave it there.'
     : `To reach the rest of yourself: ${reach.join(', and ')}.${granted.has('loop_send')
-        ? ' Anything that has to touch the outside world goes to main as a request, and main decides.'
-        : ' Anything that touches the outside world is main\'s to do.'}`
+        ? ' Outside work your own tools do not cover goes to main as a request, and main decides.'
+        : ''}`
 
-  return `You are the "${loopName}" loop, one cognition stream inside agent "${agentHandle}". You share that agent's \`.adf\` body, memory tables, files, and identity with the "main" loop and any sibling loops. You have no identity, credentials, or config of your own and cannot change the agent's.
+  return `You are the "${loopName}" loop, one cognition stream inside agent "${agentHandle}". You share that agent's \`.adf\` body, config, memory tables, files, and identity with the "main" loop and any sibling loops. You have no identity of your own.
 
-"main" owns the outside world: the inbox, messaging, channels, and the human. You are an interior process with a small toolset for that reason.
+"main" faces the outside world: the inbox, channels, and the human. You hold the tools you were given for your goal, and no others.
 
 ${reachParagraph}
 
@@ -205,7 +169,7 @@ export function buildMainLoopsSection(
     return [
       '## Inner Loops',
       '',
-      'You can run **inner loops**: named cognition streams inside you that share your `.adf` body, memory, files, and identity, each with its own goal and a small subset of your tools. You are "main", the stream that faces the outside world (inbox, messaging, channels, your principal). You have none yet. `loop_manage` creates, updates, and deletes them; deleting archives the stream rather than dropping it.',
+      'You can run **inner loops**: named cognition streams inside you that share your `.adf` body, memory, files, and identity, each with its own goal and the subset of your tools you give it. You are "main", the stream that faces the outside world (inbox, messaging, channels, your principal). You have none yet. `loop_manage` creates, updates, and deletes them; deleting archives the stream rather than dropping it.',
       ...(invited.length > 0 ? ['', `${invited.join(', and ')}.`] : []),
       '',
       LOOP_ARCHETYPES,
@@ -219,7 +183,7 @@ export function buildMainLoopsSection(
   const lines = [
     '## Your Loops',
     '',
-    'You are "main": one cognition stream of this agent, the one that faces the outside world (inbox, messaging, channels, your principal). The agent also runs these inner loops, sharing your `.adf` body, memory, files, and identity, each with a small toolset of its own:',
+    'You are "main": one cognition stream of this agent, the one that faces the outside world (inbox, messaging, channels, your principal). The agent also runs these inner loops, sharing your `.adf` body, memory, files, and identity, each with the subset of your tools it was given:',
     '',
     roster,
     '',
@@ -274,40 +238,13 @@ function dedupedHostTools(host: Pick<AgentConfig, 'tools'>): ToolDeclaration[] {
 }
 
 /**
- * MCP servers can mark every tool they expose as restricted, without that
- * showing up on the individual tool declaration. Mirrors
- * AgentExecutor.mcpServerIsRestricted.
+ * Host tools a side loop can be granted right now: every enabled one. This is
+ * the list `loop_manage` quotes back when a create names a tool that does not
+ * exist — discovery happens through the error path.
  */
-function mcpServerIsRestricted(host: Pick<AgentConfig, 'mcp'>, toolName: string): boolean {
-  if (!toolName.startsWith('mcp_')) return false
-  const parts = toolName.split('_')
-  if (parts.length < 3) return false
-  return host.mcp?.servers?.find(s => s.name === parts[1])?.restricted === true
-}
-
-/** Never grantable to a side loop: the hard names, plus anything HIL-gated. */
-function isProhibitedForLoop(
-  host: Pick<AgentConfig, 'tools' | 'mcp'>,
-  decl: ToolDeclaration | undefined,
-  toolName: string
-): boolean {
-  if ((LOOP_PROHIBITED_TOOLS as readonly string[]).includes(toolName)) return true
-  // A restricted tool would park a HIL approval on a side-loop executor, whose
-  // approval channel the filePath/singleton-keyed IPC cannot reach (MVP).
-  if (decl?.restricted === true) return true
-  return mcpServerIsRestricted(host, toolName)
-}
-
-/**
- * Host tools a side loop can be granted right now: enabled, not prohibited, not
- * restricted. This is the list `loop_manage` quotes back when a create names a
- * tool that does not exist — discovery happens through the error path.
- */
-export function listAvailableLoopTools(host: Pick<AgentConfig, 'tools' | 'mcp'>): string[] {
-  // Deduped, so this never advertises a name `validateLoopToolList` then
-  // rejects (a duplicated declaration whose restricted copy comes second).
+export function listAvailableLoopTools(host: Pick<AgentConfig, 'tools'>): string[] {
   return dedupedHostTools(host)
-    .filter(decl => decl.enabled && !isProhibitedForLoop(host, decl, decl.name))
+    .filter(decl => decl.enabled)
     .map(decl => decl.name)
 }
 
@@ -324,35 +261,27 @@ export function listAvailableLoopTools(host: Pick<AgentConfig, 'tools' | 'mcp'>)
  *                  an owner preference that may flip back on tomorrow, and the
  *                  allow-list is re-intersected on every derive — so the name
  *                  is kept in `loop.tools` and simply carries no grant today.
- * - `prohibited` — declared and enabled, but never grantable to a side loop
- *                  (hard names, or restricted by declaration/MCP server). The
- *                  caller REJECTS: this is the security boundary, not taste.
+ *
+ * A restricted tool is `ok`: granted, it asks the human for approval in the
+ * loop's own tab, exactly as it does on main.
  *
  * `disabled` used to be folded into `unknown`, which made an owner's harmless
  * "off for now" indistinguishable from a typo and failed the whole create.
  */
 export function validateLoopToolList(
-  hostConfig: Pick<AgentConfig, 'tools' | 'mcp'>,
+  hostConfig: Pick<AgentConfig, 'tools'>,
   tools: string[]
-): { ok: string[]; unknown: string[]; disabled: string[]; prohibited: string[] } {
+): { ok: string[]; unknown: string[]; disabled: string[] } {
   const ok: string[] = []
   const unknown: string[] = []
   const disabled: string[] = []
-  const prohibited: string[] = []
 
   const declarations = dedupedHostTools(hostConfig)
 
   for (const name of tools) {
     const decl = declarations.find(t => t.name === name)
-    if ((LOOP_PROHIBITED_TOOLS as readonly string[]).includes(name)) {
-      prohibited.push(name)
-    } else if (!decl) {
+    if (!decl) {
       unknown.push(name)
-    } else if (isProhibitedForLoop(hostConfig, decl, name)) {
-      // Ordered ahead of the disabled check on purpose: a name that is BOTH
-      // restricted and disabled is reported as the security refusal, because
-      // that is the reason enabling it would not help.
-      prohibited.push(name)
     } else if (!decl.enabled) {
       disabled.push(name)
     } else {
@@ -360,7 +289,7 @@ export function validateLoopToolList(
     }
   }
 
-  return { ok, unknown, disabled, prohibited }
+  return { ok, unknown, disabled }
 }
 
 /**
@@ -386,25 +315,26 @@ function deriveTools(parent: AgentConfig, loop: LoopConfig): ToolDeclaration[] {
   for (const name of LOOP_DEFAULT_ON_TOOLS) {
     const decl = declarations.find(t => t.name === name)
     if (decl?.enabled === false) continue   // explicit host disable wins
-    // Default-on is not a bypass of the prohibition check: a host that marked
-    // loop_compact/loop_clear `restricted` (or that HIL-gates them via an MCP
-    // server) HIL-gates them for main, and a side loop has no approval channel
-    // to park that on — so it simply does not get them.
-    if (isProhibitedForLoop(parent, decl, name)) continue
     granted.add(name)
   }
 
-  // LOAD-BEARING: derived declarations carry name/enabled/visible ONLY —
-  // `restricted` (and `locked`) are deliberately dropped. adf-call-handler.ts
-  // computes `authorizedBypass = !!toolDecl.restricted && authorized`, so a
-  // restricted flag carried into a side loop would let that loop's authorized
-  // code call the tool while bypassing the disabled/HIL checks. Nothing
-  // restricted is ever granted above, so dropping the flag loses no guard.
-  const derived: ToolDeclaration[] = declarations.map(decl => ({
-    name: decl.name,
-    enabled: granted.has(decl.name),
-    visible: granted.has(decl.name)
-  }))
+  // LOAD-BEARING: `restricted` and `locked` ride along on GRANTED tools only.
+  // adf-call-handler.ts computes `authorizedBypass = !!toolDecl.restricted &&
+  // authorized` and skips the enabled check on it, so a restricted flag on a
+  // tool this loop was NOT given would let the loop's authorized code call it
+  // anyway. A non-granted tool is therefore a bare {name, enabled:false,
+  // visible:false}. A granted restricted tool behaves exactly as on main: an
+  // LLM call asks the human for approval, authorized code bypasses.
+  const derived: ToolDeclaration[] = declarations.map(decl => {
+    if (!granted.has(decl.name)) return { name: decl.name, enabled: false, visible: false }
+    return {
+      name: decl.name,
+      enabled: true,
+      visible: true,
+      ...(decl.restricted ? { restricted: true } : {}),
+      ...(decl.locked ? { locked: true } : {})
+    }
+  })
 
   // Default-on tools the host never declared (`loop_compact`/`loop_clear` on a
   // config that predates them).
@@ -454,26 +384,6 @@ function deriveTriggers(parent: AgentConfig, loopName: string): TriggersConfigV3
 }
 
 /**
- * A loop never holds a code-execution capability the agent itself lacks: every
- * boolean permission is the AND of the fixed side-loop profile and the host's
- * EFFECTIVE setting (absent keys read as CODE_EXECUTION_DEFAULTS, exactly as
- * adf-call-handler does). The profile only ever narrows; the host only ever
- * narrows. Re-run on every derive, so a host revocation reaches live loops.
- */
-function deriveLoopCodeExecutionFlags(parent: AgentConfig): CodeExecutionConfig {
-  const host = { ...CODE_EXECUTION_DEFAULTS, ...parent.code_execution }
-  const result = cloneJson(SIDE_LOOP_CODE_EXECUTION)
-  const flags = result as unknown as Record<string, unknown>
-  const hostFlags = host as unknown as Record<string, unknown>
-  for (const [key, value] of Object.entries(SIDE_LOOP_CODE_EXECUTION)) {
-    if (typeof value !== 'boolean') continue
-    // `network` defaults false; any non-true host value means "off".
-    flags[key] = value && hostFlags[key] === true
-  }
-  return result
-}
-
-/**
  * The config a side loop's executor runs under. Pure: `parent` is never
  * mutated and the result shares no sub-object with it, so a later host-config
  * mutation cannot reach into a live loop.
@@ -520,21 +430,8 @@ ${loop.goal}`
     derived.context = { ...derived.context, compact_threshold: loop.compact_threshold }
   }
   derived.triggers = deriveTriggers(parent, loop.name)
-  derived.code_execution = {
-    ...deriveLoopCodeExecutionFlags(parent),
-    // No inherited packages. A pure-JS package is loaded in the sandbox worker
-    // through a worker-scope `createRequire` with an UNRESTRICTED `require` —
-    // the package body can reach child_process/fs/net — so an inherited package
-    // is worldly authority that walks straight around the attenuated profile
-    // above. Per-loop package grants are F3.
-    packages: [],
-    // Restrictions only ever accumulate.
-    restricted_methods: Array.from(new Set([
-      ...(SIDE_LOOP_CODE_EXECUTION.restricted_methods ?? []),
-      ...(parent.code_execution?.restricted_methods ?? [])
-    ]))
-  }
-  // Loops do not nest: loop_manage is main-only.
+  // code_execution rides along from the clone, packages included.
+  // Loops do not nest: the roster is flat and lives on the agent.
   derived.loops = []
   derived.metadata = { ...derived.metadata, loop_name: loop.name }
 

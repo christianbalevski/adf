@@ -416,9 +416,12 @@ export class DaemonClient {
     })
   }
 
-  /** PUT /client/sessions/:id/focus: the agent whose deltas and full tool results this session gets (null: none). */
-  setClientSessionFocus(sessionId: string, agentId: string | null): Promise<ClientSessionFocus> {
-    return this.put(`/client/sessions/${enc(sessionId)}/focus`, { agentId })
+  /**
+   * PUT /client/sessions/:id/focus: the agent whose deltas and full tool results this session gets (null: none).
+   * `visible: false`: the client keeps the agent open but does not show it (Home, a closed window).
+   */
+  setClientSessionFocus(sessionId: string, agentId: string | null, visible = true): Promise<ClientSessionFocus> {
+    return this.put(`/client/sessions/${enc(sessionId)}/focus`, visible ? { agentId } : { agentId, visible: false })
   }
 
   /** POST /client/sessions/:id/documents: hold an agent file open for this session. */
@@ -800,6 +803,14 @@ export class DaemonClient {
 
   inbox(agentId: string, status?: InboxStatus): Promise<InboxResult> {
     return this.get(`/agents/${enc(agentId)}/inbox`, { status })
+  }
+
+  async inboxCount(agentId: string, status?: InboxStatus): Promise<number> {
+    const result = await this.get<{ count: number } | InboxResult>(
+      `/agents/${enc(agentId)}/inbox`, { status, countOnly: 1 },
+    )
+    // Older daemons ignore countOnly and send their usual filtered messages.
+    return 'count' in result ? result.count : result.messages.length
   }
 
   clearInbox(agentId: string): Promise<SuccessResult & { deleted: number }> {

@@ -51,6 +51,23 @@ describe('DaemonModeSession (D3)', () => {
     expect(client.focus.at(-1)).toBeNull()
   })
 
+  it('Home and a closed window keep the focus and send it as not visible, until both are undone', async () => {
+    const client = createFakeClientSession(() => 'id-1')
+    client.holdsAvailable = true
+    const session = new DaemonModeSession(client, quiet)
+    await session.openFile('/a/agent-1.adf', async () => null)
+    const sent = async () => { await new Promise((r) => setTimeout(r, 0)); return [client.focus.at(-1), client.focusVisible.at(-1)] }
+    expect(await sent()).toEqual(['id-1', true])
+    session.setFileVisible(false)
+    expect(await sent()).toEqual(['id-1', false])
+    session.setWindowOpen(false)
+    session.setFileVisible(true)
+    expect(await sent()).toEqual(['id-1', false])
+    session.setWindowOpen(true)
+    expect(await sent()).toEqual(['id-1', true])
+    expect(session.focusAgentId).toBe('id-1')
+  })
+
   it('without client sessions (until W2-B) resolves the running agent and logs the gap once', async () => {
     const warnings: string[] = []
     const session = new DaemonModeSession(createFakeClientSession(), { log: () => {}, warn: (m: string) => { warnings.push(m) } })
@@ -226,7 +243,7 @@ describe('native notifier and approvals reveal fed from the stream', () => {
     electronStub.toastClicks.length = 0
     let enabled = true
     const ui = new ApprovalsUi({
-      notificationsEnabled: () => enabled,
+      setting: (key) => key === 'nativeNotificationsEnabled' ? enabled : undefined,
       menuBarEnabled: () => false,
       agents: () => [],
       foreground: () => null,

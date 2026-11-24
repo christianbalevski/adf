@@ -25,9 +25,7 @@ export class SayTool implements Tool {
   readonly inputSchema = InputSchema
   readonly category = 'general' as const
 
-  async execute(input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
-    input as z.infer<typeof InputSchema>
-
+  async execute(_input: unknown, _workspace: AdfWorkspace): Promise<ToolResult> {
     return {
       content: 'ok',
       isError: false,

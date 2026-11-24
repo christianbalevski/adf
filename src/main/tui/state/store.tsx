@@ -183,6 +183,8 @@ export type Outcome<T> =
 export interface TuiStore {
   /** The current daemon client (replaced by `actions.setDaemonUrl`). */
   readonly client: DaemonClient
+  /** True for requests from the same daemon, even after the session header changes. */
+  isCurrentClient(client: DaemonClient): boolean
   readonly actions: TuiActions
   getState(): TuiState
   dispatch(action: TuiAction): void
@@ -201,6 +203,7 @@ export interface TuiStore {
 export interface CreateStoreOptions {
   client: DaemonClient
   initialView?: string
+  initialAgent?: { identifier: string; loop?: string }
   /** Subscribe to live events. Default true. */
   live?: boolean
   /**
@@ -220,8 +223,11 @@ const WEB_EVENT_DEBOUNCE_MS = 900
 /** How long a resumed stream waits for stream.hello before resyncing anyway (older daemon). */
 const RESUME_VERDICT_MS = 1500
 const WEB_POLL_MS = 20_000
-/** Tracked folders' agents: Studio or the file system may add / remove .adf files; no event says so. Cheap (the daemon caches peeks by mtime). */
+/** Legacy or interrupted live streams cannot deliver tracked-directory pushes. */
 const TRACKED_POLL_MS = 15_000
+/** Catch changes the watcher skips, outages, and a disabled watcher. */
+const TRACKED_RECONCILE_MS = 60_000
+const TRACKED_DEBOUNCE_MS = 250
 /** The overlay kind of the fleet's folder-agents dialog (views/fleet/folders.ts TRACK_OVERLAY). */
 const FOLDER_OVERLAY = 'fleet.track'
 
@@ -243,6 +249,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   let current = new WeakSet<DaemonClient>([client])
   const pageSize = options.pageSize ?? 100
   let state = initialState(client.baseUrl, options.initialView)
+  let initialAgent = options.initialAgent
   // Explicit selection changes invalidate a pending start's auto-selection;
   // reducer reconciliation from a tracked path to a loaded ID does not.
   let selectionRevision = 0
@@ -267,7 +274,9 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   /** When the last resync started: a resume verdict and its stream.gap trigger one, not two. */
   let lastResyncAt = 0
   let webTick: ReturnType<typeof setInterval> | null = null
-  let trackedTick: ReturnType<typeof setInterval> | null = null
+  let trackedTick: ReturnType<typeof setTimeout> | null = null
+  let trackedPollDelay = TRACKED_POLL_MS
+  let trackedRead: { dirty: boolean; promise: Promise<void> } | null = null
   let stopped = false
   /** Set when the daemon was unreachable; the next successful open resyncs. */
   let needsResync = false
@@ -333,7 +342,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     }
   }
   /** Requests name session `id` from now on (null: none). */
-  const useSession = (id: string | null) => {
+  const adoptSession = (id: string | null) => {
     client = id ? plain.withClientSession(id) : plain
     current.add(client)
   }
@@ -362,6 +371,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       client = next
       plain = next
       current = new WeakSet([next])
+      initialAgent = undefined
+      resetTracked()
       historyGenerations.clear()
       dispatch({ type: 'daemon/switch', url: next.baseUrl })
       toast(`Switched from ${previous} to ${next.baseUrl} — agents on the old daemon keep running`, 'success', 6000)
@@ -375,8 +386,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
         const agents = await c.agents()
         if (stale(c)) return
         dispatch({ type: 'daemon/reachable', reachable: true })
-        dispatch({ type: 'agents/loaded', agents })
-        await Promise.all(agents.map(agent => actions.refreshAgent(agent.id)))
+        const requested = selectionRevision === 0 ? initialAgent : undefined
+        initialAgent = undefined
+        const match = requested && agents.find(({ id, handle, name }) =>
+          requested.identifier === id || requested.identifier === handle || requested.identifier === name)
+        dispatch({ type: 'agents/loaded', agents, initialSelection: match ? { agentId: match.id, loop: requested?.loop } : undefined })
+        if (requested && !match) toast(`No loaded agent "${requested.identifier}"`, 'warn')
+        const initialHistory = match && actions.ensureTranscript(match.id, selectedLoopOf(match.id))
+        await Promise.all([initialHistory, ...agents.map(agent => actions.refreshAgent(agent.id))])
+        if (stale(c)) return
         const selected = state.selectedAgentId
         if (selected && !isTrackedKey(selected)) await actions.ensureTranscript(selected, selectedLoopOf(selected))
       } catch (err) {
@@ -484,20 +502,8 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       }
     },
 
-    async refreshTracked() {
-      const c = client
-      try {
-        const list = await c.trackedAgents()
-        if (!stale(c)) dispatch({ type: 'tracked/loaded', list })
-      } catch (err) {
-        if (stale(c)) return
-        // No settings store / an old daemon: no tracked list, nothing to show.
-        if (err instanceof DaemonError && (err.status === 404 || err.status === 503)) {
-          if (!state.tracked) dispatch({ type: 'tracked/loaded', list: { maxDepth: 0, folders: [] } })
-          return
-        }
-        dispatch({ type: 'tracked/error', error: describe(err) })
-      }
+    refreshTracked() {
+      return refreshTracked(true)
     },
 
     async startTracked(key, options = {}) {
@@ -1014,7 +1020,12 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     switch (event.event_type) {
       case 'agent.loaded':
       case 'agent.unloaded':
-        debounce('agents', () => { void actions.refreshAgents().then(() => actions.refreshTracked()) }, 250)
+        debounce('agents', () => {
+          const c = client
+          // Read the roster before listing ghosts so the old live row
+          // cannot hide a just-unloaded file.
+          void actions.refreshAgents().then(() => { if (!stale(c) && !stopped) invalidateTracked() })
+        }, 250)
         // The daemon (re)starts / rebinds its web server as agents register.
         debounce('web', () => { void actions.refreshWeb() }, WEB_EVENT_DEBOUNCE_MS)
         return
@@ -1069,14 +1080,82 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     }
   }
 
+  function invalidateTracked() {
+    debounce('tracked', () => { void actions.refreshTracked() }, TRACKED_DEBOUNCE_MS)
+  }
+
+  function trackedDelay(): number {
+    return sessionId && state.connection.state === 'open' ? TRACKED_RECONCILE_MS : TRACKED_POLL_MS
+  }
+
+  function scheduleTrackedPoll() {
+    if (trackedTick) clearTimeout(trackedTick)
+    trackedTick = null
+    if (stopped || options.live === false) return
+    trackedPollDelay = trackedDelay()
+    trackedTick = setTimeout(() => {
+      trackedTick = null
+      void refreshTracked(false)
+    }, trackedPollDelay)
+  }
+
+  function resetTracked() {
+    if (trackedTick) clearTimeout(trackedTick)
+    trackedTick = null
+    trackedRead = null
+  }
+
+  function refreshTracked(invalidated: boolean): Promise<void> {
+    if (stopped) return Promise.resolve()
+    if (invalidated) {
+      const timer = debounced.get('tracked')
+      if (timer) clearTimeout(timer)
+      debounced.delete('tracked')
+    }
+    if (trackedRead) {
+      // A change during a scan may have landed after the daemon read that
+      // root. Keep one trailing read. A periodic poll can just share it.
+      trackedRead.dirty ||= invalidated
+      return trackedRead.promise
+    }
+    const c = client
+    const read = { dirty: false, promise: Promise.resolve() }
+    trackedRead = read
+    const active = () => trackedRead === read && !stopped && !stale(c)
+    read.promise = (async () => {
+      do {
+        read.dirty = false
+        try {
+          const list = await c.trackedAgents()
+          if (active()) dispatch({ type: 'tracked/loaded', list })
+        } catch (err) {
+          if (!active()) return
+          // No settings store or an old daemon may have no tracked list.
+          if (err instanceof DaemonError && (err.status === 404 || err.status === 503)) {
+            if (!state.tracked) dispatch({ type: 'tracked/loaded', list: { maxDepth: 0, folders: [] } })
+          } else {
+            dispatch({ type: 'tracked/error', error: describe(err) })
+          }
+        }
+      } while (read.dirty && active())
+    })().finally(() => {
+      if (!active()) return
+      trackedRead = null
+      scheduleTrackedPoll()
+    })
+    return read.promise
+  }
+
   async function start() {
     stopped = false
+    const c = client
     try {
-      await client.health()
-      dispatch({ type: 'daemon/reachable', reachable: true })
+      await c.health()
+      if (!stale(c) && !stopped) dispatch({ type: 'daemon/reachable', reachable: true })
     } catch {
-      dispatch({ type: 'daemon/reachable', reachable: false })
+      if (!stale(c) && !stopped) dispatch({ type: 'daemon/reachable', reachable: false })
     }
+    if (stale(c) || stopped) return
     // The stream opens while the snapshots load: frames that arrive first apply on top of the snapshot.
     let opening: Promise<void> = Promise.resolve()
     if (options.live !== false) {
@@ -1084,15 +1163,15 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       // Studio or the CLI may start / stop the web server: no event says so.
       if (webTick) clearInterval(webTick)
       webTick = setInterval(() => { if (!stopped) void actions.refreshWeb() }, WEB_POLL_MS)
-      if (trackedTick) clearInterval(trackedTick)
-      trackedTick = setInterval(() => { if (!stopped && state.daemonReachable !== false) void actions.refreshTracked() }, TRACKED_POLL_MS)
+      scheduleTrackedPoll()
     }
     await Promise.all([opening, actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
-    await actions.refreshTracked()
+    if (!stale(c) && !stopped) await refreshTracked(false)
   }
 
   function onStreamState(info: ConnectionInfo) {
     dispatch({ type: 'connection', info })
+    if (trackedPollDelay !== trackedDelay()) scheduleTrackedPoll()
     if (info.state === 'reconnecting') {
       needsResync = true
       if (info.error) dispatch({ type: 'daemon/reachable', reachable: false })
@@ -1128,6 +1207,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       // snapshots that are not evented, skip reloading every transcript.
       toast('Reconnected to daemon — no events missed', 'info', 2500)
       void Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+      if (!sessionId) invalidateTracked()
       return
     }
     toast(info.reason === 'epoch_changed' ? 'The daemon restarted — reloading' : 'Events were missed while disconnected — reloading', 'warn', 4000)
@@ -1143,6 +1223,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   function onClientFrame(frame: ClientFrame) {
     const effects = clientFrameEffects(frame)
+    if (effects.refreshTracked) invalidateTracked()
     for (const envelope of effects.frames) onFrame(envelope)
     if (effects.ownerCommand) {
       flushFrames()
@@ -1214,7 +1295,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       return
     }
     sessionId = id
-    useSession(id)
+    adoptSession(id)
     focusSent = undefined
     if (id) {
       stream = c.clientSessionEvents(id, { onEvent: onClientFrame, onState: onStreamState, onResume: onStreamResume, onGap: onStreamGap }).start()
@@ -1233,7 +1314,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
       stream?.close()
       stream = null
       sessionId = null
-      useSession(null)
+      adoptSession(null)
       await openStream()
       if (stopped) return
       if (hadSession) toast('The daemon no longer had this app\'s client session — reopened, reloading', 'warn', 4000)
@@ -1272,15 +1353,17 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
   function endSession(c: DaemonClient): Promise<void> {
     const id = sessionId
     sessionId = null
-    if (c === client) useSession(null)
+    if (c === client) adoptSession(null)
     focusSent = undefined
     if (!id) return Promise.resolve()
     return c.endClientSession(id).then(() => {}, () => {})
   }
 
   async function resync() {
+    const c = client
     lastResyncAt = Date.now()
     await Promise.all([actions.refreshIdentity(), actions.refreshAuth(), actions.refreshAgents(), actions.refreshWeb()])
+    if (stale(c) || stopped) return
     void actions.refreshTracked()
     for (const key of Object.keys(state.transcripts)) {
       const at = key.indexOf('\u0000')
@@ -1296,7 +1379,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
     const ended = endSession(client)
     if (resumeFallback) { clearTimeout(resumeFallback); resumeFallback = null }
     if (webTick) { clearInterval(webTick); webTick = null }
-    if (trackedTick) { clearInterval(trackedTick); trackedTick = null }
+    resetTracked()
     pendingFrames = []
     for (const timer of toastTimers.values()) clearTimeout(timer)
     for (const timer of debounced.values()) clearTimeout(timer)
@@ -1323,6 +1406,7 @@ export function createTuiStore(options: CreateStoreOptions): TuiStore {
 
   return {
     get client() { return client },
+    isCurrentClient: c => !stale(c),
     actions,
     getState,
     dispatch,

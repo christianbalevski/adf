@@ -94,7 +94,6 @@ export function lineAt(at: Cell, b: Bounds): TextSelection {
 
 /** Plain text frame (a test frame, or any ANSI-free screen) as ScreenText. Wide characters take two cells. */
 export function frameScreen(frame: string, cols: number, rows?: number): ScreenText {
-  // eslint-disable-next-line no-control-regex
   const lines = frame.replace(/\u001b\[[0-9;?]*[A-Za-z]/g, '').split('\n')
   const grid = lines.map(line => {
     const cells: string[] = []

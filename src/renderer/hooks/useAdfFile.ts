@@ -4,12 +4,11 @@ import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useAppStore } from '../stores/app.store'
 import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/editor-tabs.store'
-import { nanoid } from 'nanoid'
-import type { AskQuestion } from '../../shared/utils/ask-form'
 import { toDisplayState } from './useAgent'
 import { deliverSettledQueues } from '../utils/queued-delivery'
-import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
+import { loadOpenTabs, saveTabState, restoredComputerTab, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
+import { restorePendingApproval, restorePendingAsk, type RestorableApproval, type RestorableAsk } from './approval-target'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
 import { confirmDiscardConflicts } from '../utils/edit-conflict'
 import { closeAgentWindow, isAgentWindow, openAgentWindow, windowRuntime } from '../utils/window-kind'
@@ -132,73 +131,25 @@ function applyReattach(startResult: Awaited<ReturnType<typeof window.adfApi.reat
     // every loop that is idle now.
     if (filePath) deliverSettledQueues(windowAgentKey(useDocumentStore.getState().runtimeId, filePath), loopStates, reattachedState)
 
-    // Restore pending HIL approvals so the user can still approve/reject
-    const pending = (startResult as { pendingApprovals?: Array<{ requestId: string; name: string; input: unknown } & Partial<ApprovalMeta>> }).pendingApprovals
-    if (pending && pending.length > 0) {
-      const store = useAgentStore.getState()
-      for (const approval of pending) {
-        const meta: Partial<ApprovalMeta> = {
+    // Restore pending HIL approvals so the user can still approve/reject,
+    // each in the tab of the loop that raised it.
+    const pending = (startResult as { pendingApprovals?: Array<RestorableApproval & Partial<ApprovalMeta>> }).pendingApprovals
+    for (const approval of pending ?? []) {
+      restorePendingApproval(
+        { requestId: approval.requestId, name: approval.name, input: approval.input, loop: approval.loop },
+        {
           reason: approval.reason,
           protection: approval.protection,
           canAlwaysApprove: approval.canAlwaysApprove,
           alwaysApproveBlockedReason: approval.alwaysApproveBlockedReason
         }
-        // Find the matching tool_call log entry by tool name (search from end)
-        const log = store.log
-        let matched = false
-        for (let i = log.length - 1; i >= 0; i--) {
-          const entry = log[i]
-          if (entry.type === 'tool_call' && entry.metadata?.name === approval.name) {
-            store.addPendingApproval(entry.id, approval.requestId, meta)
-            matched = true
-            break
-          }
-        }
-        // If no matching log entry found (e.g. log was truncated), synthesize one
-        if (!matched) {
-          const entryId = nanoid()
-          store.addLogEntry({
-            id: entryId,
-            type: 'tool_call',
-            content: `Calling ${approval.name}`,
-            timestamp: Date.now(),
-            metadata: { name: approval.name, input: approval.input }
-          })
-          store.addPendingApproval(entryId, approval.requestId, meta)
-        }
-      }
+      )
     }
 
-    // Restore pending ask requests so the form reappears after navigation
-    const pendingAsks = (startResult as { pendingAsks?: Array<{ requestId: string; questions: AskQuestion[] }> }).pendingAsks
-    if (pendingAsks && pendingAsks.length > 0) {
-      const store = useAgentStore.getState()
-      for (const { requestId, questions } of pendingAsks) {
-        // Find the matching ask tool_call log entry (search from end)
-        const log = store.log
-        let matched = false
-        for (let i = log.length - 1; i >= 0; i--) {
-          const entry = log[i]
-          if (entry.type === 'tool_call' && entry.metadata?.name === 'ask') {
-            store.addPendingAsk(entry.id, requestId, questions)
-            matched = true
-            break
-          }
-        }
-        // If no matching log entry found, synthesize one
-        if (!matched) {
-          const entryId = nanoid()
-          store.addLogEntry({
-            id: entryId,
-            type: 'tool_call',
-            content: `Calling ask`,
-            timestamp: Date.now(),
-            metadata: { name: 'ask', input: { questions } }
-          })
-          store.addPendingAsk(entryId, requestId, questions)
-        }
-      }
-    }
+    // Restore pending ask requests so the form reappears after navigation,
+    // each in the tab of the loop that asked.
+    const pendingAsks = (startResult as { pendingAsks?: RestorableAsk[] }).pendingAsks
+    for (const { requestId, questions, loop } of pendingAsks ?? []) restorePendingAsk({ requestId, questions, loop })
   } else {
     // The executor is still running in main with no host attached.
     // Never fail silently: the default reset state reads as "off".
@@ -307,6 +258,7 @@ export function useAdfFile() {
     // README.md content came down in the batch; the rest was read up front
     // by fetchFileContents. False for files that no longer exist.
     const openWorkspaceFile = (path: string): boolean => {
+      if (path.startsWith('browser://')) return reopenComputerTab()
       if (path === 'README.md') {
         tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
         return true
@@ -315,6 +267,16 @@ export function useAdfFile() {
       if (!file) return false
       tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType, file.revision)
       return true
+    }
+
+    // The Computer tab comes back at the agent's current path; a second
+    // browser:// entry refreshes that same tab in place.
+    const docPath = useDocumentStore.getState().filePath
+    const computerTab = docPath ? `browser://${docPath}` : null
+    const reopenComputerTab = (): boolean => {
+      const meta = docPath ? restoredComputerTab(docPath, batch.agentConfig) : null
+      if (meta) tabStore.openBrowserTab(meta)
+      return !!meta
     }
 
     let restoredAny = false
@@ -335,21 +297,15 @@ export function useAdfFile() {
       // Every saved file is gone. Fall back to the document rather than
       // leaving a blank editor.
       tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
-    } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
-      tabStore.setActiveTab(saved.active)
+    } else {
+      const active = saved?.active?.startsWith('browser://') ? computerTab : saved?.active
+      if (active && useEditorTabsStore.getState().tabs.some((t) => t.path === active)) tabStore.setActiveTab(active)
     }
 
     // Persist the restored state now that the switch is complete (the
     // subscriber was suspended for everything above).
     resumeTabPersistence()
-    if (agentFilePath) {
-      const state = useEditorTabsStore.getState()
-      saveOpenTabs(
-        agentFilePath,
-        state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
-        state.activeTabPath
-      )
-    }
+    if (agentFilePath) saveTabState(agentFilePath, useEditorTabsStore.getState())
   }, [setDocumentContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
 
   /**

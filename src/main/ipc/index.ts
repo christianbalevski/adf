@@ -1,7 +1,7 @@
 import { z } from 'zod'
 import { app, ipcMain, dialog, shell, BrowserWindow, Notification, nativeImage } from 'electron'
 import { readdirSync, readFileSync, statSync, existsSync, unlinkSync, renameSync, copyFileSync, writeFileSync, mkdirSync, rmSync, type Dirent } from 'fs'
-import { join, dirname, basename, resolve, relative, sep } from 'path'
+import { join, dirname, basename, resolve, sep } from 'path'
 import { networkInterfaces, tmpdir } from 'os'
 import { randomUUID, createHash } from 'crypto'
 import { canonicalizePath, containsPath, isSameOrSubPath, dedupeTrackedDirectories } from '../utils/tracked-paths'
@@ -64,20 +64,12 @@ function resolveAskOn(executor: AgentExecutor, requestId: string, answers: unkno
 /**
  * Provider connection checks (services/provider-checks.ts): a per-session
  * result cache plus the `providerChecksEnabled` opt-out for checks Studio
- * starts on its own (dashboard, provider list, agent review). An explicit
- * Test click calls testProviderCredentialsForDashboard directly.
+ * starts on its own (dashboard, provider list, agent review).
  */
 const providerChecks = new ProviderChecks({ isEnabled: () => settings?.get('providerChecksEnabled') !== false })
 
 async function autoProviderCheck(cfg: ProviderConfig): Promise<'ok' | 'failed' | 'offline' | 'unconfigured' | 'unchecked'> {
   return providerChecks.autoCheck(cfg)
-}
-
-async function testProviderCredentialsForDashboard(
-  cfg: ProviderConfig,
-  force = false
-): Promise<ProviderCheckResult> {
-  return providerChecks.test(cfg, force)
 }
 
 import chokidar, { type FSWatcher } from 'chokidar'
@@ -88,6 +80,7 @@ import { IPC } from '../../shared/constants/ipc-channels'
 import { AdfWorkspace, isReservedMcpRuntimePurpose } from '../adf/adf-workspace'
 import { teardownRemovedLoopsOffline } from '../adf/loop-teardown'
 import { MAIN_LOOP } from '../adf/derive-loop-config'
+import { approvalExecutors, findApprovalHolder, findAskHolder } from '../runtime/approval-holder'
 import { stripLoopNameMarker } from '../runtime/loop-pool'
 import { runOwnerCommand, OwnerCommandRefusedError, type OwnerCommandRequest } from '../runtime/owner-command'
 import { interruptLoopTurn } from '../runtime/interrupt-turn'
@@ -113,7 +106,7 @@ import { STUDIO_WRITER, baseRevisionArg, conflictAnswer } from '../backend/edit-
 import { assembleAgent, type AgentHostBindings, type AssembledAgent, type HostAttachment } from '../runtime/assemble-agent'
 import type { AgentProfileName } from '../runtime/agent-capability-profiles'
 import { KILL_IN_PROGRESS_ERROR, RuntimeGate } from '../runtime/runtime-gate'
-import { MeshManager } from '../runtime/mesh-manager'
+import { MeshManager, type MeshInboxUpdate } from '../runtime/mesh-manager'
 import { BackgroundAgentManager, toDisplayState } from '../runtime/background-agent-manager'
 import { LeasedStartTracker, openHereOrLeasedElsewhere, processAgentLeases } from '../runtime/agent-lease'
 import { appendOwnerMessageUnderLease } from '../runtime/owner-message-append'
@@ -122,22 +115,21 @@ import { getUserDataPath } from '../utils/user-data-path'
 import { LanReach } from '../services/lan-reach'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
-import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
+import { NativeNotifier, notificationPreferences, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import { MenuBarController } from '../tray/menu-bar'
 import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../tray/menu-bar-model'
-import type { AgentState, FleetPendingInteraction, FleetAgentStatus, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
+import type { AgentExecutionEvent, AgentState, ChatAppendedPayload, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
 import { agentProviderKeySource, createProvider, resolveAgentProviderConfig } from '../providers/provider-factory'
 import { providerSelectionChanged } from '../providers/provider-selection'
 import { ensureCoreToolDeclarations } from '../runtime/core-tool-declarations'
 import { seedMandatoryReasoningModels, setMandatoryReasoningPersister } from '../providers/ai-sdk-provider'
 import { ToolRegistry } from '../tools/tool-registry'
-import { SendMessageTool, AgentDiscoverTool, SysCodeTool, SysLambdaTool, SysGetConfigTool, SysUpdateConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, WsConnectTool, WsDisconnectTool, WsConnectionsTool, WsSendTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
+import { SysCodeTool, SysLambdaTool, SysGetConfigTool, SysFetchTool, CreateAdfTool, NpmInstallTool, NpmUninstallTool, FsTransferTool, ComputeExecTool, McpInstallTool, McpUninstallTool, McpRestartTool, StreamBindTool, StreamUnbindTool, StreamBindingsTool, buildToolDiscovery, type McpConnectOutcome } from '../tools/built-in'
 import { registerBuiltInTools } from '../tools/built-in/register-built-in-tools'
 import { StreamBindingManager } from '../runtime/stream-binding-manager'
 import { buildComputeCapabilities, liveComputeCapabilities, type ComputeCapabilityInputs } from '../tools/built-in/compute-capabilities'
 import { AdfCallHandler } from '../runtime/adf-call-handler'
 import { createUmbilicalResources } from '../runtime/umbilical-lifecycle'
-import type { TapManager } from '../runtime/tap-manager'
 import { SystemScopeHandler } from '../runtime/system-scope-handler'
 import { CodeSandboxService } from '../runtime/code-sandbox'
 import { SettingsService } from '../services/settings.service'
@@ -198,11 +190,9 @@ import { parseLoopToDisplay } from '../../shared/utils/loop-parser'
 import { readArchivedChatPage } from '../adf/archived-loop-page'
 import { MAX_INLINE_BINARY_BYTES } from '../../shared/utils/image-files'
 import { getEnabledAgentAdapterConfig, withAgentEnabledAdapterRegistrations, withBuiltInAdapterRegistrations } from '../../shared/constants/adapter-registry'
-import { createEvent, createDispatch, type AdfEventDispatch, type AdfBatchDispatch } from '../../shared/types/adf-event.types'
-import type { MeshEvent, BackgroundAgentEvent, AgentExecutionEvent, McpServerRegistration, McpRegistrationTestResult, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
-import { getChatGptAuthManager } from '../providers/chatgpt-subscription/auth-manager'
-import type { AgentConfig, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
-import type { AgentTemplate } from '../../shared/types/adf-v02.types'
+import { createEvent, createDispatch } from '../../shared/types/adf-event.types'
+import type { MeshEvent, BackgroundAgentEvent, McpServerRegistration, AdapterRegistration, ProviderConfig, AgentConfigSummary } from '../../shared/types/ipc.types'
+import type { AgentConfig, LoopEntry, McpServerLogEntry, MetaProtectionLevel } from '../../shared/types/adf-v02.types'
 import { resolveStartInState } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import type { CreateAdapterFn } from '../../shared/types/channel-adapter.types'
@@ -210,7 +200,7 @@ import { loadBuiltInAdapter } from '../adapters/built-in-loaders'
 
 import { encrypt } from '../crypto/identity-crypto'
 import { readRecentToolsFromWorkspace } from '../services/recent-tools'
-import { ProviderChecks, type ProviderCheckResult } from '../services/provider-checks'
+import { ProviderChecks } from '../services/provider-checks'
 import { buildToolDescriptions } from '../services/tool-descriptions'
 import { availableAdfPath, bringRegistryAgentHome } from '../services/registry-bring-home'
 import { claimAgentWorkspace, issueAttestationsFor, readAttestations, readEnvelopeStatus, reissueAttestations, removeSharePassword, setSharePassword, unlockWithSharePassword, convertOwnLegacyPassword } from '../services/envelope-actions'
@@ -225,6 +215,8 @@ import { getComputeBrowserInfo } from '../services/compute-browser-info'
 // Application state
 let currentWorkspace: AdfWorkspace | null = null
 let currentFilePath: string | null = null
+/** FILE_SET_VISIBLE: false while the renderer shows Home (the file stays open). */
+let currentFileVisible = true
 const openedAdfDirs = new Set<string>()
 let currentDerivedKey: Buffer | null = null
 // Cache derived keys by file path so we don't re-prompt within the same app session
@@ -233,9 +225,6 @@ let agentExecutor: AgentExecutor | null = null
 let triggerEvaluator: TriggerEvaluator | null = null
 let currentAssembledAgent: AssembledAgent<AgentProfileName> | null = null
 let currentHostAttachment: HostAttachment | null = null
-let currentTapManager: TapManager | null = null
-let currentStreamBindingManager: StreamBindingManager | null = null
-let currentUmbilicalAgentId: string | null = null
 let currentSession: AgentSession | null = null
 let toolRegistry: ToolRegistry
 let settings: SettingsService
@@ -246,7 +235,7 @@ let menuBar: MenuBarController | null = null
 let meshManager: MeshManager | null = null
 let backgroundAgentManager: BackgroundAgentManager | null = null
 let backgroundEventBatcher: BackgroundEventBatcher | null = null
-let codeSandboxService: CodeSandboxService = new CodeSandboxService()
+const codeSandboxService: CodeSandboxService = new CodeSandboxService()
 const sandboxStdlibService = new SandboxStdlibService()
 const sandboxPackagesService = new SandboxPackagesService()
 let meshServer: MeshServer | null = null
@@ -261,7 +250,6 @@ let currentMcpManager: McpClientManager | null = null
 // sys_update_config) without a full restart. Reassigned on each foreground
 // attach, nulled on teardown. See the fresh-construction attach in AGENT_START.
 let currentMcpReconcile: ((nextConfig: AgentConfig) => Promise<void>) | null = null
-let currentScratchDir: string | null = null
 let currentAdapterManager: ChannelAdapterManager | null = null
 let currentAdfCallHandler: AdfCallHandler | null = null
 let mcpRegistryFetchService: McpRegistryFetchService | null = null
@@ -663,7 +651,6 @@ function mcpLogCacheSet(name: string, logs: import('../../shared/types/adf-v02.t
     else break
   }
 }
-let extractedDisplayState: string | null = null
 // Set of filePaths with in-flight AGENT_START so cleanupCurrentFile doesn't close their workspaces
 const startingFilePaths = new Set<string>()
 
@@ -834,7 +821,7 @@ function handleMenuBarAction(action: MenuBarAction): void {
       openFileHook?.(action.filePath)
       return
     case 'show':
-      focusMainWindow() ?? showMainWindowHook?.()
+      if (!focusMainWindow()) showMainWindowHook?.()
       return
     case 'settings': {
       const win = focusMainWindow() ?? showMainWindowHook?.() ?? null
@@ -857,9 +844,9 @@ function createNativeNotifierPlatform(): NativeNotifierPlatform {
     isSupported: () => {
       try { return Notification.isSupported() } catch { return false }
     },
-    // Read per notification, not cached: flipping the toggle off silences the
-    // very next request without a restart.
-    isEnabled: () => settings?.get('nativeNotificationsEnabled') !== false,
+    // Read per notification, not cached: flipping a switch off silences the
+    // very next notification without a restart.
+    preferences: () => notificationPreferences(settings),
     isWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
     now: () => Date.now(),
     show: (request): NativeToastHandle | null => {
@@ -880,34 +867,6 @@ function createNativeNotifierPlatform(): NativeNotifierPlatform {
   }
 }
 
-/**
- * Map executor internal states to display states for trigger evaluation.
- * Executor uses: idle, thinking, tool_use, awaiting_approval, awaiting_ask, suspended, error, stopped
- * Display uses: active, idle, hibernate, suspended, off
- */
-function executorToDisplayState(executorState: string): string {
-  switch (executorState) {
-    case 'thinking':
-    case 'tool_use':
-      return 'active'
-    case 'idle':
-      return 'idle'
-    case 'awaiting_approval':
-    case 'awaiting_ask':
-    case 'suspended':
-      return 'suspended'
-    case 'error':
-    case 'stopped':
-      return 'off'
-    // Already a display state (from sys_set_state or start_in_state)
-    case 'active':
-    case 'hibernate':
-    case 'off':
-      return executorState
-    default:
-      return executorState
-  }
-}
 
 // --- Tracked directory watcher ---
 let dirWatcher: FSWatcher | null = null
@@ -1168,13 +1127,9 @@ function recoverAfterFileCreateCleanupFailure() {
       currentHostAttachment = null
       currentAssembledAgent = null
       currentDerivedKey = null
-      currentTapManager = null
-      currentUmbilicalAgentId = null
-      currentStreamBindingManager = null
       currentAdapterManager = null
       currentMcpManager = null
       currentMcpReconcile = null
-      currentScratchDir = null
       currentAgentToolRegistry = null
       currentAdfCallHandler = null
       agentExecutor = null
@@ -1198,14 +1153,11 @@ async function cleanupCurrentFile(): Promise<void> {
   currentAssembledAgent = null
 
   // Foreground globals are aliases only; the stable handle retains the tap.
-  currentTapManager = null
-  currentUmbilicalAgentId = null
 
   // Clear module-level refs immediately
   agentExecutor = null
   triggerEvaluator = null
   currentAgentToolRegistry = null
-  const adfHandler = currentAdfCallHandler
   currentAdfCallHandler = null
   // Cache the derived key so re-opening the same file doesn't re-prompt
   if (currentDerivedKey && filePath) {
@@ -1228,10 +1180,7 @@ async function cleanupCurrentFile(): Promise<void> {
     // The handle retains resource ownership; foreground globals are aliases only.
     currentMcpManager = null
     currentMcpReconcile = null
-    currentScratchDir = null
     currentAdapterManager = null
-    currentStreamBindingManager = null
-    currentTapManager = null
 
     const t1 = performance.now()
     await backgroundManager.transitionToBackground(
@@ -1270,11 +1219,8 @@ async function cleanupCurrentFile(): Promise<void> {
   if (assembledAgent) await assembledAgent.disposeAsync({ mode: 'immediate' })
   await processAgentLeases().reconcile()
   currentAdapterManager = null
-  currentStreamBindingManager = null
   currentMcpManager = null
   currentMcpReconcile = null
-  currentScratchDir = null
-  currentTapManager = null
   currentSession = null
 
   // Don't close the workspace if AGENT_START is in-flight for this file —
@@ -1327,9 +1273,6 @@ async function handleAgentOff(filePath: string): Promise<void> {
       currentMcpManager = null
       currentMcpReconcile = null
       currentAdapterManager = null
-      currentStreamBindingManager = null
-      currentTapManager = null
-      currentScratchDir = null
       currentSession = null
       currentAgentToolRegistry = null
       currentAdfCallHandler = null
@@ -1836,6 +1779,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   openFileHook = hooks.openFile ?? null
   autostartSkippedReason = hooks.skipBootAutostart ?? null
   settings = new SettingsService()
+  approvalHub.initializePersistence(join(getUserDataPath(), 'notification-history.embedded.json'))
   initApplicationMenu(settings)
 
   // This process is a runtime host: register it and the foreground's leases.
@@ -1927,8 +1871,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // policy). Attached after the renderer push so a click can never race ahead
   // of the snapshot that explains it.
   nativeNotifier = new NativeNotifier(createNativeNotifierPlatform())
-  nativeNotifier.seed(approvalHub.snapshot())
+  nativeNotifier.seed(approvalHub.snapshot(), approvalHub.fullSnapshot().history)
   approvalHub.subscribe((snapshot) => nativeNotifier?.apply(snapshot))
+  // 'finished' notices skip the agent shown in the window: its chat shows the reply.
+  // Home and a closed window (macOS keeps Studio running) show none.
+  approvalHub.setAttendedCheck((filePath) => !!currentFilePath && currentFileVisible && !!getMainWindow() && canonicalizePath(currentFilePath) === canonicalizePath(filePath))
 
   // Menu bar icon (macOS only: template images and a menu bar to put them in
   // are a Mac concept). The count beside it tracks the same hub; the menu
@@ -2233,12 +2180,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           triggerEvaluator = extracted.triggerEvaluator
           currentAgentToolRegistry = extracted.toolRegistry
           currentMcpManager = extracted.mcpManager
-          currentScratchDir = extracted.scratchDir
           currentAdapterManager = extracted.adapterManager
           currentAdfCallHandler = extracted.adfCallHandler
-          currentStreamBindingManager = extracted.streamBindingManager
           currentAssembledAgent = extracted.assembledAgent
-          extractedDisplayState = extracted.displayState
           currentFilePath = filePath
           agentWasRunning = true
           perfLog(`[PERF] FILE_OPEN total (from background): ${(performance.now() - t0).toFixed(1)}ms`)
@@ -2530,6 +2474,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.FILE_CLOSE, async () => {
     await cleanupCurrentFile()
     return { success: true }
+  })
+
+  // Home keeps the file open but shows no agent: its finished turns notify.
+  ipcMain.handle(IPC.FILE_SET_VISIBLE, (_event, visible: unknown) => {
+    currentFileVisible = visible !== false
   })
 
   ipcMain.handle(IPC.FILE_DELETE, async (_event, args: { filePath: string }) => {
@@ -3070,9 +3019,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       const loopWorkspace = currentWorkspace.forLoop(args?.loop ?? MAIN_LOOP)
       const totalCount = loopWorkspace.getLoopCount()
       const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
-      const loopEntries = offset > 0
-        ? loopWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-        : loopWorkspace.getLoop()
+      const loopEntries = loopWorkspace.getLoopTail(LOOP_DISPLAY_LIMIT)
       const displayEntries = parseLoopToDisplay(loopEntries)
       return {
         chatHistory: {
@@ -3687,9 +3634,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
 
     t1 = performance.now()
     const offset = Math.max(0, totalCount - LOOP_DISPLAY_LIMIT)
-    const loopEntries = offset > 0
-      ? currentWorkspace.getLoopPaginated(LOOP_DISPLAY_LIMIT, offset)
-      : currentWorkspace.getLoop()
+    const loopEntries = currentWorkspace.getLoopTail(LOOP_DISPLAY_LIMIT)
     perfLog(`[PERF] DOC_GET_BATCH.getLoop: ${(performance.now() - t1).toFixed(1)}ms (entries=${loopEntries.length}, offset=${offset})`)
 
     t1 = performance.now()
@@ -3840,7 +3785,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         triggerEvaluator = handle.triggerEvaluator
         currentSession = handle.session
         currentAgentToolRegistry = handle.registry
-        extractedDisplayState = null
 
         if (meshManager?.isEnabled()) {
           meshManager.registerAgent(
@@ -3861,8 +3805,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
           agentState: displayState,
           // Side loops keep running across a switch; the view starts from their real states.
           loopStates: handle.loopPool.sideLoopStates(),
-          pendingApprovals: handle.executor.getPendingApprovals(),
-          pendingAsks: handle.executor.getPendingAsks(),
+          // Every loop's: a side loop's card restores into that loop's tab.
+          pendingApprovals: approvalExecutors(handle.executor, handle.loopPool)
+            .flatMap(({ loop, executor }) => executor.getPendingApprovals().map(approval => ({ ...approval, loop }))),
+          pendingAsks: approvalExecutors(handle.executor, handle.loopPool)
+            .flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop }))),
         }
       }
       throw new Error('Running foreground executor is missing its assembled lifecycle handle')
@@ -3894,10 +3841,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       triggerEvaluator = null
       currentMcpManager = null
       currentMcpReconcile = null
-      currentScratchDir = null
       currentAdapterManager = null
-      currentStreamBindingManager = null
-      currentTapManager = null
     }
 
     // Capture all context BEFORE any async operations so concurrent FILE_OPEN
@@ -4005,9 +3949,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // Fresh construction begins with no prior lifecycle owner installed.
     agentExecutor = null
     triggerEvaluator = null
-    currentTapManager = null
-    currentUmbilicalAgentId = null
-    currentStreamBindingManager = null
     currentAdapterManager = null
 
     // Set up provider. A model that names no provider this install has is
@@ -4887,6 +4828,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       ],
     })
     const newExecutor = assembled.executor
+    newExecutor.confirmProviderValidation(provider)
     const newTriggerEvaluator = assembled.triggerEvaluator
     let lastAgentName = config.name
     const foregroundHost: AgentHostBindings = {
@@ -5028,7 +4970,6 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     const foregroundAttachment = assembled.attachHost(foregroundHost)
     currentAssembledAgent = assembled
     currentHostAttachment = foregroundAttachment
-    currentUmbilicalAgentId = config.id
     agentExecutor = newExecutor
     triggerEvaluator = newTriggerEvaluator
     currentSession = session
@@ -5038,12 +4979,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     // then expose the reconcile to the module-level DOC_SET_AGENT_CONFIG handler.
     previousReconciledMcpConfig = finalConfig
     currentMcpReconcile = reconcileMcpServers
-    currentScratchDir = newScratchDir
     currentAdapterManager = newAdapterManager
-    currentStreamBindingManager = newStreamBindingManager
 
     // Taps register inside the umbilical lifecycle resource's start().
-    currentTapManager = assembled.tapManager
 
     // Wire sys_create_adf autostart + default-provider callbacks. Child trust
     // (review marking) is host-independent — see setChildTrustRegistrar.
@@ -5116,10 +5054,7 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     currentAdfCallHandler = null
     currentMcpManager = null
     currentMcpReconcile = null
-    currentScratchDir = null
     currentAdapterManager = null
-    currentStreamBindingManager = null
-    currentTapManager = null
     currentSession = null
     currentAgentToolRegistry = null
 
@@ -5186,7 +5121,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    agentExecutor.resolveApproval(args.requestId, args.approved, args.feedback)
+    // The request may be main's or any inner loop's.
+    const holder = findApprovalHolder(agentExecutor, currentAssembledAgent?.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This approval is no longer pending' }
+    holder.executor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 
@@ -5195,10 +5133,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // server-side when the declaration is locked or the approval is a protection
   // override — the UI disables the option, but the backend is the authority.
   ipcMain.handle(IPC.AGENT_TOOL_ALWAYS_APPROVE, async (_event, args: { requestId: string; toolName: string }) => {
-    if (!agentExecutor || !currentWorkspace) {
+    if (!agentExecutor || !currentWorkspace || !currentAssembledAgent) {
       return { success: false, error: 'Agent not running' }
     }
-    const meta = agentExecutor.getPendingApprovalMeta(args.requestId)
+    const holder = findApprovalHolder(agentExecutor, currentAssembledAgent?.loopPool, args.requestId)
+    const meta = holder?.executor.getPendingApprovalMeta(args.requestId)
     const config = currentWorkspace.getAgentConfig()
     const decl = config.tools?.find((t) => t.name === args.toolName)
     if (meta?.canAlwaysApprove === false || decl?.locked === true) {
@@ -5210,15 +5149,14 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     else tools.push({ name: args.toolName, enabled: true, visible: true, restricted: false })
     const updated: AgentConfig = { ...config, tools }
     currentWorkspace.setAgentConfig(updated)
-    agentExecutor.updateConfig(updated)
-    triggerEvaluator?.updateConfig(updated)
-    currentAdfCallHandler?.updateConfig(updated)
+    // Through the choke point, so inner loops re-derive the un-gated tool too.
+    currentAssembledAgent.applyConfigChange(updated, { notifyHost: false })
     if (meshManager && currentFilePath) {
       meshManager.updateAgentConfig(currentFilePath, updated)
     }
     // The window sent no config: it needs the new one and its revision, or its next panel save is refused as stale.
     if (currentFilePath) notifyRendererConfigChanged(currentFilePath, updated)
-    agentExecutor.resolveHilTask(args.requestId, true)
+    holder?.executor.resolveHilTask(args.requestId, true)
     return { success: true }
   })
 
@@ -5242,6 +5180,8 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // callback bound to its own executor, so a background agent's approval — which
   // has no in-chat card rendered anywhere — resolves identically).
   ipcMain.handle(IPC.APPROVALS_LIST, async (): Promise<NotificationsSnapshot> => approvalHub.fullSnapshot())
+  ipcMain.handle(IPC.APPROVALS_HISTORY, async (_event, before?: number) => approvalHub.historyPage(before))
+  ipcMain.handle(IPC.APPROVALS_CLEAR_HISTORY, async () => approvalHub.clearHistory())
   // Pulled once by the renderer after its reveal listener registers; clears.
   ipcMain.handle(IPC.APPROVALS_GET_PENDING_REVEAL, (): ApprovalRevealPayload | null => {
     const payload = pendingApprovalReveal
@@ -5273,7 +5213,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!agentExecutor) {
       return { success: false, error: 'Agent not running' }
     }
-    return resolveAskOn(agentExecutor, args.requestId, args.answers)
+    // The ask may be main's or any inner loop's.
+    const holder = findAskHolder(agentExecutor, currentAssembledAgent?.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This question is no longer pending' }
+    return resolveAskOn(holder.executor, args.requestId, args.answers)
   })
 
   // Background agent ask/approval responses
@@ -5285,7 +5228,9 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    return resolveAskOn(executor, args.requestId, args.answers)
+    const holder = findAskHolder(executor, backgroundAgentManager.getAgent(args.filePath)?.assembledAgent.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This question is no longer pending' }
+    return resolveAskOn(holder.executor, args.requestId, args.answers)
   })
 
   ipcMain.handle(IPC.BACKGROUND_AGENT_TOOL_APPROVAL_RESPOND, async (_event, args: { filePath: string; requestId: string; approved: boolean; feedback?: string }) => {
@@ -5296,7 +5241,10 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
     if (!executor) {
       return { success: false, error: 'Background agent not found' }
     }
-    executor.resolveApproval(args.requestId, args.approved, args.feedback)
+    // The request may be main's or any inner loop's.
+    const holder = findApprovalHolder(executor, backgroundAgentManager.getAgent(args.filePath)?.assembledAgent.loopPool, args.requestId)
+    if (!holder) return { success: false, error: 'This approval is no longer pending' }
+    holder.executor.resolveApproval(args.requestId, args.approved, args.feedback)
     return { success: true }
   })
 
@@ -5720,12 +5668,12 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         }
       })
 
-      meshManager.on('inbox_updated', (data: { filePath: string; inbox: unknown }) => {
-        if (data.filePath === currentFilePath) {
+      meshManager.on('inbox_updated', ({ filePath, workspace }: MeshInboxUpdate) => {
+        if (filePath === currentFilePath) {
           const win = getMainWindow()
           if (win) {
-            // Wrap raw InboxMessage[] in version envelope for renderer
-            win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages: data.inbox } })
+            const messages = [...workspace.getInbox('unread'), ...workspace.getInbox('read')]
+            win.webContents.send(IPC.INBOX_UPDATED, { inbox: { version: 1, messages } })
           }
         }
       })
@@ -6058,20 +6006,22 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
       return { delivered, failed: filePaths.map((filePath) => ({ filePath, error: 'empty message' })) }
     }
 
-    // Refresh an open loop panel after a direct loop append — the write went
-    // straight to SQLite, so no executor event will repaint the panel. Skipped
-    // while the foreground agent is mid-turn: chat_updated would clobber the
-    // streaming UI, and the trigger turn repaints it moments later anyway.
-    const pushForegroundLoop = (filePath: string): void => {
-      if (filePath !== currentFilePath || !currentWorkspace) return
-      if (agentExecutor && toDisplayState(agentExecutor.getState()) === 'active') return
-      const win = getMainWindow()
-      if (!win) return
-      win.webContents.send(IPC.AGENT_EVENT, {
-        type: 'chat_updated',
-        payload: { uiLog: parseLoopToDisplay(currentWorkspace.getLoop()) },
-        timestamp: Date.now()
-      })
+    // Direct writes bypass the executor's events. Send just the new entry
+    // while its workspace is still open, and leave a running stream alone.
+    const pushForegroundAppend = (filePath: string, workspace: AdfWorkspace, row: LoopEntry): void => {
+      if (filePath !== currentFilePath || workspace !== currentWorkspace) return
+      if (agentExecutor && (agentExecutor.isTurnActive() || toDisplayState(agentExecutor.getState()) === 'active')) return
+      try {
+        const [entry] = parseLoopToDisplay([row])
+        if (!entry) return
+        getMainWindow()?.webContents.send(IPC.AGENT_EVENT, {
+          type: 'chat_appended',
+          payload: { filePath, entry } satisfies ChatAppendedPayload,
+          timestamp: row.created_at
+        } satisfies AgentExecutionEvent)
+      } catch (error) {
+        console.warn('[Fleet] Failed to display committed owner message:', error)
+      }
     }
 
     // Owner → agent is plain CHAT, not mesh mail: these are our own agents,
@@ -6132,13 +6082,15 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
         // when the user starts it properly. No inbox row. Written under the
         // agent's lease: a file another runtime runs is refused, with the
         // holder's sentence.
-        const isForeground = filePath === currentFilePath && !!currentWorkspace
-        const appended = await appendOwnerMessageUnderLease(processAgentLeases(), filePath, content, isForeground ? { workspace: currentWorkspace! } : {})
+        const workspace = filePath === currentFilePath ? currentWorkspace : null
+        const appended = await appendOwnerMessageUnderLease(processAgentLeases(), filePath, content, workspace ? {
+          workspace,
+          onCommitted: (row) => pushForegroundAppend(filePath, workspace, row)
+        } : {})
         if (!appended.ok) {
           failed.push({ filePath, error: appended.error })
           continue
         }
-        if (isForeground) pushForegroundLoop(filePath)
         delivered.push(filePath)
       } catch (error) {
         failed.push({ filePath, error: error instanceof Error ? error.message : String(error) })
@@ -8422,9 +8374,6 @@ async function teardownRuntime(opts: { disposeMode: 'graceful' | 'emergency'; fi
   currentMcpManager = null
   currentMcpReconcile = null
   currentAdapterManager = null
-  currentStreamBindingManager = null
-  currentTapManager = null
-  currentScratchDir = null
   currentAdfCallHandler = null
   try { if (foregroundHandle) await foregroundHandle.disposeAsync({ mode: opts.disposeMode }) }
   catch (e) { console.error('[Teardown] foreground dispose error:', e) }
@@ -8485,6 +8434,7 @@ const CLEANUP_TEARDOWN_BUDGET_MS = 6_000
  */
 export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void> {
   console.log('[Cleanup] Session ending — fast durability flush...')
+  approvalHub.flushPersistence()
   RuntimeGate.beginTeardown()
   podmanService.beginShutdown()
   try { getTokenUsageService().flush() }
@@ -8516,6 +8466,7 @@ export async function fastSessionEndCleanup(killBudgetMs = 2_000): Promise<void>
  */
 export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }): Promise<void> {
   console.log('[Cleanup] App quitting — cleaning up all processes...')
+  approvalHub.flushPersistence()
 
   // ---- Phase 1: fast, must-complete (data durability) ----
   // Latch the gate + podman for the rest of the process lifetime: a stray
@@ -8575,6 +8526,7 @@ export async function cleanupAllProcesses(opts?: { teardownBudgetMs?: number }):
   }
 
   // ---- Phase 3: workspace close + sweeps (synchronous, unconditional) ----
+  approvalHub.flushPersistence()
   // A phase-2 timeout can leave teardown unfinished with loop entries still
   // buffered in memory — flush them before the DB closes. No-op when phase 2
   // completed (teardown flushed via abort() and nulled currentSession).

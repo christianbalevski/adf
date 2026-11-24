@@ -24,16 +24,16 @@ describe('nextLoopName', () => {
 })
 
 describe('grantableLoopTools', () => {
-  it('offers enabled host tools only, never restricted or prohibited ones, sorted', () => {
+  it('offers every enabled host tool, restricted ones included, sorted', () => {
     const tools = [
       decl('msg_send'),
       decl('fs_read'),
       decl('fs_write', { enabled: false }),
-      decl('shell_exec', { restricted: true }),
+      decl('db_execute', { restricted: true }),
       decl('sys_update_config'),
       decl('loop_manage'),
     ]
-    expect(grantableLoopTools(tools)).toEqual(['fs_read', 'msg_send'])
+    expect(grantableLoopTools(tools)).toEqual(['db_execute', 'fs_read', 'loop_manage', 'msg_send', 'sys_update_config'])
   })
 
   it('offers only tools this build runs: built-ins and MCP server tools', () => {

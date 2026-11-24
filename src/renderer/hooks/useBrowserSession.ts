@@ -17,13 +17,16 @@ export function useBrowserSessionEvents() {
     return openApi().onBrowserSession((event: BrowserSessionEvent) => {
       // v1: only auto-open for the currently focused document. Match by agent
       // id, not path — path strings can differ (8.3 short names, case, slashes).
-      if (!useDocumentStore.getState().filePath) return
+      const filePath = useDocumentStore.getState().filePath
+      if (!filePath) return
       openApi().getAgentConfig().then((config) => {
         if (!config || config.id !== event.agentId) return
+        // At the open document's path, as every other opener: main's path
+        // is the one the container started under, stale after a rename.
         // Background only: the tab appears in the bar but the stage stays where
         // the user is (usually the loop chat) — they click over when they want it.
         useEditorTabsStore.getState().openBrowserTab({
-          agentFilePath: event.agentFilePath,
+          agentFilePath: filePath,
           containerName: event.containerName,
           agentId: event.agentId,
           agentName: event.agentName,

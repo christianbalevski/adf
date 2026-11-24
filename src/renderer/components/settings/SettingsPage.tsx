@@ -4,7 +4,7 @@ import { sameContent } from '../../utils/list-rebase'
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { CompactOverlay } from '../layout/CompactOverlay'
-import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type SettingsSection, type UiFont, type UiScale } from '../../stores/app.store'
+import { useAppStore, UI_FONT_PRESETS, UI_SCALE_OPTIONS, type UiFont, type UiScale } from '../../stores/app.store'
 import { isFontInstalled } from '../../utils/fonts'
 import { PROMPT_AUTO_UPDATE_KEY, PROMPT_DEFAULTS_APPLIED_KEY, currentPromptDefaults, promptDefaultsFingerprint } from '../../../shared/utils/settings-migrations'
 import { ADF_SKILLS_REGISTRY_URL, DEFAULT_BASE_PROMPT, DEFAULT_TOOL_PROMPTS, DEFAULT_DYNAMIC_PROMPTS, DEFAULT_COMPACTION_PROMPT, TOOL_PROMPT_LABELS, TOOL_PROMPT_CONDITIONS, DYNAMIC_PROMPT_LABELS, DYNAMIC_PROMPT_CONDITIONS } from '../../../shared/constants/adf-defaults'
@@ -38,7 +38,7 @@ import { HOST_ACCESS_CONFIRM, MCP_ON_HOST_CONFIRM, useConfirm } from '../common/
 import { Tooltip } from '../common/Tooltip'
 import type { AgentAvatarMode } from '../orbital/agent-avatar'
 import { DocsLink, InfoHint } from '../common/DocsLink'
-import { DOCS, NETWORK_DOCS, guideUrl } from '../../../shared/constants/docs-links'
+import { DOCS, NETWORK_DOCS } from '../../../shared/constants/docs-links'
 import { Button, IconButton, SegmentedControl, Select, SettingsGroup, SettingsRow, Switch, TextInput, Textarea } from '../ui'
 import { CommitInput, ContainerMemoryGroup, checkWholeNumber } from './settings-inputs'
 import { DEFAULT_COMPUTE_SETTINGS } from '../../../shared/constants/compute-defaults'
@@ -144,7 +144,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState<{ ok: boolean; message: string } | null>(null)
   const plaintext = view.policy === 'plaintext'
-  const useKeyring = async () => {
+  const encryptWithKeyring = async () => {
     setBusy(true)
     setResult(null)
     try {
@@ -175,7 +175,7 @@ export function SecretStorageGroup({ view, remoteName = null, onUseKeyring, onCh
           help={plaintext && view.plaintextSecrets > 0 ? `${view.plaintextSecrets} secret${view.plaintextSecrets === 1 ? '' : 's'} stored as plain text now.` : undefined}
         >
           {plaintext && (
-            <Button variant="primary" onClick={() => { void useKeyring() }} disabled={busy || !view.keyringAvailable}>
+            <Button variant="primary" onClick={() => { void encryptWithKeyring() }} disabled={busy || !view.keyringAvailable}>
               {busy ? 'Encrypting…' : 'Encrypt with Keychain'}
             </Button>
           )}
@@ -1017,6 +1017,11 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
   const [computeExecutionTargets, setComputeExecutionTargets] = useState<ExecutionTarget[]>([])
   const [nativeNotifications, setNativeNotifications] = useState(true)
   const [menuBar, setMenuBar] = useState(true)
+  const [notificationPreviews, setNotificationPreviews] = useState(true)
+  const finishedNotificationsEnabled = useAppStore((s) => s.finishedNotificationsEnabled)
+  const setFinishedNotifications = useAppStore((s) => s.setFinishedNotifications)
+  const inAppNotifications = useAppStore((s) => s.inAppNotifications)
+  const setInAppNotifications = useAppStore((s) => s.setInAppNotifications)
   const [updateChecks, setUpdateChecks] = useState(true)
   const [remoteCatalogs, setRemoteCatalogs] = useState(true)
   const [providerChecks, setProviderChecks] = useState(true)
@@ -1140,6 +1145,9 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
     const studioKeys = (settings: Record<string, unknown>) => {
       setNativeNotifications(settings.nativeNotificationsEnabled !== false)
       setMenuBar(settings.menuBarEnabled !== false)
+      setNotificationPreviews(settings.notificationPreviewsEnabled !== false)
+      setFinishedNotifications(settings.finishedNotificationsEnabled !== false)
+      setInAppNotifications(settings.inAppNotificationsEnabled !== false)
       setUpdateChecks(settings.updateChecksEnabled !== false)
       setRemoteCatalogs(settings.remoteCatalogsEnabled !== false)
       setProviderChecks(settings.providerChecksEnabled !== false)
@@ -1703,10 +1711,29 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
           <SettingsGroup title="Notifications">
             <SettingsRow
               label="System notifications"
-              description="Show an operating-system notification when an agent needs an approval or asks a question while Studio is not the focused app. Clicking one opens that agent."
-              help="Studio never notifies twice: while a window is focused, the in-app notice and the bell badge cover it."
+              description="Show an operating-system notification for each new bell notification: an approval, a question, or an agent finished. Clicking one opens that agent."
+              help="While In-app notices is on, a focused Studio window shows the in-app notice instead. While it is off, the operating-system notification shows in both cases."
             >
               <Switch label="System notifications" checked={nativeNotifications} onChange={(next) => void persist({ nativeNotificationsEnabled: next }, setNativeNotifications, next, nativeNotifications)} />
+            </SettingsRow>
+            <SettingsRow
+              label="In-app notices"
+              description="Show a notice under the bell for each new notification of an agent that is not open. Notices close after 8 seconds."
+            >
+              <Switch label="In-app notices" checked={inAppNotifications} onChange={(next) => void persist({ inAppNotificationsEnabled: next }, setInAppNotifications, next, inAppNotifications)} />
+            </SettingsRow>
+            <SettingsRow
+              label="Finished turns"
+              description="Notify when the main loop of an agent that is not on screen ends a turn with a reply. Not on screen: another agent is shown, Home is shown, or the window is closed. The notification shows the start of the reply."
+              help="Off: no finished rows in the bell, no in-app notices and no operating-system notifications for them. The runtime still records them."
+            >
+              <Switch label="Finished turns" checked={finishedNotificationsEnabled} onChange={(next) => void persist({ finishedNotificationsEnabled: next }, setFinishedNotifications, next, finishedNotificationsEnabled)} />
+            </SettingsRow>
+            <SettingsRow
+              label="Message previews"
+              description="Include the question, reply or tool arguments in operating-system notifications. Off: the notification names the agent, the event and, for an approval, the tool."
+            >
+              <Switch label="Message previews" checked={notificationPreviews} onChange={(next) => void persist({ notificationPreviewsEnabled: next }, setNotificationPreviews, next, notificationPreviews)} />
             </SettingsRow>
             {window.adfApi?.platform === 'darwin' && (
               <SettingsRow

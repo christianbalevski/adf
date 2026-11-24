@@ -599,7 +599,7 @@ To read past loop entries or compute loop statistics (row count, estimated token
 
 Tools for the agent's **inner loops** — named loops running inside the same agent, sharing its file, identity, credentials, and memory. See [Inner Loops](inner-loops.md) for the model.
 
-All three ship **enabled and visible**, and the runtime registers each into `main` whenever its declaration is enabled — like any other capability tool. There is no loop-count gate: an agent with no loops still holds `loop_send` and `loop_list`, and they answer sensibly (`loop_list` returns just `main`; `loop_send` errors on any target it names). `loop_send` and `loop_list` reach an *inner* loop only when that loop's own tool allow-list names them; `loop_manage` never does.
+All three ship **enabled and visible**, and the runtime registers each into `main` whenever its declaration is enabled — like any other capability tool. There is no loop-count gate: an agent with no loops still holds `loop_send` and `loop_list`, and they answer sensibly (`loop_list` returns just `main`; `loop_send` errors on any target it names). Each reaches an *inner* loop only when that loop's own tool allow-list names it.
 
 ### loop_send
 
@@ -633,18 +633,18 @@ Read-only roster of this agent's loops — each loop's name, a summary of its go
 
 **Parameters:** `action` (`create` | `get` | `update` | `delete`), `name?`, `config?`
 
-**Main-only.** Create, inspect, update, and tear down this agent's own inner loops at runtime. Inner loops do not nest, so a loop that calls this is refused; the tool is also subtracted from every derived loop config (`LOOP_PROHIBITED_TOOLS`).
+Create, inspect, update, and tear down this agent's own inner loops at runtime. Held by `main`, and by any inner loop whose `tools` list names it. The roster is flat: a loop that creates a loop adds a sibling. A loop cannot update or delete itself; either would stop the turn making the call.
 
 | Action | Effect |
 |---|---|
-| `create` | Define a new inner loop and start it. `config.autostart` defaults to `true`: `main` immediately sends it a kickoff message (`wake: true`), so it runs its first turn on its goal at once, and the pool repeats that every time the agent starts. `autostart: false` leaves it waiting for a trigger, timer, or `loop_send`. Omit `config.tools` and the loop is seeded with `loop_send + loop_list`; pass `[]` for a mute loop that only thinks. |
+| `create` | Define a new inner loop and start it. `config.autostart` defaults to `true`: the calling loop immediately sends it a kickoff message (`wake: true`), so it runs its first turn on its goal at once, and the pool repeats that every time the agent starts. `autostart: false` leaves it waiting for a trigger, timer, or `loop_send`. Omit `config.tools` and the loop is seeded with `loop_send + loop_list`; pass `[]` for a mute loop that only thinks. |
 | `get` | One loop's full definition plus its live status. (Use `loop_list` to enumerate.) |
 | `update` | Patch `goal`, `enabled`, `autostart`, `autonomous`, `model`, `compact_threshold`, or `tools`; the loop is re-derived and restarted. Loops cannot be renamed. `enabled: false` stops a running loop immediately (its turn is aborted and flushed). |
 | `delete` | Stop the loop (mid-turn included — never refused for being busy), archive its stream to the audit log under `loop:<name>`, then remove it. A config-edit removal takes the same stop → archive path. |
 
 An agent may declare up to **16** inner loops.
 
-**Ungated by default.** Unlike `sys_update_config` and `sys_create_adf`, `loop_manage` ships with no `restricted` flag. A loop is a *strict attenuation* of authority `main` already holds — its tool list is intersected with the agent's own enabled tools, every approval-gated tool is subtracted, and its code profile is clamped — so `loop_manage` cannot expand the agent's capability surface, only subdivide it. Creating a loop is therefore not an escalation. Set `restricted: true` on the tool to re-add human approval.
+**Ungated by default.** Unlike `sys_update_config` and `sys_create_adf`, `loop_manage` ships with no `restricted` flag. A loop's tools are intersected with the agent's own enabled tools, and a restricted tool stays restricted inside the loop, so `loop_manage` cannot expand the agent's capability surface, only subdivide it. Set `restricted: true` on the tool to re-add human approval.
 
 **Locks still bind.** `create`, `update`, and `delete` honour [`locked_fields`](#sys_update_config): with the `loops` path locked, all three refuse with the same `'loops' is locked.` sentence `sys_update_config` uses. And `delete` (like removing a loop by config edit) **preserves `locked` timers** stamped to that loop — they are kept and logged rather than deleted, matching the human-only semantics of a lock everywhere else.
 
@@ -764,7 +764,18 @@ Use `template` to specify a path to a `.adf` file stored in the calling agent's 
 - **Preserved credentials** — non-signing identity rows (API keys, MCP credentials, adapter credentials) from the template are copied, provided they are stored as plaintext (encrypted rows from password-protected templates are skipped)
 - **All template files** — copied to the child with their original protection levels
 
-**Locked field enforcement:** The template's `locked_fields` and any `locked: true` flags on tools, triggers, trigger targets, and API routes are enforced during the merge. If an override targets a locked field or item, the tool returns an error without creating anything. Locked fields cannot be stripped by the creating agent — they carry forward to the child.
+**Locked field enforcement:** The template's `locked_fields` and any `locked: true` flags on tools, triggers, trigger targets, and API routes are enforced during the merge. A lock is a section (`model`) or one field by its dotted path (`model.model_id`), and each locked field is checked on its own:
+
+- Leave a locked field out of the call and the child keeps the template value. Fields beside it stay open: with `model.model_id` locked, `model: { temperature: 0.2 }` is fine.
+- Setting a locked field or tool to the value it already has is not a change, and is accepted.
+- Setting it to a different value returns an error naming the lock (`Template locks 'model.model_id'; it cannot be changed.`), and nothing is created.
+- A section the call replaces whole (`logging`, `audit`, `mcp`) keeps its locked fields even if the replacement leaves them out.
+- Locked commands, triggers, trigger targets and API routes follow the same rule: restating one unchanged is accepted, changing it is refused.
+- A `name` lock does not apply here: each child takes the name given in the call.
+
+The merge covers the settings this tool takes as parameters. Template settings outside them are not carried into the child, locked or not; for example `compute`, `loops`, `recovery`, `sandbox`, `bare_prompt`, `include_base_prompt`, `umbilical_taps` and `stream_bindings`. The child gets the defaults for those.
+
+The creating agent cannot strip `locked_fields`; the locks carry forward to the child.
 
 Config merge order: `AGENT_DEFAULTS → template config → explicit tool params`.
 
@@ -1010,7 +1021,7 @@ The canonical default is `DEFAULT_TOOLS` in `src/shared/types/adf-v02.types.ts`.
 - HTTP: `sys_fetch`
 - State & meta: `sys_set_state`, `sys_get_meta`, `sys_set_meta`, `sys_delete_meta`
 - Config: `sys_get_config`
-- Inner loop tools: `loop_send`, `loop_list`, `loop_manage` — `loop_manage` is **main-only** (never grantable to an inner loop) and ships ungated
+- Inner loop tools: `loop_send`, `loop_list`, `loop_manage` — `loop_manage` ships ungated
 - `sys_update_config` — **enabled and `restricted: true`** (advertised; every LLM-loop call needs approval)
 - `chat_info` — **enabled but not visible** (callable from sandbox code as `adf.chat_info`; flip `visible` to expose it to the model)
 - `db_query` — **enabled but not visible** (callable from sandbox code as `adf.db_query`; flip `visible` to expose it to the model)

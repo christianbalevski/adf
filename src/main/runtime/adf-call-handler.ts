@@ -18,6 +18,7 @@ import { withAuthorization, currentAuthorization } from './authorization-context
 import type { AgentSession } from './agent-session'
 import { currentSourceOrUnknown } from './execution-context'
 import { LOOP_RESET_TOOLS, TURN_ONLY_TOOLS, loopResetRefusal } from '../tools/built-in/loop-reset-tools'
+import { dedupeToolDeclarations } from '../../shared/utils/tool-declarations'
 
 /** Raw message from sandbox input — supports system role unlike LLMMessage. */
 interface ModelInvokeMessage {
@@ -97,7 +98,7 @@ export class AdfCallHandler {
   /** Call stack for circular sys_lambda detection */
   private callStack: string[] = []
 
-  /** Task lifecycle callbacks (set by assembleAgent for main; unset on side loops) */
+  /** Task lifecycle callbacks (set by assembleAgent for main, by the loop pool for side loops) */
   onTaskCreated?: (task: TaskEntry) => void
   onTaskCompleted?: TaskCompletedFn
 
@@ -172,12 +173,6 @@ export class AdfCallHandler {
     // the caller decides whether to fall back, and must not do so silently
     // when the override names a different provider than the host's.
     return this.createProviderForModel?.(model) ?? null
-  }
-
-  /** True when this handler serves a side loop (derived-config marker). */
-  private isSideLoop(): boolean {
-    const name = this.config.metadata?.loop_name
-    return typeof name === 'string' && name.length > 0 && name !== 'main'
   }
 
   /** Bind the live conversation session used for boundary-safe loop injection. */
@@ -315,7 +310,8 @@ export class AdfCallHandler {
       }
 
       // Check tool existence and configuration
-      const toolDecl = this.config.tools.find(t => t.name === method)
+      // The turn's reading of duplicates (first wins, restricted/locked sticky).
+      const toolDecl = dedupeToolDeclarations(this.config.tools).deduped.find(t => t.name === method)
 
       if (!toolDecl) {
         // Check if tool exists in registry but isn't declared
@@ -413,19 +409,6 @@ export class AdfCallHandler {
       // Protection denial from unauthorized code → blocking HIL override
       // approval (auto-denied on timeout by the executor). Approve re-executes
       // the exact (possibly human-modified) call with a one-time bypass.
-      // A side loop has no approval channel (HIL routing is filePath/singleton
-      // keyed, MVP), so parking an override request there would hang the call
-      // until the auto-deny timeout with nothing on screen to answer it. Fail
-      // closed instead, and say why.
-      if (result.isError && result.protection && !authorized && this.isSideLoop()) {
-        const p = result.protection
-        this.logCall('warn', 'call_rejected', method, `Protection denial in inner loop "${this.config.metadata?.loop_name}" — no approval channel`)
-        return {
-          error: `"${method}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
-          errorCode: 'PROTECTION_DENIED'
-        }
-      }
-
       if (result.isError && result.protection && !authorized && this.requestProtectionApproval) {
         const p = result.protection
         const decision = await this.requestProtectionApproval(method, args, p)

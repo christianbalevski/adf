@@ -8,8 +8,7 @@ describe('ChatGPT subscription request headers', () => {
     const fetchSpy = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('request captured'))
     vi.stubGlobal('fetch', fetchSpy)
     const { provider, setInstructions } = createChatGPTSubscriptionProvider({
-      getValidAccessToken: async () => 'test-token',
-      getAccountId: () => 'test-account',
+      getRequestAuth: async () => ({ accessToken: 'test-token', accountId: 'test-account' }),
     })
     setInstructions('Reply briefly.')
 
@@ -22,7 +21,7 @@ describe('ChatGPT subscription request headers', () => {
     expect(String(url)).toBe('https://chatgpt.com/backend-api/codex/responses')
     const headers = new Headers(init?.headers)
     expect(headers.get('originator')).toBe('codex_cli_rs')
-    expect(headers.get('version')).toBe('0.159.1')
+    expect(headers.get('version')).toBe('0.169.0')
     expect(headers.get('Authorization')).toBe('Bearer test-token')
     expect(headers.get('ChatGPT-Account-ID')).toBe('test-account')
     expect(JSON.parse(String(init?.body))).toMatchObject({

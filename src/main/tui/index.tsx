@@ -8,7 +8,7 @@ import * as daemonUrlNs from '../cli/daemon-url'
 import { cjs } from './interop'
 import { defaultPrefsPath, loadPrefs, savePrefs } from './app/prefs'
 
-const { resolveDaemonUrl, DEFAULT_DAEMON_URL } = cjs(daemonUrlNs)
+const { DEFAULT_DAEMON_URL } = cjs(daemonUrlNs)
 
 /**
  * React and ink pick their build when first loaded: without NODE_ENV they
@@ -161,7 +161,11 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
   }
 
   const client = new DaemonClient({ baseUrl: options.url, token: options.token, fetch: io.fetch, localToken: true, env: io.env })
-  const store = createTuiStore({ client, initialView: options.view })
+  const store = createTuiStore({
+    client,
+    initialView: options.view,
+    initialAgent: options.agent ? { identifier: options.agent, loop: options.loop } : undefined,
+  })
   const prefs = loadPrefs(defaultPrefsPath(io.env))
   if (prefs.sidebar === false) store.actions.setViewState(LAYOUT_STATE_KEY, { sidebarHidden: true })
   // Mouse mode is the default (in-app selection keeps drag-to-copy); /mouse off is remembered. The flag / env win over the saved choice.
@@ -212,18 +216,6 @@ export async function runTui(argv: string[] = process.argv.slice(2), io: TuiIo =
       const { openWelcome } = await import('./setup/open')
       openWelcome(store)
     }
-    if (!options.agent) return
-    const state = store.getState()
-    const id = state.agentOrder.find(agentId => {
-      const summary = state.agents[agentId]?.summary
-      return agentId === options.agent || summary?.handle === options.agent || summary?.name === options.agent
-    })
-    if (!id) {
-      store.actions.toast(`No loaded agent "${options.agent}"`, 'warn')
-      return
-    }
-    store.actions.selectAgent(id)
-    if (options.loop) store.actions.selectLoop(id, options.loop)
   })
 
   try {

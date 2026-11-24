@@ -75,7 +75,6 @@ export const MAX_SKILL_FILE_BYTES = 256 * 1024
  * description display as something other than what it is. Reject rather than
  * strip: a description that needs those characters is not a description.
  */
-// eslint-disable-next-line no-control-regex
 const UNSAFE_TEXT = /[\u0000-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/
 
 /** No control or bidirectional-override character (see UNSAFE_TEXT). */

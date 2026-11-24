@@ -43,8 +43,10 @@ describe('appendOwnerMessageUnderLease', () => {
     const { filePath, own, other, loop } = setup()
     expect((await other.acquire(filePath)).ok).toBe(true)
     const before = loop().length
-    const result = await appendOwnerMessageUnderLease(own, filePath, 'hello')
+    const onCommitted = vi.fn()
+    const result = await appendOwnerMessageUnderLease(own, filePath, 'hello', { onCommitted })
     expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/agent-1 is already running in another ADF Studio/) })
+    expect(onCommitted).not.toHaveBeenCalled()
     expect(loop()).toHaveLength(before)
   })
 
@@ -56,10 +58,17 @@ describe('appendOwnerMessageUnderLease', () => {
       heldDuringAppend.push(own.heldPaths().length)
       return original.apply(this, args)
     })
-    const result = await appendOwnerMessageUnderLease(own, filePath, 'hello')
+    const onCommitted = vi.fn(() => {
+      expect(own.heldPaths()).toHaveLength(1)
+    })
+    const result = await appendOwnerMessageUnderLease(own, filePath, 'hello', { onCommitted })
     expect(result).toEqual({ ok: true })
     expect(heldDuringAppend).toEqual([1])
-    expect(loop().at(-1)).toMatchObject({ role: 'user', content_json: [{ type: 'text', text: 'hello' }] })
+    const row = loop().at(-1)
+    expect(row).toMatchObject({ role: 'user', content_json: [{ type: 'text', text: 'hello' }] })
+    expect(onCommitted).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+      seq: row?.seq, role: 'user', content_json: row?.content_json, created_at: row?.created_at
+    }))
     expect(own.heldPaths()).toEqual([])
     expect((await other.acquire(filePath)).ok).toBe(true)
   })

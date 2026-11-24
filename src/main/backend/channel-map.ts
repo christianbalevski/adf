@@ -95,8 +95,6 @@ interface EntryOpts {
   note?: string
 }
 
-const gap = (ws: GapWorkstream, need: string): ChannelGap => ({ ws, need })
-
 function local(kind: ChannelKind, note?: string, opts: { reads?: readonly string[]; remote?: string } = {}): ChannelEntry {
   return { class: 'local', kind, scope: 'studio', routes: opts.reads ?? [], gaps: [], ...(opts.remote ? { remote: opts.remote } : {}), ...(note ? { note } : {}) }
 }
@@ -145,6 +143,7 @@ export const CHANNEL_MAP = {
   }),
   [IPC.AGENTS_FOLDER_DEFAULT_GET]: proxied('invoke', ['GET /files/agents-folder']),
   [IPC.FILE_CLOSE]: proxied('invoke', ['DELETE /client/sessions/:id/documents/:agentId', 'PUT /client/sessions/:id/focus']),
+  [IPC.FILE_SET_VISIBLE]: proxied('invoke', ['PUT /client/sessions/:id/focus']),
   [IPC.FILE_DELETE]: proxied('invoke', ['DELETE /files']),
   [IPC.FILE_CLONE]: proxied('invoke', ['POST /files/clone']),
   [IPC.FILE_LIST_TABLES]: proxied('invoke', ['GET /files/agent/tables'], { note: 'Clone dialog.' }),
@@ -183,7 +182,7 @@ export const CHANNEL_MAP = {
 
   // --- Agent runtime ---------------------------------------------------------
   [IPC.AGENT_START]: proxied('invoke', ['POST /agents/:id/start', 'GET /agents/:id/status', 'GET /agents/:id/triggers', 'GET /approvals/interactions', 'GET /agents/:id/identity/password', 'POST /agents/:id/stop', 'GET /agents/:id/config'], {
-    note: 'The reuse path (agent already running) returns sessionId, the display state (GET /agents/:id/triggers), and main\'s pending approvals and asks (GET /approvals/interactions). A held document whose key is locked answers code credentials_locked without starting (design §6.1 row 27).',
+    note: 'The reuse path (agent already running) returns sessionId, the display state (GET /agents/:id/triggers), and every loop\'s pending approvals and asks (GET /approvals/interactions). A held document whose key is locked answers code credentials_locked without starting (design §6.1 row 27).',
   }),
   [IPC.AGENT_STOP]: proxied('invoke', ['POST /agents/:id/stop']),
   [IPC.AGENT_STATUS]: proxied('invoke', ['GET /agents/:id/status']),
@@ -207,6 +206,8 @@ export const CHANNEL_MAP = {
 
   // --- Approvals hub ---------------------------------------------------------
   [IPC.APPROVALS_LIST]: proxied('invoke', ['GET /approvals']),
+  [IPC.APPROVALS_CLEAR_HISTORY]: proxied('invoke', ['DELETE /approvals/history']),
+  [IPC.APPROVALS_HISTORY]: proxied('invoke', ['GET /approvals/history']),
   [IPC.APPROVALS_RESOLVE]: proxied('invoke', ['POST /approvals/resolve']),
   [IPC.APPROVALS_CHANGED]: aggregate(proxied('push', [], {
     frame: 'push:approvals',

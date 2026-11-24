@@ -482,6 +482,27 @@ describe('PodmanService lifecycle hardening', () => {
     expect(exec0).toHaveBeenCalledTimes(2)
   })
 
+  it('shares an in-flight mkdir only for the same container run', async () => {
+    const service = new PodmanService()
+    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
+    let releaseFirst!: (result: { code: number; stdout: string; stderr: string }) => void
+    const firstExec = new Promise<{ code: number; stdout: string; stderr: string }>(resolve => { releaseFirst = resolve })
+    const exec0 = vi.fn().mockReturnValueOnce(firstExec).mockResolvedValue({ code: 0, stdout: '', stderr: '' })
+    ;(service as any).exec0 = exec0
+
+    const first = service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    const shared = service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    await Promise.resolve()
+    expect(exec0).toHaveBeenCalledTimes(1)
+
+    ;(service as any).invalidateContainer('adf-mcp')
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    releaseFirst({ code: 1, stdout: '', stderr: 'container is not running' })
+    await Promise.all([first, shared])
+    await service.ensureWorkspace('adf-mcp', '/workspace/agent-1')
+    expect(exec0).toHaveBeenCalledTimes(2)
+  })
+
   it('pendingStarts resolves only after in-flight starts settle', async () => {
     const service = new PodmanService()
     let release!: () => void
@@ -839,12 +860,17 @@ describe('PodmanService lifecycle hardening', () => {
 
   it('learns a container is gone from a dead-container exec', async () => {
     const service = new PodmanService()
-    ;(service as any).requirePodman = vi.fn().mockResolvedValue('/usr/bin/podman')
-    ;(service as any).exec0 = vi.fn().mockResolvedValue({ code: 1, stdout: '', stderr: 'Error: no container with name or ID "adf-agent-12345678" found: no such container', timedOut: false })
-    ;(service as any)._phases.set('adf-agent-12345678', { phase: 'ready' })
+    vi.spyOn(service, 'findPodman').mockResolvedValue('/usr/bin/podman')
+    const name = 'adf-agent-12345678'
+    const missing = { code: 1, stdout: '', stderr: `Error: no container with name or ID "${name}" found: no such container`, timedOut: false }
+    ;(service as any).exec0 = vi.fn().mockResolvedValue(missing)
+    ;(service as any)._phases.set(name, { phase: 'ready' })
+    const phaseChanged = vi.fn()
+    service.on('container-phase', phaseChanged)
 
-    await service.execInContainer('adf-agent-12345678', '/workspace', 'true')
-    await expect(service.containerPhase('adf-agent-12345678')).resolves.toMatchObject({ phase: 'absent' })
+    await expect(service.execInContainer(name, '/workspace', 'true')).resolves.toEqual(missing)
+    expect(phaseChanged).toHaveBeenCalledWith(expect.objectContaining({ containerName: name, phase: 'absent' }))
+    await expect(service.containerPhase(name)).resolves.toEqual({ phase: 'absent' })
   })
 
   it('memoizes browserReady and clears the memo on failure', async () => {

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { planPackageWrite, preparePackageWrite, slotOf, type PackageIo } from '../../../src/shared/utils/skill-install-plan'
 import { FILE_BATCH_MAX_BYTES } from '../../../src/shared/utils/file-batch'
 
@@ -64,6 +64,66 @@ describe('preparePackageWrite: the read protocol', () => {
     expect(reads).toEqual(['skills/a/SKILL.md'])
   })
 
+  it('bounds both read phases and keeps write order and CAS preconditions when reads finish out of order', async () => {
+    const resources = Array.from({ length: 6 }, (_, i) => ({ path: `r${i}.md`, raw_url: `https://r/${i}` }))
+    const files = ['SKILL.md', 'r4.md', 'r2.md', 'r0.md', 'r1.md', 'mine.md'].map((name) => ({
+      path: `skills/a/${name}`, protection: 'none' as const
+    }))
+    const fetches: Array<() => void> = []
+    const revisions: Array<() => void> = []
+    const value: PackageIo = {
+      fetchBytes: () => new Promise((resolve) => {
+        fetches.push(() => resolve({ ok: true, contentBase64: 'eA==', size: 1 }))
+      }),
+      listFiles: async () => files,
+      readRevision: (path) => new Promise((resolve) => {
+        revisions.push(() => resolve(10 + files.findIndex((file) => file.path === path)))
+      }),
+    }
+    const planning = preparePackageWrite(value, 'a', 'M', resources)
+    await vi.waitFor(() => expect(fetches).toHaveLength(4))
+    expect(revisions).toHaveLength(0)
+    fetches.slice().reverse().forEach((finish) => finish())
+    await vi.waitFor(() => expect(fetches).toHaveLength(6))
+    fetches.slice(4).reverse().forEach((finish) => finish())
+    await vi.waitFor(() => expect(revisions).toHaveLength(4))
+    revisions.slice().reverse().forEach((finish) => finish())
+    await vi.waitFor(() => expect(revisions).toHaveLength(5))
+    revisions[4]()
+    const plan = await planning
+    expect(plan).toMatchObject({ ok: true, occupied: true, keeps: ['skills/a/mine.md'] })
+    if (!plan.ok) throw new Error(plan.error)
+    expect(plan.files.map((file) => [file.path, file.baseRevision ?? null, file.mustNotExist ?? null])).toEqual([
+      ['skills/a/r0.md', 13, null],
+      ['skills/a/r1.md', 14, null],
+      ['skills/a/r2.md', 12, null],
+      ['skills/a/r3.md', null, true],
+      ['skills/a/r4.md', 11, null],
+      ['skills/a/r5.md', null, true],
+      ['skills/a/SKILL.md', 10, null],
+    ])
+  })
+
+  it('reports the first failure in package order and discards later in-flight rejections', async () => {
+    const rejection = new Error('later request rejected')
+    const listFiles = vi.fn(async () => [])
+    const value: PackageIo = {
+      fetchBytes: async (url) => {
+        if (url === 'second') throw rejection
+        await Promise.resolve()
+        return { ok: false, error: 'first request failed' }
+      },
+      listFiles,
+      readRevision: async () => undefined,
+    }
+    const plan = await preparePackageWrite(value, 'a', 'M', [
+      { path: 'first.md', raw_url: 'first' },
+      { path: 'second.md', raw_url: 'second' },
+    ])
+    expect(plan).toEqual({ ok: false, error: 'first.md: first request failed. Nothing was written.' })
+    expect(listFiles).not.toHaveBeenCalled()
+  })
+
   it('a resource that fails to fetch ends it before anything is listed', async () => {
     const { value, reads } = io({}, {})
     expect(await preparePackageWrite(value, 'a', 'M', [{ path: 'x.md', raw_url: 'https://r/x' }])).toEqual({ ok: false, error: 'x.md: HTTP 404. Nothing was written.' })
@@ -77,13 +137,24 @@ describe('preparePackageWrite: the read protocol', () => {
     expect(plan).toMatchObject({ ok: true, files: [{ path: 'skills/a/local.bin', contentBase64: res('local.bin', 2).contentBase64, mustNotExist: true }, { path: 'skills/a/SKILL.md', content: 'M', mustNotExist: true }] })
   })
 
-  it('a checkpoint that answers stops it after the next await, with that answer', async () => {
-    const { value } = io({}, { 'https://r/x': 'x' })
+  it('stops at a stale checkpoint without waiting on other reads or starting another window', async () => {
+    const { value } = io({})
+    const finishLater: Array<() => void> = []
     let gone = false
     value.checkpoint = () => (gone ? 'view changed' : null)
-    const fetch = value.fetchBytes
-    value.fetchBytes = async (url) => { const r = await fetch(url); gone = true; return r }
-    expect(await preparePackageWrite(value, 'a', 'M', [{ path: 'x.md', raw_url: 'https://r/x' }])).toEqual({ ok: false, error: 'view changed' })
+    const result = { ok: true as const, contentBase64: 'eA==', size: 1 }
+    const fetch = vi.fn(async (url: string) => {
+      if (url === 'https://r/0') {
+        gone = true
+        return result
+      }
+      return new Promise<typeof result>((resolve) => finishLater.push(() => resolve(result)))
+    })
+    value.fetchBytes = fetch
+    const resources = Array.from({ length: 6 }, (_, i) => ({ path: `r${i}.md`, raw_url: `https://r/${i}` }))
+    expect(await preparePackageWrite(value, 'a', 'M', resources)).toEqual({ ok: false, error: 'view changed' })
+    expect(fetch).toHaveBeenCalledTimes(4)
+    finishLater.forEach((finish) => finish())
   })
 
   // BI-F2: a catalog entry has no sizes, so 255 resources of 1 MiB were all fetched before the batch refused.

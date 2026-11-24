@@ -1,4 +1,4 @@
-import type { AgentConfig, AgentTemplate, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
+import type { AgentTemplate, DisplayEntry, LoopTokenUsage, McpServerState, McpInstalledPackage, McpInstallProgress, McpToolInfo } from './adf-v02.types'
 import type { LoopMedia } from './media.types'
 import type { AgentRegistryEntry } from '../schemas/agent-registry.schema'
 import type { AdapterRegistration, AdapterState, AdapterInstallProgress, AdapterStatusEvent, AdapterCredentialFileInfo } from './channel-adapter.types'
@@ -21,6 +21,8 @@ export interface AgentExecutionEvent {
     | 'autosaved'
     | 'document_updated'
     | 'chat_updated'
+    /** Embedded Studio delivered a Fleet message directly to an offline agent's loop. */
+    | 'chat_appended'
     | 'inter_agent_message'
     | 'tool_approval_request'
     | 'tool_approval_resolved'
@@ -50,6 +52,12 @@ export interface AgentExecutionEvent {
 /** `adf_file_created` on AGENT_EVENT: the file sys_create_adf wrote, when its result names it. */
 export interface AdfFileCreatedPayload {
   filePath?: string
+}
+
+/** A committed display entry in the embedded foreground transcript. */
+export interface ChatAppendedPayload {
+  filePath: string
+  entry: DisplayEntry
 }
 
 /**
@@ -261,6 +269,12 @@ export interface AppSettings {
   promptDefaultsApplied?: string
   /** OS notifications for agent events. Absent = enabled. */
   nativeNotificationsEnabled?: boolean
+  /** 'finished' notices: an agent no client had open ended a main loop turn with a reply. Absent = enabled. */
+  finishedNotificationsEnabled?: boolean
+  /** In-app notices under the bell. While on, a focused window gets no OS notification. Absent = enabled. */
+  inAppNotificationsEnabled?: boolean
+  /** OS notification bodies carry the question or reply text. Absent = enabled. */
+  notificationPreviewsEnabled?: boolean
   /** macOS menu bar icon with running agents and pending approvals. Absent = enabled. */
   menuBarEnabled?: boolean
   /** Background update check against GitHub Releases (packaged builds). Absent = enabled. */
@@ -500,9 +514,10 @@ export interface ContextBreakdownToolGroup {
 }
 
 /**
- * Per-request context token breakdown for a running executor. Expensive parts
- * (system prompt, tool schemas) are measured when the executor's caches
- * rebuild; message/dynamic figures are cheap estimates computed at read time.
+ * Per-request context token breakdown for a running executor. Prompt and
+ * tool totals are measured on cache rebuild. Layer and file figures are
+ * cached on the first diagnostic read. Message and dynamic figures are
+ * estimated at read time.
  */
 /**
  * Price of each system prompt layer, measured in rendered form ({{path}}
@@ -570,7 +585,7 @@ export interface ResponseMetadataPayload {
 
 /**
  * Payload of the 'chat_updated' agent event: the loop's display entries were
- * rebuilt wholesale (compaction, clear, direct append repaint). When the
+ * rebuilt wholesale (compaction, clear, or resync). When the
  * rebuild changed the context size, `contextBaseline` carries the new
  * post-rebuild estimate (see ContextBaseline) so the renderer resets its
  * gauge to it instead of keeping the pre-compaction figure until the next
@@ -626,12 +641,14 @@ export interface ToolApprovalRequestPayload extends ApprovalMeta {
 }
 
 /**
- * What a global-notification row is asking the human for. Both kinds block
- * their executor until answered; they differ only in how they are answered —
- * an approval is a yes/no (resolvable inline), an ask needs typed prose (so
- * the UI jumps you to the agent's chat instead).
+ * What a global-notification row is about. 'approval' and 'ask' block their
+ * executor until answered; they differ only in how they are answered — an
+ * approval is a yes/no (resolvable inline), an ask needs typed prose (so the UI
+ * jumps you to the agent's chat instead). 'finished' blocks nothing: a main
+ * loop turn of an agent no client had open ended with a reply. It is never
+ * pending; it goes straight to history (ApprovalHub.announce).
  */
-export type PendingNotificationKind = 'approval' | 'ask'
+export type PendingNotificationKind = 'approval' | 'ask' | 'finished'
 
 /**
  * One row of the global HIL notifications menu (title bar), and the single
@@ -661,7 +678,7 @@ export interface PendingNotification {
   loop: string
   /** Approvals only. */
   toolName?: string
-  /** One line: the tool's args summary, or the question. Truncated, redacted. */
+  /** One line, truncated: the tool's redacted args summary, the question, or the reply ('finished'). */
   preview: string
   /** Asks only — every question's text, one per line. */
   question?: string
@@ -701,12 +718,12 @@ export interface ResolvedNotification extends Omit<PendingNotification, 'input'>
   resolvedAt: number
 }
 
-/**
- * The whole notifications payload: what is still blocking an agent, plus a
- * bounded, newest-first tail of what recently stopped blocking. Pushed as one
- * object so a window that reloads or opens late is correct after a single
- * message, with no resync protocol.
- */
+/** A bounded page, with a cursor counted from the oldest end of history. */
+export interface NotificationHistoryPage {
+  history: ResolvedNotification[]
+  nextBefore: number | null
+}
+
 /**
  * Queued messages of one agent loop, handed from a closing agent window to
  * the main window, which sends them when the loop's turn ends
@@ -720,10 +737,11 @@ export interface QueueHandoverEntry {
   messages: Array<{ id: string; text: string; content?: unknown[]; error?: string; failures?: number }>
 }
 
+/** Live requests and the newest history page, pushed together to every client. */
 export interface NotificationsSnapshot {
   /** Oldest first — the thing blocking longest reads first. */
   pending: PendingNotification[]
-  /** Newest first, capped, per-app-session (never persisted). */
+  /** Most recent resolved rows, newest first. Older history is fetched in pages. */
   history: ResolvedNotification[]
   /**
    * Daemon mode with agent windows open (docs/design/agent-windows.md): the
@@ -744,6 +762,8 @@ export interface FleetPendingInteraction extends Partial<ApprovalMeta> {
   questions?: AskQuestion[]
   toolName?: string
   input?: unknown
+  /** The loop that raised it (main or an inner loop). */
+  loop?: string
 }
 
 export type MeshEvent =

@@ -30,7 +30,6 @@ import { RIGHT_PANEL_WIDTH_KEY, loadStoredSize, saveStoredSize } from '../../uti
 import { useEffect, useState, useCallback, useRef, lazy, Suspense } from 'react'
 import { isAgentWindow } from '../../utils/window-kind'
 import { AgentWindowStatus } from './AgentWindowStatus'
-import type { AgentState } from '../../../shared/types/ipc.types'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { CompactOverlay } from './CompactOverlay'
 import { useCompactNavigationStore } from '../../stores/compact-navigation.store'
@@ -331,25 +330,6 @@ export function AppShell() {
       <ShareAgentDialog />
       <ShutdownOverlay />
     </div>
-  )
-}
-
-function StatusDot({ state }: { state: AgentState }) {
-  const colors: Record<AgentState, string> = {
-    active: 'bg-yellow-400',
-    idle: 'bg-green-400',
-    hibernate: 'bg-purple-500',
-    suspended: 'border-red-400',
-    off: 'bg-neutral-400',
-    error: 'bg-red-400',
-    not_participating: 'bg-neutral-300 dark:bg-neutral-600'
-  }
-  const isRing = state === 'suspended'
-  return (
-    <span
-      className={`inline-block w-2 h-2 rounded-full shrink-0 ${isRing ? `border-[1.5px] ${colors[state]}` : colors[state]}`}
-      title={state}
-    />
   )
 }
 

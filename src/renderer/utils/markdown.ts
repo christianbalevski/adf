@@ -240,7 +240,7 @@ export function renderMarkdownToSafeHtml(source: string): string {
     pendingBlocks = null
   }
   const safe = resolveHtmlMediaUrls(DOMPurify.sanitize(raw, {
-    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|adf-file):|[^a-z]|[a-z+.\-]+(?:[^a-z+.\-:]|$))/i,
+    ALLOWED_URI_REGEXP: /^(?:(?:https?|mailto|tel|adf-file):|[^a-z]|[a-z+.-]+(?:[^a-z+.:-]|$))/i,
     FORBID_TAGS: ['style', 'form', 'input', 'textarea', 'select'],
     FORBID_ATTR: ['style'],
   }))

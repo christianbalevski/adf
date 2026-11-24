@@ -43,7 +43,6 @@ export const MAX_PREVIEW_FIELD_CHARS = 300
  * breaks and indentation ARE the content. This is the same character set minus
  * TAB (U+0009) and LF (U+000A), which are kept.
  */
-// eslint-disable-next-line no-control-regex -- removing control characters is the point
 const UNSAFE_BLOCK_CHARS = /[\u0000-\u0008\u000B-\u001F\u007F-\u009F\u061C\u200E\u200F\u202A-\u202E\u2066-\u2069]/g
 
 /**

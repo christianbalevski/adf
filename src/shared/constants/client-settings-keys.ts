@@ -55,6 +55,9 @@ export const CLIENT_SETTINGS_KEYS = [
   // handler MUST drop `migrated` when the client file has it set.
   'templatesMigrationSeen',
   'nativeNotificationsEnabled',
+  'finishedNotificationsEnabled',
+  'inAppNotificationsEnabled',
+  'notificationPreviewsEnabled',
   'menuBarEnabled',
   'recentFiles',
   // Remote mode's Open Recent: paths on the remote daemon's machine, kept

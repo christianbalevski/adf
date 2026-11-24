@@ -79,37 +79,37 @@ describe('fallbackPath', () => {
 describe('resolveLoginShellPath', () => {
   const base = { shell: '/bin/zsh', currentPath: '/usr/bin:/bin', platform: 'darwin' as const }
 
-  it('uses the login-shell PATH when the output parses', () => {
+  it('uses the login-shell PATH when the output parses', async () => {
     const exec: LoginShellExec = () => marked('PATH=/opt/homebrew/bin:/usr/bin')
-    expect(resolveLoginShellPath({ ...base, exec })).toEqual({
+    expect(await resolveLoginShellPath({ ...base, exec })).toEqual({
       source: 'login-shell',
       path: '/opt/homebrew/bin:/usr/bin',
     })
   })
 
-  it('passes separate -i -l -c flags and a timeout', () => {
+  it('passes separate -i -l -c flags and a timeout', async () => {
     const calls: Array<{ shell: string; args: string[]; timeoutMs: number }> = []
     const exec: LoginShellExec = (shell, args, timeoutMs) => {
       calls.push({ shell, args, timeoutMs })
       return marked('PATH=/usr/bin')
     }
-    resolveLoginShellPath({ ...base, exec, timeoutMs: 1234 })
+    await resolveLoginShellPath({ ...base, exec, timeoutMs: 1234 })
     expect(calls[0].shell).toBe('/bin/zsh')
     expect(calls[0].args.slice(0, 3)).toEqual(['-i', '-l', '-c'])
     expect(calls[0].timeoutMs).toBe(1234)
   })
 
-  it('falls back when the shell fails or times out', () => {
+  it('falls back when the shell fails or times out', async () => {
     const exec: LoginShellExec = () => {
       throw new Error('spawnSync /bin/zsh ETIMEDOUT')
     }
-    const result = resolveLoginShellPath({ ...base, exec, home: '/Users/me' })
+    const result = await resolveLoginShellPath({ ...base, exec, home: '/Users/me' })
     expect(result.source).toBe('fallback')
     expect(result.path).toBe('/usr/bin:/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/usr/local/bin:/usr/local/sbin:/Users/me/.local/bin')
     if (result.source === 'fallback') expect(result.reason).toContain('ETIMEDOUT')
   })
 
-  it('uses the output of a shell that exits non-zero or times out after printing', () => {
+  it('uses the output of a shell that exits non-zero or times out after printing', async () => {
     // bash/zsh exit with the -c command's status even when an rc file fails,
     // but a hanging logout hook (timeout) or an error-propagating shell can
     // still end in an exec error after env has printed.
@@ -119,15 +119,15 @@ describe('resolveLoginShellPath', () => {
         stdout: marked('PATH=/Users/me/.nvm/versions/node/v22/bin:/usr/bin'),
       })
     }
-    expect(resolveLoginShellPath({ ...base, exec })).toEqual({
+    expect(await resolveLoginShellPath({ ...base, exec })).toEqual({
       source: 'login-shell',
       path: '/Users/me/.nvm/versions/node/v22/bin:/usr/bin',
     })
   })
 
-  it('falls back when the output has no usable PATH', () => {
+  it('falls back when the output has no usable PATH', async () => {
     const exec: LoginShellExec = () => '/opt/homebrew/bin /usr/bin'
-    expect(resolveLoginShellPath({ ...base, exec }).source).toBe('fallback')
+    expect((await resolveLoginShellPath({ ...base, exec })).source).toBe('fallback')
   })
 })
 
@@ -136,8 +136,8 @@ const realShells = ['/bin/bash', '/bin/zsh', '/opt/homebrew/bin/fish', '/usr/bin
   .filter((shell) => process.platform !== 'win32' && existsSync(shell))
 
 describe.skipIf(realShells.length === 0)('resolveLoginShellPath against real shells', () => {
-  it.each(realShells)('%s yields a plausible PATH', (shell) => {
-    const result = resolveLoginShellPath({ shell, currentPath: '/usr/bin:/bin', platform: process.platform, timeoutMs: 10_000 })
+  it.each(realShells)('%s yields a plausible PATH', async (shell) => {
+    const result = await resolveLoginShellPath({ shell, currentPath: '/usr/bin:/bin', platform: process.platform, timeoutMs: 10_000 })
     expect(result.source, result.source === 'fallback' ? result.reason : '').toBe('login-shell')
     expect(isPlausiblePath(result.path)).toBe(true)
   })

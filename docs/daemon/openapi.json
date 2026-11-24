@@ -1953,7 +1953,7 @@
           "Loops"
         ],
         "summary": "Create an inner loop",
-        "description": "Goes through the agent's loop pool, the same path as the loop_manage tool: same validation, tool attenuation and owner locks (`locked_fields: [\"loops\"]`). Defaults: enabled and autostart true; tools loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off at once through loop_send (`kickoff`). `excludedTools`: requested tools the host has disabled, carried by name and granted once enabled. 400 invalid declaration (bad name, unknown or never-grantable tool); 409 for `main`, a duplicate name, the loop cap, or `loops` locked by the owner.",
+        "description": "Goes through the agent's loop pool, the same path as the loop_manage tool: same validation and owner locks (`locked_fields: [\"loops\"]`). Defaults: enabled and autostart true; tools loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off at once through loop_send (`kickoff`). `excludedTools`: requested tools the host has disabled, carried by name and granted once enabled. 400 invalid declaration (bad name, unknown tool); 409 for `main`, a duplicate name, the loop cap, or `loops` locked by the owner.",
         "operationId": "createAgentLoop",
         "parameters": [
           {
@@ -2595,7 +2595,7 @@
         "tags": [
           "Chat"
         ],
-        "summary": "List inbox messages",
+        "summary": "List inbox messages or count them",
         "operationId": "getAgentInbox",
         "parameters": [
           {
@@ -2614,15 +2614,37 @@
                 "archived"
               ]
             }
+          },
+          {
+            "name": "countOnly",
+            "in": "query",
+            "required": false,
+            "description": "Return the count of matching inbox messages without their contents. Use 1 or true to enable it. An omitted status counts the whole inbox.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "1",
+                "0",
+                "true",
+                "false"
+              ]
+            }
           }
         ],
         "responses": {
           "200": {
-            "description": "Messages",
+            "description": "Messages by default, or the matching message count when countOnly is enabled",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/InboxResponse"
+                  "oneOf": [
+                    {
+                      "$ref": "#/components/schemas/InboxResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InboxCountResponse"
+                    }
+                  ]
                 }
               }
             }
@@ -6703,7 +6725,7 @@
           "Tasks & approvals"
         ],
         "summary": "Answer an ask request",
-        "description": "Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own (\"Other\") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.",
+        "description": "Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own (\"Other\") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are unique across the agent's loops, so the loop holding the id is answered. `loop`, when given, must name that loop. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.",
         "operationId": "answerAgentAsk",
         "parameters": [
           {
@@ -10769,7 +10791,7 @@
           "Tasks & approvals"
         ],
         "summary": "Approvals hub snapshot",
-        "description": "Every pending approval and ask across loaded agents and loops (oldest first), plus the recently resolved ones of this daemon run. Raw tool input is omitted; fetch it with GET /approvals/input.",
+        "description": "Every pending approval and ask across loaded agents and loops (oldest first), plus the 50 most recent resolved notifications (newest first). Older history is retained across restarts and fetched through GET /approvals/history until manually cleared. Requests interrupted by a runtime restart are recorded as expired. Raw tool input is omitted; fetch it with GET /approvals/input.",
         "operationId": "getApprovals",
         "responses": {
           "200": {
@@ -10788,6 +10810,47 @@
           "403": {
             "$ref": "#/components/responses/Forbidden"
           }
+        }
+      }
+    },
+    "/approvals/history": {
+      "get": {
+        "tags": ["Tasks & approvals"],
+        "summary": "Browse notification history",
+        "description": "Returns at most 50 resolved notifications, newest first. Omit before for the newest page; pass the returned nextBefore to read older entries. The cursor counts from the oldest end, so newly resolved notifications do not shift older pages. Discard cursors when history is cleared; Studio resets browsing on the next live snapshot.",
+        "operationId": "getNotificationHistory",
+        "parameters": [{
+          "name": "before",
+          "in": "query",
+          "description": "The previous page's nextBefore cursor.",
+          "schema": { "type": "integer", "minimum": 0, "maximum": 9007199254740991 }
+        }],
+        "responses": {
+          "200": {
+            "description": "History page",
+            "content": { "application/json": { "schema": { "$ref": "#/components/schemas/NotificationHistoryPage" } } }
+          },
+          "400": { "$ref": "#/components/responses/BadRequest" },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
+        }
+      },
+      "delete": {
+        "tags": ["Tasks & approvals"],
+        "summary": "Clear notification history",
+        "description": "Permanently clears this runtime's resolved notification history for all connected clients. Pending approvals and asks remain actionable. Returns success: false if the cleared history could not be saved.",
+        "operationId": "clearNotificationHistory",
+        "responses": {
+          "200": {
+            "description": "Clear result",
+            "content": {
+              "application/json": {
+                "schema": { "$ref": "#/components/schemas/SuccessErrorResponse" }
+              }
+            }
+          },
+          "401": { "$ref": "#/components/responses/Unauthorized" },
+          "403": { "$ref": "#/components/responses/Forbidden" }
         }
       }
     },
@@ -10885,7 +10948,7 @@
           "Tasks & approvals"
         ],
         "summary": "Pending asks and approvals per agent",
-        "description": "Main-loop requests only, per agent asks then approvals, with the raw tool input.",
+        "description": "Every loop's requests, per agent asks then approvals, with the raw tool input. `loop` names the loop that raised each one.",
         "operationId": "getPendingInteractions",
         "responses": {
           "200": {
@@ -15346,7 +15409,7 @@
           "Client (internal)"
         ],
         "summary": "Set the agent the session follows",
-        "description": "The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet).",
+        "description": "The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet). `visible: false`: the client keeps the agent open but does not show it (Home, a closed window); its finished turns are recorded in the notifications history.",
         "operationId": "setClientSessionFocus",
         "x-adf-stability": "internal",
         "requestBody": {
@@ -15364,6 +15427,10 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "visible": {
+                    "type": "boolean",
+                    "description": "Default true"
                   }
                 }
               }
@@ -23271,6 +23338,24 @@
           }
         }
       },
+      "InboxCountResponse": {
+        "type": "object",
+        "required": [
+          "agentId",
+          "count"
+        ],
+        "properties": {
+          "agentId": {
+            "type": "string",
+            "description": "Agent id",
+            "example": "Xk3v9QpLm2"
+          },
+          "count": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "InboxResponse": {
         "type": "object",
         "required": [
@@ -28906,14 +28991,16 @@
           },
           "kind": {
             "type": "string",
+            "description": "`approval` and `ask` block their agent until answered. `finished` is never pending: it appears only in history, when the main loop of an agent no client had open ended a turn with a reply",
             "enum": [
               "approval",
-              "ask"
+              "ask",
+              "finished"
             ]
           },
           "requestId": {
             "type": "string",
-            "description": "The executor-side id (HIL task id, or `ask_N`)"
+            "description": "The executor-side id (HIL task id, or `ask_N`); `finished_<id>` for a finished turn"
           },
           "filePath": {
             "type": "string",
@@ -28931,7 +29018,7 @@
           },
           "preview": {
             "type": "string",
-            "description": "One line, truncated, secret-free"
+            "description": "One line, truncated. Approvals: the redacted argument summary. Asks: the question. Finished: the reply"
           },
           "question": {
             "type": "string",
@@ -28979,7 +29066,8 @@
                   "approved",
                   "rejected",
                   "answered",
-                  "expired"
+                  "expired",
+                  "completed"
                 ]
               },
               "resolvedAt": {
@@ -28988,6 +29076,22 @@
             }
           }
         ]
+      },
+      "NotificationHistoryPage": {
+        "type": "object",
+        "required": ["history", "nextBefore"],
+        "properties": {
+          "history": {
+            "type": "array",
+            "maxItems": 50,
+            "items": { "$ref": "#/components/schemas/ResolvedNotification" }
+          },
+          "nextBefore": {
+            "type": ["integer", "null"],
+            "minimum": 0,
+            "description": "Cursor for the next older page, or null when there are no older entries."
+          }
+        }
       },
       "NotificationsSnapshot": {
         "type": "object",
@@ -29008,7 +29112,7 @@
             "items": {
               "$ref": "#/components/schemas/ResolvedNotification"
             },
-            "description": "Newest first, capped at 50, this daemon run only"
+            "description": "At most 50 most recent entries, newest first. Older persisted entries are fetched through GET /approvals/history."
           }
         }
       },
@@ -29068,6 +29172,10 @@
           },
           "requestId": {
             "type": "string"
+          },
+          "loop": {
+            "type": "string",
+            "description": "The loop that raised the request (`main` or an inner loop)."
           },
           "question": {
             "type": "string"

@@ -413,6 +413,39 @@ export type AssistantTokenRows = ReadonlyArray<Readonly<{ seq: number; tokens: R
 const MAX_CACHED_USAGE_ROWS = 10_000
 const MAX_CACHED_USAGE_CHARS = 512 * 1024
 
+const INBOX_READ_COLUMNS = `id, message_id, "from", "to", reply_to, network, thread_id, parent_id,
+  subject, content, content_type, attachments, meta, sender_alias, recipient_alias, owner,
+  card, return_path, source, source_context, sent_at, received_at, status`
+
+const FILE_LIST_COLUMNS = 'path, mime_type, size, protection, authorized, created_at, updated_at'
+
+interface FileListRow {
+  path: string
+  mime_type: string | null
+  size: number
+  protection: FileProtectionLevel
+  authorized: number
+  created_at: string
+  updated_at: string
+}
+
+type FileListEntry = Omit<FileListRow, 'mime_type' | 'authorized'> & {
+  mime_type?: string
+  authorized: boolean
+}
+
+/** Exclusive upper bound for a literal prefix in SQLite's UTF-8 BINARY order. */
+function filePrefixUpperBound(prefix: string): string | undefined {
+  const points = Array.from(prefix)
+  while (points.length) {
+    const point = points.pop()!.codePointAt(0)!
+    if (point < 0x10ffff) {
+      const next = point === 0xd7ff ? 0xe000 : point + 1
+      return points.join('') + String.fromCodePoint(next)
+    }
+  }
+}
+
 // =============================================================================
 // AdfDatabase Class
 // =============================================================================
@@ -421,6 +454,8 @@ export class AdfDatabase {
   private db: Database.Database
   private filePath: string
   private closed = false
+  private readonly usesUtf8: boolean
+  private timerWake: { dataVersion: number; totalChanges: number; nextWake?: number } | null = null
   private assistantTokenCache: {
     loop: string
     revision: number
@@ -541,15 +576,20 @@ export class AdfDatabase {
     setConfig?: Database.Statement
     getLoopEntries?: Database.Statement
     getLoopEntriesLimited?: Database.Statement
+    getLoopEntriesTail?: Database.Statement
     getLoopEntriesBefore?: Database.Statement
     getLoopCountBefore?: Database.Statement
     appendLoopEntry?: Database.Statement
     clearLoop?: Database.Statement
     getLoopCount?: Database.Statement
+    getLoopUsageRows?: Database.Statement
     getLastAssistantTokens?: Database.Statement
     getAssistantTokenRows?: Database.Statement
     getInboxMessages?: Database.Statement
     getInboxByStatus?: Database.Statement
+    readInboxByStatus?: Database.Statement
+    readInboxLimited?: Database.Statement
+    readInboxLimitedWithOriginal?: Database.Statement
     getInboxMessageById?: Database.Statement
     getInboxCounts?: Database.Statement
     getInboxCountByStatus?: Database.Statement
@@ -570,8 +610,11 @@ export class AdfDatabase {
     updateTimer?: Database.Statement
     deleteTimer?: Database.Statement
     getDueTimers?: Database.Statement
+    getNextTimerWake?: Database.Statement
+    getTotalChanges?: Database.Statement
     expireTimer?: Database.Statement
     readFile?: Database.Statement
+    fileContentEquals?: Database.Statement
     writeFile?: Database.Statement
     updateFile?: Database.Statement
     deleteFile?: Database.Statement
@@ -637,6 +680,7 @@ export class AdfDatabase {
   private constructor(db: Database.Database, filePath: string) {
     this.db = db
     this.filePath = filePath
+    this.usesUtf8 = db.pragma('encoding', { simple: true }) === 'UTF-8'
     AdfDatabase.incrementOpen(filePath)
     try {
       this.applyPragmas()
@@ -768,6 +812,9 @@ export class AdfDatabase {
    */
   static async backupBeforeDestructive(db: Database.Database, filePath: string): Promise<string> {
     const backupPath = filePath + '.bak'
+    // An in-memory database has no file to protect; backing it up would write
+    // `:memory:.bak` into the process's working directory.
+    if (filePath === ':memory:') return backupPath
     try { await fsp.rename(backupPath, AdfDatabase.staleBackupName(backupPath)) } catch { /* none to preserve */ }
     await db.backup(backupPath)
     return backupPath
@@ -3248,24 +3295,28 @@ export class AdfDatabase {
     this.stmts.getLoopEntriesLimited = this.db.prepare(
       'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq) ASC, seq ASC LIMIT ? OFFSET ?'
     )
+    this.stmts.getLoopEntriesTail = this.db.prepare(
+      'SELECT seq, role, content_json, model, tokens, created_at, ord FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq) DESC, seq DESC LIMIT ?'
+    )
     // Keyset paging: callers pass a raw seq cursor, but rows are ordered by
     // COALESCE(ord, seq) — an ord'd summary has key << seq, so comparing the
     // raw seq against keys would re-serve already-displayed rows and inflate
     // counts. Resolve the cursor row's own key (with seq tiebreak) in SQL.
     // The cursor row is constrained to the same stream, so a seq belonging to
     // another loop resolves to an empty page instead of paging across streams.
+    // Give the stream index a bound on the position before testing ties by seq.
     this.stmts.getLoopEntriesBefore = this.db.prepare(`
       SELECT l.seq, l.role, l.content_json, l.model, l.tokens, l.created_at, l.ord FROM adf_loop l, adf_loop c
       WHERE c.seq = ? AND l.loop = ? AND c.loop = l.loop
-        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq)
-             OR (COALESCE(l.ord, l.seq) = COALESCE(c.ord, c.seq) AND l.seq < c.seq))
+        AND COALESCE(l.ord, l.seq) <= COALESCE(c.ord, c.seq)
+        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq) OR l.seq < c.seq)
       ORDER BY COALESCE(l.ord, l.seq) DESC, l.seq DESC LIMIT ?`
     )
     this.stmts.getLoopCountBefore = this.db.prepare(`
       SELECT COUNT(*) as count FROM adf_loop l, adf_loop c
       WHERE c.seq = ? AND l.loop = ? AND c.loop = l.loop
-        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq)
-             OR (COALESCE(l.ord, l.seq) = COALESCE(c.ord, c.seq) AND l.seq < c.seq))`
+        AND COALESCE(l.ord, l.seq) <= COALESCE(c.ord, c.seq)
+        AND (COALESCE(l.ord, l.seq) < COALESCE(c.ord, c.seq) OR l.seq < c.seq)`
     )
     // Nullable explicit seq: NULL lets AUTOINCREMENT assign; an explicit seq
     // above sqlite_sequence raises it (no future collisions), below leaves it.
@@ -3274,6 +3325,9 @@ export class AdfDatabase {
     )
     this.stmts.clearLoop = this.db.prepare('DELETE FROM adf_loop WHERE loop = ?')
     this.stmts.getLoopCount = this.db.prepare('SELECT COUNT(*) as count FROM adf_loop WHERE loop = ?')
+    this.stmts.getLoopUsageRows = this.db.prepare(
+      'SELECT model, tokens FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq), seq'
+    )
     this.stmts.getLastAssistantTokens = this.db.prepare(
       'SELECT tokens FROM adf_loop WHERE loop = ? AND role = \'assistant\' AND tokens IS NOT NULL ORDER BY COALESCE(ord, seq) DESC, seq DESC LIMIT 1'
     )
@@ -3288,6 +3342,18 @@ export class AdfDatabase {
     this.stmts.getInboxByStatus = this.db.prepare(
       'SELECT * FROM adf_inbox WHERE status = ? ORDER BY received_at DESC'
     )
+    this.stmts.readInboxByStatus = this.db.prepare(
+      `SELECT ${INBOX_READ_COLUMNS} FROM adf_inbox WHERE status = ? ORDER BY received_at DESC, rowid`
+    )
+    // Sort only row IDs and timestamps before reading the selected payloads.
+    // The existing status index returns equal timestamps in rowid order.
+    const readInboxLimited = (columns: string) => this.db.prepare(
+      `SELECT ${columns} FROM adf_inbox
+       WHERE rowid IN (SELECT rowid FROM adf_inbox WHERE status = ? ORDER BY received_at DESC, rowid LIMIT ?)
+       ORDER BY received_at DESC, rowid`
+    )
+    this.stmts.readInboxLimited = readInboxLimited(INBOX_READ_COLUMNS)
+    this.stmts.readInboxLimitedWithOriginal = readInboxLimited('*')
     this.stmts.getInboxMessageById = this.db.prepare('SELECT * FROM adf_inbox WHERE id = ?')
     // Counting/grouping statements: callers that only need tallies must never
     // pull `content`/`attachments` (base64 blobs) back through JS.
@@ -3362,8 +3428,14 @@ export class AdfDatabase {
     // "Due" = active timers whose wake time has passed (the fire query).
     // Rows flagged expired are history and must never refire.
     this.stmts.getDueTimers = this.db.prepare(
-      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop, expired FROM adf_timers WHERE next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
+      'SELECT id, schedule_json, next_wake_at, payload, scope, lambda, warm, run_count, created_at, last_fired_at, locked, loop, expired FROM adf_timers WHERE next_wake_at >= ? AND next_wake_at <= ? AND expired = 0 ORDER BY next_wake_at ASC'
     )
+    this.stmts.getNextTimerWake = this.db.prepare(
+      'SELECT next_wake_at FROM adf_timers WHERE expired = 0 ORDER BY next_wake_at ASC LIMIT 1'
+    ).pluck()
+    this.stmts.getTotalChanges = this.db.prepare(
+      'SELECT total_changes()'
+    ).pluck()
     // Completed timers are flagged, not deleted — they fire one last time
     // right after settling, so stamp the run onto the row for history.
     this.stmts.expireTimer = this.db.prepare(
@@ -3374,6 +3446,9 @@ export class AdfDatabase {
     this.stmts.readFile = this.db.prepare(
       'SELECT content, mime_type, size, protection, authorized, created_at, updated_at FROM adf_files WHERE path = ?'
     )
+    this.stmts.fileContentEquals = this.db.prepare(
+      'SELECT CASE WHEN length(content) = ? THEN content = ? ELSE 0 END AS same FROM adf_files WHERE path = ?'
+    )
     this.stmts.writeFile = this.db.prepare(`
       INSERT INTO adf_files (path, content, mime_type, size, protection, created_at, updated_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -3383,7 +3458,7 @@ export class AdfDatabase {
     `)
     this.stmts.deleteFile = this.db.prepare("DELETE FROM adf_files WHERE path = ? AND protection = 'none'")
     this.stmts.listFiles = this.db.prepare(
-      'SELECT path, mime_type, size, protection, authorized, created_at, updated_at FROM adf_files'
+      `SELECT ${FILE_LIST_COLUMNS} FROM adf_files`
     )
     this.stmts.fileExists = this.db.prepare('SELECT 1 FROM adf_files WHERE path = ?')
     // Canonical primary doc is README.md; fall back to legacy document.md for
@@ -3501,7 +3576,7 @@ export class AdfDatabase {
       'UPDATE adf_tasks SET args = ? WHERE id = ?'
     )
     this.stmts.getTasksByStatus = this.db.prepare(
-      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE status = ? ORDER BY created_at ASC'
+      'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks WHERE status = ? ORDER BY created_at ASC LIMIT ?'
     )
     this.stmts.getAllTasks = this.db.prepare(
       'SELECT id, tool, args, status, result, error, created_at, completed_at, origin, requires_authorization, executor_managed, approval_meta FROM adf_tasks ORDER BY created_at DESC LIMIT ?'
@@ -3955,6 +4030,12 @@ export class AdfDatabase {
     return rows.map((row) => this.rowToLoopEntry(row))
   }
 
+  /** Read the newest rows by display order using the loop index in reverse. */
+  getLoopEntriesTail(loop: string, limit: number): LoopEntryRow[] {
+    const rows = this.stmts.getLoopEntriesTail!.all(loop, limit) as Parameters<AdfDatabase['rowToLoopEntry']>[0][]
+    return rows.reverse().map((row) => this.rowToLoopEntry(row))
+  }
+
   /**
    * Parse an `adf_loop.tokens` cell. Only a JSON object is a usage record —
    * legacy rows stored a bare integer, and `JSON.parse('123')` is a perfectly
@@ -4065,6 +4146,12 @@ export class AdfDatabase {
   getLoopCount(loop: string): number {
     const row = this.stmts.getLoopCount!.get(loop) as { count: number }
     return row.count
+  }
+
+  /** Usage for every role in display order, including compaction summaries. */
+  getLoopUsageRows(loop: string): Array<Pick<LoopEntryRow, 'model' | 'tokens'>> {
+    const rows = this.stmts.getLoopUsageRows!.all(loop) as Array<{ model: string | null; tokens: string | null }>
+    return rows.map(row => ({ model: row.model ?? undefined, tokens: AdfDatabase.parseLoopTokens(row.tokens) }))
   }
 
   /**
@@ -4224,9 +4311,12 @@ export class AdfDatabase {
     return stmts.list.all(...sources) as Array<{ id: number; start_seq: number; end_seq: number; size_bytes: number }>
   }
 
-  /** Each live row of a loop: its seq and display-order key (ord when set, else seq). */
-  getLoopOrderKeys(loop: string): Array<{ seq: number; key: number }> {
-    return this.db.prepare('SELECT seq, COALESCE(ord, seq) AS key FROM adf_loop WHERE loop = ?').all(loop) as Array<{ seq: number; key: number }>
+  getOldestLoopOrderKey(loop: string): { seq: number; key: number } | undefined {
+    return this.db.prepare('SELECT seq, COALESCE(ord, seq) AS key FROM adf_loop WHERE loop = ? ORDER BY COALESCE(ord, seq), seq LIMIT 1').get(loop) as { seq: number; key: number } | undefined
+  }
+
+  listLoopSeqs(loop: string): number[] {
+    return this.db.prepare('SELECT seq FROM adf_loop WHERE loop = ?').pluck().all(loop) as number[]
   }
 
   // ===========================================================================
@@ -4323,6 +4413,23 @@ export class AdfDatabase {
       rows = this.stmts.getInboxMessages!.all() as typeof rows
     }
 
+    return rows.map((row) => this.rowToInboxMessage(row))
+  }
+
+  readInboxMessages(status: InboxStatus, limit: number | undefined, includeOriginal: boolean): InboxMessage[] {
+    // Preserve the tool's previous truthy check and Array.slice coercion.
+    // Zero is unlimited, a positive fraction rounds down, and a negative
+    // limit drops that many rows from the end.
+    const end = limit ? Math.trunc(limit) : Infinity
+    let rows: Array<Record<string, unknown>>
+    if (end >= 0 && Number.isSafeInteger(end)) {
+      const stmt = includeOriginal ? this.stmts.readInboxLimitedWithOriginal! : this.stmts.readInboxLimited!
+      rows = stmt.all(status, end) as typeof rows
+    } else {
+      const stmt = includeOriginal ? this.stmts.getInboxByStatus! : this.stmts.readInboxByStatus!
+      rows = stmt.all(status) as typeof rows
+      if (end < 0) rows = rows.slice(0, end)
+    }
     return rows.map((row) => this.rowToInboxMessage(row))
   }
 
@@ -4675,7 +4782,19 @@ export class AdfDatabase {
   /** Active timers whose wake time has passed — the set the evaluator fires. */
   getDueTimers(): Timer[] {
     const now = Date.now()
-    const rows = this.stmts.getDueTimers!.all(now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
+    // A quiet database can keep the lower bound across polls. Track both
+    // external commits and local changes, including writes through generic SQL.
+    const dataVersion = this.dataVersion()
+    const totalChanges = this.stmts.getTotalChanges!.get() as number
+    let wake = this.timerWake
+    if (!wake || wake.dataVersion !== dataVersion || wake.totalChanges !== totalChanges || this.db.inTransaction) {
+      const nextWake = this.stmts.getNextTimerWake!.get() as number | undefined
+      wake = { dataVersion, totalChanges, nextWake }
+      // An uncommitted wake might later roll back without changing either stamp.
+      if (!this.db.inTransaction) this.timerWake = wake
+    }
+    if (wake.nextWake === undefined || wake.nextWake > now) return []
+    const rows = this.stmts.getDueTimers!.all(wake.nextWake, now) as Array<Parameters<AdfDatabase['rowToTimer']>[0]>
     return rows.map((row) => this.rowToTimer(row))
   }
 
@@ -4744,6 +4863,12 @@ export class AdfDatabase {
   }
 
   /** Existence without reading the BLOB — the row's content can be megabytes. */
+  /** null means the path is free. Compare BLOB bytes inside SQLite. */
+  fileContentEquals(path: string, content: Buffer): boolean | null {
+    const result = this.stmts.fileContentEquals!.get(content.length, content, path) as { same: number } | undefined
+    return result ? result.same === 1 : null
+  }
+
   fileExists(path: string): boolean {
     return this.stmts.fileExists!.get(path) !== undefined
   }
@@ -4754,26 +4879,12 @@ export class AdfDatabase {
     return { ...row, authorized: !!row.authorized }
   }
 
-  listFiles(): Array<{
-    path: string
-    mime_type?: string
-    size: number
-    protection: FileProtectionLevel
-    authorized: boolean
-    created_at: string
-    updated_at: string
-  }> {
-    const rows = this.stmts.listFiles!.all() as Array<{
-      path: string
-      mime_type: string | null
-      size: number
-      protection: FileProtectionLevel
-      authorized: number
-      created_at: string
-      updated_at: string
-    }>
+  listFiles(): FileListEntry[] {
+    return this.fileListEntries(this.stmts.listFiles!.all())
+  }
 
-    return rows.map((row) => ({
+  private fileListEntries(rows: unknown[]): FileListEntry[] {
+    return (rows as FileListRow[]).map((row) => ({
       path: row.path,
       mime_type: row.mime_type ?? undefined,
       size: row.size,
@@ -4782,6 +4893,37 @@ export class AdfDatabase {
       created_at: row.created_at,
       updated_at: row.updated_at
     }))
+  }
+
+  /** Read only the requested metadata rows, with the exact match count for the footer. */
+  listFilePage(prefix: string | undefined, limit: number | undefined): { files: FileListEntry[]; total: number } {
+    if ((!prefix && limit === undefined) ||
+        (prefix && (!this.usesUtf8 || Buffer.from(prefix).toString('utf8') !== prefix))) {
+      // A UTF-16 prefix can end part-way through a surrogate pair. Compare
+      // those prefixes in JS because binding them as UTF-8 loses information.
+      const matches = prefix ? this.listFiles().filter((row) => row.path.startsWith(prefix)) : this.listFiles()
+      return { files: matches.slice(0, limit), total: matches.length }
+    }
+
+    const upper = prefix && filePrefixUpperBound(prefix)
+    const bounds = prefix ? (upper === undefined ? [prefix] : [prefix, upper]) : []
+    const where = prefix ? (bounds.length === 1 ? 'WHERE path >= ?' : 'WHERE path >= ? AND path < ?') : ''
+    const maxRows = limit === undefined ? -1 : limit + 1
+    // The inner query uses the path index for the range and sorts only rowids.
+    // Rowid order matches the unfiltered table scan used by listFiles().
+    const query = prefix
+      ? `SELECT ${FILE_LIST_COLUMNS} FROM adf_files
+          WHERE rowid IN (SELECT rowid FROM adf_files ${where} ORDER BY rowid LIMIT ?)
+          ORDER BY rowid`
+      : `SELECT ${FILE_LIST_COLUMNS} FROM adf_files ORDER BY rowid LIMIT ?`
+    return this.transaction(() => {
+      const rows = this.db.prepare(query).all(...bounds, maxRows)
+      if (limit === undefined || rows.length <= limit) {
+        return { files: this.fileListEntries(rows), total: rows.length }
+      }
+      const { total } = this.db.prepare(`SELECT COUNT(*) AS total FROM adf_files ${where}`).get(...bounds) as { total: number }
+      return { files: this.fileListEntries(rows.slice(0, limit)), total }
+    })
   }
 
   renameFile(oldPath: string, newPath: string): boolean {
@@ -4873,8 +5015,8 @@ export class AdfDatabase {
     this.stmts.updateTaskArgs!.run(args, id)
   }
 
-  getTasksByStatus(status: TaskStatus): TaskEntry[] {
-    const rows = this.stmts.getTasksByStatus!.all(status) as Record<string, unknown>[]
+  getTasksByStatus(status: TaskStatus, limit = -1): TaskEntry[] {
+    const rows = this.stmts.getTasksByStatus!.all(status, limit) as Record<string, unknown>[]
     return rows.map(r => this.mapTaskRow(r))
   }
 
@@ -5012,6 +5154,19 @@ export class AdfDatabase {
     // Callers normally restrict this to SELECT, but RETURNING can write too.
     if (!stmt.readonly) this.assistantTokenCache = null
     return params ? stmt.all(...params) : stmt.all()
+  }
+
+  /** Count the full read result while retaining only the rows shown to the caller. */
+  querySQLPreview(sql: string, params: unknown[] | undefined, limit: number): { rows: unknown[]; total: number } {
+    const stmt = this.db.prepare(sql)
+    if (!stmt.readonly) throw new Error('Query preview requires a read-only statement')
+    const rows: unknown[] = []
+    let total = 0
+    for (const row of stmt.iterate(...(params ?? []))) {
+      if (total < limit) rows.push(row)
+      total++
+    }
+    return { rows, total }
   }
 
   /**

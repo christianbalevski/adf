@@ -4,7 +4,7 @@ import { useDocumentStore } from '../../../src/renderer/stores/document.store'
 import { createAgentEventHandler } from '../../../src/renderer/hooks/useAgent'
 import { pickOldestSeq, pendingBlockIndexes, pendingToolResultIndexes } from '../../../src/renderer/hooks/live-seq'
 import { parseLoopToDisplay } from '../../../src/shared/utils/loop-parser'
-import type { AgentExecutionEvent } from '../../../src/shared/types/ipc.types'
+import type { AgentExecutionEvent, ChatAppendedPayload } from '../../../src/shared/types/ipc.types'
 import type { LoopEntry } from '../../../src/shared/types/adf-v02.types'
 
 /**
@@ -170,14 +170,56 @@ describe('live entries carry the same adf_loop seq as hydrated ones', () => {
     expect(selectLoopSlice(store).log[0].metadata?.seq).toBeUndefined()
   })
 
-  it('costs no structural recomputation — a seq stamp redraws nothing', () => {
+  it('signals trailing text completion without structural recomputation', () => {
     const handle = createAgentEventHandler()
     handle({ type: 'text_delta', timestamp: 1, payload: { delta: 'hi' } })
-    const before = selectLoopSlice(useAgentStore.getState()).structuralVersion
+    const before = selectLoopSlice(useAgentStore.getState())
     handle({ type: 'turn_complete', timestamp: 1, payload: { content: [], seq: 5 } })
     const after = selectLoopSlice(useAgentStore.getState())
-    expect(after.structuralVersion).toBe(before)
+    expect(after.logVersion).toBe(before.logVersion + 1)
+    expect(after.structuralVersion).toBe(before.structuralVersion)
     expect(after.log[0].metadata?.seq).toBe(5)
+  })
+
+  it('starts a new text entry when an adjacent response follows a completed stream', () => {
+    const handle = createAgentEventHandler()
+    handle({ type: 'text_delta', timestamp: 1, payload: { delta: 'First response' } })
+    handle({ type: 'turn_complete', timestamp: 1, payload: { content: [], seq: 5 } })
+    handle({ type: 'text_delta', timestamp: 2, payload: { delta: 'Second response' } })
+    handle({ type: 'text_delta', timestamp: 3, payload: { delta: ' continues' } })
+    const { log } = selectLoopSlice(useAgentStore.getState())
+    expect(log.map((entry) => [entry.content, entry.metadata?.seq])).toEqual([
+      ['First response', 5],
+      ['Second response continues', undefined],
+    ])
+  })
+})
+
+describe('offline Fleet chat append', () => {
+  it('preserves the loaded window and deduplicates hydrated entries', () => {
+    const filePath = '/agents/foreground.adf'
+    useDocumentStore.getState().setFilePath(filePath, 'local')
+    const display = parseLoopToDisplay(LOOP_ROWS)
+    useAgentStore.getState().setLog(display, 4)
+    const [entry] = parseLoopToDisplay([{
+      seq: 14, created_at: 1004, role: 'user', content_json: [{ type: 'text', text: 'An offline Fleet message.' }]
+    }])
+    const payload: ChatAppendedPayload = { filePath, entry }
+    const event: AgentExecutionEvent = { type: 'chat_appended', payload, timestamp: 1004 }
+    const handle = createAgentEventHandler()
+
+    handle(event)
+    handle(event)
+    const { log, earlierCount } = useAgentStore.getState()
+    expect(log).toEqual([...display, entry])
+    expect(log[0]).toBe(display[0])
+    expect(earlierCount).toBe(4)
+
+    useDocumentStore.getState().setFilePath('/agents/another.adf', 'local')
+    handle({ ...event, payload: { filePath, entry: { ...entry, metadata: { seq: 15 } } } })
+    useDocumentStore.getState().setFilePath(filePath, 'remote:other')
+    handle({ ...event, payload: { filePath, entry: { ...entry, metadata: { seq: 16 } } } })
+    expect(useAgentStore.getState().log).toBe(log)
   })
 })
 

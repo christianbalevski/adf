@@ -1,11 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { nanoid } from 'nanoid'
-import { approvalsBridge, useApprovalsStore } from '../../stores/approvals.store'
+import { approvalsBridge, unreadFinished, useApprovalsStore } from '../../stores/approvals.store'
 import { useAgentStore } from '../../stores/agent.store'
+import { useAppStore } from '../../stores/app.store'
 import { useDocumentStore } from '../../stores/document.store'
 import { useJumpToAgent } from '../../hooks/useJumpToAgent'
-import { runtimeDown, runtimeLabel, runtimeRemote, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
+import { runtimeDown, runtimeLabel, runtimeName, runtimeRemote, useRuntimeLabel, useRuntimesStore } from '../../stores/runtimes.store'
 import { RemoteMark } from '../common/RemoteMark'
 import { apiFor } from '../../utils/runtime-api'
 import { noticeKey } from '../../../shared/runtime-tag'
@@ -67,6 +68,15 @@ function BellIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
       <path d="M13.73 21a2 2 0 0 1-3.46 0" />
+    </svg>
+  )
+}
+
+/** A finished turn: a check mark. */
+function FinishedIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 6 9 17l-5-5" />
     </svg>
   )
 }
@@ -223,17 +233,31 @@ const OUTCOME_APPEARANCE: Record<NotificationOutcome, { label: string; tone: str
  * to the same place, but dimmed and stripped of every control. It states what
  * happened and when — nothing here is still actionable.
  */
-function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number }) {
+function ResolvedRow({ entry, now, unread, onJump }: { entry: ResolvedNotification; now: number; unread?: boolean; onJump: (filePath: string, runtimeId?: string) => void }) {
   const colors = loopColor(entry.loop)
   const isAsk = entry.kind === 'ask'
-  const outcome = OUTCOME_APPEARANCE[entry.outcome] ?? OUTCOME_APPEARANCE.expired
+  const isFinished = entry.kind === 'finished'
+  const outcome = isFinished
+    ? { label: 'finished', tone: 'text-[var(--status-stable)]' }
+    : OUTCOME_APPEARANCE[entry.outcome] ?? OUTCOME_APPEARANCE.expired
   const runtimeLabel = useRuntimeLabel(entry.runtimeId)
+  // A finished row opens its agent, where the reply is.
+  const open = isFinished ? () => onJump(entry.filePath, entry.runtimeId) : undefined
 
   return (
-    <div className="px-3 py-1.5 border-b border-hairline last:border-b-0 opacity-55">
+    <div
+      className={['px-3 py-1.5 border-b border-hairline last:border-b-0', unread ? null : 'opacity-55', open ? 'cursor-pointer hover:bg-neutral-50 dark:hover:bg-neutral-800/60' : null].filter(Boolean).join(' ')}
+      {...(open ? {
+        role: 'button',
+        tabIndex: 0,
+        title: 'Open this agent',
+        onClick: open,
+        onKeyDown: (e: React.KeyboardEvent) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); open() } },
+      } : {})}
+    >
       <div className="flex items-center gap-1.5 min-w-0">
-        <span className="shrink-0 text-[var(--adf-ui-text-subtle)]">
-          {isAsk ? <AskIcon /> : <ShieldIcon />}
+        <span className={`shrink-0 ${unread ? 'text-[var(--status-stable)]' : 'text-[var(--adf-ui-text-subtle)]'}`}>
+          {isFinished ? <FinishedIcon /> : isAsk ? <AskIcon /> : <ShieldIcon />}
         </span>
         <span className="text-xs font-medium text-neutral-600 dark:text-neutral-300 truncate">
           {runtimeLabel && runtimeRemote(entry.runtimeId) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel ? `${runtimeLabel} · ` : ''}{entry.agentName}
@@ -244,7 +268,7 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
           </span>
         )}
         <span className={`shrink-0 text-[10px] font-medium ${outcome.tone}`}>{outcome.label}</span>
-        <span className="ml-auto shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
+        <span title={new Date(entry.resolvedAt).toISOString()} className="ml-auto shrink-0 text-[10px] text-[var(--adf-ui-text-subtle)] tabular-nums">
           {relativeAge(entry.resolvedAt, now)} ago
         </span>
       </div>
@@ -263,22 +287,65 @@ function ResolvedRow({ entry, now }: { entry: ResolvedNotification; now: number 
 export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } = {}) {
   const approvals = useApprovalsStore((s) => s.approvals)
   const history = useApprovalsStore((s) => s.history)
+  const page = useApprovalsStore((s) => s.historyPage)
+  const historyLoading = useApprovalsStore((s) => s.historyLoading)
+  const historyError = useApprovalsStore((s) => s.historyError)
+  const browseHistory = useApprovalsStore((s) => s.browseHistory)
+  const recentHistory = useApprovalsStore((s) => s.showRecentHistory)
   const panelOpen = useApprovalsStore((s) => s.panelOpen)
+  const seenAt = useApprovalsStore((s) => s.seenAt)
+  const markSeen = useApprovalsStore((s) => s.markSeen)
+  const showFinished = useAppStore((s) => s.finishedNotificationsEnabled)
   const togglePanel = useApprovalsStore((s) => s.togglePanel)
   const setPanelOpen = useApprovalsStore((s) => s.setPanelOpen)
   const jumpToAgent = useJumpToAgent()
   const containerRef = useRef<HTMLDivElement>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [clearing, setClearing] = useState(false)
+  const [clearError, setClearError] = useState<string | null>(null)
+  const historyTargets = [...new Set(history.map((entry) => entry.runtimeId ?? 'local'))]
+  // Agent finished off: its rows leave the bell (the runtime still records them).
+  const shown = (entries: ResolvedNotification[]) => showFinished ? entries : entries.filter((entry) => entry.kind !== 'finished')
+  const unread = showFinished ? unreadFinished(history, seenAt) : 0
+  // What was unread when the panel opened stays highlighted while it is open.
+  const [openedSeenAt, setOpenedSeenAt] = useState(seenAt)
+
+  const clearHistory = async () => {
+    setClearing(true)
+    setClearError(null)
+    recentHistory()
+    // The bell merges several runtimes. Each one owns its own durable history
+    // and broadcasts its successful clear to every connected client.
+    const results = await Promise.allSettled(historyTargets.map(async (runtimeId) => {
+      const clear = approvalsBridge(runtimeId)?.clearNotificationHistory
+      if (!clear) throw new Error('This runtime does not support clearing notification history.')
+      const result = await clear()
+      if (!result.success) throw new Error(result.error ?? 'Could not clear notification history.')
+    }))
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') {
+      const detail = failure.reason instanceof Error ? failure.reason.message : 'Check your runtime connections and try again.'
+      setClearError(`Could not clear all history. ${detail}`)
+    }
+    setClearing(false)
+  }
   // The approval whose full request is open in the modal, by its key across runtimes (noticeKey).
   const [inspectingId, setInspectingId] = useState<string | null>(null)
   const inspecting = inspectingId ? approvals.find((a) => noticeKey(a.runtimeId, a.id) === inspectingId) ?? null : null
   const inspectingRef = useRef(false)
   inspectingRef.current = inspecting !== null
 
-  // Answered anywhere: the modal closes and the row shows under Recent.
+  // Answered anywhere: the modal closes and the row shows under History.
   useEffect(() => {
     if (inspectingId && !inspecting) setInspectingId(null)
   }, [inspectingId, inspecting])
+
+  // Opening the panel reads every finished row (in every window).
+  useEffect(() => {
+    if (!panelOpen) return
+    setOpenedSeenAt(useApprovalsStore.getState().seenAt)
+    markSeen()
+  }, [panelOpen, markSeen])
 
   // Ages are only interesting to the second while the panel is open.
   useEffect(() => {
@@ -317,7 +384,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   // popup, so it must occupy the same pixels whether or not anything is
   // waiting. The BADGE carries the urgency; the icon carries the affordance.
   const label = count === 0
-    ? 'Notifications'
+    ? unread > 0 ? `${unread} ${unread === 1 ? 'finished turn' : 'finished turns'}` : 'Notifications'
     : askCount === 0
       ? `${count} waiting for approval`
       : askCount === count
@@ -345,10 +412,15 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
             {count > 99 ? '99+' : count}
           </span>
         )}
+        {/* Unread finished rows: a dot, cleared by opening the panel. */}
+        {count === 0 && unread > 0 && !panelOpen && (
+          <span data-testid="bell-unread-dot" className="absolute top-1 right-1 w-[7px] h-[7px] rounded-full bg-[var(--adf-ui-accent)]" />
+        )}
       </button>
 
       {panelOpen && (
         <div className={`absolute ${align === 'left' ? 'left-0' : 'right-0'} top-8 z-50 w-80 max-h-[60vh] overflow-y-auto rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float`}>
+          {(clearError || historyError) && <div role="alert" className="px-3 py-2 text-xs text-[var(--adf-ui-danger)]">{clearError || historyError}</div>}
           {count === 0 && history.length === 0 ? (
             <div className="px-3 py-4 text-xs text-neutral-500 dark:text-neutral-400">
               No notifications
@@ -365,16 +437,34 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
                   ))}
                 </>
               )}
+              {/* Keyed on all history: with Finished turns off, Clear history and Browse history stay reachable. */}
               {history.length > 0 && (
                 <>
-                  <div className="px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
-                    Recent
+                  <div className="flex items-center justify-between px-3 py-1.5 border-y border-hairline text-[11px] font-medium text-[var(--adf-ui-text-subtle)]">
+                    <span>{page ? `History${historyTargets.length > 1 ? ` · ${runtimeName(page.runtimeId)}` : ''}` : 'Recent'}</span>
+                    <button type="button" onClick={() => void clearHistory()} disabled={clearing} className="text-[var(--adf-ui-accent)] hover:underline disabled:opacity-50">
+                      {clearing ? 'Clearing…' : 'Clear history'}
+                    </button>
                   </div>
-                  {history.map((entry) => (
+                  {shown(page ? page.history.map((entry) => ({ ...entry, runtimeId: page.runtimeId === 'local' ? undefined : page.runtimeId })) : history).map((entry, index) => (
                     // Resolved ids repeat across a session (a re-registered
                     // request, an agent restarted at ask_1), so the row needs a
                     // key that includes WHEN it ended.
-                    <ResolvedRow key={`${noticeKey(entry.runtimeId, entry.id)}@${entry.resolvedAt}`} entry={entry} now={now} />
+                    <ResolvedRow key={`${noticeKey(entry.runtimeId, entry.id)}@${entry.resolvedAt}:${index}`} entry={entry} now={now} unread={entry.kind === 'finished' && entry.resolvedAt > openedSeenAt} onJump={handleJump} />
+                  ))}
+                  {page ? (
+                    <div className="flex items-center justify-between px-3 py-2 text-xs text-[var(--adf-ui-accent)]">
+                      <button type="button" onClick={recentHistory} className="hover:underline">Back to recent</button>
+                      {page.nextBefore !== null && (
+                        <button type="button" disabled={historyLoading} onClick={() => void browseHistory(page.runtimeId, page.nextBefore!)} className="hover:underline disabled:opacity-50">
+                          {historyLoading ? 'Loading…' : 'Older notifications'}
+                        </button>
+                      )}
+                    </div>
+                  ) : historyTargets.map((runtimeId) => (
+                    <button key={runtimeId} type="button" disabled={historyLoading || clearing} onClick={() => void browseHistory(runtimeId)} className="block w-full px-3 py-2 text-xs text-[var(--adf-ui-accent)] hover:underline disabled:opacity-50">
+                      {historyLoading ? 'Loading…' : `Browse history${historyTargets.length > 1 ? ` · ${runtimeName(runtimeId)}` : ''}`}
+                    </button>
                   ))}
                 </>
               )}
@@ -557,26 +647,28 @@ export function ApprovalToasts() {
       {toasts.map((toast) => (
         <div
           key={toast.id}
-          className="pointer-events-auto w-64 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float px-3 py-2"
+          className="animate-bell-notice pointer-events-auto w-64 rounded-[var(--adf-ui-container-radius)] border border-[var(--adf-ui-border)] bg-surface-raised shadow-float px-3 py-2"
         >
           <div className="flex items-start gap-2">
-            <span className={`mt-0.5 shrink-0 ${toast.kind === 'ask' ? 'text-[var(--status-info)]' : 'text-[var(--adf-ui-warning)]'}`}>
-              {toast.kind === 'ask' ? <AskIcon /> : <ShieldIcon />}
+            <span className={`mt-0.5 shrink-0 ${toast.kind === 'finished' ? 'text-[var(--status-stable)]' : toast.kind === 'ask' ? 'text-[var(--status-info)]' : 'text-[var(--adf-ui-warning)]'}`}>
+              {toast.kind === 'finished' ? <FinishedIcon /> : toast.kind === 'ask' ? <AskIcon /> : <ShieldIcon />}
             </span>
             <div className="min-w-0 flex-1">
               <div className="text-xs font-medium text-neutral-700 dark:text-neutral-200 truncate">
-                {runtimeLabel(toast.runtimeId, runtimes) && runtimeRemote(toast.runtimeId, runtimes) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel(toast.runtimeId, runtimes) ? `${runtimeLabel(toast.runtimeId, runtimes)} · ` : ''}{toast.agentName} {toast.kind === 'ask' ? 'has a question' : 'needs approval'}
+                {runtimeLabel(toast.runtimeId, runtimes) && runtimeRemote(toast.runtimeId, runtimes) && <RemoteMark size={10} className="mr-1 align-[-1px]" />}{runtimeLabel(toast.runtimeId, runtimes) ? `${runtimeLabel(toast.runtimeId, runtimes)} · ` : ''}{toast.agentName} {toast.kind === 'finished' ? 'finished' : toast.kind === 'ask' ? 'has a question' : 'needs approval'}
               </div>
-              <div className={`text-[11px] text-neutral-500 dark:text-neutral-400 truncate ${toast.kind === 'ask' ? '' : 'font-mono'}`}>
+              <div className={`text-[11px] text-neutral-500 dark:text-neutral-400 truncate ${toast.kind === 'approval' ? 'font-mono' : ''}`}>
                 {toast.detail}{toast.loop !== 'main' ? ` · ${toast.loop}` : ''}
               </div>
               <div className="mt-1 flex items-center gap-2">
-                <button
-                  onClick={() => { dismissToast(toast.id); setPanelOpen(true) }}
-                  className="text-[11px] text-[var(--adf-ui-accent)] hover:underline"
-                >
-                  Review
-                </button>
+                {toast.kind !== 'finished' && (
+                  <button
+                    onClick={() => { dismissToast(toast.id); setPanelOpen(true) }}
+                    className="text-[11px] text-[var(--adf-ui-accent)] hover:underline"
+                  >
+                    Review
+                  </button>
+                )}
                 <button
                   onClick={() => { dismissToast(toast.id); jumpToAgent(toast.filePath, toast.runtimeId) }}
                   className="text-[11px] text-neutral-500 dark:text-neutral-400 hover:underline"

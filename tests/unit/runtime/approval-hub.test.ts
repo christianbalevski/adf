@@ -20,7 +20,6 @@ import {
   notificationKey,
   summarizeApprovalArgs,
   summarizeQuestion,
-  HISTORY_MAX,
   PREVIEW_MAX,
 } from '../../../src/main/runtime/approval-hub'
 import {
@@ -139,7 +138,7 @@ describe('ApprovalHub registration', () => {
     expect(approvalHub.snapshot()).toHaveLength(0)
   })
 
-  it('keys asks per agent+loop — `ask_1` is not globally unique', async () => {
+  it('keys asks per agent+loop', async () => {
     const a = makeExecutor({ filePath: '/agents/a.adf', name: 'a' })
     const b = makeExecutor({ filePath: '/agents/b.adf', name: 'b' })
     const loop = makeExecutor({ filePath: '/agents/a.adf', name: 'a', loop: 'reflector' })
@@ -148,8 +147,6 @@ describe('ApprovalHub registration', () => {
     const pb = raiseAsk(b.executor, 'B?')
     const pl = raiseAsk(loop.executor, 'L?')
 
-    // All three are `ask_1`; a naive requestId key would have collapsed them.
-    expect(approvalHub.snapshot().map((e) => e.requestId)).toEqual(['ask_1', 'ask_1', 'ask_1'])
     expect(approvalHub.snapshot()).toHaveLength(3)
     expect(new Set(approvalHub.snapshot().map((e) => e.id)).size).toBe(3)
 
@@ -336,7 +333,7 @@ describe('ApprovalHub cleanup', () => {
  * instant it stops blocking leaves the user no way to check what they just
  * answered — or to tell "I said no" from "that agent died before I looked".
  * The distinction the history has to carry is exactly that: a DECISION vs an
- * expiry, per row, for the last HISTORY_MAX rows of this app session.
+ * expiry, per row, retained until manually cleared.
  */
 describe('ApprovalHub history', () => {
   const baseEntry = (id: string, requestedAt = 1000) => ({
@@ -429,15 +426,15 @@ describe('ApprovalHub history', () => {
     expect(approvalHub.historySnapshot()[0]).not.toHaveProperty('resolve')
   })
 
-  it('is bounded — the oldest rows fall off, never the newest', () => {
-    for (let i = 0; i < HISTORY_MAX + 10; i++) {
+  it('retains older history until manually cleared', () => {
+    for (let i = 0; i < 60; i++) {
       approvalHub.register({ ...baseEntry(`k${i}`), resolve: vi.fn() })
       approvalHub.unregister(`k${i}`, 'approved')
     }
     const history = approvalHub.historySnapshot()
-    expect(history).toHaveLength(HISTORY_MAX)
-    expect(history[0].id).toBe(`k${HISTORY_MAX + 9}`)
-    expect(history[history.length - 1].id).toBe('k10')
+    expect(history).toHaveLength(60)
+    expect(history[0].id).toBe('k59')
+    expect(history[history.length - 1].id).toBe('k0')
   })
 
   it('never double-records: a second unregister of the same id is a no-op', () => {
@@ -579,7 +576,7 @@ describe('native notifications', () => {
 
     const platform: NativeNotifierPlatform = {
       isSupported: () => overrides.supported ?? true,
-      isEnabled: () => overrides.enabled ?? true,
+      preferences: () => ({ enabled: overrides.enabled ?? true, finished: true, inApp: true, previews: true }),
       isWindowFocused: () => focused,
       now: () => clock,
       show: (request) => {

@@ -49,6 +49,7 @@ export function localDaemonConnector(opts: {
   execPath: string
   daemonEntry: string
   env?: NodeJS.ProcessEnv
+  environmentReady?: Promise<void>
   log?: (line: string) => void
   /**
    * A daemon of another client API version runs (§8.2 step 3): ask the user.
@@ -73,6 +74,7 @@ export function localDaemonConnector(opts: {
     daemonEntry: opts.daemonEntry,
     execPath: opts.execPath,
     env,
+    environmentReady: opts.environmentReady,
   }, { ...opts.processDeps, ...(opts.log ? { log: opts.log } : {}) })
   const connect = async (progress: (text: string) => void) => {
     let result = await controller.ensure(progress)

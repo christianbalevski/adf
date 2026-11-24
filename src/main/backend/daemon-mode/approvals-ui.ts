@@ -2,7 +2,7 @@ import { basename, join } from 'node:path'
 import { app, BrowserWindow, Notification } from 'electron'
 import { IPC } from '../../../shared/constants/ipc-channels'
 import type { AgentState, NotificationsSnapshot, PendingNotification } from '../../../shared/types/ipc.types'
-import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../../runtime/native-notifier'
+import { NativeNotifier, notificationPreferences, type NativeNotifierPlatform, type NativeToastHandle } from '../../runtime/native-notifier'
 import { MenuBarController } from '../../tray/menu-bar'
 import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../../tray/menu-bar-model'
 
@@ -22,8 +22,8 @@ import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../../tray/me
 type ApprovalRevealPayload = { filePath?: string; notificationId?: string; runtimeId?: string }
 
 export interface ApprovalsUiDeps {
-  /** Read per notification: the client key nativeNotificationsEnabled. */
-  notificationsEnabled: () => boolean
+  /** A client settings key, read per notification (notificationPreferences). */
+  setting: (key: string) => unknown
   menuBarEnabled: () => boolean
   /** Running agents and their display states (the event bridge's view); `runtimeId` for a runtime other than This computer. */
   agents: () => ReadonlyArray<{ filePath: string; state: AgentState; activeLoops?: number; runtimeId?: string }>
@@ -90,7 +90,7 @@ export class ApprovalsUi {
     this.pending = snapshot.pending ?? []
     if (!this.seeded) {
       this.seeded = true
-      this.notifier.seed(this.pending)
+      this.notifier.seed(this.pending, snapshot.history ?? [])
     } else {
       this.notifier.apply(snapshot)
     }
@@ -144,7 +144,7 @@ export class ApprovalsUi {
         else this.deps.openFile?.(action.filePath)
         return
       case 'show':
-        this.focusMainWindow() ?? this.deps.showMainWindow?.()
+        if (!this.focusMainWindow()) this.deps.showMainWindow?.()
         return
       case 'settings': {
         const win = this.focusMainWindow() ?? this.deps.showMainWindow?.() ?? null
@@ -210,7 +210,7 @@ export class ApprovalsUi {
       isSupported: () => {
         try { return Notification.isSupported() } catch { return false }
       },
-      isEnabled: () => this.deps.notificationsEnabled(),
+      preferences: () => notificationPreferences({ get: this.deps.setting }),
       isWindowFocused: (entry) => this.deps.noticeFocused ? this.deps.noticeFocused(entry) : BrowserWindow.getFocusedWindow() !== null,
       now: () => Date.now(),
       show: (request): NativeToastHandle | null => {

@@ -30,7 +30,10 @@ function stubWorkspace(files: Record<string, StubFile>): AdfWorkspace {
     protection: 'none', authorized: false, created_at: '2026-01-01', updated_at: '2026-01-01'
   })
   return {
-    listFiles: () => Object.entries(files).map(([path, f]) => ({ ...row(path, f), size: f.listed_size ?? f.content.length, content: undefined })),
+    listFilePage: () => ({
+      files: Object.entries(files).map(([path, f]) => ({ ...row(path, f), size: f.listed_size ?? f.content.length, content: undefined })),
+      total: Object.keys(files).length
+    }),
     readDocument: () => null,
     readMind: () => null,
     getDatabase: () => ({ readFile: (path: string) => (files[path] ? row(path, files[path]) : null) })

@@ -4,7 +4,7 @@
 
 import { promises as fs } from 'node:fs'
 import { homedir } from 'node:os'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { join, relative, resolve, sep } from 'node:path'
 import * as panelNs from '../../../shared/utils/skills-panel'
 import * as schemaNs from '../../../shared/schemas/skills-catalog.schema'
 import type { DaemonClient } from '../api/client'

@@ -164,6 +164,10 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     return { success: true }
   },
 
+  [IPC.FILE_SET_VISIBLE]: (ctx, _event, visible: unknown) => {
+    ctx.session.setFileVisible(visible !== false)
+  },
+
   // Session resync for a fresh renderer, as embedded: the open file, and whether its agent runs.
   [IPC.FILE_GET_CURRENT]: async (ctx) => {
     const filePath = ctx.session.filePath
@@ -277,7 +281,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     }
     if (running) {
       // Reuse path, as embedded re-attaches the running executor: its display
-      // state, its session id, and main's pending approvals and asks.
+      // state, its session id, every loop's pending approvals and asks.
       ctx.session.noteAgent(filePath, running.id)
       const agentPath = running.filePath ?? filePath
       // Side reads: a failed one never fails the re-attach (embedded reads them from the live executor).
@@ -298,6 +302,7 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
         loopStates: running.loopStates ?? {},
         pendingApprovals: mine.filter((i) => i.type === 'approval').map((i) => ({
           requestId: i.requestId,
+          ...(i.loop !== undefined ? { loop: i.loop } : {}),
           name: i.toolName,
           input: i.input,
           ...(i.reason !== undefined ? { reason: i.reason } : {}),
@@ -305,7 +310,12 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
           ...(i.canAlwaysApprove !== undefined ? { canAlwaysApprove: i.canAlwaysApprove } : {}),
           ...(i.alwaysApproveBlockedReason !== undefined ? { alwaysApproveBlockedReason: i.alwaysApproveBlockedReason } : {}),
         })),
-        pendingAsks: mine.filter((i) => i.type === 'ask').map((i) => ({ requestId: i.requestId, question: i.question, questions: i.questions ?? [] })),
+        pendingAsks: mine.filter((i) => i.type === 'ask').map((i) => ({
+          requestId: i.requestId,
+          ...(i.loop !== undefined ? { loop: i.loop } : {}),
+          question: i.question,
+          questions: i.questions ?? [],
+        })),
       }
     }
     // Prompt before start (design §6.1 row 27): FILE_OPEN already asked for

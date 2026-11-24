@@ -988,7 +988,7 @@ export class DiscordAdapter implements ChannelAdapter {
     }
   }
 
-  private isSendableChannel(channel: unknown): channel is TextBasedChannel & { send: Function } {
+  private isSendableChannel(channel: unknown): channel is TextBasedChannel & { send: (...args: never[]) => unknown } {
     return typeof (channel as { send?: unknown })?.send === 'function'
   }
 }

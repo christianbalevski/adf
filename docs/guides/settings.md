@@ -130,7 +130,7 @@ Notes:
 - The API key and Base URL fields are not used — authentication is handled entirely via OAuth
 - These models are reasoning models — temperature and topP settings are not supported and are automatically omitted
 
-Available models: `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`, `gpt-5.5`
+Available models: `gpt-6.2-sol`, `gpt-6.2-astra`, `gpt-6.1-terra`, `gpt-6.1-sol`, `gpt-6-astra`, `gpt-6-sol`, `gpt-6-luna`, `gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`
 
 Note on gpt-5.6 reasoning traces: the codex backend ships reasoning summaries in an "experimental" headline-only format — each section is a bold headline whose body is an empty `<!-- -->` placeholder that is never filled server-side. adf strips the placeholders and shows the headlines; the full chain-of-thought is not available from the backend.
 
@@ -169,7 +169,7 @@ Notes:
 - `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` and `ANTHROPIC_BASE_URL` are removed from Claude Code's environment, so usage is never billed to an API key by accident
 - adf stays the agent: tools, permissions and history are adf's. Claude Code's built-in tools are disabled; it relays the model's tool calls back to adf through an in-process MCP bridge
 - Differences from the **Anthropic** (API key) provider: temperature, top-p, Max tokens and Custom Parameters are ignored (Claude Code sizes each response to the model's own output limit, which also covers thinking); images in tool results are passed, audio and video are replaced by a one-line note
-- Claude Code adds model input of its own that adf cannot turn off: the system prompt prefix "You are a Claude agent, built on Anthropic's Claude Agent SDK.", and reminders with the environment (working directory, platform, shell), the model name and knowledge cutoff, **the signed-in Claude account's email address**, and the date. adf records each of these in the loop verbatim as an **Added by Provider** context entry. Agents that talk to third parties SHOULD NOT use this provider if the owner's email must stay private
+- Claude Code adds model input of its own that adf cannot turn off: the system prompt prefix "You are a Claude agent, built on Anthropic's Claude Agent SDK.", and reminders with the environment (working directory, platform, shell), the model name and knowledge cutoff, **the signed-in Claude account's email address**, and the date. adf records each of these verbatim in the agent's loop, shown as an **Added by Claude Code** context entry. The entries are saved in the `.adf` file itself, so anyone with a copy of the file can read them: before sharing a file whose agent ran on this provider, assume it holds the signed-in account's email address and the working directory path, which can include your OS username. Agents that talk to third parties SHOULD NOT use this provider if the owner's email must stay private
 - adf turns off the rest: Claude Code's token-countdown reminder, CLAUDE.md and auto-memory loading, skills, plugins, hooks and user settings from `~/.claude`
 - Dynamic instructions are delivered when they change and stay in the conversation (other providers resend them on every request). During a tool loop Claude Code wraps them as `PostToolBatch hook additional context: …` in a system reminder
 - When a new Claude Code session has to resume in the middle of a tool loop, adf sends the prompt `Continue.`; it is recorded in the loop

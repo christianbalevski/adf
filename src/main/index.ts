@@ -97,19 +97,16 @@ protocol.registerSchemesAsPrivileged([
 // Fix PATH for packaged macOS/Linux apps launched from Finder/desktop.
 // GUI apps inherit a minimal PATH (/usr/bin:/bin:/usr/sbin:/sbin) that
 // doesn't include Node.js, Homebrew, nvm, etc.
-// Logged after the main log file is installed so the reason reaches main.log.
-let loginShellPathNote: string | null = null
-if (app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux')) {
-  const resolved = resolveLoginShellPath({
+const loginShellPathReady = app.isPackaged && (process.platform === 'darwin' || process.platform === 'linux')
+  ? resolveLoginShellPath({
     shell: process.env.SHELL || '/bin/zsh',
     currentPath: process.env.PATH ?? '',
     platform: process.platform
+  }).then(resolved => {
+    process.env.PATH = resolved.path
+    if (resolved.source === 'fallback') console.warn(`[App] Login-shell PATH unavailable (${resolved.reason}); using fallback PATH`)
   })
-  process.env.PATH = resolved.path
-  if (resolved.source === 'fallback') {
-    loginShellPathNote = `[App] Login-shell PATH unavailable (${resolved.reason}); using fallback PATH`
-  }
-}
+  : undefined
 
 // Support custom user data directory for running multiple instances
 // Usage: ADF_INSTANCE=2 npm run dev
@@ -134,7 +131,6 @@ console.log(
   `[App] ADF Studio ${app.getVersion()} starting — pid=${process.pid} packaged=${app.isPackaged} ` +
   `electron=${process.versions.electron} log=${mainLogPath ?? '(unavailable)'}`
 )
-if (loginShellPathNote) console.warn(loginShellPathNote)
 
 let mainWindow: BrowserWindow | null = null
 let fileToOpen: string | null = null
@@ -491,6 +487,7 @@ function createWindow(): BrowserWindow {
   // Drop the reference so later requests recreate the window instead of
   // calling into a destroyed one (macOS keeps the app alive with no window).
   const createdWindow = mainWindow
+  for (const rt of daemonMode?.runtimes.runtimes() ?? []) rt.session.setWindowOpen(true)
   mainWindow.on('close', (event) => {
     console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
     // Windows and Linux: closing the window quits, so computers connected to the daemon are asked about first.
@@ -502,6 +499,8 @@ function createWindow(): BrowserWindow {
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
     if (mainWindow === createdWindow) mainWindow = null
+    // No window shows the open agent now: its finished turns notify again.
+    for (const rt of daemonMode?.runtimes.runtimes() ?? []) rt.session.setWindowOpen(false)
     // Windows/Linux: closing it quits (window-all-closed), so a boot dialog
     // still open must not keep Studio alive, nor be answered later. macOS: it stays.
     noteMainWindowClosed()
@@ -868,6 +867,7 @@ app.whenReady().then(async () => {
   const migration: RemoteModeMigration | null = await migrateRemoteModeInstall(backend, getUserDataPath(), savedCache.get(), console, { savedUnreadable: savedCache.unreadable })
   if (backend.mode === 'embedded') {
     try {
+      await loginShellPathReady
       embeddedIpc = await import('./ipc')
     } catch (err) {
       // A static import that threw here would have failed the main script:
@@ -890,6 +890,7 @@ app.whenReady().then(async () => {
         userDataDir,
         execPath: process.execPath,
         daemonEntry: join(__dirname, 'daemon.js'),
+        environmentReady: loginShellPathReady,
         onVersionMismatch: (decision, running, clients) => askVersionMismatch(decision, running, clients, () => mainWindow),
       }),
       hooks: {
@@ -1181,8 +1182,7 @@ app.whenReady().then(async () => {
   })
 
   // Clean up scratch dirs left by previous instances that exited uncleanly.
-  // Deferred so the synchronous temp-dir scan never delays first paint.
-  setImmediate(() => purgeStaleProcessDirs())
+  void purgeStaleProcessDirs()
 
   app.on('activate', () => {
     // Through the same gate, so a Dock click during quit cleanup can't boot a

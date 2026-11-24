@@ -1,11 +1,13 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest'
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest'
 import { join } from 'path'
 import { tmpdir } from 'os'
 import { mkdtempSync, rmSync } from 'fs'
-import { brotliCompressSync } from 'zlib'
+import { brotliCompressSync, constants as zlibConstants } from 'zlib'
 import { AdfWorkspace } from '../../../src/main/adf/adf-workspace'
 import { AdfDatabase } from '../../../src/main/adf/adf-database'
+import type { LoopEntryRow } from '../../../src/main/adf/adf-database'
 import { readArchivedChatPage, ARCHIVE_MAX_SNAPSHOT_BYTES } from '../../../src/main/adf/archived-loop-page'
+import { indexArchiveRows } from '../../../src/main/adf/archive-snapshot-index'
 
 let rootDir: string
 let ws: AdfWorkspace
@@ -48,7 +50,123 @@ function db(workspace: AdfWorkspace): AdfDatabase {
   return (workspace as unknown as { db: AdfDatabase }).db
 }
 
+function archive(rows: LoopEntryRow[], workspace = ws): number {
+  const seqs = rows.map((row) => row.seq)
+  const json = Buffer.from(JSON.stringify(rows))
+  return db(workspace).insertAudit('loop:main', {
+    startSeq: Math.min(...seqs),
+    endSeq: Math.max(...seqs),
+    entryCount: rows.length,
+    sizeBytes: json.length,
+    data: brotliCompressSync(json, { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 4 } }),
+  })
+}
+
+function row(seq: number, label = `r${seq}`, ord?: number): LoopEntryRow {
+  return { seq, ord, role: 'user', content_json: text(label), created_at: 1 }
+}
+
 describe('readArchivedChatPage', () => {
+  it('seeks successive large pages without decoding again, including a shifted duplicate and live exclusion', async () => {
+    const baseline = AdfWorkspace.create(join(rootDir, 'small.adf'), { name: 'small' })
+    try {
+      const label = (seq: number) => `内容 ${seq}, ["\\\\"]`
+      const source = Array.from({ length: 130 }, (_, i) => row(i + 1, label(i + 1)))
+      const padding = 'a'.repeat(525_000)
+      for (const workspace of [ws, baseline]) {
+        workspace.appendToLoop('user', text('live: omit the archived seq 1'))
+        archive([row(10, 'older only', -1), row(94, 'earliest duplicate', 47)], workspace)
+      }
+      archive(source.toReversed().map((entry) => ({ ...entry, padding })))
+      archive(source.toReversed(), baseline)
+      const getBlob = vi.spyOn(ws, 'getAuditBlob')
+      const tape = async (workspace: AdfWorkspace) => {
+        const pages: Awaited<ReturnType<typeof readArchivedChatPage>>[] = []
+        let cursor: string | null = '1000:1000'
+        for (let i = 0; i < 10 && cursor; i++) {
+          const page = await readArchivedChatPage(workspace, cursor, { limit: 23 })
+          pages.push(page)
+          cursor = page.hasMore ? page.cursor : null
+        }
+        return pages
+      }
+      const pages = await tape(ws)
+      const control = await tape(baseline)
+      expect(pages).toEqual(control)
+      expect(pages.length).toBeGreaterThan(3)
+      expect(pages.at(-1)?.hasMore).toBe(false)
+      expect(pages.flatMap(contents)).toContain('earliest duplicate')
+      expect(pages.flatMap(contents)).not.toContain(label(1))
+      expect(getBlob.mock.calls).toEqual([[2], [1]])
+    } finally {
+      baseline.close()
+    }
+  })
+
+  it('seeks successive pages in one decoded snapshot, including a display-order tie at the cursor', async () => {
+    const oldAudit = archive([row(1)])
+    const source = Array.from({ length: 600 }, (_, i) => row(i + 2))
+    const summary = row(605, 'summary', 402)
+    const recentAudit = archive([summary, ...source.slice().reverse()])
+    const getBlob = vi.spyOn(ws, 'getAuditBlob')
+
+    const first = await readArchivedChatPage(ws, null)
+    expect(first.uiLog).toHaveLength(200)
+    expect(first.cursor).toBe('402:605')
+    expect(first.uiLog[0].content).toBe('summary')
+    expect(first.hasMore).toBe(true)
+    expect(getBlob.mock.calls).toEqual([[recentAudit]])
+
+    const second = await readArchivedChatPage(ws, first.cursor)
+    expect(second.uiLog).toHaveLength(200)
+    expect(second.uiLog.at(-1)?.content).toBe('r402')
+    expect(second.cursor).toBe('203:203')
+    expect(second.hasMore).toBe(true)
+    expect(getBlob.mock.calls).toEqual([[recentAudit]])
+
+    const third = await readArchivedChatPage(ws, second.cursor)
+    expect(third.uiLog).toHaveLength(200)
+    expect(third.cursor).toBe('3:3')
+    expect(third.hasMore).toBe(true)
+    expect(getBlob.mock.calls).toEqual([[recentAudit]])
+
+    const last = await readArchivedChatPage(ws, third.cursor)
+    expect(contents(last)).toEqual(['r1', 'r2'])
+    expect(last.hasMore).toBe(false)
+    expect(getBlob.mock.calls).toEqual([[recentAudit], [oldAudit]])
+  })
+
+  it('uses the oldest copy in an overlapping snapshot even if its display key changed', async () => {
+    const earliest = archive([row(10), row(20, 'original', 12)])
+    archive([row(20, 'changed'), row(30)])
+    const first = await readArchivedChatPage(ws, null, { limit: 2 })
+    expect(contents(first)).toEqual(['original', 'r30'])
+    expect(first.uiLog[0].id).toMatch(new RegExp(`^audit-${earliest}-`))
+    expect(first.cursor).toBe('12:20')
+    const second = await readArchivedChatPage(ws, first.cursor, { limit: 2 })
+    expect(contents(second)).toEqual(['r10'])
+    expect(second.hasMore).toBe(false)
+  })
+
+  it('peeks without walking live seqs and shares a concurrent decode', async () => {
+    const seq = ws.appendToLoop('user', text('previous answer'))
+    const live = ws.appendToLoop('user', text('still live'))
+    await ws.compactLoop([live], { content: text('[Loop Compacted] summary') })
+    const sequences = vi.spyOn(ws, 'listLoopSeqs')
+    const blobs = vi.spyOn(ws, 'getAuditBlob')
+    expect(await readArchivedChatPage(ws, null, { peek: true })).toMatchObject({ hasMore: true, uiLog: [] })
+    expect(sequences).not.toHaveBeenCalled()
+    expect(blobs).not.toHaveBeenCalled()
+
+    const [first, second] = await Promise.all([
+      readArchivedChatPage(ws, `${live}:${live}`),
+      readArchivedChatPage(ws, `${live}:${live}`),
+    ])
+    expect(first).toEqual(second)
+    expect(first.uiLog[0].metadata?.seq).toBe(seq)
+    expect(blobs).toHaveBeenCalledOnce()
+  })
+
   it('pages successive compactions in display order with summaries before their tails', async () => {
     ws.appendToLoop('user', text('first-1'))
     ws.appendToLoop('assistant', text('first-2'))
@@ -140,5 +258,27 @@ describe('readArchivedChatPage', () => {
 
   it('refuses a malformed cursor', async () => {
     await expect(readArchivedChatPage(ws, 'nope')).rejects.toThrow(/Invalid archive cursor/)
+  })
+})
+
+describe('archive byte index', () => {
+  it('indexes valid rows among other JSON values and preserves slices when sorting by ord', async () => {
+    const a = row(2, '\u2603 quote " and backslash \\', 1)
+    const b = row(1, 'some ])}+ delimiters', 1)
+    const json = Buffer.from(`\t [ ${JSON.stringify(a)}, 1.2e10, {"k":[1,2]}, null, "[s]", ${JSON.stringify(b)} ] \r\n`)
+    const index = await indexArchiveRows(json)
+    expect(index?.length).toBe(2)
+    expect(index?.positionAt(0)).toEqual({ key: 1, seq: 1 })
+    expect(index?.rowAt(0)).toEqual(b)
+    expect(index?.rowAt(1)).toEqual(a)
+  })
+
+  it.each(['[{},]', '[{} {}]', '[1] null', '["unclosed]', '[{"x":[1,2}]'])('rejects malformed arrays, including a bad suffix after a valid value: %s', async (json) => {
+    await expect(indexArchiveRows(Buffer.from(json))).rejects.toThrow(SyntaxError)
+  })
+
+  it('defers duplicate and unsafe positions to the legacy reader', async () => {
+    await expect(indexArchiveRows(Buffer.from(JSON.stringify([row(1), row(1)])))).resolves.toBeNull()
+    await expect(indexArchiveRows(Buffer.from(JSON.stringify([row(2, 'bad ord', Number.MAX_SAFE_INTEGER + 1)])))).resolves.toBeNull()
   })
 })

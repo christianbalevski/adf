@@ -94,7 +94,7 @@ The exact exposure behavior of a particular Git client, shell, wrapper, CI runne
 
 ### Source-verified
 
-An inner loop is a cognition stream inside one agent. It shares the agent's `.adf` body, memory, filesystem, identity, and credentials; it can narrow tools, goal, pacing, model, and compaction threshold, but it does not become a second agent. Main owns outside-world actions. Loop tool access is an attenuation of the agent's existing capability, not a permission escalation.
+An inner loop is a cognition stream inside one agent. It shares the agent's `.adf` body, memory, filesystem, identity, and credentials; it can narrow tools, goal, pacing, model, and compaction threshold, but it does not become a second agent. A loop holds the subset of the agent's enabled tools it was given; restricted tools still need owner approval, asked in that loop's tab. Loop tool access never exceeds the agent's own.
 
 The runtime supports optional per-loop model and compaction overrides subject to the guide's constraints. A model override may change which model a loop uses, but it does not create new credentials or a new provider identity; cross-provider and code-execution requirements still apply.
 

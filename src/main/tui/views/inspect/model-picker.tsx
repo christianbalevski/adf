@@ -170,7 +170,6 @@ export function ModelOverlay({ overlay, close, width }: OverlayProps) {
     if (step.kind !== 'model' || key.ctrl || key.meta) return false
     if (key.backspace || key.delete) { setQuery(q => q.slice(0, -1)); setIndex(0); return true }
     if (key.leftArrow) { setStep({ kind: 'provider' }); return true }
-    // eslint-disable-next-line no-control-regex
     if (input && !/[\u0000-\u001f\u007f]/.test(input) && !key.return && !key.tab) { setQuery(q => q + input); setIndex(0); return true }
     return false
   }, { layer: 'overlay' })

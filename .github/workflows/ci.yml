@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches:
-      - '**'
+    branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -14,6 +14,48 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # These checks do not require a native database or an Electron runtime.
+  quality:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: '^22.23.4'
+          cache: npm
+
+      - name: Install dependencies
+        id: install
+        run: npm ci --ignore-scripts
+
+      - name: Typecheck
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run typecheck
+
+      - name: Lint
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run lint
+
+      - name: Anti-pattern ratchet
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run check:ratchet
+
+      - name: CLI reference is up to date
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: npm run docs:cli -- --check
+
+      # Route coverage runs in the full Node suite. Validate the spec and
+      # generated reference here, independently of the runtime tests.
+      - name: API contract and reference are up to date
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: |
+          npm run docs:api:lint
+          npm run docs:api
+          git diff --exit-code -- docs/daemon/api-reference.md docs/daemon/api-reference.html
+
   verify:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -27,181 +69,51 @@ jobs:
           cache: npm
 
       - name: Install dependencies for Node tests
-        run: |
-          # The repository postinstall targets Electron's native ABI. CI runs
-          # the test suite under Node, so install without lifecycle scripts and
-          # build better-sqlite3 exactly once for the active Node runtime.
-          npm ci --ignore-scripts
-          npm rebuild better-sqlite3
+        id: install
+        # better-sqlite3 ships a Node-API prebuild. Skip Electron's postinstall.
+        run: npm ci --ignore-scripts
 
-      # `npm test` verifies that the native binding matches the active Node ABI.
-      # tests/parity runs in the daemon-parity job, under Electron-as-Node.
+      # Includes lifecycle conformance, route coverage, and the ADF format
+      # contract. The dedicated parity job runs tests/parity under Electron.
       - name: Test
         env:
           PARITY_EXCLUDE: '1'
         run: npm test
 
-      # The skill packages ship node:test suites that need the agent sandbox's
-      # document libraries (pinned in skills/package.json to the sandbox
-      # stdlib versions). Vitest excludes them; they run here instead.
+      # Vitest excludes these node:test suites, which use the skill packages'
+      # document libraries pinned to the agent sandbox versions.
       - name: Skill package tests (node:test)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           npm ci --prefix skills --no-audit --no-fund
           npm run test:skills
 
-      # Order-of-magnitude regression gate for the storage and streaming hot
-      # paths fixed in the perf review. The ceilings are 20x-300x above the
-      # measured numbers, so this catches a reverted fix, not runner noise.
-      # Linux only: the Windows job is a focused filesystem gate, and timings
-      # from a second OS would add flake without adding signal.
-      - name: Performance regression benchmarks
-        run: RUN_BENCH=1 npx vitest run tests/perf/review-bench.test.ts tests/perf/markdown-stream.test.ts --maxWorkers=1 --reporter=verbose
-
-      # Run the workloads serially: competing benchmark workers obscure the
-      # cache and rendering costs these checks are intended to catch.
-      - name: Daemon context and TUI rendering regression benchmarks
+      # Run timing-sensitive workloads serially on one OS.
+      - name: Storage, streaming, daemon context, and TUI regression benchmarks
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
+          npm run bench:review -- --maxWorkers=1
           npm run bench:daemon-context
           npm run bench:tui
 
-      # npm ci skips lifecycle scripts above. Install Electron explicitly for
-      # the real Chromium renderer checks; no native database binding is used.
       - name: Studio rendering regression benchmarks (Chromium)
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: |
           node node_modules/electron/install.js
           xvfb-run -a npm run bench:studio -- --no-sandbox
 
-      # Verbose output surfaces the independently asserted final ledger totals:
-      # 6 fixed, 3 declaredByProfile, 0 pending.
-      - name: Lifecycle conformance, closed ledger, and architecture fences
-        run: npm run test:lifecycle -- --reporter=verbose
-
-      # Typechecking is also the capability-profile completeness gate: adding
-      # a capability fails until every profile declares a boolean position.
-      - name: Typecheck
-        run: npm run typecheck
-
-      - name: Lint
-        run: npm run lint
-
-      # docs/cli/reference.md is generated from the CLI help, the terminal
-      # app's command registry and its key lists. Stale = a command, flag or
-      # key changed without `npm run docs:cli`.
-      - name: CLI reference is up to date
-        run: |
-          npm run docs:cli
-          git diff --exit-code -- docs/cli/reference.md
-
-      # docs/daemon/openapi.json is the daemon API contract: every registered
-      # route documented with its path parameters (coverage test), a valid
-      # spec (Redocly, strict), and the generated reference in sync with it.
-      # Stale = the spec changed without `npm run docs:api`.
-      - name: API contract and reference are up to date
-        run: |
-          npx vitest run tests/openapi-coverage.test.ts
-          npm run docs:api:lint
-          npm run docs:api
-          git diff --exit-code -- docs/daemon/api-reference.md docs/daemon/api-reference.html
-
-      - name: Build
-        run: npm run build
-
-  # Runs the Node-level suite and the Electron build on darwin: the darwin
-  # branches unit tests reach (case-insensitive FS in tracked-paths/
-  # adf-database, the darwin user-data path, host-exec 'macos', real-shell
-  # login PATH tests, POSIX-only tests). Then the Electron smoke launches the
-  # packaged app for the runtime paths no unit test reaches: window lifecycle
-  # after the last window closes, the packaged-app login-shell PATH, and quit.
-  # Not covered: the Podman setup wizard. Typecheck and lint are
-  # platform-independent, so they stay on the Linux job.
-  #
-  # Keep the install/test/lifecycle/build steps in sync with `verify` above
-  # (a matrix can't share them: job-level `if:` can't reference matrix values).
-  verify-macos:
-    runs-on: macos-15
-    timeout-minutes: 30
-
-    steps:
-      - uses: actions/checkout@v5
-
-      - uses: actions/setup-node@v5
-        with:
-          node-version: '^22.23.4'
-          cache: npm
-
-      - name: Install dependencies for Node tests
-        run: |
-          # Same as the Linux job: skip the Electron-ABI postinstall and build
-          # better-sqlite3 once for the active Node runtime.
-          npm ci --ignore-scripts
-          npm rebuild better-sqlite3
-
-      - name: Test
-        env:
-          PARITY_EXCLUDE: '1'
-        run: npm test
-
-      - name: Skill package tests (node:test)
-        if: ${{ !cancelled() }}
-        run: |
-          npm ci --prefix skills --no-audit --no-fund
-          npm run test:skills
-
-      # Run even when Test fails: they are independent signals, and a failing
-      # unit test shouldn't hide whether lifecycle conformance or the build
-      # hold on macOS.
-      - name: Lifecycle conformance, closed ledger, and architecture fences
-        if: ${{ !cancelled() }}
-        run: npm run test:lifecycle -- --reporter=verbose
-
-      - name: Build
-        id: build
-        if: ${{ !cancelled() }}
-        run: npm run build
-
-      # The Electron runtime paths the unit suite can't reach: launch the
-      # packaged app and drive its main process (cold start, login-shell PATH,
-      # window recreation after the last window closes, clean quit). See
-      # scripts/electron-smoke.mjs. Unsigned host-arch --dir build: no dmg,
-      # no notarization. Packaging rebuilds better-sqlite3 for Electron, so
-      # these stay last.
-      - name: Package the app (unsigned)
-        id: package
-        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: npx electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false
-
-      - name: Electron smoke (packaged app)
-        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
-        run: npm run test:electron-smoke
-
-  # Parity harness with the daemon side required (tests/parity/README.md,
-  # tracker §6 W2-C/W5-B): Studio in daemon mode against the BUILT daemon
-  # bundle, out/main/daemon.js, run as a child of Electron with
-  # ELECTRON_RUN_AS_NODE=1, exactly as the packaged Studio runs it. The
-  # `verify` jobs run `npm test` before `npm run build`, so there the daemon
-  # side is skipped; PARITY_REQUIRE_DAEMON=1 makes a missing or stale bundle
-  # a failure here.
-  #
-  # Unlike `verify`, this job needs the Electron binary (the daemon child) and
-  # better-sqlite3 built for Electron's ABI: the embedded side runs in the
-  # vitest process, the daemon side in the Electron child, and both load the
-  # same better_sqlite3.node. So vitest itself runs under Electron-as-Node.
-  # Install without lifecycle scripts, then run only the two that matter:
-  # electron's download and the repo's postinstall (better-sqlite3 alone).
-  #
-  # windows-2022 matches the release runner (see release.yml for why it is
-  # pinned). macOS is best effort: the harness never touches the login
-  # keychain (ADF_KEYCHAIN=0, a test keychain file), so the macOS keychain
-  # prompts of risk K11 are not exercised here; they need a signed build.
+  # Build on each target OS and compare the embedded runtime with the bundled
+  # daemon running under Electron-as-Node, as it does in packaged Studio.
+  # Both sides load better-sqlite3 under Electron's Node runtime. The harness
+  # uses a test keychain. The release workflow explains the Windows runner pin.
+  # macOS also runs the full Node suite and packaged smoke test on this runner,
+  # sharing the build and avoiding a second macOS runner allocation.
   daemon-parity:
     strategy:
       fail-fast: false
       matrix:
         os: [windows-2022, ubuntu-latest, macos-15]
     runs-on: ${{ matrix.os }}
-    continue-on-error: ${{ matrix.os == 'macos-15' }}
     timeout-minutes: 45
 
     steps:
@@ -222,13 +134,24 @@ jobs:
             ~/Library/Caches/electron
           key: electron-${{ runner.os }}-${{ hashFiles('package-lock.json') }}
 
-      - name: Install dependencies with the Electron binary
-        shell: bash
-        run: |
-          npm ci --ignore-scripts
-          node node_modules/electron/install.js
+      - name: Install dependencies
+        id: install
+        run: npm ci --ignore-scripts
+
+      - name: Node tests (macOS)
+        if: runner.os == 'macOS'
+        env:
+          PARITY_EXCLUDE: '1'
+        run: npm test
+
+      - name: Install Electron
+        id: electron
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
+        run: node node_modules/electron/install.js
 
       - name: Electron runs as Node
+        id: electron-node
+        if: ${{ !cancelled() && steps.electron.outcome == 'success' }}
         shell: bash
         run: |
           case "$RUNNER_OS" in
@@ -239,17 +162,19 @@ jobs:
           echo "ELECTRON=$ELECTRON" >> "$GITHUB_ENV"
           ELECTRON_RUN_AS_NODE=1 "$ELECTRON" -e "require('better-sqlite3')(':memory:').close(); console.log('electron', process.versions.electron, 'node', process.version, 'better-sqlite3 ok')"
 
-      # electron-vite build: out/main/index.js and the daemon, out/main/daemon.js.
       - name: Build
+        id: build
+        if: ${{ !cancelled() && steps.install.outcome == 'success' }}
         run: npm run build
 
       # The Gmail and Google Calendar MCP servers Studio ships: bundled, then run
-      # on this OS's Electron binary in Node mode (the other test jobs have no
-      # Electron).
+      # on this OS's Electron binary in Node mode.
       - name: Bundled MCP server on Electron-as-Node
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.electron-node.outcome == 'success' }}
         run: npx vitest run tests/unit/services/bundled-mcp-servers-smoke.test.ts --reporter=verbose
 
       - name: Parity, daemon side required
+        if: ${{ !cancelled() && steps.build.outcome == 'success' && steps.electron-node.outcome == 'success' }}
         shell: bash
         env:
           PARITY_REQUIRE_DAEMON: '1'
@@ -265,3 +190,16 @@ jobs:
           name: parity-daemon-logs-${{ matrix.os }}
           path: ${{ runner.temp }}/parity-daemon-logs
           if-no-files-found: ignore
+
+      # The packaged app exercises macOS window recreation, login-shell PATH,
+      # and clean quit. Package last so the parity suite uses the npm install.
+      - name: Package the app (unsigned macOS)
+        id: package
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.build.outcome == 'success' }}
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: npx electron-builder --mac dir --publish never -c.mac.identity=null -c.mac.notarize=false
+
+      - name: Electron smoke (packaged macOS app)
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        run: npm run test:electron-smoke

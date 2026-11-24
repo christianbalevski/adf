@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 350 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 352 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -39,7 +39,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Channels](#tag-channels) (5)
 - [MCP](#tag-mcp) (15)
 - [Providers & sign-in](#tag-providers-sign-in) (22)
-- [Tasks & approvals](#tag-tasks-approvals) (12)
+- [Tasks & approvals](#tag-tasks-approvals) (14)
 - [Timers](#tag-timers) (4)
 - [Templates](#tag-templates) (14)
 - [Tracked folders](#tag-tracked-folders) (6)
@@ -2774,7 +2774,7 @@ Example 200 (`application/json`):
 
 **Create an inner loop**
 
-Goes through the agent's loop pool, the same path as the loop_manage tool: same validation, tool attenuation and owner locks (`locked_fields: ["loops"]`). Defaults: enabled and autostart true; tools loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off at once through loop_send (`kickoff`). `excludedTools`: requested tools the host has disabled, carried by name and granted once enabled. 400 invalid declaration (bad name, unknown or never-grantable tool); 409 for `main`, a duplicate name, the loop cap, or `loops` locked by the owner.
+Goes through the agent's loop pool, the same path as the loop_manage tool: same validation and owner locks (`locked_fields: ["loops"]`). Defaults: enabled and autostart true; tools loop_send + loop_list + sys_set_state (filtered to what the host can grant). An enabled autostart loop is kicked off at once through loop_send (`kickoff`). `excludedTools`: requested tools the host has disabled, carried by name and granted once enabled. 400 invalid declaration (bad name, unknown tool); 409 for `main`, a duplicate name, the loop cap, or `loops` locked by the owner.
 
 Operation `createAgentLoop` · bearer token
 
@@ -3291,7 +3291,7 @@ Chat turns, event triggers and the agent's message inbox / outbox.
 | DELETE | [`/agents/{id}/chat`](#op-clearagentchat) | Clear a loop's persisted chat / loop history |
 | GET | [`/agents/{id}/chat/archived`](#op-getagentchatarchived) | Archived chat history of a loop |
 | POST | [`/agents/{id}/trigger`](#op-triggeragent) | Queue an ADF event dispatch |
-| GET | [`/agents/{id}/inbox`](#op-getagentinbox) | List inbox messages |
+| GET | [`/agents/{id}/inbox`](#op-getagentinbox) | List inbox messages or count them |
 | DELETE | [`/agents/{id}/inbox`](#op-clearagentinbox) | Delete all inbox messages |
 | GET | [`/agents/{id}/outbox`](#op-getagentoutbox) | List outbox messages |
 
@@ -3553,7 +3553,7 @@ Example 202 (`application/json`):
 
 ### GET `/agents/{id}/inbox`
 
-**List inbox messages**
+**List inbox messages or count them**
 
 Operation `getAgentInbox` · bearer token
 
@@ -3563,12 +3563,13 @@ Operation `getAgentInbox` · bearer token
 |---|---|---|---|---|
 | `id` | path | string | yes | Loaded agent: its id, handle or name. |
 | `status` | query | `"unread"` \| `"read"` \| `"archived"` |  | Only this status |
+| `countOnly` | query | `"1"` \| `"0"` \| `"true"` \| `"false"` |  | Return the count of matching inbox messages without their contents. Use 1 or true to enable it. An omitted status counts the whole inbox. |
 
 **Responses**
 
 | Status | Body | Description |
 |---|---|---|
-| 200 | [InboxResponse](#schema-inboxresponse) | Messages |
+| 200 | [InboxResponse](#schema-inboxresponse) \| [InboxCountResponse](#schema-inboxcountresponse) | Messages by default, or the matching message count when countOnly is enabled |
 | 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
@@ -8824,6 +8825,8 @@ Human-in-the-loop: tool approvals, ask requests and suspend prompts.
 | POST | [`/agents/{id}/asks/{requestId}/respond`](#op-answeragentask) | Answer an ask request |
 | POST | [`/agents/{id}/suspend/respond`](#op-respondagentsuspend) | Resume or stop after a suspend prompt |
 | GET | [`/approvals`](#op-getapprovals) | Approvals hub snapshot |
+| GET | [`/approvals/history`](#op-getnotificationhistory) | Browse notification history |
+| DELETE | [`/approvals/history`](#op-clearnotificationhistory) | Clear notification history |
 | GET | [`/approvals/input`](#op-getapprovalinput) | Raw tool input of one pending approval |
 | POST | [`/approvals/resolve`](#op-resolveapproval) | Resolve a pending approval |
 | GET | [`/approvals/interactions`](#op-getpendinginteractions) | Pending asks and approvals per agent |
@@ -9152,7 +9155,7 @@ Example 200 (`application/json`):
 
 **Answer an ask request**
 
-Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are numbered per loop: pass the `loop` from GET …/asks when two loops ask at once; without it the first loop holding the id is answered. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
+Answer with one entry per question, in order: a string (free text, or one option label), an array of strings (several picks, for a question with `multiple`), or `null` to skip. A value that is not one of the question's option labels is the human's own ("Other") text. Answers that do not fit the form (wrong count, a value that is not a string) answer 400 `invalid_answers` and the ask stays pending. The agent receives `Q: <question>` / `A: <answer>` pairs (`(skipped)` for a skipped question, `Other: <text>` for free text beside options). Request ids are unique across the agent's loops, so the loop holding the id is answered. `loop`, when given, must name that loop. An id no loop holds (already answered, or never asked) answers 404 `ask_not_found`.
 
 Operation `answerAgentAsk` · bearer token
 
@@ -9258,7 +9261,7 @@ Example 200 (`application/json`):
 
 **Approvals hub snapshot**
 
-Every pending approval and ask across loaded agents and loops (oldest first), plus the recently resolved ones of this daemon run. Raw tool input is omitted; fetch it with GET /approvals/input.
+Every pending approval and ask across loaded agents and loops (oldest first), plus the 50 most recent resolved notifications (newest first). Older history is retained across restarts and fetched through GET /approvals/history until manually cleared. Requests interrupted by a runtime restart are recorded as expired. Raw tool input is omitted; fetch it with GET /approvals/input.
 
 Operation `getApprovals` · bearer token
 
@@ -9312,6 +9315,86 @@ Example 200 (`application/json`):
       "resolvedAt": 0
     }
   ]
+}
+```
+
+<a id="op-getnotificationhistory"></a>
+
+### GET `/approvals/history`
+
+**Browse notification history**
+
+Returns at most 50 resolved notifications, newest first. Omit before for the newest page; pass the returned nextBefore to read older entries. The cursor counts from the oldest end, so newly resolved notifications do not shift older pages. Discard cursors when history is cleared; Studio resets browsing on the next live snapshot.
+
+Operation `getNotificationHistory` · bearer token
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `before` | query | integer |  | The previous page's nextBefore cursor. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [NotificationHistoryPage](#schema-notificationhistorypage) | History page |
+| 400 | [ErrorResponse](#schema-errorresponse) | Invalid request: missing or malformed field, query parameter or body. A body Fastify cannot parse gets Fastify's own shape (`statusCode`, `code`, `error`, `message`). |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "history": [
+    {
+      "id": "string",
+      "kind": "approval",
+      "requestId": "string",
+      "filePath": "string",
+      "agentName": "string",
+      "loop": "string",
+      "toolName": "string",
+      "preview": "string",
+      "question": "string",
+      "reason": "restricted",
+      "protection": {},
+      "canAlwaysApprove": true,
+      "alwaysApproveBlockedReason": "string",
+      "requestedAt": 0,
+      "outcome": "approved",
+      "resolvedAt": 0
+    }
+  ],
+  "nextBefore": 0
+}
+```
+
+<a id="op-clearnotificationhistory"></a>
+
+### DELETE `/approvals/history`
+
+**Clear notification history**
+
+Permanently clears this runtime's resolved notification history for all connected clients. Pending approvals and asks remain actionable. Returns success: false if the cleared history could not be saved.
+
+Operation `clearNotificationHistory` · bearer token
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 200 | [SuccessErrorResponse](#schema-successerrorresponse) | Clear result |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
+| 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
+
+Example 200 (`application/json`):
+
+```json
+{
+  "success": false,
+  "error": "This approval is no longer pending — it was already resolved, timed out, or its agent stopped."
 }
 ```
 
@@ -9398,7 +9481,7 @@ Example 200 (`application/json`):
 
 **Pending asks and approvals per agent**
 
-Main-loop requests only, per agent asks then approvals, with the raw tool input.
+Every loop's requests, per agent asks then approvals, with the raw tool input. `loop` names the loop that raised each one.
 
 Operation `getPendingInteractions` · bearer token
 
@@ -9419,6 +9502,7 @@ Example 200 (`application/json`):
     "handle": "string",
     "type": "ask",
     "requestId": "string",
+    "loop": "string",
     "question": "string",
     "toolName": "string",
     "input": null,
@@ -17444,7 +17528,7 @@ Example 200 (`text/event-stream`):
 
 **Set the agent the session follows**
 
-The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet).
+The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet). `visible: false`: the client keeps the agent open but does not show it (Home, a closed window); its finished turns are recorded in the notifications history.
 
 Operation `setClientSessionFocus` · bearer token
 
@@ -17459,10 +17543,12 @@ Operation `setClientSessionFocus` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agentId` | string \| null | yes |  |
+| `visible` | boolean |  | Default true |
 
 ```json
 {
-  "agentId": "string"
+  "agentId": "string",
+  "visible": true
 }
 ```
 
@@ -20546,6 +20632,15 @@ Whose runtime identity the daemon uses. `adopted`: ADF Studio's, from a verified
 | `status` | `"unread"` \| `"read"` \| `"archived"` | yes |  |
 | `original_message` | string |  |  |
 
+<a id="schema-inboxcountresponse"></a>
+
+### InboxCountResponse
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `agentId` | string | yes | Agent id |
+| `count` | integer | yes |  |
+
 <a id="schema-inboxresponse"></a>
 
 ### InboxResponse
@@ -22473,13 +22568,13 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Hub key `<filePath>\|<loop>\|<requestId>` |
-| `kind` | `"approval"` \| `"ask"` | yes |  |
-| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`) |
+| `kind` | `"approval"` \| `"ask"` \| `"finished"` | yes | `approval` and `ask` block their agent until answered. `finished` is never pending: it appears only in history, when the main loop of an agent no client had open ended a turn with a reply |
+| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`); `finished_<id>` for a finished turn |
 | `filePath` | string | yes | The agent file the request belongs to |
 | `agentName` | string | yes |  |
 | `loop` | string | yes | `main` or the inner loop name |
 | `toolName` | string |  |  |
-| `preview` | string | yes | One line, truncated, secret-free |
+| `preview` | string | yes | One line, truncated. Approvals: the redacted argument summary. Asks: the question. Finished: the reply |
 | `question` | string |  | Asks only: the full question |
 | `reason` | `"restricted"` \| `"protection"` |  |  |
 | `protection` | object |  |  |
@@ -22494,21 +22589,30 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Hub key `<filePath>\|<loop>\|<requestId>` |
-| `kind` | `"approval"` \| `"ask"` | yes |  |
-| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`) |
+| `kind` | `"approval"` \| `"ask"` \| `"finished"` | yes | `approval` and `ask` block their agent until answered. `finished` is never pending: it appears only in history, when the main loop of an agent no client had open ended a turn with a reply |
+| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`); `finished_<id>` for a finished turn |
 | `filePath` | string | yes | The agent file the request belongs to |
 | `agentName` | string | yes |  |
 | `loop` | string | yes | `main` or the inner loop name |
 | `toolName` | string |  |  |
-| `preview` | string | yes | One line, truncated, secret-free |
+| `preview` | string | yes | One line, truncated. Approvals: the redacted argument summary. Asks: the question. Finished: the reply |
 | `question` | string |  | Asks only: the full question |
 | `reason` | `"restricted"` \| `"protection"` |  |  |
 | `protection` | object |  |  |
 | `canAlwaysApprove` | boolean |  |  |
 | `alwaysApproveBlockedReason` | string |  |  |
 | `requestedAt` | number | yes | Epoch ms |
-| `outcome` | `"approved"` \| `"rejected"` \| `"answered"` \| `"expired"` | yes |  |
+| `outcome` | `"approved"` \| `"rejected"` \| `"answered"` \| `"expired"` \| `"completed"` | yes |  |
 | `resolvedAt` | number | yes |  |
+
+<a id="schema-notificationhistorypage"></a>
+
+### NotificationHistoryPage
+
+| Field | Type | Required | Description |
+|---|---|---|---|
+| `history` | [ResolvedNotification](#schema-resolvednotification)[] | yes |  |
+| `nextBefore` | integer \| null | yes | Cursor for the next older page, or null when there are no older entries. |
 
 <a id="schema-notificationssnapshot"></a>
 
@@ -22517,7 +22621,7 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `pending` | [PendingNotification](#schema-pendingnotification)[] | yes | Oldest first. Raw tool input omitted (GET /approvals/input). |
-| `history` | [ResolvedNotification](#schema-resolvednotification)[] | yes | Newest first, capped at 50, this daemon run only |
+| `history` | [ResolvedNotification](#schema-resolvednotification)[] | yes | At most 50 most recent entries, newest first. Older persisted entries are fetched through GET /approvals/history. |
 
 <a id="schema-approvalinputresponse"></a>
 
@@ -22548,6 +22652,7 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | `handle` | string | yes |  |
 | `type` | `"ask"` \| `"approval"` | yes |  |
 | `requestId` | string | yes |  |
+| `loop` | string |  | The loop that raised the request (`main` or an inner loop). |
 | `question` | string |  |  |
 | `toolName` | string |  |  |
 | `input` | any |  |  |

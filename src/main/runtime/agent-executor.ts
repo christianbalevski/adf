@@ -2,13 +2,13 @@ import { EventEmitter } from 'events'
 import { createHash } from 'node:crypto'
 import type { CreateMessageOptions, LLMProvider } from '../providers/provider.interface'
 import type { ToolRegistry } from '../tools/tool-registry'
-import { stripInternalToolFlags } from '../tools/tool-registry'
+import { currentToolSignal, stripInternalToolFlags } from '../tools/tool-registry'
 import { RECOVERY_DEFAULTS, type AgentConfig, type LoopTokenUsage, type ModelConfig } from '../../shared/types/adf-v02.types'
 import type { AgentSession } from './agent-session'
 import { projectMessageMedia, type MediaOmissions } from './message-media-projection'
 import { MEDIA_KINDS, effectiveMediaSupport, mediaOmissionReason, mediaRefusals, unsupportedMediaInput, type MediaKind, type MediaSupport } from '../providers/media-capabilities'
 import type { LoopMedia } from '../../shared/types/media.types'
-import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
+import { DEFAULT_MEDIA_SIZE_LIMITS, ingestMessageMedia, makeFileRef, mediaPayloadFromBase64, projectFileRefs, requestMediaLimit, requestMediaLimitText, resolveFileRefs, type FileRefsNotSent, type MediaSizeLimits } from './file-ref-media'
 import { attachmentsOf, fileRefKind, fileRefText, isFileRefBlock, mediaKindOfMime } from '../../shared/utils/file-ref'
 import type { FileRefRegistry } from '../adf/file-ref-registry'
 import type { ContentBlock, LLMMessage } from '../../shared/types/provider.types'
@@ -18,7 +18,7 @@ import type { ToolProviderFormat, ToolResult, ProtectionDenial } from '../../sha
 import type { SystemScopeHandler } from './system-scope-handler'
 import { PreLlmHookError, PreLlmHookRunner, preLlmHookApplies, type PreLlmHookRequest } from './pre-llm-hook'
 import {
-  type AdfEventDispatch, type AdfBatchDispatch, type AnyAdfEventDispatch,
+  type AdfEventDispatch, type AdfBatchDispatch,
   type InboxEventData, type OutboxEventData, type FileChangeEventData, type ChatEventData,
   type TimerEventData, type ToolCallEventData, type TaskCompleteEventData, type LogEntryEventData,
   type LlmCallEventData,
@@ -42,7 +42,7 @@ import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
 import { LoopCompactionSupersededError, type AdfWorkspace } from '../adf/adf-workspace'
 // Global pending-approval registry (title-bar approvals menu). Registration is
 // unconditional: hosts with no UI never subscribe, so it costs one map write.
-import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
+import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion, truncateLine } from './approval-hub'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, calibrateContextBreakdown, findLastCall, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -64,6 +64,11 @@ import {
   loopTokensFromLlmMetadata,
   toLlmCallEventData,
 } from './llm-call-metadata'
+
+interface SystemPromptDiagnostics {
+  promptParts: SystemPromptParts
+  injectedFiles: ContextBreakdownFileEntry[]
+}
 
 /** `hil.requested` fields telling an owner surface (daemon/TUI) whether
  *  "Always approve" is offered — snake_case like the rest of the payload. The
@@ -134,6 +139,9 @@ const MSG_TOOLS = new Set(['msg_send', 'agent_discover', 'msg_list', 'msg_read',
  * write-isolated bookkeeping; per-loop recovery is a later wave.
  */
 const TURN_CHECKPOINT_META_KEY = 'adf_runtime_turn_checkpoint'
+
+/** Last sentence of an over-cap notice when there is no code route to name. */
+const NARROW_RESULT = 'Request a smaller or more specific result.'
 // Sent when a turn answering an owner chat is about to end with nothing the
 // owner can see (only thinking, or a bare state change). Written to the loop
 // like any other model input.
@@ -146,6 +154,19 @@ export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by user.'
 function isVisibleToOwner(block: ContentBlock): boolean {
   return (block.type === 'text' && !!block.text?.trim())
     || (block.type === 'tool_use' && (block.name === 'say' || block.name === 'ask'))
+}
+
+/** The owner-visible words of a response: its text blocks and `say` messages, in order. Empty when it said nothing. */
+export function replyTextOf(content: ContentBlock[]): string {
+  const parts: string[] = []
+  for (const block of content) {
+    if (block.type === 'text' && block.text?.trim()) parts.push(block.text)
+    else if (block.type === 'tool_use' && block.name === 'say') {
+      const message = (block.input as { message?: unknown } | undefined)?.message
+      if (typeof message === 'string' && message.trim()) parts.push(message)
+    }
+  }
+  return parts.join('\n').trim()
 }
 
 const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
@@ -206,8 +227,6 @@ interface ToolSnapshot {
   declarations: Map<string, NonNullable<AgentConfig['tools']>[number]>
 }
 
-type ToolDeclarationEntry = NonNullable<AgentConfig['tools']>[number]
-
 /** Coarse human-readable span used in crash-recovery notices, e.g. `3h 12m`. */
 function formatElapsed(ms: number): string {
   if (!Number.isFinite(ms) || ms < 0) return 'an unknown amount of time'
@@ -225,7 +244,6 @@ function formatElapsed(ms: number): string {
  *  chars, and the `]` that would escape a `[System notice: …]` frame before
  *  embedding one in a durable history notice. */
 function sanitizeForNotice(msg: string): string {
-  // eslint-disable-next-line no-control-regex
   return msg.replace(/[\u0000-\u001f\]]+/g, ' ').slice(0, 150)
 }
 
@@ -576,11 +594,18 @@ interface TurnOptions {
   nested?: boolean
 }
 
+const STOPPED_CALL_DENIAL = { approved: false, feedback: 'The turn was stopped.' } as const
+
 export class AgentExecutor extends EventEmitter {
   private state: AgentState = 'idle'
   private provider: LLMProvider | null
   private toolRegistry: ToolRegistry
   private session: AgentSession
+  private readonly checkedToolPairs = new WeakMap<LLMMessage[], {
+    count: number
+    uses: Set<string>
+    results: Set<string>
+  }>()
   private config: AgentConfig
   private basePrompt: string
   /** Settings' app system prompt, read each turn: an edit applies at the next turn (setBasePromptSource). */
@@ -602,6 +627,8 @@ export class AgentExecutor extends EventEmitter {
   private absorbedTurnIds: string[] = []
   /** turnId of the dispatch the current (outermost) turn is running. */
   private runningTurnId: string | null = null
+  /** The current outermost turn's last owner-visible reply (announceFinishedTurn). */
+  private turnReply: string | null = null
   /** Counts outermost agent turns, so a late approval can tell whether the
    *  turn that raised it is the one running now. */
   private agentTurnSerial = 0
@@ -723,7 +750,6 @@ export class AgentExecutor extends EventEmitter {
 
   // Ask tool: pause loop and wait for human answer
   private pendingAsks = new Map<string, { resolve: (answers: AskAnswer[]) => void; questions: AskQuestion[] }>()
-  private askCounter = 0
 
   // Suspend flow: pause loop and wait for owner decision
   private pendingSuspend: { resolve: (resume: boolean) => void } | null = null
@@ -770,11 +796,8 @@ export class AgentExecutor extends EventEmitter {
      *  follows the provider at rebuild — a provider swap without a config
      *  change keeps the old figure, which is an acceptable approximation. */
     promptTokens: number
-    /** Per-layer prices (base+sections / runtime blocks / instructions), each
-     *  measured whether or not the current composition mode includes it. */
-    promptParts: SystemPromptParts
-    /** Per-file share of promptTokens for {{path}} injections (rendered form). */
-    injectedFiles: ContextBreakdownFileEntry[]
+    /** Measured on the first diagnostic read of this prompt snapshot. */
+    diagnostics: SystemPromptDiagnostics | (() => SystemPromptDiagnostics)
   } | null = null
   private toolSnapshotCache: CachedToolSnapshot | null = null
   /** One dynamic-instruction count, shared by preflight and diagnostics. */
@@ -910,8 +933,14 @@ export class AgentExecutor extends EventEmitter {
    * tool-heavy agent and make the post-compaction gauge lie small.
    */
   private estimateSessionRequestTokens(): number {
-    const messages = getTokenCounterService().estimateMessagesTokens(this.session.getMessages())
-    return messages + this.getFixedOverheadTokens()
+    return this.estimateRequestMessageTokens() + this.getFixedOverheadTokens()
+  }
+
+  private estimateRequestMessageTokens(): number {
+    const support = this.mediaSupport()
+    const { messages } = projectMessageMedia(this.session.getMessages(), support)
+    const files = projectFileRefs(messages, this.mediaSizeLimits(), support, requestMediaLimit(this.config.context))
+    return getTokenCounterService().estimateAppendOnlyMessagesTokens(files.messages)
   }
 
   /**
@@ -952,7 +981,9 @@ export class AgentExecutor extends EventEmitter {
     try {
       this.buildSystemPrompt()
       this.buildToolSnapshot()
-      if (!this.systemPromptCache || !this.toolSnapshotCache) return null
+      const prompt = this.systemPromptCache
+      if (!prompt || !this.toolSnapshotCache) return null
+      if (typeof prompt.diagnostics === 'function') prompt.diagnostics = prompt.diagnostics()
       const tc = getTokenCounterService()
       const workspace = this.session.getWorkspace()
       const rows = workspace.getAssistantTokenRows()
@@ -981,9 +1012,9 @@ export class AgentExecutor extends EventEmitter {
       const since = tc.estimateMessagesTokensSplit(messages.slice(replyTokens !== undefined ? cut + 1 : cut), reasoningBySeq)
       if (replyTokens !== undefined) since.reported += replyTokens
       const breakdown = assembleContextBreakdown({
-        systemPromptTokens: this.systemPromptCache.promptTokens,
-        systemPromptParts: this.systemPromptCache.promptParts,
-        injectedFiles: this.systemPromptCache.injectedFiles,
+        systemPromptTokens: prompt.promptTokens,
+        systemPromptParts: prompt.diagnostics.promptParts,
+        injectedFiles: prompt.diagnostics.injectedFiles,
         toolGroups: this.toolSnapshotCache.toolGroups,
         toolsTotalTokens: this.toolSnapshotCache.toolsTotalTokens,
         dynamicInstructionsTokens: this.countDynamicInstructionTokens(this.currentDynamicInstructions),
@@ -1234,6 +1265,31 @@ export class AgentExecutor extends EventEmitter {
     return true
   }
 
+  /**
+   * A main loop turn that ended cleanly with a reply goes to the notifications
+   * history as 'finished' (the hub skips it while a client has the agent
+   * open). The reply is the turn's last owner-visible text: an autonomous
+   * agent that replies and then calls sys_set_state idle counts.
+   */
+  private announceFinishedTurn(): void {
+    const reply = this.turnReply
+    this.turnReply = null
+    if (!reply || this.approvalLoopName() !== MAIN_LOOP) return
+    const filePath = this.approvalFilePath()
+    if (!filePath) return
+    const requestId = `finished_${nanoid(8)}`
+    approvalHub.announce({
+      id: this.notificationKeyFor(requestId),
+      kind: 'finished',
+      requestId,
+      filePath,
+      agentName: this.config.name,
+      loop: MAIN_LOOP,
+      preview: truncateLine(reply) || 'Turn complete',
+      requestedAt: Date.now(),
+    })
+  }
+
   /** The hub is keyed per agent+loop+request — `ask_1` is not globally unique. */
   private notificationKeyFor(requestId: string): string {
     return notificationKey(this.approvalFilePath(), this.approvalLoopName(), requestId)
@@ -1330,13 +1386,6 @@ export class AgentExecutor extends EventEmitter {
     return this.config
   }
 
-  /** True when this executor runs a side loop (derived-config marker set by
-   *  deriveLoopConfig; a stored .adf never carries it). */
-  private isSideLoop(): boolean {
-    const name = this.config.metadata?.loop_name
-    return typeof name === 'string' && name.length > 0 && name !== 'main'
-  }
-
   updateConfig(config: AgentConfig): void {
     this.config = config
     this.toolObservationEpoch++
@@ -1356,6 +1405,11 @@ export class AgentExecutor extends EventEmitter {
     // New provider instance — must re-validate on the next turn.
     this.providerValidated = false
     this.providerChangeListener?.(provider)
+  }
+
+  /** Reuse a successful startup preflight for the exact provider it checked. */
+  confirmProviderValidation(provider: LLMProvider): void {
+    if (this.provider === provider) this.providerValidated = true
   }
 
   private providerChangeListener: ((provider: LLMProvider) => void) | null = null
@@ -1621,6 +1675,12 @@ export class AgentExecutor extends EventEmitter {
     })
   }
 
+  // requestApproval and requestProtectionApproval are reached from inside a
+  // running tool call (a shell pipeline, sandboxed code). Once that call's
+  // turn is stopped, interrupted or killed, abort() has already drained the
+  // pending approvals; a request raised after it is refused, never parked, so
+  // nothing approves work from a stopped turn.
+
   /** Default auto-deny timeout for protection approvals requested by sandboxed code. */
   private static readonly PROTECTION_APPROVAL_TIMEOUT_MS = 1_200_000
 
@@ -1637,6 +1697,7 @@ export class AgentExecutor extends EventEmitter {
     protection: ProtectionDenial,
     opts?: { timeoutMs?: number | null }
   ): Promise<{ approved: boolean; modifiedArgs?: Record<string, unknown>; feedback?: string }> {
+    if (currentToolSignal()?.aborted) return STOPPED_CALL_DENIAL
     const meta = this.buildApprovalMeta(name, protection)
     const priorState = this.state
     const raisedInTurn = this.currentAgentTurn()
@@ -1696,6 +1757,7 @@ export class AgentExecutor extends EventEmitter {
     input: unknown,
     opts?: { canAlwaysApprove?: boolean; restoreState?: boolean }
   ): Promise<boolean> {
+    if (currentToolSignal()?.aborted) return false
     const priorState = this.state
     const restoreState = opts?.restoreState === true
     const ownsState = !restoreState || !this.isTurnActive()
@@ -1869,7 +1931,7 @@ export class AgentExecutor extends EventEmitter {
    * event and pauses the executor until the user responds via `resolveAsk`.
    */
   private requestAsk(questions: AskQuestion[]): { requestId: string; answers: Promise<AskAnswer[]> } {
-    const requestId = `ask_${++this.askCounter}`
+    const requestId = `ask_${nanoid(12)}`
     const question = summarizeAsk(questions)
     this.setState('awaiting_ask')
     this.emitEvent({
@@ -2416,6 +2478,7 @@ export class AgentExecutor extends EventEmitter {
     if (!opts?.nested) {
       this.runningTurnId = dispatch.turnId ?? null
       this.agentTurnSerial++
+      this.turnReply = null
     }
 
     this._isMessageTriggered = eventType === 'inbox'
@@ -2492,14 +2555,14 @@ export class AgentExecutor extends EventEmitter {
       // prior turn exists. Reading the newest loop row's usage here was the
       // bug: after a voluntary compaction that row honestly reports the
       // pre-compaction context, which re-triggered compaction on a tiny loop.
-      const tokenCounter = getTokenCounterService()
       const compactThreshold = this.config.context?.compact_threshold ?? this.config.model.compact_threshold ?? 100000
       let chatTokens = this.readContextBaselineTokens()
-        ?? tokenCounter.estimateMessagesTokens(this.session.getMessages())
+        ?? this.estimateRequestMessageTokens()
 
       let continueLoop = true
       let activeTurns = 0
       this.compactionFailedThisTurn = false
+      let attemptedEmergencyCompaction = false
       const maxActiveTurns = this.config.limits?.max_active_turns ?? null
       // Track target state from sys_set_state tool
       let targetState: string | null = null
@@ -2606,8 +2669,8 @@ export class AgentExecutor extends EventEmitter {
         // provider.validateConfig() instead, cache the result, and surface a clear,
         // actionable error if the credentials don't work.
         //
-        // Steady-state cost: one tiny request after agent-start (or after the user
-        // updates the provider config / a prior turn returned an auth-class error).
+        // Steady-state cost: one tiny request unless startup already checked this
+        // provider; changing the provider or an auth error clears the result.
         // No per-turn latency once validated.
         if (!this.providerValidated && this.provider) {
           const validation = await this.provider.validateConfig()
@@ -2668,10 +2731,13 @@ export class AgentExecutor extends EventEmitter {
           // During the memory-flush grace turn the preflight compacts only at
           // an emergency bound above the normal threshold, so the nudge turn
           // isn't immediately killed by the same threshold that triggered it.
-          const preflightBound = this.memoryFlushNudgeIssued
-            ? Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
-            : compactThreshold
-          if (preflightTokens >= preflightBound && this.provider) {
+          const emergencyBound = Math.min(compactThreshold + MEMORY_FLUSH_EMERGENCY_MARGIN, Math.floor(compactThreshold * MEMORY_FLUSH_EMERGENCY_FACTOR))
+          const preflightBound = this.memoryFlushNudgeIssued ? emergencyBound : compactThreshold
+          const atEmergencyBound = preflightTokens >= emergencyBound
+          // Try again only if this turn reaches the emergency bound for the first time.
+          if (preflightTokens >= preflightBound && this.provider &&
+              (!this.compactionFailedThisTurn || (atEmergencyBound && !attemptedEmergencyCompaction))) {
+            attemptedEmergencyCompaction ||= atEmergencyBound
             this.emitEvent({
               type: 'context_injected',
               payload: { category: 'status', content: 'Compacting conversation history (context limit reached)…' },
@@ -2698,35 +2764,7 @@ export class AgentExecutor extends EventEmitter {
         // reset landed mid-turn) and repair them instead of letting the provider
         // reject the request. Repair only when an orphan exists — it replaces
         // the array reference, which invalidates the incremental conversion cache.
-        {
-          const msgs = this.session.getMessages()
-          const toolUseIds = new Set<string>()
-          const toolResultIds = new Set<string>()
-          for (const m of msgs) {
-            if (!Array.isArray(m.content)) continue
-            for (const b of m.content) {
-              if (b.type === 'tool_use' && b.id) toolUseIds.add(b.id)
-              else if (b.type === 'tool_result' && b.tool_use_id) toolResultIds.add(b.tool_use_id)
-            }
-          }
-          let hasOrphan = false
-          for (const m of msgs) {
-            if (!Array.isArray(m.content)) continue
-            for (const b of m.content) {
-              if (b.type === 'tool_result' && b.tool_use_id && !toolUseIds.has(b.tool_use_id)) {
-                hasOrphan = true
-                console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${b.tool_use_id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
-              } else if (b.type === 'tool_use' && b.id && !toolResultIds.has(b.id)) {
-                hasOrphan = true
-                console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${b.id}, msgIndex=${msgs.indexOf(m)}/${msgs.length}) — repairing`)
-              }
-            }
-          }
-          if (hasOrphan) {
-            try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
-            this.session.repairToolPairing()
-          }
-        }
+        this.checkToolPairing()
 
         // A mid-turn external reset (clear chat / mesh session reset) can leave
         // the history empty after repair. Sending zero messages is a guaranteed
@@ -2769,13 +2807,14 @@ export class AgentExecutor extends EventEmitter {
         // Media the model cannot take becomes placeholder text in this request
         // only; the session keeps the original for a model that can. File
         // references left after that load their bytes from Files.
-        const media = projectMessageMedia(request.messages, this.mediaSupport())
+        const mediaSupport = this.mediaSupport()
+        const media = projectMessageMedia(request.messages, mediaSupport)
         const files = await resolveFileRefs(
           media.messages,
           this.fileRefRegistry(),
           path => this.session.getWorkspace().readFileBuffer(path),
           this.mediaSizeLimits(),
-          this.mediaSupport(),
+          mediaSupport,
           requestMediaLimit(this.config.context),
         )
         if (media.omitted || files.notSent) this.noteMediaOmitted(media.omitted ?? {}, files.notSent, dispatch)
@@ -2919,6 +2958,8 @@ export class AgentExecutor extends EventEmitter {
         )
 
         const responseVisible = response.content.some(isVisibleToOwner)
+        const replyText = replyTextOf(response.content)
+        if (replyText) this.turnReply = replyText
 
         if (toolUseBlocks.length > 0) {
           consecutiveTextOnly = 0
@@ -2962,6 +3003,26 @@ export class AgentExecutor extends EventEmitter {
               },
               timestamp: Date.now()
             })
+
+            // Guard: reject tool calls not in the enabled set. Runs before the
+            // `ask` intercept so a disabled ask is refused like any other tool.
+            if (!toolSnapshot.enabledNames.has(toolBlock.name)) {
+              toolResults.push({
+                type: 'tool_result',
+                tool_use_id: toolBlock.id,
+                content: `Tool "${toolBlock.name}" is not enabled. Check your agent configuration to enable it.`,
+                is_error: true
+              })
+              this.emitEvent({
+                type: 'tool_call_result',
+                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
+                timestamp: Date.now()
+              })
+              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
+                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
+              })
+              continue
+            }
 
             // Ask tool: intercept and block until human responds
             if (toolBlock.name === 'ask') {
@@ -3011,25 +3072,6 @@ export class AgentExecutor extends EventEmitter {
               continue
             }
 
-            // Guard: reject tool calls not in the enabled set
-            if (!toolSnapshot.enabledNames.has(toolBlock.name)) {
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolBlock.id,
-                content: `Tool "${toolBlock.name}" is not enabled. Check your agent configuration to enable it.`,
-                is_error: true
-              })
-              this.emitEvent({
-                type: 'tool_call_result',
-                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: `Tool "${toolBlock.name}" is not enabled.`, isError: true } },
-                timestamp: Date.now()
-              })
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
-                content: `Tool "${toolBlock.name}" is not enabled.`, isError: true
-              })
-              continue
-            }
-
             // Strip _full, _authorized and _protection_override from LLM tool calls — only
             // allowed from code execution / HIL re-execution. _authorized is injected by
             // adf-call-handler for authorized lambdas; it bypasses file/meta/table protection
@@ -3060,34 +3102,6 @@ export class AgentExecutor extends EventEmitter {
                   isRestricted = true
                 }
               }
-            }
-
-            // Side loops have no approval channel (HIL routing is filePath/
-            // singleton keyed, MVP), so a restricted call here would park an
-            // approval nobody can answer and block the loop until the auto-deny
-            // timeout. deriveLoopConfig already keeps every statically
-            // restricted tool out of a loop's toolset; this closes the DYNAMIC
-            // escape above (sys_lambda targeting an authorized file) and any
-            // MCP server restricted after the derive. Fail closed, and say why.
-            if (isRestricted && this.isSideLoop()) {
-              const refusal =
-                `"${toolBlock.name}" needs human approval, and an inner loop has no channel to ask for one. ` +
-                'Ask main to run this (loop_send), or do it a way that needs no approval.'
-              toolResults.push({
-                type: 'tool_result',
-                tool_use_id: toolBlock.id,
-                content: refusal,
-                is_error: true
-              })
-              this.emitEvent({
-                type: 'tool_call_result',
-                payload: { name: toolBlock.name, id: toolBlock.id, result: { content: refusal, isError: true } },
-                timestamp: Date.now()
-              })
-              this.emitSyntheticToolEvents(toolBlock.name!, toolBlock.id, toolBlock.input, {
-                content: refusal, isError: true
-              })
-              continue
             }
 
             // _async check BEFORE HIL — async restricted tools create a pending_approval task
@@ -3310,20 +3324,6 @@ export class AgentExecutor extends EventEmitter {
             // on deny the denial is final for this turn (dedupe by tool+target).
             if (rawResult.isError && rawResult.protection) {
               const p = rawResult.protection
-              // A4 (security F2): a side loop has no HIL approval channel (routing
-              // is filePath/singleton-keyed, MVP), so parking an override request
-              // here would hang the call until the auto-deny timeout with nothing
-              // on screen to answer it — AND turn a protection denial in an inner
-              // loop into a working override channel via the hub. Fail closed,
-              // mirroring adf-call-handler.ts:401. Dedupe-mark it so a retry this
-              // turn is short-circuited too.
-              if (this.isSideLoop()) {
-                this.deniedProtectionKeys.add(`${toolBlock.name}|${p.kind}|${p.target}`)
-                rawResult = {
-                  content: `"${toolBlock.name}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`,
-                  isError: true
-                }
-              } else {
               const dedupeKey = `${toolBlock.name}|${p.kind}|${p.target}`
               if (this.deniedProtectionKeys.has(dedupeKey)) {
                 rawResult = {
@@ -3380,7 +3380,6 @@ export class AgentExecutor extends EventEmitter {
                   }
                   if (this.getState() !== 'stopped') this.setState('tool_use')
                 }
-              }
               }
             }
 
@@ -3713,6 +3712,10 @@ export class AgentExecutor extends EventEmitter {
         }
       }
     } catch (error) {
+      // A turn that threw did not finish, whatever state it settles in. A
+      // nested recovery retry that throws fails its outer turn too; one that
+      // succeeds sets the reply again.
+      this.turnReply = null
       // A model call cut off by an interrupt, an owner state change or a
       // stop: what it already streamed is the model's output and is kept.
       const cutOff = this.inFlightOutput
@@ -4014,6 +4017,7 @@ export class AgentExecutor extends EventEmitter {
         if (!opts?.nested) this.runningTurnId = null
         this.setState('idle')
         this.replayQueuedChats()
+        // eslint-disable-next-line no-unsafe-finally -- the catch above handles every error; this return only skips the normal cleanup below.
         return  // Skip normal cleanup
       }
 
@@ -4063,6 +4067,7 @@ export class AgentExecutor extends EventEmitter {
         // the retry turn overwrites this checkpoint when it begins.
       } else {
         this.completeTurnCheckpoint(checkpointId)
+        if (!opts?.nested) this.announceFinishedTurn()
       }
 
       if (!opts?.nested) this.runningTurnId = null
@@ -4723,17 +4728,6 @@ export class AgentExecutor extends EventEmitter {
       // instead of failing. Non-blocking: the loop already returned the task
       // reference; approval re-runs the call with a one-time bypass.
       if (rawResult.isError && rawResult.protection) {
-        const p = rawResult.protection
-        // A4 (security F2): a side loop has no HIL approval channel, so parking
-        // a pending_approval task here would leave an override request no one
-        // can see or answer — and would make protection denials in inner loops
-        // a working override channel via the hub. Fail closed (auto-deny),
-        // mirroring the sync path and adf-call-handler.ts:401.
-        if (this.isSideLoop()) {
-          const msg = `"${toolName}" was blocked (${p.kind}: "${p.target}" is ${p.level}). An inner loop cannot ask a human for an override — ask main to do this, or have the owner change the protection.`
-          if (workspace.updateTaskStatus(taskId, 'denied', undefined, msg)) this.onTaskCompleted?.(taskId, toolName, 'denied', undefined, msg)
-          return null
-        }
         const meta = this.buildApprovalMeta(toolName, rawResult.protection)
         // The row now asks for a protection override, not the original
         // restricted-tool approval: rewrite its durable metadata (and require
@@ -5186,7 +5180,7 @@ export class AgentExecutor extends EventEmitter {
     } else {
       filteredResult = rawResult
     }
-    const result = this.enforceToolResultLimit(filteredResult, toolName)
+    const result = this.enforceToolResultLimit(filteredResult, toolName, this.toolResultRemedy(toolName))
 
     // Build adf-file:// URL for the renderer image preview
     let eventImageUrl: string | undefined
@@ -5353,7 +5347,21 @@ export class AgentExecutor extends EventEmitter {
     }
   }
 
-  private enforceToolResultLimit(result: ToolResult, toolName: string): ToolResult {
+  /** What the agent can do to get at a tool result that was over the cap. */
+  private toolResultRemedy(toolName: string): string {
+    // Name the code route only for a result that isn't the agent's own code
+    // (sys_code, sys_lambda), when sys_code is enabled and registered (it isn't
+    // on a host without a sandbox service), and when inline code may make the
+    // call: inline code is refused a tool that any declaration marks restricted,
+    // as the turn's dedupe reads it. Any other refusal the gate gives says why.
+    const declaration = (name: string) => this.config.tools.find(t => t.name === name)
+    if (toolName === 'sys_code' || toolName === 'sys_lambda') return NARROW_RESULT
+    if (!declaration('sys_code')?.enabled || !this.toolRegistry.get('sys_code')) return NARROW_RESULT
+    if (this.config.tools.some(t => t.name === toolName && t.restricted)) return NARROW_RESULT
+    return `Calls made from code are not capped: if running it again is safe, try it from sys_code (\`await adf[${JSON.stringify(toolName)}]({...})\` with the same arguments, without \`_async\`) and return only the part you need.`
+  }
+
+  private enforceToolResultLimit(result: ToolResult, toolName: string, remedy = NARROW_RESULT): ToolResult {
     const maxTokens = this.config.limits?.max_tool_result_tokens ?? 16000
     const content = result.content
 
@@ -5383,7 +5391,7 @@ export class AgentExecutor extends EventEmitter {
       content:
         `[TRUNCATED] Tool "${toolName}" returned ~${tokenCount.toLocaleString()} tokens ` +
         `(limit: ${maxTokens.toLocaleString()}). The full result was discarded to protect the context window. ` +
-        `Request a smaller or more specific result.\n\n` +
+        `${remedy}\n\n` +
         preview
     }
   }
@@ -5477,6 +5485,46 @@ export class AgentExecutor extends EventEmitter {
     return true
   }
 
+  private checkToolPairing(): void {
+    const messages = this.session.getMessages()
+    // AgentSession appends in place and replaces the array whenever it rewrites
+    // a prefix. The checked prefix has no orphans, so only new blocks need to
+    // be checked against the IDs from the prefix plus the new suffix.
+    const scan = this.checkedToolPairs.get(messages) ?? { count: 0, uses: new Set<string>(), results: new Set<string>() }
+    for (let index = scan.count; index < messages.length; index++) {
+      const { content } = messages[index]
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type === 'tool_use' && block.id) scan.uses.add(block.id)
+        else if (block.type === 'tool_result' && block.tool_use_id) scan.results.add(block.tool_use_id)
+      }
+    }
+
+    let hasOrphan = false
+    for (let index = scan.count; index < messages.length; index++) {
+      const { content } = messages[index]
+      if (!Array.isArray(content)) continue
+      for (const block of content) {
+        if (block.type === 'tool_result' && block.tool_use_id && !scan.uses.has(block.tool_use_id)) {
+          hasOrphan = true
+          console.error(`[AgentExecutor] Orphan tool_result before createMessage (tool_use_id=${block.tool_use_id}, msgIndex=${index}/${messages.length}) — repairing`)
+        } else if (block.type === 'tool_use' && block.id && !scan.results.has(block.id)) {
+          hasOrphan = true
+          console.error(`[AgentExecutor] Orphan tool_use before createMessage (id=${block.id}, msgIndex=${index}/${messages.length}) — repairing`)
+        }
+      }
+    }
+
+    if (hasOrphan) {
+      this.checkedToolPairs.delete(messages)
+      try { this.session.getWorkspace().insertLog('warn', 'executor', 'orphan_tool_repair', null, 'Repaired orphaned tool blocks before LLM call') } catch { /* non-fatal */ }
+      this.session.repairToolPairing()
+    } else {
+      scan.count = messages.length
+      this.checkedToolPairs.set(messages, scan)
+    }
+  }
+
   /**
    * Estimate the token size of the request that is ABOUT to be sent, so the
    * loop can compact *before* the call instead of letting the provider reject
@@ -5502,8 +5550,7 @@ export class AgentExecutor extends EventEmitter {
    * the turn it just preserved.
    */
   private estimatePreflightTokens(baselineTokens: number, dynamicInstructions?: string): number {
-    const tc = getTokenCounterService()
-    const estimated = tc.estimateMessagesTokens(this.session.getMessages())
+    const estimated = this.estimateRequestMessageTokens()
     // Fixed overhead (system prompt + tool schemas + this turn's dynamic
     // instructions) goes on the char-estimate side ONLY: baselineTokens is the
     // last call's real API input+output, which already includes that overhead —
@@ -5818,7 +5865,7 @@ export class AgentExecutor extends EventEmitter {
         this.addRuntimeNotice(`[System] Compaction failed: ${detail}. Your history is preserved; compaction will be retried.`)
       }
       this.emitRuntimeEvent('loop.compaction_failed', { reason: detail, trigger: reason })
-      return tokenCounter.estimateMessagesTokens(this.session.getMessages())
+      return this.estimateRequestMessageTokens()
     }
     this.lastCompactionFailureDetail = undefined
 
@@ -6207,6 +6254,11 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private buildSystemPrompt(): string {
+    const live = this.basePromptSource?.()
+    if (typeof live === 'string' && live !== this.basePrompt) {
+      this.basePrompt = live
+      this.systemPromptMemo = null
+    }
     // Short-circuit for the steady state: nothing that feeds the prompt has
     // moved since the last build, so re-deriving the cache key (assemblePrompt,
     // a placeholder scan, a char-loop hash over every injected file and a
@@ -6252,8 +6304,6 @@ export class AgentExecutor extends EventEmitter {
   }
 
   private assembleSystemPrompt(): string {
-    const live = this.basePromptSource?.()
-    if (typeof live === 'string') this.basePrompt = live
     const enabledToolNames = this.config.tools
       .filter(t => t.enabled)
       .map(t => t.name)
@@ -6356,12 +6406,14 @@ export class AgentExecutor extends EventEmitter {
       if (this.config.id) identityLines.push(`DID: ${this.config.id}.`)
       runtimeBlocks.push(`## Your Identity\n\n${identityLines.join(' ')}`)
 
-      // Inner loops — main only. A side loop's derived config carries
-      // `loops: []` (loops do not nest) and gets its own preamble through
-      // `instructions` instead, so this never doubles up. Null (nothing
-      // added) only for an agent with no loops AND loop_manage off — the
-      // opt-out that keeps its prompt byte-identical to the pre-loops one.
-      const loopsSection = buildMainLoopsSection(this.config.loops, {
+      // Inner loops — main only. A side loop gets its own preamble through
+      // `instructions`, and its derived config carries `loops: []`: with
+      // loop_manage granted, this section would tell it that it is main with
+      // no loops yet. Null (nothing added) for main only with no loops AND
+      // loop_manage off — the opt-out that keeps its prompt byte-identical to
+      // the pre-loops one.
+      const isSideLoop = this.approvalLoopName() !== MAIN_LOOP
+      const loopsSection = isSideLoop ? null : buildMainLoopsSection(this.config.loops, {
         loopManageEnabled: enabledTools.has('loop_manage'),
         loopSendEnabled: enabledTools.has('loop_send'),
         loopListEnabled: enabledTools.has('loop_list')
@@ -6408,41 +6460,34 @@ export class AgentExecutor extends EventEmitter {
       const autonomousText = this.config.autonomous
         ? (this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
         : ''
-      let promptTokens = this.countPromptTokens(cachedPrompt)
-      if (autonomousText.trim() && !bare) {
-        promptTokens += this.countPromptTokens(SEP + autonomousText)
-      }
+      const autonomousSuffix = autonomousText.trim() ? SEP + autonomousText : ''
+      const countTokens = getTokenCounterService().bindTokenizer(this.tokenizerProviderId())
+      const sentAutonomousTokens = bare ? undefined : countTokens(autonomousSuffix)
+      const promptTokens = countTokens(cachedPrompt) + (sentAutonomousTokens ?? 0)
+      const snapshot = this.injectedFileSnapshots ?? new Map<string, string>()
 
-      // Per-layer prices for the composition receipt. Each layer is measured
-      // in its rendered form (placeholders resolved), whether or not the
-      // current mode includes it, so the panel can show what switching would
-      // cost. Layers omitted from the prompt resolve against a throwaway copy
-      // of the session snapshot — the real snapshot only ever holds files
-      // that reached the prompt (that is what injectedFilesHash promises).
-      const measureLayer = (text: string): number => {
-        if (!text.trim()) return 0
-        const ws = this.session.getWorkspace()
-        const scratch = new Map(this.injectedFileSnapshots ?? [])
-        return this.countPromptTokens(resolveInjectedFiles(text, (p) => ws.readFile(p), scratch))
-      }
-      const promptParts: SystemPromptParts = {
-        base_and_sections: measureLayer(fullSections),
-        runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) +
-          (autonomousText.trim() ? this.countPromptTokens(SEP + autonomousText) : 0),
-        instructions: measureLayer(instructionsBlock),
-      }
-
-      // Cache the result
       this.systemPromptCache = {
         injectedFilesHash,
         configHash,
         cachedPrompt,
         promptTokens,
-        promptParts,
-        injectedFiles: measureInjectedFiles(
-          this.injectedFileSnapshots ?? new Map(),
-          (text) => this.countPromptTokens(text)
-        )
+        diagnostics: () => {
+          const workspace = this.session.getWorkspace()
+          // Price every layer in its rendered form. Off-mode placeholder
+          // reads stay in this copy and never change the sent prompt.
+          const scratch = new Map(snapshot)
+          const measureLayer = (text: string): number => text.trim()
+            ? countTokens(resolveInjectedFiles(text, (path) => workspace.readFile(path), scratch))
+            : 0
+          return {
+            promptParts: {
+              base_and_sections: measureLayer(fullSections),
+              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + (sentAutonomousTokens ?? countTokens(autonomousSuffix)),
+              instructions: measureLayer(instructionsBlock),
+            },
+            injectedFiles: measureInjectedFiles(snapshot, countTokens),
+          }
+        },
       }
     }
 

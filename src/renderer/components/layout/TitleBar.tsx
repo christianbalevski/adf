@@ -3,7 +3,6 @@ import { useDocumentStore } from '../../stores/document.store'
 import { useAgentStore } from '../../stores/agent.store'
 import { useAppStore, SIDEBAR_MAX_VW } from '../../stores/app.store'
 import { SIDEBAR_WIDTH_VAR } from './SidebarFrame'
-import { toDisplayState } from '../../hooks/useAgent'
 import { startForegroundAgent } from '../../utils/start-agent'
 import { ApprovalsMenu } from './ApprovalsMenu'
 import { Button } from '../ui'
@@ -65,7 +64,7 @@ export function OpenAgentNavButton({ active, onClick }: { active: boolean; onCli
   const agentState = useAgentStore((s) => s.state)
   const orbitalSeed = useOpenAgentOrbitalSeed()
   if (!filePath || !config) return null
-  const name = config.name || agentNameOf(filePath)
+  const name = agentNameOf(filePath)
   return (
     <NavButton title={name} active={active} onClick={onClick}>
       <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} />
@@ -145,9 +144,9 @@ export function AgentTitleCluster({ onActivate, avatar = true }: { onActivate?: 
       {avatar && <OrbitalAvatar seed={orbitalSeed} icon={config.icon} iconSeed={config.id} size={16} emojiSize={14} animated={agentState === 'active'} title={config.description || undefined} />}
       <span
         className="shrink-0 max-w-56 font-medium text-neutral-700 dark:text-neutral-200 truncate"
-        title={config.description || config.name}
+        title={config.description || agentNameOf(filePath)}
       >
-        {config.name}{isDirty ? ' •' : ''}
+        {agentNameOf(filePath)}{isDirty ? ' •' : ''}
       </span>
       {remoteTip && (
         <Tooltip tip={remoteTip} className="flex shrink-0 text-[var(--adf-ui-text-subtle)]">
@@ -271,7 +270,7 @@ export function TitleBar() {
       await openApi()?.stopAgent()
     } catch (err) {
       // The agent still runs: say so, and leave the state as it is.
-      reportFailure(`${config?.name || (stoppingPath ? agentNameOf(stoppingPath) : 'The agent')} did not turn off`, err)
+      reportFailure(`${stoppingPath ? agentNameOf(stoppingPath) : 'The agent'} did not turn off`, err)
       return
     } finally {
       setStopping(false)
@@ -386,7 +385,7 @@ export function TitleBar() {
         {filePath && config && !showHome && agentWindowsAvailable && (
           <Tooltip tip="Open in new window" className="flex">
             <button
-              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: config.name, runtimeId: useDocumentStore.getState().runtimeId })}
+              onClick={() => openAgentWindow({ filePath, agentId: config.id ?? null, name: agentNameOf(filePath), runtimeId: useDocumentStore.getState().runtimeId })}
               aria-label="Open in new window"
               className="w-7 h-7 flex items-center justify-center rounded-md transition-colors text-[var(--adf-ui-text-muted)] hover:bg-[var(--adf-ui-surface-hover)] hover:text-[var(--adf-ui-text)]"
             >

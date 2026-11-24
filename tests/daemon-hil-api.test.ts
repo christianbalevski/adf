@@ -185,6 +185,8 @@ describe('daemon HIL approval API (Studio parity)', () => {
 
     const rt = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/tasks?status=pending_approval` })).json().tasks
     expect(rt).toHaveLength(3)
+    const limited = (await server.inject({ method: 'GET', url: `/agents/${ref.id}/tasks?status=pending_approval&limit=1` })).json().tasks
+    expect(limited).toEqual([rt[0]])
   })
 
   it('approve-all approves gated requests and skips protection overrides', async () => {
@@ -216,8 +218,7 @@ describe('daemon HIL approval API (Studio parity)', () => {
     const loopExecutor = managed().agent.loopPool.getRuntime('researcher')?.executor
     expect(loopExecutor).toBeTruthy()
 
-    // Side loops fail closed on restricted tools in practice; park one directly
-    // to prove the owner API still reaches the right executor if one exists.
+    // Park one directly: the owner API must reach the loop's executor.
     const denied = park(loopExecutor!, 'fs_write')
     const deny = await server.inject({ method: 'POST', url: `/agents/${ref.id}/tasks/${denied.taskId}/resolve`, payload: { action: 'deny', reason: 'not from a side loop' } })
     expect(deny.statusCode).toBe(200)

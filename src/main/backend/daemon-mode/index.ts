@@ -136,7 +136,7 @@ export const REGISTERED_OUTSIDE: readonly MappedChannel[] = [
  * another one (`local` included). Untagged, an agent window's call is its
  * own runtime's, as every call.
  */
-const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
+const ANY_RUNTIME_CHANNELS: ReadonlySet<string> = new Set([IPC.APPROVALS_LIST, IPC.APPROVALS_CLEAR_HISTORY, IPC.APPROVALS_HISTORY, IPC.APPROVALS_RESOLVE, IPC.APPROVALS_GET_INPUT])
 
 /** Main-window calls that open a file on their runtime: that runtime holds the main window's open agent (§4.3). */
 const MAIN_OPEN_CHANNELS: ReadonlySet<string> = new Set([IPC.FILE_OPEN, IPC.FILE_CREATE, IPC.FILE_CREATE_QUICK])
@@ -335,7 +335,6 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
   const browserWindowOf = (id: number): BrowserWindow | null =>
     BrowserWindow.getAllWindows().find((win) => !win.isDestroyed() && win.webContents.id === id) ?? null
 
-  // eslint-disable-next-line prefer-const
   let manager: RuntimeManager
   const closedWindows = new Set<number>()
   const aggregator = new ApprovalsAggregator(primaryId)
@@ -408,7 +407,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       const main = firstWindow()
       return !!main && BrowserWindow.getFocusedWindow() === main
     },
-    notificationsEnabled: () => clientSettings.get('nativeNotificationsEnabled') !== false,
+    setting: (key) => clientSettings.get(key),
     // Every OS notification names its runtime while there is more than one (§6.1); This computer is named too.
     runtimeName: (runtimeId) => {
       if (!manager || manager.runtimes().length < 2) return null

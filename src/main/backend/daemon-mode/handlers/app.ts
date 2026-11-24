@@ -38,8 +38,8 @@ async function revealProviderKeys(ctx: DaemonModeContext, client: DaemonClient, 
     p?.apiKey === REDACTED_API_KEY && typeof p.id === 'string' && typeof keys[p.id] === 'string' ? { ...p, apiKey: keys[p.id] } : p)
 }
 
-/** The client keys App.tsx applies to the page (theme, typeface, scale, avatars). */
-export const APPEARANCE_KEYS = ['theme', 'uiFont', 'uiFontCustom', 'uiScale', 'agentAvatars'] as const
+/** The client keys App.tsx applies to the page (theme, typeface, scale, avatars, the bell's notice switches). */
+export const APPEARANCE_KEYS = ['theme', 'uiFont', 'uiFontCustom', 'uiScale', 'agentAvatars', 'finishedNotificationsEnabled', 'inAppNotificationsEnabled'] as const
 
 export const APP_HANDLERS: DaemonHandlerTable = {
   // --- local -----------------------------------------------------------------
@@ -123,6 +123,14 @@ export const APP_HANDLERS: DaemonHandlerTable = {
   },
 
   // --- approvals (W1-D routes) ---------------------------------------------------
+  [IPC.APPROVALS_HISTORY]: async (ctx, _event, before?: number) => {
+    const client = await ctx.ready()
+    return client.request('GET', '/approvals/history', { query: { before } })
+  },
+  [IPC.APPROVALS_CLEAR_HISTORY]: async (ctx) => {
+    const client = await ctx.ready()
+    return client.request('DELETE', '/approvals/history')
+  },
   [IPC.APPROVALS_LIST]: async (ctx) => {
     const client = await ctx.ready()
     return client.request<NotificationsSnapshot>('GET', '/approvals')
@@ -151,17 +159,15 @@ export const APP_HANDLERS: DaemonHandlerTable = {
    */
   [IPC.TOOLS_DESCRIPTIONS]: async (ctx) => {
     const client = await ctx.ready()
-    const definitions = await client.request<Record<string, unknown>>('GET', '/runtime/tools/descriptions')
     const agentId = ctx.session.agentId
-    if (!agentId) return definitions
-    let own: AgentToolsResult
-    try {
-      own = await client.request<AgentToolsResult>('GET', `/agents/${enc(agentId)}/tools`)
-    } catch (err) {
-      if (isNotFound(err)) return definitions
-      throw err
-    }
-    for (const tool of own.tools) {
+    const [definitions, own] = await Promise.all([
+      client.request<Record<string, unknown>>('GET', '/runtime/tools/descriptions'),
+      agentId ? client.request<AgentToolsResult>('GET', `/agents/${enc(agentId)}/tools`).catch(err => {
+        if (isNotFound(err)) return null
+        throw err
+      }) : null,
+    ])
+    for (const tool of own?.tools ?? []) {
       if (definitions[tool.name]) continue
       if (!tool.schema || Object.keys(tool.schema).length === 0) continue
       definitions[tool.name] = { name: tool.name, description: tool.description, input_schema: tool.schema }

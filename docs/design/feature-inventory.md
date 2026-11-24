@@ -63,7 +63,7 @@ Grouped by area, then category.
 - **`locked_fields`** — array of dot-paths the agent cannot self-modify via `sys_update_config`; several fields (`id`, `metadata`, `providers`, `restricted*`) are owner-only regardless.
 - **`bare_prompt` / `include_base_prompt`** — graduated control over how much runtime-authored prompt text surrounds `instructions`, including suppressing dynamic per-turn instructions.
 - **Tool declaration matrix** — `enabled` × `visible` × `restricted` jointly gate LLM-loop, authorized-code, and unauthorized-code access per tool.
-- **Side loops (`config.loops`)** — named secondary cognition streams with their own optional goal (required for autostart), model override, tool allow-list, autostart/autonomous flags, and prohibited-tool enforcement.
+- **Side loops (`config.loops`)** — named secondary cognition streams with their own optional goal (required for autostart), model override, tool allow-list, autostart/autonomous flags, and subset-of-host tool grants.
 - **Compatibility shims** — legacy `autonomous: true|false` maps to `loop_mode`; deprecated `model.thinking_budget` folds into `model.reasoning.max_tokens`; dead `allow_protected_writes` stripped on migration.
 - **Recovery/backoff config** — `recovery.auto_retry`, `max_attempts`, `base_delay_ms`/`max_delay_ms` for transient provider-error retry, bounded to avoid `setTimeout` overflow.
 - **Stream binding config** — `stream_bind` gates (host/container/TCP process binds) plus `stream_bindings[]` declaring paired WS/process/TCP/umbilical endpoints with idle/duration/byte limits.
@@ -302,17 +302,17 @@ Grouped by area, then category.
 
 ### Inner Loops
 - **Named cognition streams** — An agent runs one `main` loop plus up to 16 declared inner loops, all sharing one `.adf` file, identity, memory, and files.
-- **Attenuate-don't-prohibit security model** — A loop's effective tools/`code_execution`/triggers are always a strict subset of the host's, enforced at `deriveLoopConfig` derive time.
-- **loop_manage tool** — Main-only, enabled and ungated by default; `create`/`get`/`update`/`delete` actions, honors `locked_fields` on the `loops` config path.
+- **Subset grant model** — A loop's effective tools are always a subset of the host's enabled tools, enforced at `deriveLoopConfig` derive time; granted tools keep `restricted`/`locked`, non-granted tools carry neither. `code_execution` is inherited as-is; system-scope trigger targets are stripped.
+- **loop_manage tool** — Held by main and by any loop granted it (flat roster; a loop cannot update or delete itself); enabled and ungated by default; `create`/`get`/`update`/`delete` actions, honors `locked_fields` on the `loops` config path.
 - **loop_send tool** — Peer-to-peer inter-loop message with `wake` controlling delivery timing; content stamped `[from loop:<sender>]` (audit-only, not a security boundary).
 - **loop_list tool** — Read-only roster (name, goal, enabled, running) for `loop_send` target discovery, works even on a loop-less agent (returns just `main`).
-- **loop_compact/loop_clear default-on grant** — The only two tools every loop gets without naming them in its allow-list, unless the host explicitly disabled/restricted them.
+- **loop_compact/loop_clear default-on grant** — The only two tools every loop gets without naming them in its allow-list, unless the host explicitly disabled them (a restricted flag carries into the loop).
 - **Wake delivery semantics** — Idle+wake runs immediately; busy+wake injects at the next model boundary with one exactly-once "kick" turn if the turn ends first; no-wake just waits.
 - **Autostart loop kickoff** — `autostart:true` loops get an auditory `LOOP_AUTOSTART_MESSAGE` kickoff from main at create time and every subsequent agent start.
 - **Autonomous inner loop flag** — Per-loop, not inherited from the host; keeps turning after text-only responses until `sys_set_state` or the 4-reply narration breaker fires.
 - **Per-loop model override** — Same-provider-only override; requires code execution enabled on the host; falls back to the host model with a logged warning if unavailable.
 - **Per-loop compact_threshold** — Optional override of the auto-compaction token threshold, absent inherits the host's, useful alongside a differently-windowed model override.
-- **Side-loop code_execution attenuation** — `model_invoke`/`sys_lambda`/`identity_status`/`loop_inject`/`emit_event` allowed only where the agent itself allows them; `get_identity`/`set_identity`/`task_resolve`/`attestation_*`/`network` denied, no inherited sandbox packages.
+- **Side-loop code_execution** — Inherited from the host as-is, packages included; the owner controls loop code by granting `sys_code`/`sys_lambda`.
 - **No side-loop system lambdas** — Inner loops cannot create system-scope lambda timers or `locked` timers; those must be requested from `main` via `loop_send`.
 - **loop_manage delete archival** — Stops the loop (aborting any in-flight turn), archives its stream to `adf_audit` under `loop:<name>`, then removes config + runtime.
 - **Locked-timer survival on loop delete** — A `locked:true` timer stamped to a deleted loop is preserved and logged rather than deleted.
@@ -376,8 +376,7 @@ Grouped by area, then category.
 - **LoopConfig fields** — `name`, `goal` (≤4000 chars), `enabled`, `autostart`, `autonomous`, `tools` (absolute allow-list, ≤64 names), `model`, `compact_threshold`.
 - **MAX_SIDE_LOOPS=16** — A structural brake on inner-loop count, since loop concurrency is otherwise unbounded.
 - **Absolute tool allow-list intersection** — `effective(loop) = (loop.tools ∩ host-enabled)`, no union beyond default-on `loop_compact`/`loop_clear`, re-intersected on every derive.
-- **Prohibited-for-loop tool set** — `sys_update_config`, `loop_manage`, `sys_create_adf`, and every host-`restricted` tool can never be granted to an inner loop.
-- **validateLoopToolList classification** — Splits a requested tool list into `ok`/`unknown` (typo, rejected)/`disabled` (host-off, kept ungranted)/`prohibited` (security refusal).
+- **validateLoopToolList classification** — Splits a requested tool list into `ok`/`unknown` (typo, rejected)/`disabled` (host-off, kept ungranted).
 - **Fleet bulk config (design)** — Selecting N agents on the map applies a tri-state leave/set patch across tool enable/restrict, model, context limit, triggers, security level, start state.
 - **Fleet bulk apply semantics** — Sequential per-file open/patch-via-sys_update_config-merge/persist/reload, with a per-agent ok/error result row, never an all-or-nothing batch.
 
@@ -472,7 +471,7 @@ Grouped by area, then category.
 ### Inner Loop Tools
 - **loop_send** — Send a message between this agent's cognition loops (`main` + inner loops); optional `wake`.
 - **loop_list** — Read-only roster of this agent's cognition loops, enabled/running state.
-- **loop_manage** — Main-only create/get/update/delete of inner loops; up to 16 per agent; ungated by default.
+- **loop_manage** — Create/get/update/delete of inner loops; up to 16 per agent; ungated by default.
 
 ### Message Deletion Tools
 - **msg_delete (detail)** — Requires ≥1 supported filter field; permanent, no audit snapshot at delete time.
@@ -998,7 +997,7 @@ Grouped by area, then category.
 - **OAuth login, no API key** — flat monthly billing via ChatGPT Plus/Pro, Responses API backend.
 - **App-wide session sharing** — all Studio agents share one sign-in; daemon keeps a fully separate session.
 - **Reasoning trace stripping** — codex-backend "experimental" headline-only summaries stripped of empty `<!-- -->` placeholders.
-- **Fixed model catalog** — gpt-5.6-sol/terra/luna, gpt-5.5, gpt-5.4(+mini), gpt-5.3-codex(+spark).
+- **Fixed model catalog** — gpt-6.2-sol/astra, gpt-6.1-sol/terra, gpt-6-sol/astra/luna, gpt-5.6-sol/terra/luna.
 - **Rate-limit telemetry** — `sys_get_config({section:"provider_status"})` exposes primary (5h) and secondary (7d) window usage percentages, reset timers, plan type, credits balance.
 - **No-retry limit errors** — usage-limit errors surface immediately with the reset time, no automatic retry.
 

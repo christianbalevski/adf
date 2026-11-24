@@ -10,6 +10,8 @@ export const IPC = {
   // setting, else Documents/adf-agents); for the home folder chip.
   AGENTS_FOLDER_DEFAULT_GET: 'adf:agents-folder:default-get',
   FILE_CLOSE: 'adf:file:close',
+  // The open file's agent view is shown (false: Home). Hidden, its finished turns notify.
+  FILE_SET_VISIBLE: 'adf:file:set-visible',
   FILE_DELETE: 'adf:file:delete',
   FILE_CLONE: 'adf:file:clone',
   FILE_LIST_TABLES: 'adf:file:list-tables',
@@ -74,6 +76,8 @@ export const IPC = {
   // foreground and background (src/main/runtime/approval-hub.ts).
   // CHANGED carries a full snapshot; there is no incremental protocol.
   APPROVALS_LIST: 'adf:approvals:list',
+  APPROVALS_CLEAR_HISTORY: 'adf:approvals:clear-history',
+  APPROVALS_HISTORY: 'adf:approvals:history',
   APPROVALS_RESOLVE: 'adf:approvals:resolve',
   APPROVALS_CHANGED: 'adf:approvals:changed',
   // On-demand fetch of one pending approval's raw tool input (B8): the broadcast

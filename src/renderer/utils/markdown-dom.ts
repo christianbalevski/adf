@@ -1,5 +1,8 @@
 import { stableBlockBoundary, UNSAFE_TO_SPLIT } from './markdown-split'
 
+const LARGE_TAIL_CHARS = 8 * 1024
+const LARGE_TAIL_INTERVAL_MS = 200
+
 /** Reconcile direct children after an immutable prefix. Equal nodes keep their
  * identity, including DOM selection, and no wrappers change Markdown's CSS. */
 function replaceSuffix(root: HTMLElement, anchor: ChildNode | null, fragment: DocumentFragment): ChildNode[] {
@@ -31,30 +34,27 @@ export function createMarkdownDomRenderer(root: HTMLElement, render: (source: st
   let version: number | undefined
   let settled = 0
   let anchor: ChildNode | null = null
+  let canonical = false
+  let lastPaint = -Infinity
+  let pending: { source: string; version: number } | undefined
+  let timer: ReturnType<typeof setTimeout> | undefined
 
   const fragment = (html: string): DocumentFragment => {
     const template = root.ownerDocument.createElement('template')
     template.innerHTML = html
     return template.content
   }
-  const full = (source: string): void => {
-    replaceSuffix(root, null, fragment(render(source)))
-    settled = 0
-    anchor = null
-  }
-
-  return {
-    update(source: string, nextVersion: number): void {
-      if (source === previous && version === nextVersion) return
-      const grew = version === nextVersion && previous !== null
-        && source.length > previous.length && source.startsWith(previous)
-      previous = source
-      version = nextVersion
-      const boundary = grew ? stableBlockBoundary(source.slice(settled)) : UNSAFE_TO_SPLIT
-      if (boundary === UNSAFE_TO_SPLIT) {
-        full(source)
-        return
-      }
+  const paint = (source: string, nextVersion: number, streaming: boolean): void => {
+    if (source === previous && version === nextVersion && (streaming || canonical)) return
+    const grew = streaming && version === nextVersion && previous !== null
+      && source.length > previous.length && source.startsWith(previous)
+    const boundary = grew ? stableBlockBoundary(source.slice(settled)) : UNSAFE_TO_SPLIT
+    canonical = boundary === UNSAFE_TO_SPLIT || (settled === 0 && boundary === 0)
+    if (canonical) {
+      replaceSuffix(root, null, fragment(render(source)))
+      settled = 0
+      anchor = null
+    } else {
       const cut = settled + boundary
       const prefix = boundary > 0 ? fragment(render(source.slice(settled, cut))) : root.ownerDocument.createDocumentFragment()
       const prefixCount = prefix.childNodes.length
@@ -62,12 +62,37 @@ export function createMarkdownDomRenderer(root: HTMLElement, render: (source: st
       const nodes = replaceSuffix(root, anchor, prefix)
       if (prefixCount > 0) anchor = nodes[prefixCount - 1]
       settled = cut
+    }
+    previous = source
+    version = nextVersion
+    lastPaint = performance.now()
+  }
+
+  const cancelPending = (): void => {
+    if (timer !== undefined) clearTimeout(timer)
+    timer = undefined
+    pending = undefined
+  }
+
+  return {
+    update(source: string, nextVersion: number, streaming: boolean): void {
+      const wait = lastPaint + LARGE_TAIL_INTERVAL_MS - performance.now()
+      // A long, unsettled block (such as an open fence) or an unsafe cut can
+      // cost a multi-KiB parse on every delta. Keep the last sanitized DOM
+      // interactive while coalescing these updates into one trailing paint.
+      if (streaming && previous && version === nextVersion && source.length > previous.length
+          && source.length - settled >= LARGE_TAIL_CHARS && wait > 0) {
+        pending = { source, version: nextVersion }
+        timer ??= setTimeout(() => {
+          const next = pending
+          cancelPending()
+          if (next) paint(next.source, next.version, true)
+        }, wait)
+        return
+      }
+      cancelPending()
+      paint(source, nextVersion, streaming)
     },
-    /** Canonical parse after a pause. Stale timers cannot overwrite a newer
-     * answer/grammar. Reconciliation preserves all unchanged settled nodes. */
-    settle(source: string, expectedVersion: number): void {
-      if (source !== previous || expectedVersion !== version) return
-      full(source)
-    },
+    cancelPending,
   }
 }

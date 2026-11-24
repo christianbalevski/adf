@@ -9,9 +9,9 @@
  *
  *   - `workspace.forLoop(name)` — every read/write the loop makes lands in its
  *     own `adf_loop` stream and is stamped with its name.
- *   - `deriveLoopConfig(host, loop)` — the attenuated config: allow-listed
- *     tools, the side-loop `code_execution` profile, only the triggers that
- *     name this loop, no nested loops.
+ *   - `deriveLoopConfig(host, loop)` — the derived config: allow-listed
+ *     tools, the agent's `code_execution`, only the triggers that name this
+ *     loop, no nested loops.
  *   - a per-loop `AdfCallHandler` built from BOTH of the above. Handing a loop
  *     the host's handler would undo the other two in one line (review D2).
  *
@@ -21,7 +21,7 @@
  */
 
 import type { AgentExecutionEvent, AgentState } from '../../shared/types/ipc.types'
-import type { AgentConfig, LoopConfig } from '../../shared/types/adf-v02.types'
+import type { AgentConfig, LoopConfig, TaskEntry } from '../../shared/types/adf-v02.types'
 import { hasLoopGoal } from '../../shared/types/adf-v02.types'
 import type { ContentBlock } from '../../shared/types/provider.types'
 import {
@@ -58,7 +58,10 @@ import type {
 } from '../adf/loop-pool.types'
 import { LOOP_AUTOSTART_MESSAGE } from '../adf/loop-pool.types'
 import { dropTimersForLoop } from '../adf/loop-teardown'
-import { LoopSendTool, LoopListTool, ShellTool, SysCodeTool, SysLambdaTool } from '../tools/built-in'
+import { LoopSendTool, LoopListTool, LoopManageTool, ShellTool, SysCodeTool, SysLambdaTool } from '../tools/built-in'
+
+/** What a stopped loop's approval callbacks answer. */
+const LOOP_STOPPED_DENIAL = { approved: false, feedback: 'The loop stopped.' } as const
 
 export { MAIN_LOOP }
 
@@ -110,6 +113,16 @@ export interface LoopPoolDeps {
   onLoopEvent: (event: AgentExecutionEvent) => void
   /** `adf_call` events from a loop's code (mirrors the host's onAdfEvent). */
   onLoopAdfEvent?: (event: { type: string; payload: unknown; timestamp: number }) => void
+  /** The agent's task-create hook (main's on_task_create trigger fabric), so a
+   *  remote-approval lambda sees a loop's pending_approval rows as it sees main's. */
+  onTaskCreated?: (task: TaskEntry) => void
+  /**
+   * The agent-level HIL resolver: finds whichever executor (main or any loop)
+   * holds the task and resumes it. A loop's `task_resolve` may answer main's
+   * request or another loop's, just as main's may answer a loop's. Returns true
+   * when the holder reports the task's outcome itself (AgentExecutor.resolveHilTask).
+   */
+  resolveHilTask: (taskId: string, approved: boolean, modifiedArgs?: Record<string, unknown>, feedback?: string) => boolean
   /**
    * Main, as the pool sees it. Main is a peer in `loop_send` — any loop may
    * address any other and main is not a bus (§7.2) — but its executor belongs
@@ -203,6 +216,16 @@ export class LoopRuntime {
    * raced.
    */
   condemned: string | null = null
+
+  /**
+   * Condemned or disposed. A shell command or sandbox call already running
+   * when the loop stopped keeps its approval callbacks, so each one checks
+   * this when it is called and denies instead of parking a request on a
+   * stopped executor that a later approval would resume.
+   */
+  get closed(): boolean {
+    return this.condemned !== null || this.disposed
+  }
   /**
    * Turn-boundary hook, from the pool. Two paths call it, deliberately: the
    * executor's own `onTurnSettled` (which sees re-entrant successor turns the
@@ -359,12 +382,16 @@ export class LoopRuntime {
       try { this.executor.abort() } catch { /* continue teardown */ }
     }
     this.executor.onTurnSettled = undefined
+    this.executor.onTaskCreated = undefined
     this.executor.onTaskCompleted = undefined
     try { this.executor.removeAllListeners() } catch { /* continue teardown */ }
     if (this.callHandler) {
       this.callHandler.onEvent = undefined
       this.callHandler.onTaskCompleted = undefined
       this.callHandler.onLambdaToolEndTurn = undefined
+      this.callHandler.onTaskCreated = undefined
+      this.callHandler.onHilApproved = undefined
+      this.callHandler.requestProtectionApproval = undefined
     }
   }
 }
@@ -1053,9 +1080,8 @@ export class LoopPool implements LoopPoolApi {
    * The enforcement (deriveTools subtracts silently, which is fail-safe, not
    * enforcement) — and every non-tool caller crosses it too.
    *
-   * Two buckets refuse and one does not: an UNKNOWN name is a typo worth
-   * failing on, a PROHIBITED name is the security boundary, but a name the
-   * owner merely switched off is a preference. The loop is created carrying it,
+   * One bucket refuses and one does not: an UNKNOWN name is a typo worth
+   * failing on, but a name the owner merely switched off is a preference. The loop is created carrying it,
    * ungranted, and gains it if the owner ever turns it back on.
    */
   /**
@@ -1073,13 +1099,10 @@ export class LoopPool implements LoopPoolApi {
 
   private assertToolsGrantable(host: AgentConfig, tools: string[]): void {
     if (tools.length === 0) return
-    const { unknown, prohibited } = validateLoopToolList(host, tools)
-    if (unknown.length === 0 && prohibited.length === 0) return
-    const parts: string[] = []
-    if (unknown.length > 0) parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
-    if (prohibited.length > 0) parts.push(`never grantable to a loop: ${prohibited.join(', ')}`)
+    const { unknown } = validateLoopToolList(host, tools)
+    if (unknown.length === 0) return
     refuse(
-      `Cannot grant those tools — ${parts.join('; ')}. ` +
+      `Cannot grant those tools — no such tool on this agent: ${unknown.join(', ')}. ` +
       `Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`
     )
   }
@@ -1240,9 +1263,11 @@ export class LoopPool implements LoopPoolApi {
       executor.onTurnSettled = () => this.consumePendingWake(runtime)
       runtime.onTurnBoundary = () => this.consumePendingWake(runtime)
       // A loop's own end-of-turn state transitions apply to ITS executor. The
-      // trigger evaluator is deliberately NOT wired: only main feeds
-      // setDisplayState (RT-F4), and a side loop's tool calls must not re-enter
-      // the agent's trigger fabric in the MVP.
+      // trigger evaluator's completion and tool-call hooks are deliberately NOT
+      // wired: only main feeds setDisplayState (RT-F4). Task creation is: a
+      // loop's pending_approval row must reach on_task_create (remote-approval
+      // lambdas) exactly as main's does, or nothing but a human could answer it.
+      executor.onTaskCreated = this.deps.onTaskCreated
       executor.onTaskCompleted = (_taskId, tool, status, result, _error, sideEffects) => {
         if (!sideEffects?.endTurn || status !== 'completed' || !result) return
         if (tool !== 'sys_set_state' && tool !== 'adf_shell') return
@@ -1260,9 +1285,13 @@ export class LoopPool implements LoopPoolApi {
             if (parsed.target_state) executor.applyDeferredStateTransition(parsed.target_state)
           } catch { /* invalid tool result */ }
         }
-        // requestProtectionApproval and onHilApproved are deliberately UNSET:
-        // a side loop has no approval channel, and the call handler fails those
-        // closed with a message that says so.
+        callHandler.onTaskCreated = this.deps.onTaskCreated
+        // task_resolve from this loop's code resumes whichever executor holds
+        // the task; a protection denial from its code parks an override on
+        // THIS loop's executor, shown in this loop's tab.
+        callHandler.onHilApproved = this.deps.resolveHilTask
+        callHandler.requestProtectionApproval = async (method, args, protection) =>
+          runtime.closed ? LOOP_STOPPED_DENIAL : executor.requestProtectionApproval(method, args, protection)
       }
 
       this.runtimes.set(loop.name, runtime)
@@ -1370,8 +1399,13 @@ export class LoopPool implements LoopPoolApi {
     } else {
       runtime.registry.unregister('loop_list')
     }
-    // loop_manage is main-only and is never registered here (loops do not nest).
-    runtime.registry.unregister('loop_manage')
+    // A granted loop_manage manages the agent's flat roster (siblings); the
+    // tool itself refuses a loop updating or deleting itself.
+    if (granted.has('loop_manage')) {
+      runtime.registry.register(new LoopManageTool(() => this))
+    } else {
+      runtime.registry.unregister('loop_manage')
+    }
 
     if (granted.has('adf_shell')) {
       // Main's shell holds MAIN's workspace and gates on MAIN's config — and
@@ -1383,8 +1417,12 @@ export class LoopPool implements LoopPoolApi {
         () => runtime.executor.getConfig(),
         this.deps.mcpManager,
       )
-      // No approval callbacks: a side loop has no HIL channel, so a shell
-      // command that needs one is refused rather than parked.
+      // Approvals park on THIS loop's executor, so they show in this loop's
+      // tab. Interactive shell approvals have no auto-deny, as on main.
+      shell.onApprovalRequired = async (toolName, command) =>
+        !runtime.closed && runtime.executor.requestApproval(toolName, { command })
+      shell.onProtectionBlocked = async (toolName, input, protection) =>
+        runtime.closed ? LOOP_STOPPED_DENIAL : runtime.executor.requestProtectionApproval(toolName, input, protection, { timeoutMs: null })
       runtime.registry.register(shell)
     } else {
       runtime.registry.unregister('adf_shell')

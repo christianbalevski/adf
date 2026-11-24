@@ -66,7 +66,6 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
   const agentId = props.agentId ?? store.getState().selectedAgentId ?? ''
   const agent = useTuiSelector(s => s.agents[agentId])
   const who = agent?.summary.handle || agent?.summary.name || agentId
-  const direct = props.add !== undefined || !!props.skill
 
   // --- state (store-held) ---------------------------------------------------------
   const fresh = useMemo<SkillsViewState>(() => {
@@ -132,7 +131,7 @@ export function SkillsDialog({ overlay, close, width, height }: OverlayProps) {
       const sources = [...extra, ...configured.sources.filter(url => !extra.includes(url))]
       patch({ catalog: { loading: true, sources, results: [], sourcesNote: configured.note } })
       const results = await loadCatalogSources(sources)
-      patch(s => ({ catalog: { loading: false, sources, results, sourcesNote: configured.note } }))
+      patch(() => ({ catalog: { loading: false, sources, results, sourcesNote: configured.note } }))
       const now = read()
       if (now.step.kind === 'catalog' && now.step.autoPreview) {
         const hit = exactEntry(catalogEntries(results), now.query)

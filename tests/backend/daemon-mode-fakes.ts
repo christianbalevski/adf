@@ -40,6 +40,8 @@ export function createFakeDaemon(baseUrl = 'http://127.0.0.1:47385'): FakeDaemon
 export interface FakeClientSession extends ClientSession {
   listener: ClientStreamListener | null
   focus: Array<string | null>
+  /** The visibility sent with each focus (absent: true). */
+  focusVisible: boolean[]
   held: string[]
   released: string[]
   reconnects: number
@@ -53,13 +55,14 @@ export function createFakeClientSession(resolveHold: (filePath: string) => strin
     sessionId: null,
     listener: null,
     focus: [],
+    focusVisible: [],
     held: [],
     released: [],
     reconnects: 0,
     ended: false,
     holdsAvailable: false,
     start(listener) { s.listener = listener; listener.onConnection({ state: 'open' }) },
-    async setFocus(agentId) { s.focus.push(agentId) },
+    async setFocus(agentId, visible = true) { s.focus.push(agentId); s.focusVisible.push(visible) },
     async holdDocument(filePath) {
       if (!s.holdsAvailable) {
         const { DaemonModeUnavailableError } = await import('../../src/main/backend/daemon-mode/errors')

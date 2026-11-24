@@ -17,9 +17,9 @@
 //                                  (compaction, rewrite): reload that transcript
 //
 // Other agents' `turn.delta` (with `stream_deltas` on) arrive as umbilical
-// frames, as on GET /events. Host and push frames are not needed: the
-// umbilical envelopes carry the same lifecycle and state changes, except
-// `daemon_orphan_hold`, which becomes a notice.
+// frames, as on GET /events. Host frames duplicate lifecycle envelopes.
+// Tracked-folder pushes invalidate the listing and `daemon_orphan_hold`
+// becomes a notice.
 
 import type { ClientFrame, UmbilicalEvent } from '../api/types'
 import type { LiveFrame } from './reducer'
@@ -42,6 +42,7 @@ export interface ClientFrameEffects {
   ownerCommand?: { agentId: string; loop: string; item: ContextItem }
   /** Reload this transcript from history. */
   reload?: { agentId: string; loop: string }
+  refreshTracked?: boolean
   /** Something to tell the user (a toast). */
   notice?: { text: string; level: 'info' | 'warn' }
 }
@@ -54,6 +55,9 @@ export function clientFrameEffects(frame: ClientFrame): ClientFrameEffects {
   if (frame.kind === 'push' && frame.topic === 'daemon_orphan_hold') {
     const payload = frame.payload as { holding: boolean; reason: string }
     return { frames: [], notice: payload.holding ? { text: `The daemon stays up because this app is connected: ${payload.reason}`, level: 'warn' } : { text: 'The daemon is no longer waiting for this app to close', level: 'info' } }
+  }
+  if (frame.kind === 'push' && (frame.topic === 'tracked_dirs' || frame.topic === 'file_renamed' || frame.topic === 'autostart_overflow')) {
+    return { frames: [], refreshTracked: true }
   }
   if (frame.kind !== 'executor') return NONE
   const { event, agentId } = frame

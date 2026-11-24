@@ -2,9 +2,11 @@
 // fleet map's pending badges (APPROVALS_*, MESH_PENDING_INTERACTIONS).
 //
 //   GET  /approvals                      pending + history (NotificationsSnapshot)
+//   DELETE /approvals/history            clear resolved history; pending stays live
+//   GET /approvals/history?before=       a bounded page of resolved history
 //   GET  /approvals/input?filePath=&approvalId=
 //   POST /approvals/resolve              { filePath, approvalId, approved, feedback? }
-//   GET  /approvals/interactions         pending asks + approvals per agent (main loop)
+//   GET  /approvals/interactions         pending asks + approvals per agent, every loop
 //
 // Every executor registers its blocking requests in the process-wide
 // approvalHub, whichever host built it, so the daemon's hub already holds
@@ -21,6 +23,14 @@ import { badRequest, stringParam } from './route-helpers'
 
 export function registerApprovalsRoutes(server: FastifyInstance, ctx: DaemonRouteContext): void {
   server.get('/approvals', async () => approvalHub.fullSnapshot())
+  server.delete('/approvals/history', async () => approvalHub.clearHistory())
+  server.get<{ Querystring: { before?: string } }>('/approvals/history', async (request, reply) => {
+    const before = request.query.before === undefined ? undefined : Number(request.query.before)
+    if (before !== undefined && (!Number.isSafeInteger(before) || before < 0 || request.query.before?.trim() === '')) {
+      return badRequest(reply, 'before must be a non-negative safe integer')
+    }
+    return approvalHub.historyPage(before)
+  })
 
   // The snapshot omits each approval's raw tool input (it can be large); the
   // full-context modal fetches it here. `{}` when the entry is gone or
@@ -44,28 +54,30 @@ export function registerApprovalsRoutes(server: FastifyInstance, ctx: DaemonRout
     return approvalHub.resolve(filePath, approvalId, body.approved === true, feedback)
   })
 
-  // The pull-shaped view of the same hub state: per agent, its main loop's
-  // asks, then its approvals, with the raw tool input. Studio no longer
-  // renders it; kept for out-of-band callers, as Studio keeps the channel.
+  // The pull-shaped view of the same hub state: per agent, every loop's asks,
+  // then every loop's approvals, each with its loop and approvals with the raw
+  // tool input. Studio's re-attach restores each into its loop's tab.
+  // Kept for out-of-band callers too, as Studio keeps the channel.
   server.get('/approvals/interactions', async (): Promise<FleetPendingInteraction[]> => {
     const handles = new Map<string, string>()
     for (const agent of ctx.runtime.listAgents()) {
       if (agent.filePath) handles.set(agent.filePath, agent.handle || deriveHandle(agent.filePath))
     }
-    const pending = approvalHub.snapshot().filter((entry) => entry.loop === 'main')
+    const pending = approvalHub.snapshot()
     const order = [...new Set(pending.map((entry) => entry.filePath))]
     const out: FleetPendingInteraction[] = []
     for (const filePath of order) {
       const handle = handles.get(filePath) ?? deriveHandle(filePath)
       const mine = pending.filter((entry) => entry.filePath === filePath)
       for (const ask of mine.filter((entry) => entry.kind === 'ask')) {
-        out.push({ filePath, handle, type: 'ask', requestId: ask.requestId, question: ask.question, questions: ask.questions })
+        out.push({ filePath, handle, type: 'ask', loop: ask.loop, requestId: ask.requestId, question: ask.question, questions: ask.questions })
       }
       for (const approval of mine.filter((entry) => entry.kind === 'approval')) {
         out.push({
           filePath,
           handle,
           type: 'approval',
+          loop: approval.loop,
           requestId: approval.requestId,
           toolName: approval.toolName,
           input: approvalHub.getApprovalInput(filePath, approval.id),

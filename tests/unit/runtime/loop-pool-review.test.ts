@@ -111,6 +111,7 @@ function buildPool(mutate?: (config: AgentConfig) => void): LoopPool {
     workspace: ws,
     registry,
     getProvider: () => provider,
+    resolveHilTask: () => false,
     basePrompt: '',
     toolPrompts: {},
     adfCallHandler: null,

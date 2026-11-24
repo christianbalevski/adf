@@ -496,6 +496,20 @@ body,
 }
 
 /* Loading indicator used by the fleet map while it is being prepared. */
+/* In-app notices under the bell: fade in on arrival. */
+@keyframes bell-notice-in {
+  from { opacity: 0; transform: translateY(-4px); }
+  to { opacity: 1; transform: none; }
+}
+
+.animate-bell-notice {
+  animation: bell-notice-in 180ms ease-out;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .animate-bell-notice { animation: none; }
+}
+
 @keyframes meshSweep {
   0% { background-position: -100% 0; }
   100% { background-position: 200% 0; }

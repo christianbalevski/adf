@@ -111,11 +111,8 @@ export function TabBar({ tabs, activeTabPath, onSelect, onClose, onReload, chatT
           const isActive = tab.path === activeTabPath
           const isBrowser = tab.kind === 'browser'
           const fileName = isBrowser ? 'Computer' : tab.path.split('/').pop() ?? tab.path
-          const hoverTitle = isBrowser && tab.browserMeta
-            ? tab.browserMeta.hostPort != null
-              ? `Agent computer — http://127.0.0.1:${tab.browserMeta.hostPort}`
-              : 'Agent computer — not ready'
-            : tab.path
+          // Not the port: the viewer follows the container, the tab's meta may not.
+          const hoverTitle = isBrowser ? 'Agent computer' : tab.path
 
           return (
             <button

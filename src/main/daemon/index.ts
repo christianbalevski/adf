@@ -499,6 +499,7 @@ const daemon = new DaemonHost({
     }),
     getLanAddresses,
     getDiscoveredRuntimes: (args?: { force?: boolean }) => runtimeDiscovery.getDiscoveredRuntimes(args),
+    getFleetPeers: () => runtimeDiscovery.getFleetPeers(),
     getPeers: (args: { waitMs?: number }) => runtimeDiscovery.peers(args),
   },
   // The admin install routes report progress on the client stream, as
@@ -511,6 +512,7 @@ const daemon = new DaemonHost({
   // debounced token usage is the most losable data, and a hang anywhere later
   // in shutdown must not cost it (Studio's cleanupAllProcesses phase-1 parity).
   onShutdownStart: [
+    () => approvalHub.flushPersistence(),
     () => getTokenUsageService().flush(),
     () => flushSubscriptionUsage(),
   ],
@@ -518,6 +520,8 @@ const daemon = new DaemonHost({
   // daemon shutdown at parity with Studio's cleanupAllProcesses. Each hook is
   // independently try-caught by the host.
   onShutdown: [
+    // Agent teardown records final outcomes after the initial durability flush.
+    () => approvalHub.flushPersistence(),
     () => trackedDirWatcher.close(),
     () => agentFactory.stopTemplatesWatcher(),
     () => wsConnectionManager.stopAll(),
@@ -620,13 +624,15 @@ else if (envelopeSweepSeam !== 'off') setTimeout(() => { void runEnvelopeSweep()
 if (envelopeSweepSeam) console.log(`[ADF Daemon] Test seam: boot envelope sweep ${envelopeSweepSeam} (ADF_TEST_ENVELOPE_SWEEP)`)
 
 withSource('system:daemon', () => {
-  // Clean up scratch dirs left by previous processes that exited uncleanly
-  // (parity with Studio boot).
-  try { purgeStaleProcessDirs() } catch (err) { console.warn('[ADF Daemon] Stale scratch purge failed:', err) }
-
   bootEnvelopeSweep.then(() => daemon.start())
     .then(address => {
+      // Only the daemon that claimed its PID file and listening port may
+      // recover pending receipts. A refused second start must not rewrite
+      // the running daemon's notification history.
+      approvalHub.initializePersistence(`${settingsPath}.notifications.json`)
       console.log(`[ADF Daemon] Listening on http://${address.host}:${address.port}`)
+      // Stale scratch belongs to dead processes; it does not gate readiness.
+      void purgeStaleProcessDirs().catch(err => console.warn('[ADF Daemon] Stale scratch purge failed:', err))
       console.log(`[ADF Daemon] Settings: ${settings.filePath ?? '(memory)'}`)
       withSource('system:daemon', () => {
         emitUmbilicalEvent({

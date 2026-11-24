@@ -49,6 +49,11 @@ export function samePath(a: string | null | undefined, b: string | null | undefi
 }
 
 export class DaemonModeSession {
+  /** setWindowOpen(false) / setFileVisible(false): the focus is sent as not visible until both are undone. */
+  private windowClosed = false
+  private fileHidden = false
+  /** The visibility last sent with sentFocus. */
+  private sentVisible = true
   private file: SessionFile | null = null
   /** Unlocked documents retain both their comparison key and the original daemon path. */
   private readonly unlocked = new Map<string, { filePath: string; agentId: string }>()
@@ -157,6 +162,30 @@ export class DaemonModeSession {
     this.file = { filePath, agentId, held, ...(opened ? { opened } : {}) }
     await this.setFocus(agentId)
     return this.file
+  }
+
+  /**
+   * The main window closed (macOS keeps Studio and its agents running) or
+   * opened again. While closed the focus is sent as not visible: no one sees
+   * the open file, so its 'finished' notices are recorded (ApprovalHub.announce).
+   * The file stays held and the focus (its full event payloads) is kept.
+   */
+  setWindowOpen(open: boolean): void {
+    if (this.windowClosed === !open) return
+    this.windowClosed = !open
+    void this.pushFocus()
+  }
+
+  /**
+   * FILE_SET_VISIBLE: the renderer shows Home (false) or the open file's
+   * agent (true). Home keeps the file held and focused (its chat stays
+   * current); the focus is sent as not visible, so its 'finished' notices are
+   * recorded.
+   */
+  setFileVisible(visible: boolean): void {
+    if (this.fileHidden === !visible) return
+    this.fileHidden = !visible
+    void this.pushFocus()
   }
 
   /** FILE_CLOSE. */
@@ -324,10 +353,12 @@ export class DaemonModeSession {
     this.focusSends = this.focusSends.then(async () => {
       const client = this.client
       const focus = this.focus
-      if (!client || focus === this.sentFocus) return
+      const visible = !this.windowClosed && !this.fileHidden
+      if (!client || (focus === this.sentFocus && visible === this.sentVisible)) return
       try {
-        await client.setFocus(focus)
+        await client.setFocus(focus, visible)
         this.sentFocus = focus
+        this.sentVisible = visible
       } catch (err) {
         this.sentFocus = undefined
         this.log.warn(`[Backend] Could not set the session focus: ${err instanceof Error ? err.message : String(err)}`)

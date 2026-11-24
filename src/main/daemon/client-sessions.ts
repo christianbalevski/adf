@@ -57,6 +57,8 @@ import type { UmbilicalEvent } from '../runtime/umbilical-bus'
 import type { RemoteAccessEvent } from '../../shared/types/remote-access.types'
 import type { SubscriptionUsageState } from '../../shared/types/subscription-usage.types'
 import type { WorkspaceDataScope } from '../adf/adf-workspace'
+import { BROWSER_STUDIO_CLIENT } from '../../shared/daemon-client/types'
+import type { MeshInboxUpdate } from '../runtime/mesh-manager'
 import { subscribeAgentRuntimeSignals } from '../runtime/agent-runtime-signals'
 import { configRevision, type ResourceWriter, type RevisionedWorkspace } from '../runtime/resource-revisions'
 import type {
@@ -485,6 +487,8 @@ class ClientSession {
   readonly epoch = randomUUID()
   readonly createdAt = Date.now()
   focus: string | null = null
+  /** False while the client keeps the focused agent open without showing it (Home, a closed window). */
+  focusVisible = true
   readonly documents = new Map<string, ClientHeldDocument>()
   readonly ring: FrameRing
   nextCursor = 1
@@ -554,6 +558,8 @@ interface FrameBodies {
   full: () => string
   /** Absent: unfocused sessions get `full` too. Null from the function: they get nothing. */
   unfocused?: () => string | null
+  /** Use the reduced frame even when this client is focused. */
+  preferStub?: (client: string) => boolean
 }
 
 /**
@@ -731,6 +737,12 @@ export class ClientSessionRegistry {
     return this.sessions.get(sessionId)?.focus
   }
 
+  /** Whether a connected session shows `agentId`: it follows it and has it on screen. */
+  showing(agentId: string): boolean {
+    for (const session of this.sessions.values()) if (session.connection && session.focusVisible && session.focus === agentId) return true
+    return false
+  }
+
   /** The client name a session was created with (`studio`, `tui`, …), or undefined for an unknown session. */
   clientOf(sessionId: string): string | undefined {
     return this.sessions.get(sessionId)?.client
@@ -756,10 +768,11 @@ export class ClientSessionRegistry {
     this.documentHost = host
   }
 
-  setFocus(sessionId: string, identifier: string | null): string | null {
+  setFocus(sessionId: string, identifier: string | null, visible = true): string | null {
     const session = this.require(sessionId)
     const focus = identifier === null ? null : this.options.resolveAgentId?.(identifier) ?? identifier
     session.focus = focus
+    session.focusVisible = visible
     return focus
   }
 
@@ -976,6 +989,35 @@ export class ClientSessionRegistry {
     }, echoFrom, LOCAL_ONLY_PUSH_TOPICS.has(topic))
   }
 
+  /** Read a mailbox only for clients that use snapshots. Browser Studio
+   * refetches from the coalesced workspace_data event, outside its SSE budget. */
+  publishInbox(
+    workspace: MeshInboxUpdate['workspace'],
+    target: { agentId?: string; filePath: string | null },
+    includeArchived: boolean
+  ): void {
+    if (this.sessions.size === 0) return
+    const { filePath } = target
+    const agentId = target.agentId ?? (filePath ? this.agentIdForPath(filePath) : null)
+    this.fanOut(agentId, {
+      name: 'push',
+      full: () => {
+        const messages = [
+          ...workspace.getInbox('unread'),
+          ...workspace.getInbox('read'),
+          ...(includeArchived ? workspace.getInbox('archived') : []),
+        ]
+        return frameJson({ kind: 'push', topic: 'inbox', agentId, filePath, payload: { inbox: { version: 1, messages } } }, 'payload')
+      },
+      unfocused: () => {
+        const { unread, read, archived } = workspace.getInboxCounts()
+        const counts = { unread, read, archived: includeArchived ? archived : 0 }
+        return frameJson({ kind: 'push', topic: 'inbox', agentId, filePath, payload: { counts }, stripped: 'stub' }, 'payload')
+      },
+      preferStub: (client) => client === BROWSER_STUDIO_CLIENT,
+    })
+  }
+
   // --- agent index ------------------------------------------------------------
 
   indexAgent(filePath: string | null, agentId: string): void {
@@ -1010,7 +1052,7 @@ export class ClientSessionRegistry {
       if (localOnly && session.deviceId !== null) continue
       const focused = agentId !== null && session.focus === agentId
       let body: string | null
-      if (focused || !bodies.unfocused) body = full ??= bodies.full()
+      if (!bodies.unfocused || (focused && !bodies.preferStub?.(session.client))) body = full ??= bodies.full()
       else {
         if (unfocused === undefined) unfocused = bodies.unfocused()
         body = unfocused
@@ -1328,22 +1370,6 @@ function frameJson(frame: Record<string, unknown>, payloadAt: 'event' | 'payload
   return safeJsonStringify(replaced)
 }
 
-/** Inbox counts by status: what a session not focused on the agent gets instead of the messages. */
-function inboxCounts(messages: Array<{ status?: unknown }>): { unread: number; read: number; archived: number } {
-  const counts = { unread: 0, read: 0, archived: 0 }
-  for (const message of messages) {
-    if (message.status === 'read') counts.read++
-    else if (message.status === 'archived') counts.archived++
-    else counts.unread++
-  }
-  return counts
-}
-
-/** The `inbox` push for an agent: the messages to sessions focused on it, the counts to the others. */
-function publishInbox(sessions: ClientSessionRegistry, messages: InboxMessage[], target: { agentId?: string | null; filePath?: string | null }): void {
-  sessions.publishPush('inbox', { inbox: { version: 1, messages } }, target, { unfocused: () => ({ counts: inboxCounts(messages) }) })
-}
-
 // --- Documents (W2-A) --------------------------------------------------------------
 
 /** The RuntimeService calls a session's documents go through (W2-A, design D4). */
@@ -1502,8 +1528,7 @@ export function wireRuntimeToClientSessions(
 
 /** The parts of a loaded agent the per-agent producers read. */
 interface LoadedAgentParts {
-  workspace: {
-    getInbox(status?: 'unread' | 'read' | 'archived'): InboxMessage[]
+  workspace: MeshInboxUpdate['workspace'] & {
     setOnDataChangeCallback(callback: ((scope: WorkspaceDataScope) => void) | null): void
   }
   mcpManager?: ManagerLike | null
@@ -1534,12 +1559,11 @@ function attachLoadedAgent(sessions: ClientSessionRegistry, event: RuntimeAgentL
     // The assembler's own listener (registered at assembly, before this one)
     // has written the message to the inbox by now.
     const onInbound = (type: string) => {
-      // Nobody listens: skip the three inbox queries.
+      // Nobody listens, including to the mesh notification.
       if (sessions.size === 0) return
       const path = filePath()
       try {
-        const messages = [...agent.workspace.getInbox('unread'), ...agent.workspace.getInbox('read'), ...agent.workspace.getInbox('archived')]
-        publishInbox(sessions, messages, target())
+        sessions.publishInbox(agent.workspace, target(), true)
       } catch (err) {
         console.error(`[ADF Daemon] Inbox read for the client stream failed (${path ?? agentId}):`, err)
       }
@@ -1618,8 +1642,12 @@ export function wireMeshToClientSessions(
     const filePath = typeof event.payload?.filePath === 'string' && !event.payload.filePath.startsWith('station:') ? event.payload.filePath : null
     sessions.publishPush('mesh', event, { filePath })
   }
-  const onInbox = (data: { filePath: string; inbox: InboxMessage[] }) => {
-    publishInbox(sessions, data.inbox, { filePath: data.filePath })
+  const onInbox = ({ filePath, workspace }: MeshInboxUpdate) => {
+    try {
+      sessions.publishInbox(workspace, { filePath }, false)
+    } catch (err) {
+      console.error(`[ADF Daemon] Inbox read for the client stream failed (${filePath}):`, err)
+    }
   }
   // Every delivery to a registered agent (mesh-manager `agent_incoming`):
   // the full message to sessions focused on the recipient, a stub to the rest.

@@ -1,4 +1,5 @@
 import { EventEmitter } from 'node:events'
+import { createHash } from 'node:crypto'
 import type { LoopMedia } from '../../shared/types/media.types'
 import { mcpConnectorFor } from './mcp-connectors'
 import { existsSync, readdirSync, realpathSync, renameSync, statSync } from 'node:fs'
@@ -25,6 +26,7 @@ import {
   agentProviderKeySource,
   providerNeedsApiKey,
   resolveAgentProviderConfig,
+  resolveEffectiveProviderConfig,
   type ProviderSettingsStore,
 } from '../providers/provider-factory'
 import type {
@@ -98,6 +100,7 @@ import type { ContentBlock } from '../../shared/types/provider.types'
 import { agentFileNameProblem } from '../../shared/utils/agent-file-name'
 import { summarizeLoopUsage, type RuntimeAgentUsageByModel, type RuntimeUsageTotals } from './loop-usage'
 import { AskAnswerError, type AskQuestion } from '../../shared/utils/ask-form'
+import { approvalExecutors, findApprovalHolder, findAskHolder } from './approval-holder'
 
 /** Max agents loading concurrently during autostart. */
 const AUTOSTART_CONCURRENCY = 5
@@ -195,6 +198,7 @@ export interface RuntimeServiceOptions {
 export interface RuntimeLoadAgentOptions {
   provider?: LLMProvider
   enforceReviewGate?: boolean
+  providerPreflight?: StartProviderPreflight
   /**
    * Legacy-password derived key the caller already holds (a file unlocked
    * before its start). Every consumer reads it from the first connect, as in
@@ -202,6 +206,17 @@ export interface RuntimeLoadAgentOptions {
    * unlockAgentIdentityPassword.
    */
   derivedKey?: Buffer | null
+}
+
+interface StartProviderPreflight {
+  killEpoch: number
+  credentialsLocked?: string
+  failed?: boolean
+}
+
+interface PendingRuntimeLoad {
+  done: Promise<RuntimeAgentRef>
+  providerPreflight?: StartProviderPreflight
 }
 
 /** 409 code of a load refused because another loaded file has the same `config.id`. */
@@ -409,6 +424,8 @@ export type RuntimeProviderPreflight =
       error: string
     }
 
+type CheckedStartProvider = RuntimeProviderPreflight & { provider?: LLMProvider }
+
 /** A loaded agent's assembled handle, for daemon routes that need more than RuntimeService exposes. */
 export interface RuntimeLoadedAgent {
   agentId: string
@@ -459,6 +476,7 @@ export interface RuntimeAgentStartResult {
   ref: RuntimeAgentRef
   loaded: boolean
   startupTriggered: boolean
+  credentialsLocked?: string
 }
 
 export interface RuntimeAgentLoopPage {
@@ -834,7 +852,7 @@ export class RuntimeService extends EventEmitter {
    * watcher, API, child autostart) await the same load instead of building
    * two full agent instances for one file.
    */
-  private readonly inFlightLoads = new Map<string, Promise<RuntimeAgentRef>>()
+  private readonly inFlightLoads = new Map<string, PendingRuntimeLoad>()
   private readonly agentLeases: AgentLeaseRegistry | null
   /** Agents whose self-off teardown is running (re-entrancy guard, as Studio's handleAgentOff). */
   private readonly offInProgress = new Set<string>()
@@ -880,7 +898,19 @@ export class RuntimeService extends EventEmitter {
     // Double-start TOCTOU guard: claim an in-flight slot SYNCHRONOUSLY before
     // any await so concurrent loads of the same file converge on one build.
     const pending = this.inFlightLoads.get(canonicalPath)
-    if (pending) return pending
+    if (pending) {
+      try {
+        return await pending.done
+      } catch (error) {
+        const check = pending.providerPreflight
+        // A manual provider refusal belongs to checked starts. An unchecked
+        // start that joined this slot can still load through its ordinary path.
+        if (!opts.providerPreflight && check?.failed && !RuntimeGate.killedSince(check.killEpoch)) {
+          return this.loadAgent(canonicalPath, opts)
+        }
+        throw error
+      }
+    }
 
     // The body starts a microtask later, after the slot is claimed: an
     // 'agent-lifecycle' listener that loads the same file from inside
@@ -893,7 +923,7 @@ export class RuntimeService extends EventEmitter {
       this.assertNotTearingDown()
       return this.doLoadAgent(canonicalPath, opts)
     })
-    this.inFlightLoads.set(canonicalPath, load)
+    this.inFlightLoads.set(canonicalPath, { done: load, providerPreflight: opts.providerPreflight })
     try {
       return await load
     } finally {
@@ -920,7 +950,7 @@ export class RuntimeService extends EventEmitter {
     let timer: ReturnType<typeof setTimeout> | undefined
     const timedOut = new Promise<void>((resolve) => { timer = setTimeout(resolve, timeoutMs) })
     const settled = (async () => {
-      while (this.inFlightLoads.size > 0) await Promise.allSettled([...this.inFlightLoads.values()])
+      while (this.inFlightLoads.size > 0) await Promise.allSettled(Array.from(this.inFlightLoads.values(), load => load.done))
     })()
     try {
       await Promise.race([settled, timedOut])
@@ -942,7 +972,7 @@ export class RuntimeService extends EventEmitter {
     let timer: ReturnType<typeof setTimeout> | undefined
     const timedOut = new Promise<false>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs) })
     try {
-      return await Promise.race([pending.then(() => true, () => true), timedOut])
+      return await Promise.race([pending.done.then(() => true, () => true), timedOut])
     } finally {
       clearTimeout(timer)
     }
@@ -1029,11 +1059,39 @@ export class RuntimeService extends EventEmitter {
       previousName = this.adoptFileName(workspace, config, canonicalPath) ?? previousName
       const keyCell: DerivedKeyCell = doc ? doc.keyCell : { current: opts.derivedKey ?? null }
       if (doc && !keyCell.current && opts.derivedKey) keyCell.current = opts.derivedKey
-      const provider = await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
+      let checkedProvider: LLMProvider | undefined
+      let assertSameProvider: (() => void) | undefined
+      const preflight = opts.providerPreflight
+      if (preflight && this.providerFactory && !opts.provider) {
+        const fingerprint = this.startProviderFingerprint(config, workspace, keyCell.current)
+        assertSameProvider = () => {
+          if (this.startProviderFingerprint(workspace.getAgentConfig(), workspace, keyCell.current) !== fingerprint) {
+            preflight.failed = true
+            throw new RuntimeLoopError('The provider changed while the agent was starting. Start the agent again.', 409, 'provider_check_failed')
+          }
+        }
+        const check = await this.checkProviderForStart(config, canonicalPath, workspace, keyCell.current, this.providerFactory).catch(error => {
+          preflight.failed = true
+          throw error
+        })
+        if (RuntimeGate.killedSince(preflight.killEpoch)) {
+          throw new RuntimeLoopError(KILL_IN_PROGRESS_ERROR, 409, 'kill_in_progress')
+        }
+        assertSameProvider()
+        if (!check.ok) {
+          preflight.failed = true
+          throw new RuntimeLoopError(check.error, 409, check.code ?? 'provider_check_failed')
+        }
+        preflight.credentialsLocked = check.credentialsLocked
+        checkedProvider = check.provider
+      }
+      const provider = checkedProvider ?? await this.resolveProvider(config, canonicalPath, opts.provider, workspace, keyCell.current)
       this.assertNotTearingDown()
       built = await this.buildLoadedAgent(workspace, canonicalPath, config, provider, keyCell)
       // The document keeps the workspace when the runtime stops.
       if (this.documents.get(canonicalPath) === doc && doc) built.setWorkspaceOwnership(false)
+      assertSameProvider?.()
+      if (checkedProvider) built.executor.confirmProviderValidation(checkedProvider)
       // Studio's pickFresherConfig at install (config-freshness.ts): a config
       // write through the document while the build awaited reached the file
       // but no executor. The running agent adopts the file's config.
@@ -1276,7 +1334,7 @@ export class RuntimeService extends EventEmitter {
     // Never let a slow startup prevent existing agents, compute and host
     // processes from reaching teardown. Late builds still see the terminal
     // gate in registerAgent and dispose themselves when they eventually finish.
-    const pending = Promise.allSettled([...this.inFlightLoads.values(), ...this.inFlightOpens.values()])
+    const pending = Promise.allSettled([...Array.from(this.inFlightLoads.values(), load => load.done), ...this.inFlightOpens.values()])
     const settling = withDeadline(pending, opts.agentTimeoutMs ?? 10_000, () => {
       console.error('[RuntimeService] Timed out waiting for pending loads/documents during shutdown — continuing teardown')
     })
@@ -1415,11 +1473,7 @@ export class RuntimeService extends EventEmitter {
     const recovered: RuntimeAuthRecovery[] = []
     const notice = `recovered after ${signInLabel} sign-in`
     for (const managed of this.agents.values()) {
-      const executors: Array<{ loop: string; executor: RuntimeAgent['executor'] }> = [
-        { loop: MAIN_LOOP, executor: managed.agent.executor },
-        ...managed.agent.loopPool.getRuntimes().map(runtime => ({ loop: runtime.name, executor: runtime.executor })),
-      ]
-      for (const { loop, executor } of executors) {
+      for (const { loop, executor } of approvalExecutors(managed.agent.executor, managed.agent.loopPool)) {
         if (executor.getErrorReason() !== 'auth') continue
         if (executor.getProvider()?.providerType !== providerType) continue
         const loopNotice = `${managed.config.name}${loop === MAIN_LOOP ? '' : ` (loop ${loop})`} ${notice}`
@@ -1574,16 +1628,32 @@ export class RuntimeService extends EventEmitter {
    * `killEpoch`: RuntimeGate.killEpoch when the caller's start began (before
    * its own awaits); a Kill since then refuses the start.
    */
-  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean; killEpoch?: number } = {}): Promise<RuntimeAgentStartResult> {
+  async startOrLoadAgent(identifier: string, opts: { hasUserMessage?: boolean; killEpoch?: number; preflight?: boolean } = {}): Promise<RuntimeAgentStartResult> {
     const killEpoch = opts.killEpoch ?? RuntimeGate.killEpoch
     let managed = this.resolveAgent(identifier)
     let loaded = false
+    let credentialsLocked: string | undefined
 
     if (!managed) {
       // An open document starts on its own workspace (D4).
       const filePath = this.documents.resolve(identifier)?.filePath ?? this.findAgentFile(identifier)
       if (!filePath) throw new Error(`RuntimeService: unknown agent "${identifier}"`)
-      const ref = await this.loadAgent(filePath)
+      let providerPreflight: StartProviderPreflight | undefined
+      if (opts.preflight) {
+        const canonicalPath = this.canonicalFilePath(filePath)
+        const pending = this.inFlightLoads.get(canonicalPath)
+        if (pending?.providerPreflight) providerPreflight = pending.providerPreflight
+        else if (!pending && !this.filePathToAgentId.has(canonicalPath)) providerPreflight = { killEpoch }
+        else {
+          // A file-path request may resolve to a loaded agent, or an unchecked
+          // load may already own the slot. Both still need the requested check.
+          const check = await this.preflightProvider(identifier)
+          if (!check.ok) throw new RuntimeLoopError(check.error, 409, check.code ?? 'provider_check_failed')
+          credentialsLocked = check.credentialsLocked
+        }
+      }
+      const ref = await this.loadAgent(filePath, { providerPreflight })
+      credentialsLocked ??= providerPreflight?.credentialsLocked
       managed = this.requireAgent(ref.id)
       loaded = true
     }
@@ -1598,6 +1668,7 @@ export class RuntimeService extends EventEmitter {
       ref: this.toRef(managed),
       loaded,
       startupTriggered,
+      ...(credentialsLocked ? { credentialsLocked } : {}),
     }
   }
 
@@ -1661,8 +1732,10 @@ export class RuntimeService extends EventEmitter {
     trackedDirs: string[],
     opts: RuntimeAutostartOptions = {},
   ): Promise<RuntimeAutostartReport> {
-    // A Kill during the scan or the starts stops what is left of the autostart.
+    // A scan requested during a Kill must still refuse to start agents if
+    // the Kill finishes before the scan does. Later Kills change the epoch.
     const killEpoch = RuntimeGate.killEpoch
+    const requestedDuringKill = RuntimeGate.killing
     RuntimeGate.resume()
     const files = await this.scanAdfFilesAsync(trackedDirs, opts.maxDepth ?? 5)
     const report: RuntimeAutostartReport = {
@@ -1718,7 +1791,9 @@ export class RuntimeService extends EventEmitter {
       }
 
       try {
-        if (RuntimeGate.killedSince(killEpoch)) throw new RuntimeLoopError(KILL_STOPPED_AUTOSTART, 409, 'kill_in_progress')
+        if (requestedDuringKill || RuntimeGate.killedSince(killEpoch)) {
+          throw new RuntimeLoopError(KILL_STOPPED_AUTOSTART, 409, 'kill_in_progress')
+        }
         // Review verified above — disable loadAgent's own gate so the file is
         // opened exactly once more (the real open): 2 opens per candidate.
         const ref = await this.loadAgent(filePath, { enforceReviewGate: false })
@@ -1893,7 +1968,7 @@ export class RuntimeService extends EventEmitter {
     const canonicalPath = this.canonicalFilePath(filePath)
     // A load in flight finishes first, so the document joins its workspace.
     const loading = this.inFlightLoads.get(canonicalPath)
-    if (loading) await loading.catch(() => {})
+    if (loading) await loading.done.catch(() => {})
     this.assertNotTearingDown()
     let nameChangedFrom: string | null = null
     let doc = this.documents.get(canonicalPath)
@@ -2178,6 +2253,7 @@ export class RuntimeService extends EventEmitter {
       const stillOpen = this.documents.get(doc.filePath) === doc
       if (stillOpen && at !== doc.filePath) this.documents.rekey(doc.filePath, at)
       if (stillOpen) try {
+        // eslint-disable-next-line no-unsafe-finally -- caught by the try around it, not thrown out of the finally.
         if (!existsSync(at)) throw new Error(`no file at ${at}`) // never create one by reopening
         doc.workspace = AdfWorkspace.open(at)
         unlockWorkspaceEnvelopes(doc.workspace)
@@ -2341,7 +2417,7 @@ export class RuntimeService extends EventEmitter {
     try { target.managed?.agent.session.flushToLoop?.() } catch { /* best effort */ }
     const total = workspace.getLoopCount()
     const offset = Math.max(0, total - CHAT_DISPLAY_LIMIT)
-    const entries = offset > 0 ? workspace.getLoopPaginated(CHAT_DISPLAY_LIMIT, offset) : workspace.getLoop()
+    const entries = workspace.getLoopTail(CHAT_DISPLAY_LIMIT)
     return {
       ...this.getAgentHeader(target.id),
       configRevision: configRevision(workspace).revision,
@@ -2382,7 +2458,7 @@ export class RuntimeService extends EventEmitter {
     const offset = opts.offset === undefined
       ? Math.max(0, total - limit)
       : clampInteger(opts.offset, 0, Math.max(0, total))
-    const entries = workspace.getLoopPaginated(limit, offset)
+    const entries = opts.offset === undefined ? workspace.getLoopTail(limit) : workspace.getLoopPaginated(limit, offset)
     return { agentId: target.id, loop, total, limit, offset, entries }
   }
 
@@ -2555,13 +2631,10 @@ export class RuntimeService extends EventEmitter {
     const config = parsed.data as unknown as LoopConfig
     const requested = config.tools ?? []
     if (requested.length === 0) return { config, disabled: [] }
-    const { unknown, disabled, prohibited } = validateLoopToolList(host, requested)
-    if (unknown.length > 0 || prohibited.length > 0) {
-      const parts: string[] = []
-      if (unknown.length > 0) parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
-      if (prohibited.length > 0) parts.push(`never grantable to a loop: ${prohibited.join(', ')}`)
+    const { unknown, disabled } = validateLoopToolList(host, requested)
+    if (unknown.length > 0) {
       throw new RuntimeLoopError(
-        `Cannot grant those tools — ${parts.join('; ')}. Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`,
+        `Cannot grant those tools — no such tool on this agent: ${unknown.join(', ')}. Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`,
         400,
       )
     }
@@ -2741,9 +2814,7 @@ export class RuntimeService extends EventEmitter {
     if (total === 0) return { agentId: target.id, loop: loopName, chatHistory: null }
     const clampedLimit = clampInteger(limit, 1, 500)
     const offset = Math.max(0, total - clampedLimit)
-    const loopEntries = offset > 0
-      ? workspace.getLoopPaginated(clampedLimit, offset)
-      : workspace.getLoop()
+    const loopEntries = workspace.getLoopTail(clampedLimit)
     return {
       agentId: target.id,
       loop: loopName,
@@ -2930,6 +3001,11 @@ export class RuntimeService extends EventEmitter {
     return { agentId: target.id, messages: target.workspace.getInbox(status) }
   }
 
+  getAgentInboxCount(agentId: string, status?: InboxStatus): { agentId: string; count: number } {
+    const target = this.requireTarget(agentId)
+    return { agentId: target.id, count: target.workspace.getInboxCount(status) }
+  }
+
   clearAgentInbox(agentId: string): { agentId: string; success: true; deleted: number } {
     const target = this.requireTarget(agentId)
     const result = target.workspace.deleteInboxByFilter({})
@@ -2994,7 +3070,7 @@ export class RuntimeService extends EventEmitter {
 
   getAgentUsage(agentId: string): RuntimeAgentUsage {
     const target = this.requireTarget(agentId)
-    const { loopRows, usageRows, totals, byModel } = summarizeLoopUsage(target.workspace.getLoop())
+    const { loopRows, usageRows, totals, byModel } = summarizeLoopUsage(target.workspace.getLoopUsageRows())
     return {
       agentId: target.id,
       source: 'adf_loop',
@@ -3009,7 +3085,7 @@ export class RuntimeService extends EventEmitter {
   getAgentTasks(agentId: string, opts: RuntimeAgentTasksOptions = {}): { agentId: string; tasks: RuntimeTaskEntry[] } {
     const target = this.requireTarget(agentId)
     const tasks = opts.status
-      ? target.workspace.getTasksByStatus(opts.status)
+      ? target.workspace.getTasksByStatus(opts.status, opts.limit === undefined ? undefined : clampInteger(opts.limit, 1, 1000))
       : target.workspace.getAllTasks(clampInteger(opts.limit ?? 200, 1, 1000))
     return { agentId: target.id, tasks: tasks.map(task => this.withApprovalAffordance(target.managed, target.config, task)) }
   }
@@ -3020,15 +3096,6 @@ export class RuntimeService extends EventEmitter {
     return task ? { agentId: target.id, task: this.withApprovalAffordance(target.managed, target.config, task) } : null
   }
 
-  /**
-   * The executor (main or an inner loop) whose pending HIL map holds this
-   * request. Task ids are globally unique (`task_<nanoid>`), so the first hit
-   * is the only one.
-   */
-  private approvalHolder(managed: ManagedRuntimeAgent, taskId: string): { loop: string; executor: ManagedRuntimeAgent['agent']['executor'] } | undefined {
-    return this.askExecutors(managed).find(entry => entry.executor.getPendingApprovalMeta(taskId) !== undefined)
-  }
-
   /** pending_approval rows gain the live "Always approve" affordance
    *  (Studio's ApprovalControls) — derived from the executor holding the
    *  request, never persisted. A row no executor is waiting on (deferred
@@ -3036,7 +3103,7 @@ export class RuntimeService extends EventEmitter {
   private withApprovalAffordance(managed: ManagedRuntimeAgent | null, config: AgentConfig, task: TaskEntry): RuntimeTaskEntry {
     if (task.status !== 'pending_approval') return task
     // An open document runs no executor: nothing waits on the request.
-    const meta = managed ? this.approvalHolder(managed, task.id)?.executor.getPendingApprovalMeta(task.id) : undefined
+    const meta = managed ? findApprovalHolder(managed.agent.executor, managed.agent.loopPool, task.id)?.executor.getPendingApprovalMeta(task.id) : undefined
     if (!meta) return { ...task, canAlwaysApprove: false, alwaysApproveBlockedReason: NO_LIVE_APPROVAL_REASON }
     const locked = config.tools?.find(t => t.name === task.tool)?.locked === true
     if (meta.canAlwaysApprove === false || locked) {
@@ -3068,7 +3135,7 @@ export class RuntimeService extends EventEmitter {
     if (task.status !== 'pending_approval') {
       throw new RuntimeLoopError(`Task "${taskId}" is in status "${task.status}" - only pending_approval tasks can be always-approved`, 409)
     }
-    const holder = this.approvalHolder(managed, taskId)
+    const holder = findApprovalHolder(managed.agent.executor, managed.agent.loopPool, taskId)
     const meta = holder?.executor.getPendingApprovalMeta(taskId)
     if (!holder || !meta) throw new RuntimeLoopError(`Task "${taskId}": ${NO_LIVE_APPROVAL_REASON}`, 409)
     const toolName = holder.executor.getPendingApprovals().find(a => a.requestId === taskId)?.name ?? task.tool
@@ -3096,7 +3163,7 @@ export class RuntimeService extends EventEmitter {
    */
   approveAllAgentTasks(agentId: string, loop?: string): { agentId: string; loop?: string; approved: number; skippedProtection: number } {
     const managed = this.requireAgent(agentId)
-    const executors = this.askExecutors(managed)
+    const executors = approvalExecutors(managed.agent.executor, managed.agent.loopPool)
     let targets = executors
     if (loop !== undefined) {
       const loopName = this.requireLoopName(managed, loop)
@@ -3127,27 +3194,10 @@ export class RuntimeService extends EventEmitter {
       modified_args: opts.modifiedArgs,
     }
 
-    // The main call handler's onHilApproved is bound to MAIN's executor, so a
-    // request parked by an inner loop's executor must be answered on that
-    // executor directly (same status writes as handleTaskResolve).
-    const holder = this.approvalHolder(managed, taskId)
+    // The call handler's onHilApproved finds whichever executor (main or an
+    // inner loop) holds the request, so one path serves every loop.
     let resolution: unknown
-    if (holder && holder.loop !== MAIN_LOOP) {
-      const workspace = managed.agent.workspace
-      if (opts.action === 'approve') {
-        workspace.updateTaskStatus(taskId, 'running')
-        holder.executor.resolveHilTask(taskId, true, opts.modifiedArgs)
-        resolution = { task_id: taskId, status: 'approved' }
-      } else if (opts.action === 'deny') {
-        const reason = opts.reason ?? 'Denied'
-        workspace.updateTaskStatus(taskId, 'denied', undefined, reason)
-        holder.executor.resolveHilTask(taskId, false, undefined, opts.reason)
-        resolution = { task_id: taskId, status: 'denied', reason }
-      } else {
-        workspace.updateTaskStatus(taskId, 'pending_approval')
-        resolution = { task_id: taskId, status: 'pending_approval' }
-      }
-    } else if (managed.agent.adfCallHandler) {
+    if (managed.agent.adfCallHandler) {
       const result = await managed.agent.adfCallHandler.resolveTask(input)
       if (result.error) throw new Error(result.error)
       resolution = parseMaybeJson(result.result)
@@ -3160,15 +3210,16 @@ export class RuntimeService extends EventEmitter {
       if (!task.executor_managed) {
         throw new Error(`Task "${taskId}" requires code execution support to resolve`)
       }
+      const executor = findApprovalHolder(managed.agent.executor, managed.agent.loopPool, taskId)?.executor ?? managed.agent.executor
       if (opts.action === 'approve') {
         managed.agent.workspace.updateTaskStatus(taskId, 'running')
-        managed.agent.executor.resolveHilTask(taskId, true, opts.modifiedArgs)
+        executor.resolveHilTask(taskId, true, opts.modifiedArgs)
         resolution = { task_id: taskId, status: 'approved' }
       } else if (opts.action === 'deny') {
         const reason = opts.reason ?? 'Denied'
         managed.agent.workspace.updateTaskStatus(taskId, 'denied', undefined, reason)
         // Reason rides along as feedback: the agent reads it in the tool error.
-        managed.agent.executor.resolveHilTask(taskId, false, undefined, opts.reason)
+        executor.resolveHilTask(taskId, false, undefined, opts.reason)
         resolution = { task_id: taskId, status: 'denied', reason }
       } else {
         managed.agent.workspace.updateTaskStatus(taskId, 'pending_approval')
@@ -3184,34 +3235,22 @@ export class RuntimeService extends EventEmitter {
     }
   }
 
-  /** Main's executor plus every running inner loop's: asks can come from any loop. */
-  private askExecutors(managed: ManagedRuntimeAgent): Array<{ loop: string; executor: ManagedRuntimeAgent['agent']['executor'] }> {
-    const out: Array<{ loop: string; executor: ManagedRuntimeAgent['agent']['executor'] }> = [{ loop: MAIN_LOOP, executor: managed.agent.executor }]
-    for (const info of managed.agent.loopPool.listLoops()) {
-      if (info.name === MAIN_LOOP) continue
-      const runtime = managed.agent.loopPool.getRuntime(info.name)
-      if (runtime) out.push({ loop: info.name, executor: runtime.executor })
-    }
-    return out
-  }
-
   getAgentAsks(agentId: string): { agentId: string; asks: RuntimeAgentAsk[] } {
     const target = this.requireTarget(agentId)
     // An open document asks nothing: no executor runs.
     if (!target.managed) return { agentId: target.id, asks: [] }
     const managed = target.managed
-    const asks = this.askExecutors(managed).flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop })))
+    const asks = approvalExecutors(managed.agent.executor, managed.agent.loopPool).flatMap(({ loop, executor }) => executor.getPendingAsks().map(ask => ({ ...ask, loop })))
     return { agentId: managed.id, asks }
   }
 
   /**
    * `answers`: one per question (`null` = skipped); a payload that does not fit the form is a 400 and the ask stays pending.
-   * Request ids are per executor, so `loop` disambiguates; absent = the first loop holding that id.
+   * Request ids are unique across the agent; `loop`, when given, must name the asking loop.
    */
   answerAgentAsk(agentId: string, requestId: string, answers: unknown, loop?: string): { agentId: string; requestId: string; loop: string; answered: boolean } {
     const managed = this.requireAgent(agentId)
-    const holder = this.askExecutors(managed).find(entry =>
-      (loop === undefined || entry.loop === loop) && entry.executor.getPendingAsks().some(ask => ask.requestId === requestId))
+    const holder = findAskHolder(managed.agent.executor, managed.agent.loopPool, requestId, loop)
     if (!holder) throw new RuntimeLoopError(`Ask request "${requestId}" not found${loop ? ` in loop "${loop}"` : ''} (already answered, or never asked).`, 404, 'ask_not_found')
     try {
       holder.executor.resolveAsk(requestId, answers)
@@ -3825,30 +3864,46 @@ export class RuntimeService extends EventEmitter {
     try {
       // The agent's own provider key may be envelope-sealed (the load path's unlock).
       if (!managed && !doc) unlockWorkspaceEnvelopes(workspace)
-      const config = workspace.getAgentConfig() as AgentConfig
-      const store = this.providerSettings()
-      // The agent has its own key but it cannot be opened here (password or
-      // envelope locked): not a missing key. The agent loads and unlocks
-      // later (unlockAgentIdentityPassword, owner identity); the start goes on.
-      const credentialsLocked = this.lockedProviderKeyMessage(config, workspace, derivedKey)
-      if (credentialsLocked) return { ok: true, credentialsLocked }
-      let provider: LLMProvider
-      try {
-        provider = await this.providerFactory(config, filePath, { workspace, derivedKey })
-      } catch (err) {
-        return { ok: false, code: 'provider_missing', error: err instanceof Error ? err.message : String(err) }
-      }
-      const validation = await provider.validateConfig()
-      if (validation.valid) return { ok: true }
-      const local = resolveAgentProviderConfig(config, workspace, derivedKey, store) ?? store.getProvider(config.model.provider)
-      const needsKey = !!local && !local.apiKey && providerNeedsApiKey(local.type)
-      return {
-        ok: false,
-        error: validation.error || 'Provider not configured',
-        ...(needsKey ? { code: 'provider_unconfigured' as const } : {}),
-      }
+      const check = await this.checkProviderForStart(workspace.getAgentConfig(), filePath, workspace, derivedKey, this.providerFactory)
+      if (!check.ok) return check
+      return { ok: true, ...(check.credentialsLocked ? { credentialsLocked: check.credentialsLocked } : {}) }
     } finally {
       if (!managed && !doc) try { workspace.dispose() } catch { /* best effort */ }
+    }
+  }
+
+  /** Keep the successful network check tied to the config/credentials that created the provider. */
+  private startProviderFingerprint(config: AgentConfig, workspace: AdfWorkspace, derivedKey: Buffer | null): string {
+    const store = this.providerSettings()
+    const { provider, model_id, params } = config.model
+    const resolved = resolveAgentProviderConfig(config, workspace, derivedKey, store)
+    const effective = resolveEffectiveProviderConfig(provider, store, resolved)
+    const locked = !!this.lockedProviderKeyMessage(config, workspace, derivedKey)
+    return createHash('sha256').update(JSON.stringify([provider, model_id, params, effective, locked])).digest('hex')
+  }
+
+  private async checkProviderForStart(
+    config: AgentConfig, filePath: string | null, workspace: AdfWorkspace, derivedKey: Buffer | null, factory: RuntimeProviderFactory,
+  ): Promise<CheckedStartProvider> {
+    // The agent's key may be stored but locked here. Start with the usual
+    // locked-provider behavior so a later unlock can replace the provider.
+    const credentialsLocked = this.lockedProviderKeyMessage(config, workspace, derivedKey)
+    if (credentialsLocked) return { ok: true, credentialsLocked }
+    let provider: LLMProvider
+    try {
+      provider = await factory(config, filePath, { workspace, derivedKey })
+    } catch (err) {
+      return { ok: false, code: 'provider_missing', error: err instanceof Error ? err.message : String(err) }
+    }
+    const validation = await provider.validateConfig()
+    if (validation.valid) return { ok: true, provider }
+    const store = this.providerSettings()
+    const local = resolveAgentProviderConfig(config, workspace, derivedKey, store) ?? store.getProvider(config.model.provider)
+    const needsKey = !!local && !local.apiKey && providerNeedsApiKey(local.type)
+    return {
+      ok: false,
+      error: validation.error || 'Provider not configured',
+      ...(needsKey ? { code: 'provider_unconfigured' as const } : {}),
     }
   }
 

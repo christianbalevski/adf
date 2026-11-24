@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useLayoutEffect, useCallback, useMemo, memo } from 'react'
-import { useVirtualizer } from '@tanstack/react-virtual'
+import { defaultRangeExtractor, useVirtualizer, type Range } from '@tanstack/react-virtual'
 import { useAgentStore, selectLoopSlice, liveHeadOf, MAIN_LOOP, type AgentLogEntry, type PendingApprovalInfo, type PendingAsk } from '../../stores/agent.store'
 import { useDocumentStore } from '../../stores/document.store'
+import { agentNameOf } from '../../stores/failure-notices.store'
 import { useMessageQueueStore, selectQueue, MAX_AUTOMATIC_SENDS } from '../../stores/message-queue.store'
 import { useAppStore, selectChatColumnCapped, selectCanPromoteChat, type AppState } from '../../stores/app.store'
-import { toDisplayState } from '../../hooks/useAgent'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
-import { pickOldestSeq } from '../../hooks/live-seq'
+import { lacksSeq, pickOldestSeq } from '../../hooks/live-seq'
+import { rebindPendingRequests } from '../../hooks/approval-target'
 import { captureAgentView, isCurrentAgentView } from '../../utils/agent-view'
 import { sendQueuedMessages } from '../../utils/queued-delivery'
 import { sendComposerMessage, type SendRoute } from '../../utils/composer-send'
@@ -15,8 +16,9 @@ import type { LoopMedia } from '../../../shared/types/media.types'
 import { nanoid } from 'nanoid'
 import { MarkdownEntry } from './MarkdownEntry'
 import { loopColor } from '../../utils/loop-color'
-import { getLoopActivity, isSystemNotice, isTurnCompleteMarker } from '../../utils/loop-activity'
-import { contextLabel, describeWake, mergeContextRows } from '../../utils/loop-labels'
+import { getLoopActivity, isSystemNotice } from '../../utils/loop-activity'
+import { contextLabel, describeWake } from '../../utils/loop-labels'
+import { createTranscriptRows, isLoopMessageEntry, TranscriptProjection, type DisplayItem, type FindToolPair, type TranscriptActivity } from '../../utils/transcript-projection'
 import { LOOP_ERROR_ACTION_LABELS, actionableErrorId, errorAction, isMissingProvider, type LoopErrorAction } from '../../utils/loop-error'
 import { restoreDraft, sendWithRecovery } from '../../utils/send-recovery'
 import { SKILLS_REGISTRY_PATH, parseSkillsRegistry, type RegistryEntry } from '../../utils/skills-panel'
@@ -55,7 +57,7 @@ import { OwnerCommandRow } from './OwnerCommandRow'
 import { SlashCommandPalette } from './SlashCommandPalette'
 import { ToolCallModal } from './ToolCallModal'
 import { AttachedImage, AttachmentList } from './ChatAttachments'
-import { adfFileUrl, type DisplayAttachment } from '../../../shared/utils/file-ref'
+import { type DisplayAttachment } from '../../../shared/utils/file-ref'
 import {
   TOOL_FAMILY_STYLES,
   ATTENTION_TOOL_STYLE,
@@ -75,14 +77,6 @@ import { openApi, providerSheetReaches, useOpenAgentKey, useOpenRuntime } from '
 const MAX_INPUT_ROWS = 10
 /** What an error row's Retry now sends: a message of the owner's, shown like any other. */
 const RETRY_MESSAGE = 'Try again.'
-// Model-facing text for attachment-only messages; also shown in the UI so the
-// optimistic entry matches what the loop table persists and restores.
-const DEFAULT_MEDIA_LIMITS = {
-  image: 5 * 1024 * 1024,
-  audio: 10 * 1024 * 1024,
-  video: 20 * 1024 * 1024,
-}
-
 type UploadKind = 'image' | 'audio' | 'video' | 'file'
 
 interface PendingAttachment {
@@ -168,12 +162,6 @@ function uploadKind(mimeType: string): UploadKind {
   return 'file'
 }
 
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`
-  return `${(size / (1024 * 1024)).toFixed(1)} MB`
-}
-
 /** Compact fallback for older tool calls that do not provide `_reason`. */
 function summarizeToolInput(input: unknown): string {
   if (!input) return 'Called tool'
@@ -229,116 +217,6 @@ const ThinkingContent = memo(({ content }: { content: string }) => {
   )
   return <div className="whitespace-pre-wrap">{nodes}</div>
 })
-
-// Memoized individual log entry renderer
-/**
- * A message delivered by another loop's `loop_send`. It arrives as a plain user
- * row (adf_loop has no metadata column) and is classified by its durable
- * `[from loop:<name>]` stamp — in `parseLoopToDisplay` on rehydrate and in
- * `useAgent`'s event router live, both producing this shape.
- */
-function isLoopMessageEntry(entry: AgentLogEntry): boolean {
-  return entry.type === 'context'
-    && entry.metadata?.category === 'loop'
-    && typeof entry.metadata?.fromLoop === 'string'
-}
-
-type ToolPair = { call: AgentLogEntry | null; result: AgentLogEntry | null }
-type ToolPairIndex = Map<string, ToolPair>
-type DisplayItem =
-  | { kind: 'entry'; id: string; entry: AgentLogEntry }
-  | { kind: 'activity'; id: string; entries: AgentLogEntry[] }
-
-function buildToolPairIndex(log: AgentLogEntry[]): ToolPairIndex {
-  const index: ToolPairIndex = new Map()
-  const pendingCallsById = new Map<string, AgentLogEntry>()
-  const pendingCallsByName = new Map<string, AgentLogEntry>()
-
-  for (const entry of log) {
-    if (entry.type === 'tool_call') {
-      const toolId = entry.metadata?.tool_id as string | undefined
-      if (toolId) pendingCallsById.set(toolId, entry)
-      else pendingCallsByName.set(entry.metadata?.name as string, entry)
-      continue
-    }
-    if (entry.type !== 'tool_result') continue
-
-    const toolUseId = entry.metadata?.tool_use_id as string | undefined
-    let call: AgentLogEntry | null = null
-    if (toolUseId) {
-      call = pendingCallsById.get(toolUseId) ?? null
-      if (call) pendingCallsById.delete(toolUseId)
-    }
-    if (!call) {
-      const name = entry.metadata?.name as string
-      call = pendingCallsByName.get(name) ?? null
-      if (call) pendingCallsByName.delete(name)
-    }
-    if (call) {
-      const pair = { call, result: entry }
-      index.set(call.id, pair)
-      index.set(entry.id, pair)
-    } else {
-      index.set(entry.id, { call: null, result: entry })
-    }
-  }
-
-  for (const call of [...pendingCallsById.values(), ...pendingCallsByName.values()]) {
-    if (!index.has(call.id)) index.set(call.id, { call, result: null })
-  }
-  return index
-}
-
-function isSuccessfulStatusChange(entry: AgentLogEntry, toolPairs: ToolPairIndex): boolean {
-  if (entry.type !== 'tool_call' || entry.metadata?.name !== 'sys_set_meta') return false
-  const input = entry.metadata?.input as { key?: unknown; value?: unknown } | undefined
-  return input?.key === 'status'
-    && typeof input.value === 'string'
-    && input.value.trim().length > 0
-    && toolPairs.get(entry.id)?.result?.metadata?.isError === false
-}
-
-function isCollapsibleActivity(entry: AgentLogEntry, toolPairs: ToolPairIndex): boolean {
-  // A delivered inter-loop message is content, not workflow noise — folding it
-  // into an activity group under a tool-call label would hide it entirely.
-  if (isLoopMessageEntry(entry)) return false
-  // A runtime notice (compacting, a provider that gave up) is status the
-  // owner must see without opening a group.
-  if (isSystemNotice(entry)) return false
-  if (entry.type === 'thinking' || entry.type === 'context') return true
-  if (entry.type !== 'tool_call') return false
-  const name = entry.metadata?.name as string | undefined
-  if (name === 'say' || name === 'ask') return false
-  return !isSuccessfulStatusChange(entry, toolPairs)
-}
-
-function buildDisplayItems(entries: AgentLogEntry[], toolPairs: ToolPairIndex): DisplayItem[] {
-  const items: DisplayItem[] = []
-  let activityEntries: AgentLogEntry[] = []
-
-  const flushActivity = () => {
-    if (activityEntries.length === 0) return
-    if (activityEntries.length === 1) {
-      // A one-step block is noise — show the step directly.
-      items.push({ kind: 'entry', id: activityEntries[0].id, entry: activityEntries[0] })
-    } else {
-      items.push({ kind: 'activity', id: `activity:${activityEntries[0].id}`, entries: activityEntries })
-    }
-    activityEntries = []
-  }
-
-  // A trigger is never folded: it is the line that opens a woken turn.
-  for (const entry of mergeContextRows(entries)) {
-    if (isCollapsibleActivity(entry, toolPairs)) {
-      activityEntries.push(entry)
-    } else {
-      flushActivity()
-      items.push({ kind: 'entry', id: entry.id, entry })
-    }
-  }
-  flushActivity()
-  return items
-}
 
 /**
  * A compaction summary: a fixed-height preview that expands into a scrollable
@@ -446,7 +324,7 @@ function getActivitySummary(entries: AgentLogEntry[]): { label: string; family: 
   return { label: 'Working', family: 'neutral' }
 }
 
-function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairIndex): number | null {
+function getActivityDurationMs(entries: AgentLogEntry[], findPair: FindToolPair): number | null {
   let startedAt = Number.POSITIVE_INFINITY
   let completedAt = 0
 
@@ -454,7 +332,7 @@ function getActivityDurationMs(entries: AgentLogEntry[], toolPairs: ToolPairInde
     if (entry.timestamp > 0) startedAt = Math.min(startedAt, entry.timestamp)
 
     if (entry.type === 'tool_call') {
-      const result = toolPairs.get(entry.id)?.result
+      const result = findPair(entry.id)?.result
       if (!result) return null
       completedAt = Math.max(completedAt, result.timestamp || entry.timestamp)
     } else {
@@ -507,6 +385,7 @@ const LogEntryRow = memo(({
   askAnswer,
   compact = false,
   continuing = false,
+  streamingText = false,
   errorAction: rowErrorAction = null,
   onErrorAction
 }: {
@@ -540,6 +419,7 @@ const LogEntryRow = memo(({
   compact?: boolean
   /** The agent is still working from this step, even if its tool has returned. */
   continuing?: boolean
+  streamingText?: boolean
   /** The error row's one action, when it is the latest unresolved error. */
   errorAction?: LoopErrorAction | null
   onErrorAction?: (action: LoopErrorAction, entry: AgentLogEntry) => void
@@ -688,7 +568,7 @@ const LogEntryRow = memo(({
         const interrupted = entry.metadata?.interrupted === true
         return (
           <div>
-            <MarkdownEntry content={entry.content} />
+            <MarkdownEntry content={entry.content} streaming={streamingText} />
             {(entry.timestamp > 0 || interrupted) && (
               <div className="mt-0.5 flex items-center gap-1.5 px-1 text-[10px] text-[var(--ink-faint)]">
                 {entry.timestamp > 0 && <span>{formatLoopTime(entry.timestamp)}</span>}
@@ -1015,6 +895,7 @@ function LoopStream({ loop }: { loop: string }) {
   const log = useAgentStore((s) => selectLoopSlice(s, loop).log)
   const logVersion = useAgentStore((s) => selectLoopSlice(s, loop).logVersion)
   const structuralVersion = useAgentStore((s) => selectLoopSlice(s, loop).structuralVersion)
+  const appendGeneration = useAgentStore((s) => selectLoopSlice(s, loop).logAppendGeneration)
   const earlierCount = useAgentStore((s) => selectLoopSlice(s, loop).earlierCount)
   const prependLog = useAgentStore((s) => s.prependLog)
   const setEarlierCount = useAgentStore((s) => s.setEarlierCount)
@@ -1176,28 +1057,25 @@ function LoopStream({ loop }: { loop: string }) {
   // earlier-entries boundary banner only shows there.
   const [atTop, setAtTop] = useState(false)
 
-  // Virtual scrolling setup
-  // Filter out tool_result entries — their content is accessible via the tool_call inspector
-  //
-  // These three passes walk the WHOLE log, so they key on `structuralVersion`
-  // (entry appended / window replaced / an entry's type or metadata rewritten)
-  // rather than `logVersion`, which also moves for each of the ~20 streamed
-  // deltas a second. Nothing they read changes on a delta: the store only
-  // withholds the structural bump when a text/thinking entry's `content` grew
-  // and nothing else about it moved.
-  const displayLog = useMemo(
-    () => log.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
-    [log, structuralVersion]
-  )
-  const liveToolPairIndex = useMemo(() => buildToolPairIndex(log), [log, structuralVersion])
-  // Archived entries pair and group among themselves only, so a call in the
-  // archive never claims a live result and no group spans the boundary.
-  const archivedToolPairIndex = useMemo(() => buildToolPairIndex(archive.entries), [archive.entries])
-  /** Lookup for rendering: ids never collide (archived ones are `audit-…`). */
-  const toolPairIndex = useMemo(
-    () => (archivedToolPairIndex.size === 0 ? liveToolPairIndex : new Map([...archivedToolPairIndex, ...liveToolPairIndex])),
-    [archivedToolPairIndex, liveToolPairIndex]
-  )
+  // Only structural appends advance the cached projection. A prepend,
+  // replacement or earlier edit changes the store's generation.
+  const previousProjection = useRef<{ generation: object; projection: TranscriptProjection } | undefined>(undefined)
+  const liveProjection = useMemo(() => {
+    const previous = previousProjection.current
+    const projection = previous?.generation === appendGeneration && previous.projection.length <= log.length
+      ? previous.projection : new TranscriptProjection()
+    projection.append(log)
+    previousProjection.current = { generation: appendGeneration, projection }
+    return projection
+  }, [log, structuralVersion, appendGeneration])
+  // Archived and live entries pair only among themselves.
+  const archivedProjection = useMemo(() => {
+    const projection = new TranscriptProjection()
+    projection.append(archive.entries)
+    return projection
+  }, [archive.entries])
+  const findPair: FindToolPair = useCallback((id: string) =>
+    liveProjection.findPair(id) ?? archivedProjection.findPair(id), [liveProjection, archivedProjection])
   const isActive = state === 'active'
   // A turn that can be stopped: working, or waiting on the owner (approval, question, suspend).
   const turnRunning = state === 'active' || state === 'suspended'
@@ -1225,38 +1103,127 @@ function LoopStream({ loop }: { loop: string }) {
   const tailEntry = log.length > 0 ? log[log.length - 1] : null
   const liveEntry = (entry: AgentLogEntry): AgentLogEntry =>
     tailEntry !== null && tailEntry.id === entry.id ? tailEntry : entry
-  const archivedItems = useMemo(() => {
-    if (archive.entries.length === 0) return []
-    const archivedDisplayLog = archive.entries.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
-    return [...buildDisplayItems(archivedDisplayLog, archivedToolPairIndex), ARCHIVE_END_ITEM]
-  }, [archive.entries, archivedToolPairIndex])
-  const liveItems = useMemo(
-    () => buildDisplayItems(displayLog, liveToolPairIndex),
-    [displayLog, liveToolPairIndex]
-  )
-  const displayItems = useMemo(
-    () => (archivedItems.length === 0 ? liveItems : [...archivedItems, ...liveItems]),
-    [archivedItems, liveItems]
-  )
   const [expandedActivityGroups, setExpandedActivityGroups] = useState<Set<string>>(new Set())
   const [collapsedActivityGroups, setCollapsedActivityGroups] = useState<Set<string>>(new Set())
+  const groupFacts = useRef(new WeakMap<TranscriptActivity, {
+    revision: number
+    duration: number | null
+    summary: ReturnType<typeof getActivitySummary>
+    hasError: boolean
+  }>())
+  const getGroupFacts = useCallback((group: TranscriptActivity) => {
+    const cached = groupFacts.current.get(group)
+    if (cached?.revision === group.revision) return cached
+    const facts = {
+      revision: group.revision,
+      duration: getActivityDurationMs(group.entries, findPair),
+      summary: getActivitySummary(group.entries),
+      hasError: group.entries.some((entry) => {
+        const result = findPair(entry.id)?.result
+        return result != null && (result.metadata?.isError === true
+          || isShellFailure((entry.metadata?.name as string | undefined) ?? '', result))
+      }),
+    }
+    groupFacts.current.set(group, facts)
+    return facts
+  }, [findPair])
+  const pendingGroups = useMemo(() => {
+    const groups = new Set<TranscriptActivity>()
+    for (const id of [...pendingApprovals.keys(), ...pendingAsks.keys()]) {
+      const group = liveProjection.groupFor(id)
+      if (group) groups.add(group)
+    }
+    return groups
+  }, [pendingApprovals, pendingAsks, liveProjection, log, structuralVersion])
+  const activeGroup = activity.entryId === null ? undefined : liveProjection.groupFor(activity.entryId)
+  const isGroupExpanded = useCallback((group: TranscriptActivity) =>
+    pendingGroups.has(group) || ((group === activeGroup || expandedActivityGroups.has(group.id)
+      || liveProjection.imageGroups.has(group) || archivedProjection.imageGroups.has(group))
+      && !collapsedActivityGroups.has(group.id)),
+  [activeGroup, archivedProjection, collapsedActivityGroups, expandedActivityGroups, liveProjection, pendingGroups])
+  const rows = useMemo(() => {
+    const expanded = new Set<TranscriptActivity>()
+    const add = (group: TranscriptActivity | undefined) => {
+      if (group && isGroupExpanded(group)) expanded.add(group)
+    }
+    add(activeGroup)
+    pendingGroups.forEach(add)
+    archivedProjection.imageGroups.forEach(add)
+    liveProjection.imageGroups.forEach(add)
+    for (const id of expandedActivityGroups) add(liveProjection.groupFor(id) ?? archivedProjection.groupFor(id))
+    return createTranscriptRows(archivedProjection, liveProjection, ARCHIVE_END_ITEM, expanded)
+  }, [archivedProjection, liveProjection, log, structuralVersion, activeGroup, pendingGroups, expandedActivityGroups, isGroupExpanded])
 
-  const getVirtualItemKey = useCallback(
-    (index: number) => displayItems[index]?.id ?? index,
-    [displayItems]
-  )
-
+  const getVirtualItemKey = useCallback((index: number) => rows.rowAt(index)?.key ?? index, [rows])
+  // React focus events from an inline approval's portal bubble to the owning
+  // row even when the dialog lives under document.body.
+  const [focusedStep, setFocusedStep] = useState<{ key: string; element: HTMLDivElement } | null>(null)
+  const rangeExtractor = useCallback((range: Range) => {
+    const indexes = defaultRangeExtractor(range)
+    if (!focusedStep?.element.isConnected) return indexes
+    const { key, element } = focusedStep
+    const priorIndex = Number(element.dataset.index)
+    const focusedIndex = rows.rowAt(priorIndex)?.key === key ? priorIndex : rows.indexOf(key)
+    if (rows.rowAt(focusedIndex)?.key === key && !indexes.includes(focusedIndex)) {
+      indexes.push(focusedIndex)
+      indexes.sort((a, b) => a - b)
+    }
+    return indexes
+  }, [rows, focusedStep])
   const virtualizer = useVirtualizer({
-    count: displayItems.length,
+    count: rows.count,
     getScrollElement: () => scrollRef.current,
-    estimateSize: () => 60,
+    estimateSize: (index) => rows.rowAt(index)?.child === undefined ? 60 : 28,
     getItemKey: getVirtualItemKey,
+    rangeExtractor,
     overscan: 8,
-    // NOTE: do not enable useAnimationFrameWithResizeObserver here. Deferring
-    // measurement to rAF lets streamed entries regroup (shift data-index)
-    // between the ResizeObserver snapshot and the measurement, so sizes get
-    // written under the wrong item key — rows then overlap permanently.
+    // Measure before another append can move the row at this index.
   })
+
+  const scrollAnchor = useRef<{ key: string; firstStep?: string; offset: number } | null>(null)
+  const anchorFrame = useRef<number | null>(null)
+  const cancelAnchorCorrection = useCallback(() => {
+    if (anchorFrame.current !== null) cancelAnimationFrame(anchorFrame.current)
+    anchorFrame.current = null
+  }, [])
+  const committedRows = useRef(rows)
+  const transcriptListRef = useRef<HTMLDivElement>(null)
+  const listOffset = useCallback(() => {
+    const scroller = scrollRef.current
+    const list = transcriptListRef.current
+    return scroller && list ? list.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop : 0
+  }, [])
+  const captureScrollAnchor = useCallback(() => {
+    scrollAnchor.current = null
+    const top = (scrollRef.current?.scrollTop ?? 0) - listOffset()
+    const item = virtualizer.getVirtualItemForOffset(top)
+    const row = item && committedRows.current.rowAt(item.index)
+    if (item && row) {
+      const firstStep = row.item.kind === 'activity' && row.child === undefined ? row.item.entries[0].id : undefined
+      scrollAnchor.current = { key: row.key, firstStep, offset: top - item.start }
+    }
+  }, [listOffset, virtualizer])
+  useLayoutEffect(() => {
+    committedRows.current = rows
+    const anchor = scrollAnchor.current
+    if (!anchor) return
+    scrollAnchor.current = null
+    let index = rows.indexOf(anchor.key)
+    if (index < 0 && anchor.firstStep !== undefined) index = rows.indexOf(anchor.firstStep)
+    if (index < 0) return
+    const restore = (frames: number) => {
+      const offset = virtualizer.getOffsetForIndex(index, 'start')
+      const scroller = scrollRef.current
+      if (!offset || !scroller || userDragging.current) return
+      const top = offset[0] + listOffset() + anchor.offset
+      if (Math.abs(top - scroller.scrollTop) > 1) virtualizer.scrollToOffset(top)
+      anchorFrame.current = frames > 0 ? requestAnimationFrame(() => restore(frames - 1)) : null
+    }
+    // The new rows start with estimated heights. Correct the anchor after
+    // their ResizeObserver measurements land, while the scroll settles.
+    restore(3)
+    return cancelAnchorCorrection
+  }, [rows, listOffset, virtualizer, cancelAnchorCorrection])
 
   // Width toggle (comfortable ↔ full) reflows the column, so every row's height
   // changes. The stream no longer remounts on a width change (B5), so nudge the
@@ -1282,25 +1249,28 @@ function LoopStream({ loop }: { loop: string }) {
 
   // The user's own scroll gestures — the only things that stop following.
   const handleWheel = useCallback((e: React.WheelEvent) => {
+    cancelAnchorCorrection()
     const el = scrollRef.current
     if (e.deltaY < 0 && el && el.scrollTop > 0) followTail.current = false
-  }, [])
+  }, [cancelAnchorCorrection])
   const handleScrollKey = useCallback((e: React.KeyboardEvent) => {
     const target = e.target as HTMLElement
     if (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA') return
     if (e.key === 'ArrowUp' || e.key === 'PageUp' || e.key === 'Home' || (e.key === ' ' && e.shiftKey)) {
+      cancelAnchorCorrection()
       followTail.current = false
     }
-  }, [])
+  }, [cancelAnchorCorrection])
   // A scrollbar drag or touch pan: scroll events while it lasts are the user's.
   // A press on the scrollbar targets the scroller itself; one on a row (a
   // block header click) targets the row and is not a scroll gesture.
   const startUserDrag = useCallback(() => {
+    cancelAnchorCorrection()
     userDragging.current = true
     const end = (): void => { userDragging.current = false }
     window.addEventListener('pointerup', end, { once: true })
     window.addEventListener('touchend', end, { once: true })
-  }, [])
+  }, [cancelAnchorCorrection])
   const handleScrollbarPointerDown = useCallback((e: React.PointerEvent) => {
     if (e.target === e.currentTarget) startUserDrag()
   }, [startUserDrag])
@@ -1310,12 +1280,13 @@ function LoopStream({ loop }: { loop: string }) {
   // (one resolves, the next takes its place) — never on unrelated re-renders,
   // so we don't fight a user who has scrolled away.
   const activeApproval = useMemo(() => {
-    for (const entry of displayLog) {
+    if (pendingApprovals.size === 0) return null
+    for (const entry of liveProjection.visible) {
       const info = pendingApprovals.get(entry.id)
       if (info) return { logEntryId: entry.id, requestId: info.requestId }
     }
     return null
-  }, [displayLog, pendingApprovals])
+  }, [liveProjection, log, structuralVersion, pendingApprovals])
 
   const lastScrolledApprovalRef = useRef<string | undefined>(undefined)
   useEffect(() => {
@@ -1328,14 +1299,16 @@ function LoopStream({ loop }: { loop: string }) {
     // A deliberate move to the approval: stop pinning so the smooth scroll is
     // not fought. Landing at the bottom (the usual case) resumes following.
     followTail.current = false
-    const index = displayItems.findIndex((item) =>
-      item.kind === 'entry'
-        ? item.entry.id === activeApproval.logEntryId
-        : item.entries.some((e) => e.id === activeApproval.logEntryId)
-    )
-    if (index >= 0) virtualizer.scrollToIndex(index, { align: 'center', behavior: 'smooth' })
+    cancelAnchorCorrection()
+    const index = rows.indexOf(activeApproval.logEntryId)
+    if (index >= 0) {
+      // A windowed child may be thousands of rows away and still estimated.
+      // Jump to it so the virtualizer can measure and correct its position.
+      const behavior = rows.rowAt(index)?.child === undefined ? 'smooth' : 'auto'
+      virtualizer.scrollToIndex(index, { align: 'center', behavior })
+    }
     else if (scrollRef.current) scrollRef.current.scrollTo({ top: scrollRef.current.scrollHeight, behavior: 'smooth' })
-  }, [activeApproval, displayItems, virtualizer])
+  }, [activeApproval, rows, virtualizer, cancelAnchorCorrection])
 
   // Batched approvals fatigue the user one-by-one. "Approve all" resolves every
   // pending GATED (restricted) approval at once; protection/lock overrides are
@@ -1404,7 +1377,11 @@ function LoopStream({ loop }: { loop: string }) {
         if (cancelled) return
         const history = result?.chatHistory
         if (history?.uiLog?.length) {
+          // An approval or ask this loop raised before its tab first opened is
+          // bound to an entry the history replaces: carry it over.
+          const before = selectLoopSlice(useAgentStore.getState(), loop)
           setLog(history.uiLog as AgentLogEntry[], history.earlierCount ?? 0, loop)
+          rebindPendingRequests(before, loop)
         }
       })
       .catch(() => { /* stream unavailable — the tab just starts empty */ })
@@ -1513,7 +1490,6 @@ function LoopStream({ loop }: { loop: string }) {
   const addLogEntry = useAgentStore((s) => s.addLogEntry)
 
   const setState = useAgentStore((s) => s.setState)
-  const setSessionId = useAgentStore((s) => s.setSessionId)
 
   // The connector's media narrowed by the toggles, asked of the runtime (no
   // copy of the connector table here). Re-asked when the config, the loop or
@@ -1531,19 +1507,13 @@ function LoopStream({ loop }: { loop: string }) {
     audio: config?.model.multimodal?.audio ?? false,
     video: config?.model.multimodal?.video ?? false,
   }), [config, loopMedia])
-  const mediaSupport = media.support
 
-  const mediaLimits = useMemo(() => ({
-    image: config?.limits?.max_image_size_bytes ?? DEFAULT_MEDIA_LIMITS.image,
-    audio: config?.limits?.max_audio_size_bytes ?? DEFAULT_MEDIA_LIMITS.audio,
-    video: config?.limits?.max_video_size_bytes ?? DEFAULT_MEDIA_LIMITS.video,
-  }), [config])
 
   // Side loops are addressed as `agent:loop` (e.g. "aom:reflection") so the
   // composer placeholder names who actually receives the message.
   const agentName = isMainLoop
-    ? (config?.name?.trim() || 'the agent')
-    : `${config?.name?.trim() || 'agent'}:${loop}`
+    ? (filePath ? agentNameOf(filePath) : 'the agent')
+    : `${filePath ? agentNameOf(filePath) : 'agent'}:${loop}`
 
   // --- `/` command palette (design doc §5) --------------------------------
   //
@@ -1886,8 +1856,8 @@ function LoopStream({ loop }: { loop: string }) {
   // Only the latest error the agent has not moved past offers an action, and
   // not while a turn is running.
   const errorActionId = useMemo(
-    () => (isActive || starting ? null : actionableErrorId(displayLog)),
-    [displayLog, isActive, starting]
+    () => (isActive || starting ? null : actionableErrorId(liveProjection.visible)),
+    [liveProjection, log, structuralVersion, isActive, starting]
   )
 
   /** Put a row's command words in the composer and wait for its arguments. */
@@ -1974,18 +1944,14 @@ function LoopStream({ loop }: { loop: string }) {
     const oldestSeq = pickOldestSeq(s.log)
     if (oldestSeq === undefined) return
     setLoadingOlder(true)
+    const view = captureAgentView()
     try {
       const result = await openApi().getChatOlder(oldestSeq, undefined, loop)
+      if (!isCurrentAgentView(view)) return
+      if (pickOldestSeq(selectLoopSlice(useAgentStore.getState(), loop).log) !== oldestSeq) return
       if (result.uiLog.length > 0) {
-        // Count grouped display items so the previous top item can be
-        // re-anchored after the prepend without activity groups causing drift.
-        const olderLog = result.uiLog as AgentLogEntry[]
-        const olderDisplayLog = olderLog.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry))
-        const prependedDisplayCount = buildDisplayItems(olderDisplayLog, buildToolPairIndex(olderLog)).length
-        prependLog(olderLog, result.earlierCount, loop)
-        requestAnimationFrame(() => {
-          virtualizer.scrollToIndex(prependedDisplayCount, { align: 'start' })
-        })
+        captureScrollAnchor()
+        prependLog(result.uiLog as AgentLogEntry[], result.earlierCount, loop)
       } else {
         // No rows before the cursor — the boundary count was stale
         setEarlierCount(0, loop)
@@ -1995,7 +1961,7 @@ function LoopStream({ loop }: { loop: string }) {
     } finally {
       setLoadingOlder(false)
     }
-  }, [loadingOlder, prependLog, setEarlierCount, virtualizer, loop])
+  }, [loadingOlder, prependLog, setEarlierCount, captureScrollAnchor, loop])
 
   // Archived history: rows compactions and clears moved into adf_audit, read
   // a page per click once the whole live table is loaded and the user is at
@@ -2039,29 +2005,20 @@ function LoopStream({ loop }: { loop: string }) {
       if (current.hasMore === null) {
         patchArchive(generation, { liveHead: liveHeadOf(selectLoopSlice(useAgentStore.getState(), loop).log) }, loop)
       }
+      if (selectLoopSlice(useAgentStore.getState(), loop).archive.generation !== generation) return
+      if (entries.length > 0) captureScrollAnchor()
       prependArchive(generation, { entries, cursor: result.cursor, hasMore: result.hasMore, unreadable: result.unreadable }, loop)
-      if (entries.length > 0) {
-        const added = buildDisplayItems(
-          entries.filter((entry) => entry.type !== 'tool_result' && !isTurnCompleteMarker(entry)),
-          buildToolPairIndex(entries)
-        ).length
-        // The first page also adds the end-of-archive line.
-        const prepended = added + (current.entries.length === 0 ? 1 : 0)
-        requestAnimationFrame(() => {
-          virtualizer.scrollToIndex(prepended, { align: 'start' })
-        })
-      }
     } catch (error) {
       console.error('[AgentLoop] Failed to load archived loop history:', error)
       patchArchive(generation, { error: error instanceof Error ? error.message : String(error) }, loop)
     } finally {
       setLoadingArchived(false)
     }
-  }, [loadingArchived, loop, patchArchive, prependArchive, virtualizer])
+  }, [loadingArchived, loop, patchArchive, prependArchive, captureScrollAnchor])
 
   const findToolPair = useCallback((entry: AgentLogEntry) => {
-    return toolPairIndex.get(entry.id) ?? { call: null, result: null }
-  }, [toolPairIndex])
+    return findPair(entry.id) ?? { call: null, result: null }
+  }, [findPair])
 
   // Stable — LogEntryRow is memo'd, and a fresh handler here would re-render
   // every visible row on every streaming delta.
@@ -2117,25 +2074,14 @@ function LoopStream({ loop }: { loop: string }) {
     }
   }, [])
 
-  // A group with an unanswered approval or ask is locked open — the user has
-  // to act on it. A group with an image result only opens by default: the
-  // preview is worth surfacing, but a manual collapse must still win.
-  const activityHasPendingInput = useCallback((entries: AgentLogEntry[]): boolean => {
-    return entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
-  }, [pendingApprovals, pendingAsks])
-
-  const activityHasImage = useCallback((entries: AgentLogEntry[]): boolean => {
-    return entries.some((entry) => Boolean(toolPairIndex.get(entry.id)?.result?.metadata?.imageUrl))
-  }, [toolPairIndex])
-
   const renderLogEntry = (grouped: AgentLogEntry, compact = false) => {
     const entry = liveEntry(grouped)
-    const toolPair = entry.type === 'tool_call' ? toolPairIndex.get(entry.id) : undefined
+    const toolPair = entry.type === 'tool_call' ? findPair(entry.id) : undefined
     // Effective error: the executor's isError flag, OR — for adf_shell, which
     // always reports isError:false — a nonzero exit_code in the result payload.
     const pairedResult = toolPair?.result
     const toolResultIsError = entry.type === 'tool_call' && pairedResult
-      ? isShellFailure((entry.metadata?.name as string | undefined) ?? '', pairedResult.content)
+      ? isShellFailure((entry.metadata?.name as string | undefined) ?? '', pairedResult)
         || ((pairedResult.metadata?.isError as boolean | undefined) ?? null)
       : null
     const askAnswer = entry.metadata?.askAnswer as string | undefined
@@ -2170,6 +2116,7 @@ function LoopStream({ loop }: { loop: string }) {
         askAnswer={askAnswer ?? pairedAskAnswer}
         compact={compact}
         continuing={activity.entryId === entry.id}
+        streamingText={entry.type === 'text' && isActive && entry.id === tailEntry?.id && lacksSeq(entry)}
         errorAction={entry.type === 'error' && entry.id === errorActionId ? errorAction(entry.content) : null}
         onErrorAction={handleErrorAction}
       />
@@ -2256,13 +2203,14 @@ function LoopStream({ loop }: { loop: string }) {
       >
       <div className={columnClass}>
         {hasBoundary && <div className="h-7" aria-hidden />}
-        {displayItems.length === 0 && !isActive && !starting && (
+        {rows.count === 0 && !isActive && !starting && (
           <p className="mt-8 text-center text-sm text-[var(--ink-faint)]">
             No messages yet.
           </p>
         )}
-        {displayItems.length > 0 && (
+        {rows.count > 0 && (
           <div
+            ref={transcriptListRef}
             style={{
               height: `${virtualTotalSize}px`,
               width: '100%',
@@ -2270,46 +2218,21 @@ function LoopStream({ loop }: { loop: string }) {
             }}
           >
             {virtualItems.map((virtualItem) => {
-              const displayItem = displayItems[virtualItem.index]
-              if (!displayItem) return null
-              const attentionRequired = displayItem.kind === 'activity' && activityHasPendingInput(displayItem.entries)
-              const openByDefault = displayItem.kind === 'activity' && activityHasImage(displayItem.entries)
-              const isLiveTail = displayItem.kind === 'activity'
-                && displayItem.entries.some((entry) => entry.id === activity.entryId)
-              const activityDurationMs = displayItem.kind === 'activity'
-                ? getActivityDurationMs(displayItem.entries, toolPairIndex)
-                : null
-              const currentStep = displayItem.kind === 'activity'
-                ? displayItem.entries.find((entry) => entry.id === activity.entryId)
-                : undefined
-              const activitySummary = displayItem.kind === 'activity'
-                ? getActivitySummary(currentStep ? [currentStep] : displayItem.entries)
-                : { label: '', family: 'neutral' as ToolFamily }
-              const activityHasPending = displayItem.kind === 'activity'
-                && displayItem.entries.some((entry) => pendingApprovals.has(entry.id) || pendingAsks.has(entry.id))
-              const activityHasError = displayItem.kind === 'activity'
-                && displayItem.entries.some((entry) => {
-                  const result = toolPairIndex.get(entry.id)?.result
-                  if (!result) return false
-                  return result.metadata?.isError === true
-                    || isShellFailure((entry.metadata?.name as string | undefined) ?? '', result.content)
-                })
-              const activityAccent = activityHasError
-                ? ERROR_TOOL_STYLE
-                : activityHasPending
-                  ? ATTENTION_TOOL_STYLE
-                  : TOOL_FAMILY_STYLES[activitySummary.family]
-              const activityExpanded = displayItem.kind === 'activity'
-                && (attentionRequired
-                  // Brand §10: tool calls collapsed by default — except the block
-                  // the agent is working in, which stays open so its steps can
-                  // be followed as they land, and folds once the work ends.
-                  || ((openByDefault || isLiveTail || expandedActivityGroups.has(displayItem.id))
-                    && !collapsedActivityGroups.has(displayItem.id)))
-
+              const row = rows.rowAt(virtualItem.index)
+              if (!row) return null
+              const { item: displayItem, child, windowed } = row
+              const group = displayItem.kind === 'activity' && child === undefined ? displayItem : undefined
+              const facts = group && getGroupFacts(group)
+              const activityExpanded = group !== undefined && isGroupExpanded(group)
+              const hasPending = group !== undefined && pendingGroups.has(group)
+              const isLiveTail = group !== undefined && group === activeGroup
+              const currentStep = isLiveTail && !activityExpanded ? group?.entries.find(entry => entry.id === activity.entryId) : undefined
+              const activitySummary = currentStep ? getActivitySummary([currentStep]) : facts?.summary
+              const activityAccent = facts?.hasError ? ERROR_TOOL_STYLE
+                : hasPending ? ATTENTION_TOOL_STYLE : TOOL_FAMILY_STYLES[activitySummary?.family ?? 'neutral']
               return (
                 <div
-                  key={displayItem.id}
+                  key={row.key}
                   style={{
                     position: 'absolute',
                     top: 0,
@@ -2318,13 +2241,24 @@ function LoopStream({ loop }: { loop: string }) {
                     transform: `translateY(${virtualItem.start}px)`,
                   }}
                   data-index={virtualItem.index}
+                  data-transcript-step={child === undefined ? undefined : row.key}
+                  onFocusCapture={child === undefined ? undefined : event => setFocusedStep({ key: row.key, element: event.currentTarget })}
+                  onBlurCapture={child === undefined ? undefined : () => setFocusedStep(current => current?.key === row.key ? null : current)}
                   ref={virtualizer.measureElement}
                 >
                   {displayItem.kind === 'entry' ? (
                     <div className="py-1">{renderLogEntry(displayItem.entry)}</div>
+                  ) : child !== undefined ? (
+                    <div className={child === displayItem.entries.length - 1 ? 'px-3 pb-1' : 'px-3'}>
+                      <div className={child === displayItem.entries.length - 1
+                        ? 'rounded-b-lg border-x border-b border-[var(--rule)] bg-[var(--paper-sunken)] pb-0.5'
+                        : 'border-x border-[var(--rule)] bg-[var(--paper-sunken)]'}>
+                        {renderLogEntry(displayItem.entries[child], true)}
+                      </div>
+                    </div>
                   ) : (
-                    <div className="px-3 py-1">
-                     <div className={LOG_BOX}>
+                    <div className={windowed ? 'px-3 pt-1' : 'px-3 py-1'}>
+                     <div className={windowed ? 'overflow-hidden rounded-t-lg border border-[var(--rule)] bg-[var(--paper-sunken)]' : LOG_BOX}>
                       <button
                         type="button"
                         onClick={() => toggleActivityGroup(displayItem.id, activityExpanded)}
@@ -2332,7 +2266,7 @@ function LoopStream({ loop }: { loop: string }) {
                         className={`flex w-full items-center gap-1.5 px-1.5 py-1 text-left font-mono text-xs text-[var(--ink-muted)] ${LOG_ROW_HOVER}`}
                       >
                         <span className="shrink-0 text-[10px] leading-none text-[var(--ink-faint)]" aria-hidden>{activityExpanded ? '\u25BC' : '\u25B6'}</span>
-                        {(activityHasError || activityHasPending) && (
+                        {(facts?.hasError || hasPending) && (
                           <span className={`h-1.5 w-1.5 shrink-0 rounded-full ${activityAccent.dot}`} aria-hidden />
                         )}
                         <span className={`shrink-0 text-[var(--ink-faint)] ${activityExpanded ? 'flex-1 text-left' : ''}`}>
@@ -2341,26 +2275,19 @@ function LoopStream({ loop }: { loop: string }) {
                         {!activityExpanded && <span
                           data-agent-continuing={isLiveTail || undefined}
                           className="min-w-0 flex-1 truncate text-left"
-                          title={activitySummary.label}
+                          title={activitySummary?.label}
                         >
                           <span className={isLiveTail ? 'inline-block max-w-full truncate align-bottom adf-shimmer-text adf-shimmer-text--activity' : undefined}>
-                            {activitySummary.label}
+                            {activitySummary?.label}
                           </span>
                           {isLiveTail && <span className="sr-only"> — agent continuing</span>}
                         </span>}
-                        {activityDurationMs != null && !isLiveTail && (
+                        {facts?.duration != null && !isLiveTail && (
                           <span className="shrink-0 tabular-nums text-[var(--ink-faint)]">
-                            {formatActivityDuration(activityDurationMs)}
+                            {formatActivityDuration(facts.duration)}
                           </span>
                         )}
                       </button>
-                      {activityExpanded && (
-                        <div className="border-t border-[var(--rule)] py-0.5">
-                          {displayItem.entries.map((entry) => (
-                            <div key={entry.id}>{renderLogEntry(entry, true)}</div>
-                          ))}
-                        </div>
-                      )}
                      </div>
                     </div>
                   )}
@@ -2793,6 +2720,11 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, onOpenMenu, disa
   // (which IS the agent state, §6.3) and a side loop to its own slice, which
   // `useAgent` fills the moment that loop's executor emits `state_changed`.
   const loopState = useAgentStore((s) => selectLoopSlice(s, name).state)
+  // An inner loop's approvals and questions show only in its own tab, so the
+  // tab says they are waiting. Main's are already shown wherever the agent is
+  // listed (the sidebar's waiting ring counts both).
+  const pendingApprovalCount = useAgentStore((s) => name === MAIN_LOOP ? 0 : selectLoopSlice(s, name).pendingApprovals.size)
+  const pendingAskCount = useAgentStore((s) => name === MAIN_LOOP ? 0 : selectLoopSlice(s, name).pendingAsks.size)
   // A side loop that has never emitted reads the default slice ('idle'), and a
   // stopped agent holds no runtime for it — painting that green would claim a
   // mind is alive behind the tab when the pool has none. Read main's state for
@@ -2862,7 +2794,29 @@ function LoopTab({ name, label, active, onSelect, onOpenConfig, onOpenMenu, disa
         )}
       </span>
       <span className="max-w-[9rem] truncate">{label}</span>
+      <LoopPendingBadge approvals={pendingApprovalCount} asks={pendingAskCount} />
     </button>
+  )
+}
+
+/** A loop tab's count of pending approvals and questions, styled as the approvals bell's. Nothing at zero. */
+export function LoopPendingBadge({ approvals, asks }: { approvals: number; asks: number }) {
+  const count = approvals + asks
+  if (count <= 0) return null
+  const label = [
+    approvals > 0 ? `${approvals} pending approval${approvals === 1 ? '' : 's'}` : null,
+    asks > 0 ? `${asks} pending question${asks === 1 ? '' : 's'}` : null,
+  ].filter(Boolean).join(', ')
+  return (
+    <span
+      data-loop-pending-approvals=""
+      role="img"
+      aria-label={label}
+      title={label}
+      className="min-w-[14px] h-[14px] px-[3px] flex items-center justify-center rounded-full bg-[var(--status-draft-bg)] text-[var(--status-draft)] text-[9px] font-semibold leading-none tabular-nums"
+    >
+      {count}
+    </span>
   )
 }
 

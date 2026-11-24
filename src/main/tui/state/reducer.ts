@@ -52,7 +52,7 @@ export const MAX_LAST_EVENTS = 5000
 export type TuiAction =
   | { type: 'connection'; info: ConnectionInfo }
   | { type: 'daemon/reachable'; reachable: boolean }
-  | { type: 'agents/loaded'; agents: AgentSummary[] }
+  | { type: 'agents/loaded'; agents: AgentSummary[]; initialSelection?: { agentId: string; loop?: string } }
   | { type: 'agent/status'; agentId: string; status: AgentStatus }
   | { type: 'agent/config'; agentId: string; config: AgentConfig }
   | { type: 'agent/error'; agentId: string; error: string | undefined }
@@ -189,6 +189,11 @@ export function tuiReducer(state: TuiState, action: TuiAction): TuiState {
       const previous = Object.fromEntries(Object.entries(state.agents).map(([id, a]) => [id, a.summary]))
       const tracked = state.tracked ? pruneLoaded(state.tracked, action.agents) : null
       const next = { ...state, agents, agentOrder, tracked }
+      if (action.initialSelection) {
+        const { agentId, loop } = action.initialSelection
+        const selectedLoop = loop && loop !== MAIN_LOOP ? { ...next.selectedLoop, [agentId]: loop } : next.selectedLoop
+        return { ...next, selectedAgentId: agentId, selectedLoop }
+      }
       return { ...next, selectedAgentId: reconcileSelection(next, previous) }
     }
     case 'tracked/loaded': {

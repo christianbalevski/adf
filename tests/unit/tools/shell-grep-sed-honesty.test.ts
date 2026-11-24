@@ -93,6 +93,17 @@ describe('grep honesty', () => {
     expect(miss.exit_code).toBe(1)
   })
 
+  it('-rq stops reading files after its first hit and respects -m 0', async () => {
+    const grep = await getHandler('text', 'grep')
+    const vfs = { 'a.txt': 'hit\n', 'b.txt': 'hit\n' }
+    const { ctx } = ctxOf({ args: ['hit'], flags: { r: true, q: true }, vfs })
+    expect(await grep.execute(ctx)).toEqual({ exit_code: 0, stdout: '', stderr: '' })
+    expect(ctx.toolRegistry.executeTool).toHaveBeenCalledTimes(1)
+
+    const { ctx: limited } = ctxOf({ args: ['hit'], flags: { r: true, q: true, m: '0' }, vfs })
+    expect(await grep.execute(limited)).toEqual({ exit_code: 1, stdout: '', stderr: '' })
+  })
+
   it('-l lists matching files (recursive)', async () => {
     const grep = await getHandler('text', 'grep')
     const r = await grep.execute(ctxOf({ args: ['hit'], flags: { l: true, r: true }, vfs: { 'a.txt': 'hit\n', 'b.txt': 'miss\n' } }).ctx)

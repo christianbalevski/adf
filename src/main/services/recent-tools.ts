@@ -3,19 +3,15 @@ import type { AdfWorkspace } from '../adf/adf-workspace'
 /**
  * Read recent tool calls from an agent's workspace loop table.
  * Extracts tool_use/tool_result pairs from the last ~30 loop entries.
- * Used for agents the mesh does not track (MESH_GET_RECENT_TOOLS in Studio,
- * GET /fleet/recent-tools in the daemon).
+ * Used by MESH_GET_RECENT_TOOLS in Studio and GET /fleet/recent-tools in the daemon.
  */
 export function readRecentToolsFromWorkspace(
-  workspace: Pick<AdfWorkspace, 'getLoopCount' | 'getLoopPaginated' | 'getLoop'>,
-  limit: number
+  workspace: Pick<AdfWorkspace, 'getLoopTail'>,
+  limit: number,
+  onError?: (error: unknown) => void
 ): { name: string; args?: string; isError?: boolean; timestamp: number }[] {
   try {
-    const totalCount = workspace.getLoopCount()
-    const offset = Math.max(0, totalCount - 30)
-    const entries = offset > 0
-      ? workspace.getLoopPaginated(30, offset)
-      : workspace.getLoop()
+    const entries = workspace.getLoopTail(30)
 
     const toolUseMap = new Map<string, { name: string; args?: string; timestamp: number }>()
     const tools: { name: string; args?: string; isError?: boolean; timestamp: number }[] = []
@@ -52,7 +48,8 @@ export function readRecentToolsFromWorkspace(
     }
 
     return tools.slice(-limit)
-  } catch {
+  } catch (error) {
+    onError?.(error)
     return []
   }
 }

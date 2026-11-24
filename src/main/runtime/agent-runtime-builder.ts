@@ -197,6 +197,7 @@ interface PrepareHttpOAuthParams {
   keyRef: DerivedKeyRef
   executor: AgentExecutor | null
   signIns: Set<AbortController>
+  signal: AbortSignal
   /** Raised outside a turn: each approval restores the executor state. */
   restoreState: boolean
 }
@@ -205,9 +206,9 @@ interface PrepareHttpOAuthParams {
 interface McpRuntime {
   manager: McpClientManager | null
   scratchDir: string | null
-  connect: (freshConfig: AgentConfig, serverName: string, reason: string, opts: McpConnectOpts) => Promise<McpConnectOutcome>
+  connect: (serverName: string, reason: string, opts: McpConnectOpts) => Promise<McpConnectOutcome>
   reconcile: (nextConfig: AgentConfig) => Promise<void>
-  abortInteractiveSignIns: () => void
+  cancelPending: () => void
   /** Raise the sign-ins deferred to this agent's next LLM turn (host beforeDispatch, not awaited). */
   runDeferredSignIns: () => Promise<void>
 }
@@ -296,38 +297,30 @@ export class AgentRuntimeBuilder {
     // a freshly-synced config out to the live executor once it exists (a no-op
     // during the initial connect, which runs before assembly).
     let assembled: AssembledAgent<'daemon'> | undefined
-    const mcpRuntime = await this.registerMcpTools(
-      registry,
-      workspace,
-      config,
-      label,
-      adfCallHandler,
-      () => assembled ?? null,
-      keyRef,
-    )
-    const adapterRuntime = await this.registerChannelAdapters(workspace, config, keyRef)
-    // StreamBindingManager is keyed by the stable agent id (config.id) —
-    // parity with the Studio background path, and the id the podman compute
-    // registry tracks.
-    const streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, config.id, filePath ?? config.id)
-    this.wireFetchMiddleware(registry, workspace, agentId, adfCallHandler)
-    const sysGetConfigTool = registry.get('sys_get_config') as SysGetConfigTool | undefined
-    sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), registry))
+    // MCP tool setup runs first, and adapter startup buffers inbound until
+    // assembly. Await both outcomes so cleanup owns any successful sibling.
+    const [mcpStartup, adapterStartup] = await Promise.allSettled([
+      this.registerMcpTools(registry, workspace, config, label, adfCallHandler, () => assembled ?? null, keyRef),
+      this.registerChannelAdapters(workspace, config, keyRef),
+    ])
 
     let disposed = false
+    let streamBindingManager: StreamBindingManager | null = null
     const cleanup = async () => {
       if (disposed) return
       disposed = true
       const cleanupPromises: Promise<unknown>[] = [...computeStartup]
-      // An interactive OAuth sign-in still waiting on its browser callback
-      // closes its loopback listener now instead of at its own timeout.
-      mcpRuntime.abortInteractiveSignIns()
-      if (mcpRuntime.manager) {
+      const mcpRuntime = mcpStartup.status === 'fulfilled' ? mcpStartup.value : null
+      const adapterRuntime = adapterStartup.status === 'fulfilled' ? adapterStartup.value : null
+      // Stop preprocessing, handshakes and interactive OAuth before removing
+      // the manager's entries and closing its connected servers.
+      mcpRuntime?.cancelPending()
+      if (mcpRuntime?.manager) {
         const mgr = mcpRuntime.manager
         mgr.removeAllListeners()
         cleanupPromises.push(mgr.disconnectAll())
       }
-      if (adapterRuntime.manager) {
+      if (adapterRuntime?.manager) {
         const mgr = adapterRuntime.manager
         mgr.removeAllListeners()
         cleanupPromises.push(mgr.stopAll())
@@ -343,7 +336,7 @@ export class AgentRuntimeBuilder {
         }
       }
       await Promise.allSettled(cleanupPromises)
-      removeScratchDir(mcpRuntime.scratchDir)
+      removeScratchDir(mcpRuntime?.scratchDir ?? null)
       if (this.codeSandboxService) {
         // Reap by prefix: lambdas, middleware and taps live in derived sandbox
         // ids (`<agentId>:lambda:<file>:<fn>[:<invocation>]`), and cold lambdas
@@ -353,26 +346,39 @@ export class AgentRuntimeBuilder {
       }
     }
 
-    const systemScopeHandler = this.codeSandboxService && adfCallHandler
-      ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
-      : null
-
-    // Umbilical bus + taps + agent.loaded/unloaded + adapter/MCP bridges.
-    // Shared with both Studio hosts (runtime/umbilical-lifecycle.ts) so all
-    // three produce the same ordered event stream. Listed FIRST so its start
-    // runs before every other resource and its stop runs last.
-    const umbilical = createUmbilicalResources({
-      agentId: config.id,
-      workspace,
-      filePath,
-      config,
-      codeSandboxService: this.codeSandboxService,
-      adfCallHandler,
-      adapterManager: adapterRuntime.manager,
-      mcpManager: mcpRuntime.manager,
-    })
-
     try {
+      if (mcpStartup.status === 'rejected') throw mcpStartup.reason
+      if (adapterStartup.status === 'rejected') throw adapterStartup.reason
+      const mcpRuntime = mcpStartup.value
+      const adapterRuntime = adapterStartup.value
+
+      // StreamBindingManager is keyed by the stable agent id (config.id) —
+      // parity with the Studio background path, and the id the podman compute
+      // registry tracks.
+      streamBindingManager = this.registerStreamBindingTools(registry, workspace, config, config.id, filePath ?? config.id)
+      this.wireFetchMiddleware(registry, workspace, agentId, adfCallHandler)
+      const sysGetConfigTool = registry.get('sys_get_config') as SysGetConfigTool | undefined
+      sysGetConfigTool?.setToolDiscoveryProvider((ws) => buildToolDiscovery(ws.getAgentConfig(), registry))
+
+      const systemScopeHandler = this.codeSandboxService && adfCallHandler
+        ? new SystemScopeHandler(workspace, this.codeSandboxService, adfCallHandler, agentId)
+        : null
+
+      // Umbilical bus + taps + agent.loaded/unloaded + adapter/MCP bridges.
+      // Shared with both Studio hosts (runtime/umbilical-lifecycle.ts) so all
+      // three produce the same ordered event stream. Listed FIRST so its start
+      // runs before every other resource and its stop runs last.
+      const umbilical = createUmbilicalResources({
+        agentId: config.id,
+        workspace,
+        filePath,
+        config,
+        codeSandboxService: this.codeSandboxService,
+        adfCallHandler,
+        adapterManager: adapterRuntime.manager,
+        mcpManager: mcpRuntime.manager,
+      })
+
       assembled = assembleAgent({
         profile: 'daemon',
         workspace,
@@ -499,7 +505,7 @@ export class AgentRuntimeBuilder {
         keyRef,
         mcpManager: mcpRuntime.manager,
         adapterManager: adapterRuntime.manager,
-        connectMcpServer: (serverName, reason) => mcpRuntime.connect(workspace.getAgentConfig(), serverName, reason, { interactive: false }),
+        connectMcpServer: (serverName, reason) => mcpRuntime.connect(serverName, reason, { interactive: false }),
       }
       this.builtAgents.set(assembled, state)
       this.builtByWorkspace.set(workspace, state)
@@ -644,6 +650,9 @@ export class AgentRuntimeBuilder {
       resolveOAuthStoreForConnect({ agentStore: new AgentKeystoreOAuthStore(workspace, cfg.name, keyRef.current) }),
     )
     const manager = new McpClientManager(scratchDir, oauthProviderFactory)
+    const lifecycle = new AbortController()
+    const { signal } = lifecycle
+    const stopped: McpConnectOutcome = { toolsDiscovered: 0, error: 'Agent stopped before MCP connection completed' }
     // Interactive sign-ins in flight, aborted at teardown; one per server.
     const signIns = new Set<AbortController>()
     const signInsByServer = new Map<string, Promise<OAuthReadiness>>()
@@ -698,6 +707,7 @@ export class AgentRuntimeBuilder {
       reason: string,
       connectOpts: McpConnectOpts,
     ): Promise<McpConnectOutcome> => {
+      if (signal.aborted) return stopped
       const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
       if (!serverCfg) throw new Error(`Server "${serverName}" not found.`)
 
@@ -725,17 +735,18 @@ export class AgentRuntimeBuilder {
         connCfg.env = { ...connCfg.env, ...resolvedEnv }
       }
 
+      const computeSettings = this.getComputeRoutingSettings()
+      const willContainerize = connCfg.transport !== 'http'
+        && shouldContainerize(connCfg.name, connCfg, freshConfig, computeSettings)
       let uvBinPath: string | undefined
-      if (connCfg.transport !== 'http' && (connCfg.pypi_package || connCfg.command === 'uvx')) {
+      if (connCfg.transport !== 'http' && !(willContainerize && this.podmanService) && (connCfg.pypi_package || connCfg.command === 'uvx')) {
         try { uvBinPath = await this.uvManager?.ensureUv() } catch { /* uv not available */ }
+        if (signal.aborted) return stopped
       }
 
       let connectOptions: import('../services/mcp-client-manager').McpConnectOptions | undefined
       let location: McpConnectOutcome['location'] = 'host'
       let hostDenied: string | undefined
-      const computeSettings = this.getComputeRoutingSettings()
-      const willContainerize = connCfg.transport !== 'http'
-        && shouldContainerize(connCfg.name, connCfg, freshConfig, computeSettings)
       let oauthReadiness: OAuthReadiness | null = null
       if (connCfg.transport === 'http') {
         location = 'remote http'
@@ -750,6 +761,7 @@ export class AgentRuntimeBuilder {
             signIns,
             inFlight: signInsByServer,
             restoreState: connectOpts.outsideTurn === true,
+            signal,
           })
         }
       } else if (this.podmanService && willContainerize) {
@@ -769,26 +781,33 @@ export class AgentRuntimeBuilder {
           ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
           : podman.ensureRunning(),
         ).catch((err: unknown) => {
+          if (signal.aborted) return undefined
           if (err instanceof ComputeUnavailableError) manager.markFailed(serverCfg, err.message, 'needs_compute')
           throw err
         })
+        if (signal.aborted) return stopped
         const containerName = isolated ? isolatedContainerName(freshConfig.name, freshConfig.id) : 'adf-mcp'
         try { await this.podmanService.ensureWorkspace(containerName, containerWorkspacePath(isolated, freshConfig.id)) } catch { /* ignore */ }
+        if (signal.aborted) return stopped
         try { await this.podmanService.ensureWorkspace(containerName, containerAgentHome(isolated, freshConfig.id)) } catch { /* ignore */ }
+        if (signal.aborted) return stopped
         // Materialize stored credential files into the server's home before spawn.
         const agentHome = containerAgentHome(isolated, freshConfig.id)
         const serverHome = mcpServerContainerHome(connCfg, agentHome)
         if (serverHome !== agentHome) { try { await this.podmanService.ensureWorkspace(containerName, serverHome) } catch { /* ignore */ } }
+        if (signal.aborted) return stopped
         await materializeCredentialFiles(
           credFiles,
           connCfg,
           containerCredentialTarget(this.podmanService, containerName, serverHome),
         )
+        if (signal.aborted) return stopped
         if (podmanBin) {
           // Browser-dependent MCP servers need the container's browser
           // runtime env — parity with the Studio foreground connect path.
           let browserEnv: Record<string, string> = {}
           try { browserEnv = await this.podmanService.getBrowserRuntimeEnv() } catch { /* best effort */ }
+          if (signal.aborted) return stopped
           connectOptions = {
             externalTransport: new PodmanStdioTransport({
               podmanBin,
@@ -826,8 +845,10 @@ export class AgentRuntimeBuilder {
         if (spawn.args) connCfg.args = spawn.args
       }
 
+      if (signal.aborted) return stopped
       console.log(`[AgentRuntimeBuilder][MCP] ${reason}: connecting "${serverName}" (${location})`)
-      const tools = await manager.connect(connCfg, connectOptions)
+      const tools = await manager.connect(connCfg, { ...connectOptions, signal })
+      if (signal.aborted) return stopped
       if (!tools) {
         if (connectOpts.deferSignIn && oauthReadiness === 'no_token') {
           // No turn to raise the sign-in in (a config write to an idle or off
@@ -869,6 +890,7 @@ export class AgentRuntimeBuilder {
     // side: the workspace already holds the new config when either fires.
     let previousReconciled: AgentConfig = config
     const reconcile = async (nextConfig: AgentConfig): Promise<void> => {
+      if (signal.aborted) return
       const prev = previousReconciled
       previousReconciled = nextConfig
       const { added, removed } = diffMcpServerNames(prev, nextConfig)
@@ -876,6 +898,7 @@ export class AgentRuntimeBuilder {
 
       const registeredNames = new Set(this.getMcpRegistrations().map(r => r.name))
       for (const name of added) {
+        if (signal.aborted) return
         const serverCfg = nextConfig.mcp?.servers?.find(s => s.name === name)
         if (!serverCfg) continue
         // Same skip rule as the start-up connect loop.
@@ -894,6 +917,7 @@ export class AgentRuntimeBuilder {
           // must not leave it in awaiting_approval with no turn to resume.
           const interactive = getAssembled()?.executor.isTurnActive() ?? false
           const result = await connectOneServer(nextConfig, name, 'Attached', { interactive, deferSignIn: !interactive })
+          if (signal.aborted) return
           if (result.toolsDiscovered > 0) {
             console.log(`[AgentRuntimeBuilder][MCP] Reconcile: connected "${name}" — ${result.toolsDiscovered} tools now available to agent`)
           } else if (result.error) {
@@ -903,6 +927,7 @@ export class AgentRuntimeBuilder {
             console.warn(`[AgentRuntimeBuilder][MCP] Reconcile: "${name}" connected with no tools (may need credentials or a later reconnect)`)
           }
         } catch (err) {
+          if (signal.aborted) return
           // One server's failure must not abort the others or the config save.
           // Recorded on the manager, so the server's status says why.
           const message = err instanceof Error ? err.message : String(err)
@@ -913,6 +938,7 @@ export class AgentRuntimeBuilder {
       }
 
       for (const name of removed) {
+        if (signal.aborted) return
         try {
           await manager.disconnect(name)
         } catch (err) {
@@ -928,16 +954,21 @@ export class AgentRuntimeBuilder {
       }
     }
 
+    const connectCurrent = (serverName: string, reason: string, opts: McpConnectOpts): Promise<McpConnectOutcome> =>
+      signal.aborted ? Promise.resolve(stopped) : connectOneServer(workspace.getAgentConfig(), serverName, reason, opts)
     const runtime: McpRuntime = {
       manager,
       scratchDir,
-      connect: connectOneServer,
+      connect: connectCurrent,
       reconcile,
-      abortInteractiveSignIns: () => {
+      cancelPending: () => {
+        lifecycle.abort()
         for (const controller of signIns) controller.abort()
         signIns.clear()
+        deferredSignIns.clear()
       },
       runDeferredSignIns: () => {
+        if (signal.aborted) return Promise.resolve()
         // Single flight; nobody waits on it. Its approvals run beside the
         // turn (restoreState) and never touch the executor state mid-turn.
         if (deferredRun) return deferredRun
@@ -947,6 +978,7 @@ export class AgentRuntimeBuilder {
         deferredSignIns.clear()
         deferredRun = (async () => {
           for (const name of names) {
+            if (signal.aborted) return
             const fresh = workspace.getAgentConfig()
             if (!fresh.mcp?.servers?.some(s => s.name === name)) continue
             try {
@@ -962,13 +994,14 @@ export class AgentRuntimeBuilder {
 
     // The owner's restart / connect-after-attach (POST /agents/:id/mcp/servers/:name/restart).
     // Not interactive: Studio's owner restart reuses the stored connection and never prompts.
-    registerMcpConnector(manager, (serverName, reason = 'Owner restart') => connectOneServer(workspace.getAgentConfig(), serverName, reason, { interactive: false }))
+    registerMcpConnector(manager, (serverName, reason = 'Owner restart') => connectCurrent(serverName, reason, { interactive: false }))
 
     // Register the MCP management tools UNCONDITIONALLY — declared/enabled
     // gating happens per-call in the shell/executor, not at registration time.
     // Gating registration on the start-time config leaves the registry stale
     // when a tool is enabled later (the bug this fixes for headless agents).
     registry.register(new McpInstallTool(async (serverName, installOptions) => {
+      if (signal.aborted) return stopped
       const freshConfig = workspace.getAgentConfig()
       const serverCfg = freshConfig.mcp?.servers?.find(s => s.name === serverName)
       if (!serverCfg) return
@@ -983,24 +1016,27 @@ export class AgentRuntimeBuilder {
         const cfg = { ...pinned, env: { ...pinned.env, ...registrationAppEnv(authReg) } }
         const authCfg = { ...cfg }
         const resolvedEnv = resolveMcpEnvVars(cfg, key => workspace.getIdentityDecrypted(key, keyRef.current))
+        const willContainerize = shouldContainerize(cfg.name, cfg, freshConfig, this.getComputeRoutingSettings())
         let uvBinPath: string | undefined
-        if (cfg.pypi_package || cfg.command === 'uvx') {
+        if (!(willContainerize && this.podmanService) && (cfg.pypi_package || cfg.command === 'uvx')) {
           try { uvBinPath = await this.uvManager?.ensureUv() } catch { /* uv not available */ }
+          if (signal.aborted) return stopped
         }
         // Mirror the connect path's routing: containerized servers run the
         // auth subcommand INSIDE their container so tokens persist where the
         // server will run. ensure* failures propagate — fail plainly.
         let container: import('../services/mcp-auth-preflight').ContainerAuthTarget | undefined
-        const willContainerize = shouldContainerize(cfg.name, cfg, freshConfig, this.getComputeRoutingSettings())
         if (this.podmanService && willContainerize) {
           const isolated = shouldIsolate(freshConfig) && !isServerForceShared(cfg)
           const podman = this.podmanService
           const podmanBin = await prepareMcpContainer(podman, cfg.name, () => isolated
             ? podman.ensureIsolatedRunning(freshConfig.name, freshConfig.id, freshConfig.compute?.packages?.pip)
             : podman.ensureRunning()).catch((err: unknown) => {
+            if (signal.aborted) return undefined
             if (err instanceof ComputeUnavailableError) manager.markFailed(cfg, err.message, 'needs_compute')
             throw err
           })
+          if (!podmanBin || signal.aborted) return stopped
           const cc = resolveContainerCommand(cfg)
           container = {
             podmanBin,
@@ -1012,6 +1048,7 @@ export class AgentRuntimeBuilder {
           }
           // The auth subcommand writes tokens into $HOME — make sure it exists.
           try { await this.podmanService.ensureWorkspace(container.containerName, container.home!) } catch { /* preflight itself will surface real failures */ }
+          if (signal.aborted) return stopped
         }
         const podmanSvc = this.podmanService
         const { owner, files: credFiles, capture: credCapture } = mcpServerCredentials(cfg, authReg, freshConfig.id, agentCredentialStore())
@@ -1027,14 +1064,16 @@ export class AgentRuntimeBuilder {
           ? containerCredentialTarget(podmanSvc, container.containerName, container.home ?? '/root')
           : (!willContainerize ? { kind: 'host', home: mcpServerHostHome(cfg, owner) } : null)
         if (credTarget) await materializeCredentialFiles(credFiles, cfg, credTarget)
+        if (signal.aborted) return stopped
         await this.mcpAuthPreflight(authCfg, { authArgs: installOptions.authArgs, resolvedEnv, uvBinPath, container, authPort: installOptions.authPort })
+        if (signal.aborted) return stopped
         // Auth succeeded: capture files the flow stored (tokens) into the store.
         if (credTarget && credCapture) await writeBackCredentialFiles(credCapture, cfg, credTarget, new Date().toISOString(), (m) => { console.log(m); try { workspace.insertLog('info', 'mcp', 'credential_writeback', cfg.name, m.slice(0, 500)) } catch { /* non-fatal */ } })
       }
       return connectOneServer(freshConfig, serverName, 'Hot-load', { interactive: true })
     }, () => this.getMcpRegistrations()))
     registry.register(new McpRestartTool(async (serverName) => {
-      return connectOneServer(workspace.getAgentConfig(), serverName, 'Agent reconnect', { interactive: true })
+      return connectCurrent(serverName, 'Agent reconnect', { interactive: true })
     }))
     registry.register(new McpUninstallTool((serverName) => {
       manager.disconnect(serverName).catch(() => {})
@@ -1056,6 +1095,7 @@ export class AgentRuntimeBuilder {
             const outcome = await connectOneServer(config, serverCfg.name, 'Initial connect', { interactive: false })
             return { name: serverCfg.name, skipped: false, attempted: true, connected: outcome.toolsDiscovered > 0 }
           } catch (err) {
+            if (signal.aborted) return { name: serverCfg.name, skipped: false, attempted: true, connected: false }
             console.error(`[AgentRuntimeBuilder][MCP] connect failed for "${serverCfg.name}":`, err)
             if (!(err instanceof ComputeUnavailableError)) manager.markFailed(serverCfg, err instanceof Error ? err.message : String(err))
             return { name: serverCfg.name, skipped: false, attempted: true, connected: false }
@@ -1175,6 +1215,7 @@ export class AgentRuntimeBuilder {
       }
     }
 
+    if (params.signal.aborted) return 'unknown'
     const reg = params.registration as { oauthClientId?: string; oauthScopes?: string[] } | undefined
     const gateExecutor = executor && params.restoreState
       ? { requestApproval: (n: string, i: unknown, o?: { canAlwaysApprove?: boolean }) => executor.requestApproval(n, i, { ...o, restoreState: true }) }
@@ -1183,8 +1224,8 @@ export class AgentRuntimeBuilder {
       await gateInteractiveOAuthSignIn({
         server: { name: serverName, url },
         executor: gateExecutor,
-        isAlreadySignedIn: async () => !!(await agentStore.get(url))?.tokens,
-        runInteractiveFlow: () => this.runInteractiveOAuthFlow({
+        isAlreadySignedIn: async () => !!(await agentStore.get(url))?.tokens || params.signal.aborted,
+        runInteractiveFlow: () => params.signal.aborted ? Promise.resolve(false) : this.runInteractiveOAuthFlow({
           serverName,
           url,
           clientId: reg?.oauthClientId,
@@ -1201,6 +1242,7 @@ export class AgentRuntimeBuilder {
     } catch (err) {
       log('warn', `OAuth sign-in failed for "${serverName}": ${err instanceof Error ? err.message : String(err)}`)
     }
+    if (params.signal.aborted) return 'unknown'
     try {
       return (await agentStore.get(url))?.tokens ? 'signed_in' : 'no_token'
     } catch {

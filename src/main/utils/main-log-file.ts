@@ -18,7 +18,6 @@ const KEEP_ROTATED = 2
 const FLUSH_MS = 250
 const MAX_BUFFER_BYTES = 256 * 1024
 
-// eslint-disable-next-line no-control-regex
 const ANSI_RE = /\x1b\[[0-9;]*m/g
 
 let logPath: string | null = null

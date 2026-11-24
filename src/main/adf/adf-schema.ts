@@ -1,6 +1,6 @@
 import { COMMAND_NAME_PATTERN, RESERVED_COMMAND_NAMES, validateAgentCommands } from '../../shared/utils/agent-commands'
 import { z } from 'zod'
-import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, LOOP_PROHIBITED_TOOLS, MAX_SIDE_LOOPS, hasLoopGoal } from '../../shared/types/adf-v02.types'
+import { AGENT_STATES, MESSAGING_MODES, START_IN_STATES, RESERVED_AGENT_PATH_SEGMENTS, MAX_SIDE_LOOPS, hasLoopGoal } from '../../shared/types/adf-v02.types'
 import { isKnownUmbilicalEventType, isUmbilicalEventWildcard } from '../../shared/types/umbilical-events'
 
 /**
@@ -365,18 +365,6 @@ export const ModelConfigSchema = z.object({
 })
 
 /**
- * Tool names a side loop may never name in `LoopConfig.tools`.
- *
- * Mirrors LOOP_PROHIBITED_TOOLS in the shared types — kept as a hard,
- * schema-level rejection so a hand-edited `.adf` surfaces the drift at load.
- * The wider rule ("no tool the host marked `restricted`", because HIL approval
- * cannot be routed to a side-loop executor) depends on the host's tool
- * declarations, so it is enforced at runtime by `deriveLoopConfig` and
- * `loop_manage` rather than here.
- */
-const PROHIBITED_LOOP_TOOL_NAMES: readonly string[] = LOOP_PROHIBITED_TOOLS
-
-/**
  * A loop name is an identifier, not free text.
  *
  * The name is not decoration: it is the audit source (`loop:<name>`), the
@@ -393,7 +381,7 @@ export const LOOP_NAME_RULE =
 /** The goal becomes the loop's ENTIRE system instruction — bound it. */
 export const LOOP_GOAL_MAX_CHARS = 4000
 
-/** Allow-list length cap; a side loop is meant to be minimal. */
+/** Allow-list length cap. */
 export const LOOP_TOOLS_MAX = 64
 
 /** Re-exported: the cap is shared with the renderer (see the shared types). */
@@ -442,15 +430,6 @@ export const LoopConfigSchema = z.object({
       message: `loop "${loop.name}" has autostart on but no goal; add a goal or turn autostart off`,
       path: ['autostart']
     })
-  }
-  for (const tool of loop.tools ?? []) {
-    if (PROHIBITED_LOOP_TOOL_NAMES.includes(tool)) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: `loop "${loop.name}" requests prohibited tool "${tool}" (never grantable to an inner loop)`,
-        path: ['tools']
-      })
-    }
   }
 })
 

@@ -23,6 +23,7 @@ import {
 import { emitAgentConfigChanged } from '../src/main/runtime/agent-runtime-signals'
 import type { RuntimeAgentEvent } from '../src/main/runtime/runtime-service'
 import type { AgentExecutionEvent } from '../src/shared/types/ipc.types'
+import { BROWSER_STUDIO_CLIENT } from '../src/shared/daemon-client/types'
 
 const AGENT_1 = randomUUID()
 const AGENT_2 = randomUUID()
@@ -92,8 +93,8 @@ function exec(agentId: string, type: AgentExecutionEvent['type'], payload: unkno
   return { agentId, filePath: agentId === AGENT_1 ? FILE_1 : FILE_2, event: { type, payload, timestamp: 1, ...(loop ? { loop } : {}) } }
 }
 
-function open(sessions: ClientSessionRegistry, opts: { focus?: string; since?: number } = {}) {
-  const { sessionId, epoch } = sessions.create({ client: 'test', version: '1' })
+function open(sessions: ClientSessionRegistry, opts: { focus?: string; since?: number; client?: string } = {}) {
+  const { sessionId, epoch } = sessions.create({ client: opts.client ?? 'test', version: '1' })
   if (opts.focus) sessions.setFocus(sessionId, opts.focus)
   const sink = new FakeSink()
   sessions.attach(sessionId, sink, opts.since !== undefined ? { since: opts.since } : {})
@@ -526,6 +527,29 @@ describe('client sessions: producers', () => {
     unwire()
   })
 
+  it('uses counts and the workspace hint when only Browser Studio is focused', async () => {
+    const sessions = registry()
+    const runtime = fakeRuntime()
+    wireRuntimeToClientSessions(sessions, runtime as never)
+    const browser = open(sessions, { client: BROWSER_STUDIO_CLIENT, focus: AGENT_1 })
+    open(sessions)
+    const agent = fakeAgent()
+    const getInbox = vi.spyOn(agent.workspace, 'getInbox')
+    const getInboxCounts = vi.fn(() => ({ unread: 2000, read: 12, archived: 2, total: 2014 }))
+    Object.assign(agent.workspace, { getInboxCounts })
+    runtime.emit('agent-loaded', { agentId: AGENT_1, filePath: FILE_1, ref: {}, agent })
+    agent.adapterManager.emit('inbound', 'telegram')
+    agent.workspace.callback!('inbox')
+    await new Promise(resolve => setTimeout(resolve, 300))
+
+    expect(getInbox).not.toHaveBeenCalled()
+    expect(getInboxCounts).toHaveBeenCalledTimes(1)
+    expect(browser.sink.frames()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ kind: 'push', topic: 'inbox', stripped: 'stub', payload: { counts: { unread: 2000, read: 12, archived: 2 } } }),
+      expect.objectContaining({ kind: 'push', topic: 'workspace_data', payload: { scope: 'inbox' } }),
+    ]))
+  })
+
   it('mesh, compute, approvals and the tracked-folder watcher', async () => {
     const sessions = registry()
     sessions.indexAgent(FILE_2, AGENT_2)
@@ -541,7 +565,10 @@ describe('client sessions: producers', () => {
     wireTrackedDirWatcherToClientSessions(sessions, watcher as never)
 
     mesh.emit('mesh_event', { type: 'agent_joined', payload: { filePath: FILE_2 }, timestamp: 1 })
-    mesh.emit('inbox_updated', { filePath: FILE_2, inbox: [{ id: 'm' }] })
+    mesh.emit('inbox_updated', { filePath: FILE_2, workspace: {
+      getInbox: (status: string) => status === 'unread' ? [{ id: 'm' }] : [],
+      getInboxCounts: () => ({ unread: 1, read: 0, archived: 3, total: 4 }),
+    } })
     mesh.emit('agent_incoming', { filePath: FILE_2, fromAgent: 'agent-1', toAgent: 'agent-2', content: 'hi' })
     mesh.persisted!(FILE_2, { name: 'agent-2' })
     compute.emit('container-phase', { containerName: 'adf-agent-2', phase: 'ready', agentId: AGENT_2, timestamp: 1 })
@@ -661,7 +688,7 @@ describe('client sessions: daemon wiring', () => {
     const installer = { async install(_name: string, ...rest: unknown[]) { for (const arg of rest) if (typeof arg === 'function') (arg as (m: string) => void)('step'); return {} } }
     const built = createDaemonClientSessions({
       runtime: runtime as never, mesh, compute, trackedDirWatcher: watcher,
-      approvals: { subscribe: (l) => { approvals.push(l as never); return () => {} } },
+      approvals: { subscribe: (l) => { approvals.push(l as never); return () => {} }, setAttendedCheck: () => {} },
       eventBus: { subscribe: (l) => { bus.push(l as never); return () => {} } },
       packages: { mcp: installer, python: installer, adapters: installer, sandbox: installer },
       options: { log: quiet },
@@ -692,6 +719,43 @@ describe('client sessions: daemon wiring', () => {
       built.unwire()
     }
     expect(daemonClientSessions()).toBeNull()
+  })
+})
+
+describe('client sessions: finished notices', () => {
+  it('an agent is attended while a connected session focuses it, looked up by file path', async () => {
+    const { createDaemonClientSessions } = await import('../src/main/daemon/client-wiring')
+    const runtime = Object.assign(new EventEmitter(), {
+      listAgents: () => [],
+      getAgentOrDocument: (id: string) => (id === AGENT_1 ? { id: AGENT_1 } : undefined),
+      getAgentWorkspaceByPath: (filePath: string) => (filePath === FILE_1 ? { agentId: AGENT_1 } : undefined),
+      openDocument: async () => ({}), releaseDocument: async () => ({}), releaseDocumentHolder: async () => [], setDocumentHolderCheck: vi.fn(),
+    })
+    let attended: ((filePath: string) => boolean) | null = null
+    const built = createDaemonClientSessions({
+      runtime: runtime as never, mesh: new EventEmitter(), compute: new EventEmitter(), trackedDirWatcher: new EventEmitter(),
+      approvals: { subscribe: () => () => {}, setAttendedCheck: (check) => { attended = check } },
+      eventBus: { subscribe: () => () => {} },
+      packages: { mcp: { install: async () => ({}) }, python: { install: async () => ({}) }, adapters: { install: async () => ({}) }, sandbox: { install: async () => ({}) } },
+      options: { log: quiet },
+    })
+    registries.push(built.sessions)
+    try {
+      const { sessionId } = built.sessions.create({ client: 'studio', version: '1' })
+      built.sessions.attach(sessionId, new FakeSink())
+      expect(attended!(FILE_1)).toBe(false)
+      built.sessions.setFocus(sessionId, AGENT_1)
+      expect(attended!(FILE_1)).toBe(true)
+      expect(attended!('/agents/other.adf')).toBe(false)
+      // Home or a closed window: still focused (full payloads), not shown.
+      built.sessions.setFocus(sessionId, AGENT_1, false)
+      expect(attended!(FILE_1)).toBe(false)
+      built.sessions.setFocus(sessionId, null)
+      expect(attended!(FILE_1)).toBe(false)
+    } finally {
+      built.unwire()
+    }
+    expect(attended).toBeNull()
   })
 })
 

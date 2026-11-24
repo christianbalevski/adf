@@ -228,6 +228,32 @@ describe('RuntimeDiscovery', () => {
     await new Promise(resolve => setTimeout(resolve, 40))
     expect(services).toHaveLength(1)
   })
+
+  it('reports current fleet peers without waiting for their enrichment', async () => {
+    const { discovery, services, fetchFn } = setup()
+    stops.push(() => discovery.stop())
+    const slow = Promise.withResolvers<Response>()
+    fetchFn.mockImplementationOnce(() => slow.promise)
+    discovery.start()
+    await waitFor(() => discovery.isActive())
+    const peer = {
+      runtime_id: 'slow', proto: 'alf/0.2', directory_path: '/agents',
+      host: '10.0.0.2', port: 7295, url: 'http://10.0.0.2:7295', first_seen: 1, last_seen: 2,
+    }
+    const fast = { ...peer, runtime_id: 'fast', host: '10.0.0.3', url: 'http://10.0.0.3:7295' }
+    services[0].runtimes = [peer, fast]
+    expect(discovery.getFleetPeers().map(p => p.runtime_id)).toEqual(['slow', 'fast'])
+    await waitFor(() => discovery.getFleetPeers()[1].agent_count === 0)
+    expect(discovery.getFleetPeers()[0].agent_count).toBeUndefined()
+    expect(fetchFn).toHaveBeenCalledTimes(2)
+
+    // Disappearing routes remove their stations even when a read is outstanding.
+    services[0].runtimes = [fast]
+    expect(discovery.getFleetPeers().map(p => p.runtime_id)).toEqual(['fast'])
+    slow.resolve(new Response(JSON.stringify({ runtime_alias: 'old' })))
+    await discovery.stop()
+    expect(discovery.getFleetPeers()).toEqual([])
+  })
 })
 
 describe('RuntimeDiscovery: the one discovery service (remote-access.md §5.1)', () => {

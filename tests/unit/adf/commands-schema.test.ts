@@ -14,11 +14,12 @@ describe('commands schema and templates', () => {
     expect(AgentCommandsSchema.safeParse([{ ...command, name: 'stop' }]).success).toBe(false)
     expect(AgentCommandsSchema.safeParse([command, command]).success).toBe(false)
   })
-  it('carries locked commands forward and refuses overriding them', () => {
+  it('carries locked commands forward and refuses changing them', () => {
     const config = { ...AGENT_DEFAULTS, name: 'Test', commands: [{ ...command, locked: true }] } as AgentConfig
     const merged = mergeTemplateWithOverrides(config, { commands: [] })
     expect(merged.ok && merged.options.commands).toEqual(config.commands)
-    expect(mergeTemplateWithOverrides(config, { commands: [command] }).ok).toBe(false)
+    expect(mergeTemplateWithOverrides(config, { commands: [command] }).ok).toBe(true)
+    expect(mergeTemplateWithOverrides(config, { commands: [{ ...command, description: 'changed' }] }).ok).toBe(false)
     config.locked_fields = ['commands']
     expect(mergeTemplateWithOverrides(config, { commands: [] }).ok).toBe(false)
   })

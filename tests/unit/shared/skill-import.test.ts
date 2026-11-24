@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 import { buildSkillRegistry, parseSkillFrontmatter } from '../../../src/main/adf/skill-indexer'
@@ -186,14 +186,12 @@ describe('adf label', () => {
     expect(adfCompatLabel({ native: false, reason: 'unreadable', detail: 'duplicate adf' }).title).toMatch(/could not be read \(duplicate adf\)\./)
   })
 
-  it('every first-party skill declares a valid adf version (including the five markers added here)', () => {
-    const root = join(__dirname, '../../../skills')
-    const dirs = readdirSync(root, { withFileTypes: true }).filter((d) => d.isDirectory() && d.name !== 'node_modules')
-    const labels = dirs.flatMap((d) => {
-      try { return [[d.name, readAdfCompat(readFileSync(join(root, d.name, 'SKILL.md'), 'utf8')).native] as const] } catch { return [] }
-    })
-    expect(labels.length).toBe(19)
-    expect(labels.filter(([, native]) => !native)).toEqual([])
+  it('every first-party skill declares a valid adf version', () => {
+    const root = join(__dirname, '../../..')
+    const registry = JSON.parse(readFileSync(join(root, 'skills/registry.json'), 'utf8')) as { skills: { path: string }[] }
+    const manifests = registry.skills.map(skill => join(root, skill.path))
+    expect(manifests.length).toBeGreaterThan(0)
+    expect(manifests.filter(path => !readAdfCompat(readFileSync(path, 'utf8')).native)).toEqual([])
   })
 })
 

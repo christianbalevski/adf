@@ -77,7 +77,6 @@ export interface ContainerPhaseInfo {
 // ---------------------------------------------------------------------------
 
 const SHARED_CONTAINER = 'adf-mcp'
-const STOP_DELAY_MS = 30_000
 
 /** Label recording the host port published to the container's noVNC (6080).
  *  First entry of the generic io.adf.port.* scheme for exposing container ports. */
@@ -908,17 +907,13 @@ export class PodmanService extends EventEmitter {
   /** Shutdown latch: once set, ensure* calls reject fast so teardown cannot
    *  race a container resurrection. */
   private _shuttingDown = false
-  /** containerName → generation, bumped whenever cached per-run state is
-   *  cleared (restart/invalidate) so an in-flight ensureWorkspace from the
-   *  previous container run cannot mark the NEW run as ensured. */
-  private _containerGen = new Map<string, number>()
   /** First `machine list` of a session gets a long timeout (VM wake latency);
    *  once one has completed, subsequent ones use the quick timeout. */
   private _machineListChecked = false
   /** In-flight bring-up promises not covered by the pending maps (for pendingStarts()). */
   private _inFlightStarts = new Set<Promise<unknown>>()
-  /** `container\0path` workspace dirs already created this container run. */
-  private _workspacesEnsured = new Set<string>()
+  /** `container\0path` workspace dirs being created or ready this container run. */
+  private _workspacesEnsured = new Map<string, Promise<void>>()
   /** containerName → in-flight/completed lazy browser bring-up. */
   private _browserReadyPending = new Map<string, Promise<void>>()
   /** Last time the machine clock was compared against the host (0 = never). */
@@ -1135,16 +1130,14 @@ export class PodmanService extends EventEmitter {
       this._sharedRunning = null
       this._sharedRunningSettled = false
     }
-    this.bumpContainerGeneration(name)
+    this.clearWorkspaceEnsures(name)
     this.clearMemorySync(name, true)
     this._browserReadyPending.delete(name)
   }
 
-  /** New container run: clear cached workspace state and advance the
-   *  generation so stale in-flight ensures cannot re-populate the cache. */
-  private bumpContainerGeneration(name: string): void {
-    this._containerGen.set(name, (this._containerGen.get(name) ?? 0) + 1)
-    for (const key of [...this._workspacesEnsured]) {
+  /** Pending and completed mkdirs belong to a single container run. */
+  private clearWorkspaceEnsures(name: string): void {
+    for (const key of this._workspacesEnsured.keys()) {
       if (key.startsWith(`${name}\0`)) this._workspacesEnsured.delete(key)
     }
   }
@@ -1411,16 +1404,19 @@ export class PodmanService extends EventEmitter {
    */
   async ensureWorkspace(containerName: string, workspacePath: string): Promise<void> {
     const key = `${containerName}\0${workspacePath}`
-    if (this._workspacesEnsured.has(key)) return
-    const bin = await this.requirePodman()
-    const gen = this._containerGen.get(containerName) ?? 0
-    const result = await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', workspacePath])
-    this.noteContainerExec(containerName, result)
-    // Cache only against the same container run: a restart during the exec
-    // bumps the generation, and this success belongs to the old run.
-    if (result.code === 0 && (this._containerGen.get(containerName) ?? 0) === gen) {
-      this._workspacesEnsured.add(key)
-    }
+    const existing = this._workspacesEnsured.get(key)
+    if (existing) return existing
+    const pending = this.requirePodman().then(async bin => {
+      const result = await this.exec0(bin, ['exec', containerName, 'mkdir', '-p', workspacePath])
+      if (this._workspacesEnsured.get(key) !== pending) return
+      this.noteContainerExec(containerName, result)
+      if (result.code !== 0 && this._workspacesEnsured.get(key) === pending) this._workspacesEnsured.delete(key)
+    }).catch((error: unknown) => {
+      if (this._workspacesEnsured.get(key) === pending) this._workspacesEnsured.delete(key)
+      throw error
+    })
+    this._workspacesEnsured.set(key, pending)
+    return pending
   }
 
   /**
@@ -1945,7 +1941,7 @@ export class PodmanService extends EventEmitter {
         // The display daemons died with the container — restart them lazily.
         // (Clear per-run caches directly; the shared ensureRunning memo stays
         // intact because this very call is what backs it.)
-        this.bumpContainerGeneration(containerName)
+        this.clearWorkspaceEnsures(containerName)
         this.clearMemorySync(containerName)
         this._browserReadyPending.delete(containerName)
         await this.ensureBrowserCompatibility(bin, containerName, compatibility)
@@ -2053,7 +2049,7 @@ export class PodmanService extends EventEmitter {
             if (recheck.stdout.trim() !== 'true') {
               const restart = await this.exec0(bin, ['start', containerName], 30_000)
               if (restart.code !== 0) throw new Error(restart.stderr || `Failed to start ${containerName}`)
-              this.bumpContainerGeneration(containerName)
+              this.clearWorkspaceEnsures(containerName)
               this._browserReadyPending.delete(containerName)
               this._stackStarted.delete(containerName)
               this._stackStartPending.delete(containerName)

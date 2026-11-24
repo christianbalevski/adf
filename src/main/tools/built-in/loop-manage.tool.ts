@@ -13,6 +13,7 @@ import {
   MAX_SIDE_LOOPS
 } from '../../adf/adf-schema'
 import {
+  LOOP_DEFAULT_ON_TOOLS,
   MAIN_LOOP,
   listAvailableLoopTools,
   validateLoopToolList
@@ -81,20 +82,19 @@ function errorResult(content: string): ToolResult {
 }
 
 /**
- * The self-curating organism: main creates, inspects, patches and tears down
- * this agent's own side loops at runtime (docs/design/agent-loops-mvp.md §7.2).
+ * The self-curating organism: the agent creates, inspects, patches and tears
+ * down its own side loops at runtime (docs/design/agent-loops-mvp.md §7.2).
  *
- * **Main only.** `deriveLoopConfig` already subtracts it from every side loop's
- * toolset (it is in `LOOP_PROHIBITED_TOOLS`, rejected by `LoopConfigSchema`
- * too), so the runtime guard below is defense in depth against a future
- * registration path that hands the tool to the wrong executor. Loops do not
- * nest.
+ * **Any loop that holds it.** The roster is flat: a side loop granted this
+ * tool manages its siblings, and what it creates is a sibling, never a child
+ * (derived configs carry `loops: []`). A loop may not update or delete itself:
+ * either stops the caller's own runtime from inside its own turn, which aborts
+ * that turn and then waits out the pool's stop-settle timeout on itself.
  *
  * **Ungated by default.** It ships `enabled: true, visible: true` (no
- * `restricted`) in `DEFAULT_TOOLS`. The rationale is attenuation, not
- * convenience: a loop is a strict attenuation of authority main ALREADY holds
- * — `deriveLoopConfig` intersects the loop's allow-list with the host's enabled
- * tools, drops every `restricted` name, and clamps `code_execution` — so
+ * `restricted`) in `DEFAULT_TOOLS`. A loop never holds more than the agent
+ * already does — `deriveLoopConfig` intersects the loop's allow-list with the
+ * host's enabled tools and keeps each granted tool's `restricted` flag — so
  * `loop_manage` cannot expand the agent's capability surface, only subdivide
  * it. Creating a loop is therefore not an escalation, and gating it would buy
  * no authority the agent did not already have. HIL gating is still driven
@@ -121,7 +121,7 @@ export class LoopManageTool implements Tool {
     'Create, inspect, update and delete this agent\'s inner cognition loops: named streams inside you ' +
     'that share your file, identity and credentials but run their own stream with their own goal and a subset of your tools. ' +
     'Use loop_list to see which loops exist; this tool changes them. ' +
-    'Deleting a loop archives its stream to the audit log first. Only the main loop can call this, and loops cannot create loops.'
+    'Deleting a loop archives its stream to the audit log first. Loops do not nest: a loop that creates one adds a sibling, manages only loops whose tools it holds, and cannot update or delete itself.'
   readonly inputSchema = InputSchema
   readonly category = 'self' as const
   readonly requireApproval = false
@@ -136,10 +136,11 @@ export class LoopManageTool implements Tool {
     const parsed = input as z.infer<typeof InputSchema>
 
     const callerLoop = workspace.getLoopName()
-    if (callerLoop !== MAIN_LOOP) {
+    // Updating or deleting the calling loop stops its own runtime mid-turn.
+    if ((parsed.action === 'update' || parsed.action === 'delete') && parsed.name === callerLoop && callerLoop !== MAIN_LOOP) {
       return errorResult(
-        `loop_manage is available to the main loop only (you are "${callerLoop}"). ` +
-        'Loops do not create or modify loops — ask main with loop_send.'
+        `A loop cannot ${parsed.action} itself (you are "${callerLoop}"): that would stop the turn making the call. ` +
+        'Ask main or another loop to do it with loop_send.'
       )
     }
 
@@ -151,11 +152,11 @@ export class LoopManageTool implements Tool {
         case 'get':
           return this.handleGet(pool, parsed.name)
         case 'create':
-          return await this.handleCreate(pool, workspace, parsed.name, parsed.config)
+          return await this.handleCreate(pool, workspace, callerLoop, parsed.name, parsed.config)
         case 'update':
-          return await this.handleUpdate(pool, workspace, parsed.name, parsed.config)
+          return await this.handleUpdate(pool, workspace, callerLoop, parsed.name, parsed.config)
         case 'delete':
-          return await this.handleDelete(pool, parsed.name)
+          return await this.handleDelete(pool, callerLoop, parsed.name)
       }
     } catch (error) {
       return errorResult(
@@ -198,6 +199,7 @@ export class LoopManageTool implements Tool {
   private async handleCreate(
     pool: LoopPoolApi,
     workspace: AdfWorkspace,
+    callerLoop: string,
     nameArg: string | undefined,
     configArg: LoopConfigInput | undefined
   ): Promise<ToolResult> {
@@ -248,17 +250,25 @@ export class LoopManageTool implements Tool {
       // still be able to create a loop, not hit "not available on this agent"
       // for a name they never typed. An explicit request for the same name
       // still errors — that one was asked for.
-      tools: configArg.tools ?? this.defaultToolsFor(workspace)
+      // From an inner loop, the default is also cut to what that loop holds.
+      tools: configArg.tools ?? this.defaultToolsFor(workspace).filter(n => this.toolsBeyondCaller(pool, callerLoop, [n]).length === 0)
     }
 
     const validated = this.validate(candidate, workspace)
     if ('error' in validated) return errorResult(validated.error)
+    const beyond = this.toolsBeyondCaller(pool, callerLoop, validated.config.tools ?? [])
+    if (beyond.length > 0) {
+      return errorResult(
+        `"${callerLoop}" can only give a loop tools it holds itself; it does not hold ${beyond.join(', ')}. ` +
+        'Ask main to create this loop with loop_send.'
+      )
+    }
 
     const created = await pool.createLoop(validated.config)
 
     // Report what the loop ACTUALLY got, not what was asked for: derivation
-    // still adds loop_compact/loop_clear unless the host disabled or restricted
-    // them. Fall back to the resolved request only if the pool predates the
+    // still adds loop_compact/loop_clear unless the host disabled them. Fall
+    // back to the resolved request only if the pool predates the
     // effectiveTools contract.
     const requested = validated.config.tools ?? []
     const effective = created?.effectiveTools
@@ -268,7 +278,7 @@ export class LoopManageTool implements Tool {
 
     // A loop is event-driven: enabled means it CAN take a turn, not that it
     // does. Without a first message it sits idle until a trigger, timer or
-    // loop_send names it. With autostart main kicks it off now through the
+    // loop_send names it. With autostart the caller kicks it off now through the
     // normal loop_send path (the wake row is appended and audited like any
     // other interior message); the pool repeats that on every agent start.
     let startLine: string
@@ -277,7 +287,7 @@ export class LoopManageTool implements Tool {
     } else if (!validated.config.autostart) {
       startLine = 'It is waiting: give it work by targeting it from a trigger or timer, or with loop_send.'
     } else {
-      const sent = await pool.sendToLoop(MAIN_LOOP, name, LOOP_AUTOSTART_MESSAGE, true)
+      const sent = await pool.sendToLoop(callerLoop, name, LOOP_AUTOSTART_MESSAGE, true)
       startLine = (sent.woke
         ? 'It is running its first turn on its goal now'
         : `Its kickoff message was delivered but it has not started${sent.reason ? ` (${sent.reason})` : ''}`) +
@@ -294,6 +304,21 @@ export class LoopManageTool implements Tool {
     }
   }
 
+  /**
+   * Tool names in `tools` that the calling inner loop's own allow-list lacks.
+   * Main may manage any loop; an inner loop only loops whose tools it holds,
+   * so `loop_manage` never widens, redirects or removes a loop that can do
+   * more than the one using it. The
+   * allow-lists are compared directly: both are intersected with the same
+   * host tools at derive time.
+   */
+  private toolsBeyondCaller(pool: LoopPoolApi, callerLoop: string, tools: string[]): string[] {
+    if (callerLoop === MAIN_LOOP) return []
+    // Every loop holds the default-on pair whether or not it lists them.
+    const held = new Set([...(pool.getLoop(callerLoop)?.tools ?? []), ...LOOP_DEFAULT_ON_TOOLS])
+    return [...new Set(tools)].filter(name => !held.has(name))
+  }
+
   /** `DEFAULT_NEW_LOOP_TOOLS`, minus anything this host cannot grant. */
   private defaultToolsFor(workspace: AdfWorkspace): string[] {
     const available = new Set(listAvailableLoopTools(workspace.getAgentConfig()))
@@ -303,6 +328,7 @@ export class LoopManageTool implements Tool {
   private async handleUpdate(
     pool: LoopPoolApi,
     workspace: AdfWorkspace,
+    callerLoop: string,
     name: string | undefined,
     patch: LoopConfigInput | undefined
   ): Promise<ToolResult> {
@@ -339,6 +365,15 @@ export class LoopManageTool implements Tool {
 
     const validated = this.validate(merged, workspace)
     if ('error' in validated) return errorResult(validated.error)
+    // Both sides: what the loop would get, and what it already holds (a loop
+    // must not redirect a sibling that holds more than it does).
+    const beyond = this.toolsBeyondCaller(pool, callerLoop, [...(existing.tools ?? []), ...(validated.config.tools ?? [])])
+    if (beyond.length > 0) {
+      return errorResult(
+        `"${callerLoop}" can only change a loop whose tools it holds itself; it does not hold ${beyond.join(', ')}. ` +
+        `Ask main to update "${name}" with loop_send.`
+      )
+    }
 
     // Send the pool a patch, not the merge: it re-reads the live config itself,
     // so a concurrent edit is not silently overwritten by our stale snapshot.
@@ -370,6 +405,7 @@ export class LoopManageTool implements Tool {
 
   private async handleDelete(
     pool: LoopPoolApi,
+    callerLoop: string,
     name: string | undefined
   ): Promise<ToolResult> {
     if (!name) return errorResult('delete requires "name".')
@@ -378,7 +414,15 @@ export class LoopManageTool implements Tool {
       return errorResult('main is your own loop and cannot be deleted.')
     }
 
-    if (!pool.getLoop(name)) return this.unknownLoop(pool, name)
+    const existing = pool.getLoop(name)
+    if (!existing) return this.unknownLoop(pool, name)
+    const beyond = this.toolsBeyondCaller(pool, callerLoop, existing.tools ?? [])
+    if (beyond.length > 0) {
+      return errorResult(
+        `"${callerLoop}" can only delete a loop whose tools it holds itself; it does not hold ${beyond.join(', ')}. ` +
+        `Ask main to delete "${name}" with loop_send.`
+      )
+    }
 
     const result = await pool.deleteLoop(name)
 
@@ -396,14 +440,12 @@ export class LoopManageTool implements Tool {
   // ---------------------------------------------------------------------------
 
   /**
-   * Schema validation (name/goal/enabled, hard prohibited names) followed by
-   * the host-relative tool check that the schema cannot do — it needs this
-   * agent's tool declarations.
+   * Schema validation (name/goal/enabled) followed by the host-relative tool
+   * check that the schema cannot do — it needs this agent's tool declarations.
    *
-   * Only two of the four buckets fail. An UNKNOWN name is a typo or an
-   * invention and failing is how the model learns the real list; a PROHIBITED
-   * name is the security boundary. A name the owner has merely DISABLED is
-   * neither — the loop is created carrying it, ungranted for now, and `disabled`
+   * Only UNKNOWN names fail: a typo or an invention, and failing is how the
+   * model learns the real list. A name the owner has merely DISABLED is not an
+   * error — the loop is created carrying it, ungranted for now, and `disabled`
    * comes back so the success message can say which names did not take effect.
    */
   private validate(
@@ -424,23 +466,12 @@ export class LoopManageTool implements Tool {
     if (requested.length === 0) return { config, disabled: [] }
 
     const host = workspace.getAgentConfig()
-    const { unknown, disabled, prohibited } = validateLoopToolList(host, requested)
+    const { unknown, disabled } = validateLoopToolList(host, requested)
 
-    if (unknown.length > 0 || prohibited.length > 0) {
-      const parts: string[] = []
-      if (unknown.length > 0) {
-        parts.push(`no such tool on this agent: ${unknown.join(', ')}`)
-      }
-      if (prohibited.length > 0) {
-        parts.push(
-          `never grantable to a loop: ${prohibited.join(', ')} ` +
-          '(config self-modification, agent creation, loop management, and anything needing human approval — ' +
-          'a loop has no channel to ask a human)'
-        )
-      }
+    if (unknown.length > 0) {
       return {
         error:
-          `Cannot grant those tools — ${parts.join('; ')}. ` +
+          `Cannot grant those tools — no such tool on this agent: ${unknown.join(', ')}. ` +
           `Available: ${listAvailableLoopTools(host).join(', ') || '(none)'}.`
       }
     }

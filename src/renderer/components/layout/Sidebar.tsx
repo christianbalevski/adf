@@ -31,7 +31,7 @@ import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../u
 import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
-import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
+import type { PendingNotification, TrackedDirEntry } from '../../../shared/types/ipc.types'
 import type { RuntimeView } from '../../../shared/types/connection.types'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { agentKey } from '../../../shared/types/agent-ref'
@@ -373,7 +373,6 @@ export function Sidebar({ overlay = false, onNavigate }: { overlay?: boolean; on
 
   const foregroundAgentState = useAgentStore((s) => s.state)
 
-  const meshEnabled = useMeshStore((s) => s.enabled)
   const meshAgents = useMeshStore((s) => s.agents)
   const agentStatusMap = useStableMap(
     useMemo(() => meshAgents.map((a) => [a.filePath, a] as [string, MeshAgentStatus]), [meshAgents])
@@ -695,7 +694,6 @@ export function Sidebar({ overlay = false, onNavigate }: { overlay?: boolean; on
             open
             onClose={() => setCloneTarget(null)}
             filePath={cloneTarget.file.filePath}
-            dirPath={cloneTarget.dirPath}
             runtimeId={cloneTarget.runtimeId}
             onCloned={() => rescanOn(cloneTarget.dirPath, cloneTarget.runtimeId)}
           />
@@ -820,7 +818,6 @@ export function Sidebar({ overlay = false, onNavigate }: { overlay?: boolean; on
         <RunningSection
           rows={runningRows}
           currentFilePath={openKey}
-          meshEnabled={meshEnabled}
           agentStatusMap={runningStatusMap}
           backgroundAgentMap={runningBackgroundMap}
           onOpenFile={handleOpenFile}
@@ -852,7 +849,6 @@ export function Sidebar({ overlay = false, onNavigate }: { overlay?: boolean; on
                   dirPath={dirPath}
                   files={visibleFilesByDir[dirPath] ?? []}
                   currentFilePath={filePath}
-                  meshEnabled={meshEnabled}
                   agentStatusMap={agentStatusMap}
                   backgroundAgentMap={backgroundAgentMap}
                   foregroundAgentState={foregroundAgentState}
@@ -890,7 +886,6 @@ export function Sidebar({ overlay = false, onNavigate }: { overlay?: boolean; on
                   dirPath={dirPath}
                   files={visibleFilesByDir[dirPath] ?? []}
                   currentFilePath={filePath}
-                  meshEnabled={meshEnabled}
                   agentStatusMap={agentStatusMap}
                   backgroundAgentMap={backgroundAgentMap}
                   foregroundAgentState={foregroundAgentState}
@@ -1015,7 +1010,6 @@ const RemoteRuntimeTree = memo(function RemoteRuntimeTree({
             dirPath={dirPath}
             files={visibleFilesByDir[dirPath] ?? []}
             currentFilePath={current}
-            meshEnabled={mesh.enabled}
             agentStatusMap={statusMap}
             backgroundAgentMap={backgroundMap}
             foregroundAgentState={current ? foregroundAgentState : 'off'}
@@ -1110,7 +1104,6 @@ function PlayIcon() {
 const RunningSection = memo(function RunningSection({
   rows,
   currentFilePath,
-  meshEnabled,
   agentStatusMap,
   backgroundAgentMap,
   onOpenFile,
@@ -1119,7 +1112,6 @@ const RunningSection = memo(function RunningSection({
 }: {
   rows: RunningAgentRow[]
   currentFilePath: string | null
-  meshEnabled: boolean
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   onOpenFile: OpenFileHandler
@@ -1212,7 +1204,6 @@ const RunningSection = memo(function RunningSection({
               file={file}
               depth={0}
               isActive={rowKey(runtimeId, file.filePath) === currentFilePath}
-              meshEnabled={meshEnabled}
               status={agentStatusMap.get(rowKey(runtimeId, file.filePath))}
               backgroundStatus={backgroundAgentMap.get(rowKey(runtimeId, file.filePath))}
               folderHint={folderHint}
@@ -1240,7 +1231,6 @@ const DirectorySection = memo(function DirectorySection({
   dirPath,
   files,
   currentFilePath,
-  meshEnabled,
   agentStatusMap,
   backgroundAgentMap,
   foregroundAgentState,
@@ -1253,7 +1243,6 @@ const DirectorySection = memo(function DirectorySection({
   dirPath: string
   files: TrackedDirEntry[]
   currentFilePath: string | null
-  meshEnabled: boolean
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
@@ -1380,7 +1369,6 @@ const DirectorySection = memo(function DirectorySection({
               depth={1}
               dirPath={dirPath}
               currentFilePath={currentFilePath}
-              meshEnabled={meshEnabled}
               agentStatusMap={agentStatusMap}
               backgroundAgentMap={backgroundAgentMap}
               foregroundAgentState={foregroundAgentState}
@@ -1401,7 +1389,6 @@ const TreeNode = memo(function TreeNode({
   depth,
   dirPath,
   currentFilePath,
-  meshEnabled,
   agentStatusMap,
   backgroundAgentMap,
   foregroundAgentState,
@@ -1415,7 +1402,6 @@ const TreeNode = memo(function TreeNode({
   /** Tracked root this node belongs to (what the clone/delete rescan targets). */
   dirPath: string
   currentFilePath: string | null
-  meshEnabled: boolean
   agentStatusMap: Map<string, MeshAgentStatus>
   backgroundAgentMap: Map<string, BackgroundAgentStatus>
   foregroundAgentState: string
@@ -1525,7 +1511,6 @@ const TreeNode = memo(function TreeNode({
                 depth={depth + 1}
                 dirPath={dirPath}
                 currentFilePath={currentFilePath}
-                meshEnabled={meshEnabled}
                 agentStatusMap={agentStatusMap}
                 backgroundAgentMap={backgroundAgentMap}
                 foregroundAgentState={foregroundAgentState}
@@ -1550,7 +1535,6 @@ const TreeNode = memo(function TreeNode({
       file={entry}
       depth={depth}
       isActive={isActive}
-      meshEnabled={meshEnabled}
       status={status}
       backgroundStatus={backgroundStatus}
       dirPath={dirPath}
@@ -1565,7 +1549,6 @@ const AgentFileRow = memo(function AgentFileRow({
   file,
   depth,
   isActive,
-  meshEnabled,
   status,
   backgroundStatus,
   folderHint,
@@ -1577,7 +1560,6 @@ const AgentFileRow = memo(function AgentFileRow({
   file: TrackedDirEntry
   depth: number
   isActive: boolean
-  meshEnabled: boolean
   status: MeshAgentStatus | undefined
   backgroundStatus: BackgroundAgentStatus | undefined
   /** Muted parent-folder name shown after the agent name to tell same-named agents apart. */
@@ -1610,7 +1592,7 @@ const AgentFileRow = memo(function AgentFileRow({
   const isStopping = useAppStore((s) => s.stoppingFilePaths.has(key))
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
   // Same as the rail: the request the agent is blocked on, oldest first (on this row's runtime).
-  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind ?? null)
+  const waiting = useApprovalsStore((s) => blockingKind(s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind))
   const inWindow = useInAgentWindow(file.filePath, file.agentId, runtimeId)
   // The open agent's review state is live; the others come from the folder scan.
   const needsReview = useAppStore((s) => isActive ? s.agentNeedsReview : file.reviewed === false)
@@ -1858,7 +1840,7 @@ const RailAvatar = memo(function RailAvatar({
   const isStarting = useAppStore((s) => s.startingFilePaths.has(rowKey(runtimeId, file.filePath)))
   const isStopping = useAppStore((s) => s.stoppingFilePaths.has(rowKey(runtimeId, file.filePath)))
   // Oldest first, like the snapshot: the request the agent is blocked on.
-  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind ?? null)
+  const waiting = useApprovalsStore((s) => blockingKind(s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind))
 
   const isRunning = isActive ? agentState !== 'off' : backgroundStatus !== undefined
   const state: AgentState = isActive
@@ -1922,6 +1904,11 @@ const RailAvatar = memo(function RailAvatar({
     </HoverLabel>
   )
 })
+
+/** What an agent is blocked on; 'finished' blocks nothing (it is never pending). */
+function blockingKind(kind: PendingNotification['kind'] | undefined): 'approval' | 'ask' | null {
+  return kind === 'approval' || kind === 'ask' ? kind : null
+}
 
 /** What an amber ring means, on the rail and on a row. */
 function waitingLabel(kind: 'approval' | 'ask' | null): string | null {

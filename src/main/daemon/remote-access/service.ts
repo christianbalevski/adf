@@ -414,7 +414,7 @@ export class RemoteAccessService {
     const wanted = this.candidates.filter(c => !c.refusal).map(c => c.address)
     const previous = new Set(this.listeners.addresses())
     this.listenerProblems = await this.listeners.sync(wanted, { shouldOpen: () => this.enabled && !this.stopped })
-    for (const [address, problem] of this.listenerProblems) this.log(`[remote-access] ${problem}`)
+    for (const problem of this.listenerProblems.values()) this.log(`[remote-access] ${problem}`)
     const after = this.candidates.map(c => `${c.address}:${c.refusal ? 'off' : 'on'}`).join(',')
     const listening = this.listeners.addresses()
     const added = listening.filter(a => !previous.has(a))
