@@ -5,7 +5,7 @@ adf: ">=0.8"
 requires:
   tools: [fs_read, fs_write, fs_list, sys_code, msg_send]
   optional: [sys_create_adf, fs_delete, sys_get_config]
-version: 0.10.5
+version: 0.11.0
 ---
 
 # Import an OpenClaw or Hermes agent
@@ -19,33 +19,10 @@ This skill grants nothing. It never turns on a tool, approves its own calls, aut
 ## 0. Where the import runs
 
 Deleting a file doesn't erase it from an agent file, so the notes are kept out of the owner's agent from the start. Two roles:
-
 - **Home agent**: the owner's agent, the one that has this skill installed. It never receives the drop.
 - **Importer**: a throwaway agent the home agent creates for this import. The owner drops the notes there. It runs steps 1 to 13 and hands the pages to the home agent (step 14). Then the home agent confirms complete receipt and placement before the owner deletes it.
 
-**As the home agent**, when the owner asks to import:
-Open with this line before any choice, whichever path you take: "You copy some of your agent's files to me. I don't touch your OpenClaw or Hermes agent, which keeps running as it is. At the end I'll have pages of what those files say about you, drafts of its personality and rules for you to approve, and its skills to install one at a time if you approve them. Some things don't carry over exactly; the report lists what was lost or left out. I try to keep passwords and keys out, but my filter can miss one, so leave out files you know hold them. I'll suggest your scheduled jobs for you to turn back on."
-
-1. If `sys_create_adf` isn't in your tools, don't turn anything on yourself. Tell the owner: "I can do this two ways, and I recommend the first. (1) In Studio, open me, click Config in the right-hand panel, find sys_create_adf in the Tools section, and turn it on. Leave its approval setting on, so I still have to ask you each time. Then I'll make a separate importer agent, so your agent's files stay out of me; only the pages I write from them come to me. (2) I import here, in me. Bits of your agent's files could then stay in my file even after I remove them, and anyone you share me with could find them. Tell me which, or neither." Default: don't import, and wait. Follow the in-place path (steps 1 to 14 yourself) only on a clear yes to (2); turning the tool on is the owner's choice, and on its own it isn't a yes to (2). Once it's on, go to step 2.
-2. Otherwise tell the owner: "I'll make a separate importer agent for this, so your agent's files stay out of me; only the pages I write from them come to me. A card will appear in our chat asking permission to create a new agent. It says sys_create_adf, which is me asking. Press Approve to allow this one agent. The arrow beside Approve offers Always approve, which would let me create agents in future without asking you; I don't need it for this. Reject, or Reject with feedback, cancels creating it, and then I'll ask whether to import here in me instead." Then call `sys_create_adf` from the loop, not from code (code can't call it unless the owner authorized the file), and let the card decide. (If the owner has turned that tool's approval off, no card appears; that is their setting.) Never retry a rejected call. Use:
-   - `name`: `importer-<source or "notes">-<YYYYMMDD>`, `autostart: true`, `start_in_state: "active"`, and `model` set to your own model's provider and model_id.
-   - `files`: every file under `skills/agent-import/`, each as `{ parent_path: <path>, child_path: <same path> }`.
-   - `instructions`: "You are a throwaway importer for <home handle> (DID <your DID>). Follow skills/agent-import/SKILL.md as the importer. Send the pages to <home handle> when done. Talk to the owner in chat."
-   Pass nothing else: no tools, triggers, or other config. The importer gets the defaults (or the owner's chosen template for new agents) and its own preflight checks them.
-   If the owner rejects it, ask: "Should I import here in me instead? Bits of your agent's files could then stay in my file even after I remove them, and anyone you share me with could find them." Default: don't import, and stop. Import in place only on a clear yes. If the call fails, say why and ask the same question, with the same default.
-3. Tell the owner: "<importer name> is in the list on the left. Open it and follow its steps there. Keep Studio open until it's done, which often takes 10 to 20 minutes. When it's done, it sends me the pages. I'll check that they all arrived before telling you to delete it."
-4. When the importer's message arrives, the runtime has already saved its attachments in your files, flattened by file name under `imported/<importer handle>/` (a repeated name gets " (1)", " (2)", and so on). `msg_read` the message: its text lists each page's original path in attachment order, and the attachment records give where each one was saved, in the same order. Match them by position and require each attachment filename to match the basename of its listed source path. Require the declared counts to match the list and attachment records, including `REPORT.md`, `manifest.md`, and `PROVENANCE.md`. Before opening or placing any page, require exactly one record for every listed path, in order, with `skipped` absent or false, `transfer: "imported"`, and a saved `path` under the expected importer folder. If any record is missing, skipped, or unmatched, keep the importer, report the incomplete handover, and ask it to repair or explicitly account for the missing pages; do not advise deletion. Check that each is a page from the step 14 list; an attachment that isn't (or that you can't match) is not opened: delete it if you have `fs_delete`, otherwise ask the owner to delete it in the Files panel, and tell the owner the importer sent something it shouldn't have. After validating and reading those generated records, reconcile their inventory and every hub or report reference against the received pages; unresolved omissions block cleanup even when absent from both the message list and attachments. For each received mind page, first read its destination in the home agent and apply step 9's merge and conflict rules here: the importer could not see your existing pages. Preserve the existing type and facts, keep unresolved conflicts with both citations, and never overwrite a page with the incoming copy. Create a page only when its destination does not exist. Then add the hub's line under `## Pages` in `mind.md`, and append to `mind/log.md` (step 9's hub bullet). Put the rest in `import-review/<source>/` under their original paths. These are drafts and staged skills, not approved changes: apply none of them until the owner approves each one (Hard rule 4). Write nothing from the message other than those pages. Only after every expected page is received and placed, tell the owner the counts, what's waiting on them (from REPORT.md), and: "When you're ready, delete the importer. Its file holds a copy of your agent's files. Delete <importer name> from the list on the left in Studio, and press Delete when it asks. That removes its file (usually in the same folder as mine) from this computer. A copy of the importer you exported, shared, or backed up still holds them."
-
-The importer, not this agent, decides what is attached, so keeping the notes out of this agent depends on the importer following step 14. You can check attachments after delivery; you can't refuse delivery.
-
-**As the importer**: run steps 1 to 13 as written, with the importer's own files and chat. Write mind pages to `import-review/<source>/mind/` instead of `mind/`, since this agent goes away. That includes the hub; never touch `mind.md` or `mind/log.md`. Don't write `soul.md`, `instructions`, or `## Always` here. Those drafts go to the home agent for the owner to approve there. Step 14 is the handover, not a removal.
-
-Your transcript, with anything you `fs_read` or code returns or prints, is saved in this .adf. So you never read the drop. Code reads each dropped file into a variable, sends it to `adf.model_invoke`, filters the reply, and writes pages. Inside `sys_code`, a successful `model_invoke` adds no loop row and logs only usage. A failed one logs the first 200 characters of the provider's error to this agent's logs, and a failed tool call from code logs the first 200 characters of its error; some errors quote their input. So keep prompts free of anything the scrubber didn't see, and never print or return an error message (Hard rule 3).
-
-Owner lines. The importer or in-place line goes first, always; the folder lines (step 2) only if the drop isn't there:
-> Drop one folder with your workspace files, not your whole `~/.openclaw` or `~/.hermes` home. If a file you drop has the same name as one of this agent's files, it replaces that file without asking. Putting everything in one agent-import folder prevents that.
-> Importer: Your agent's files stay in this importer agent. I'll send only the pages I write from them to <home agent>, and then you delete me.
-> In place: I won't keep copies of your agent's files, only the pages I write from them. Those pages stay in this agent's file and go with it if you ever share the agent. Clearing a conversation doesn't remove them.
+fs_read skills/agent-import/references/where-it-runs.md now.
 
 ## Hard rules
 
@@ -58,22 +35,6 @@ Owner lines. The importer or in-place line goes first, always; the folder lines 
 7. Deleting the importer removes its file from this computer, not exported, shared, or backed-up copies. Never say it erases every copy. `fs_delete` is not a secure erase: removing the drop takes it off the file list, but traces can stay inside the agent file, and with file auditing on (`context.audit.files`, off by default) deleting a file archives its content in the agent's history. Shared or exported copies of an agent keep that history. Never say or imply that the notes are gone from it, or that removed content can't be recovered.
 8. Do not claim continuity. You have the files, not the conversations.
 9. Never promise a lossless import, a secret-free result, secure erasure, or that the scrubber caught every secret. It is a heuristic; say so when it matters.
-
-## Questions and defaults
-
-Every question has a default. Ask, wait, and take the default for anything unanswered, or for everything if the owner says go ahead. Defaults taken go under Waiting on you.
-
-## 1. Preflight
-
-If `fs_read`, `fs_write`, or `fs_list` is missing, say which and stop. `fs_delete` and `sys_get_config` are used only in step 14; note whether each is there.
-
-Code keeps the drop out of the transcript. If `sys_code` is off, or `adf.model_invoke` fails inside it, don't enable anything. Tell the owner:
-
-> I can't process your files in code here, so I'd have to read them directly. Any password or token in them would be saved in this agent's conversation history. I recommend you turn on code first: in Studio, open me, click Config in the right-hand panel, and turn on sys_code in the Tools section (and model_invoke under Code Execution, if it's off). Or should I continue anyway?
-
-Continue only on a clear yes. Then read the files yourself and write the pages from them, leaving out anything that looks like a password, code, or key. Treat `config.yaml` and `cron/jobs.json` as SKIP, label SKIP files "not scanned", and say in the report that secrets may be in the transcript. Still write no copies.
-
-With code, load the scripts and run the self-test first. If it fails, stop and tell the owner. In place, also check file auditing now (step 14's check), so the step 6 notice is accurate. The importer skips it.
 
 ### The scripts
 
@@ -96,6 +57,24 @@ What they do:
 - `flagged(text)` counts lines with broad secret words (step 6). `asText(f)` gives text from an `fs_read` record (base64 for a non-text mime type, like a `.bak`), or null for a binary. `reply(r)` turns a `model_invoke` reply into JSON.
 
 Residual risk: a secret written as an ordinary sentence, with no secret word, prefix, or telltale shape, reaches the model provider and could reach a page. The extraction prompt and the filters keep most of it out. Step 6 tells the owner first.
+
+## Questions and defaults
+
+Every question has a default. Ask, wait, and take the default for anything unanswered, or for everything if the owner says go ahead. Defaults taken go under Waiting on you.
+
+## 1. Preflight
+
+If `fs_read`, `fs_write`, or `fs_list` is missing, say which and stop. `fs_delete` and `sys_get_config` are used only in step 14; note whether each is there.
+
+Code keeps the drop out of the transcript. If `sys_code` is off, or `adf.model_invoke` fails inside it, don't enable anything. Tell the owner:
+
+> I can't process your files in code here, so I'd have to read them directly. Any password or token in them would be saved in this agent's conversation history. I recommend you turn on code first: in Studio, open me, click Config in the right-hand panel, and turn on sys_code in the Tools section (and model_invoke under Code Execution, if it's off). Or should I continue anyway?
+
+Continue only on a clear yes. Then read the files yourself and write the pages from them, leaving out anything that looks like a password, code, or key. Treat `config.yaml` and `cron/jobs.json` as SKIP, label SKIP files "not scanned", and say in the report that secrets may be in the transcript. Still write no copies.
+
+With code, load the scripts and run the self-test first. If it fails, stop and tell the owner. In place, also check file auditing now (step 14's check), so the step 6 notice is accurate. The importer skips it.
+
+fs_read skills/agent-import/references/hand-over.md now.
 
 ## 2. What the owner drops
 
@@ -279,92 +258,13 @@ Before the report, one `sys_code` call per source loads `S` and `risk.json` and 
 
 Write `import-review/<source>/REPORT.md` from this template, copying Not imported from `manifest.md` in code. Number Waiting on you consecutively, only items that apply.
 
-```
-# Import report: <source> → <agent name>, <date UTC>
-
-## Carried
-- <file> → <target>  (distilled into <page> | merged into <page> | staged skill)
-
-## Lossy
-- <item>: what was lost and why (large files read in chunks, "scope unclear" facts, weekday mismatches, lines withheld)
-Pages cite your files by name and line. I kept no copies, so check those lines in your original.
-
-## Not carried
-- <item>: why (credential, hook, schedule, history, config, identity, unreadable)
-
-## Not imported
-- <path> (<size>)  [<label>] [scanned in code | not scanned] [credential-like (content)]
-Files not on the allowlist (other notes folders, CSVs) weren't imported. Drop any one on its own and ask, and I'll import it.
-
-## Secrets
-<n> values were hidden from the model provider in <m> files; PROVENANCE.md lists the lines, without the values.
-<k> more were found in files that were scanned in code but not imported: <paths>.
-<d> lines were left out of the pages because they looked like secrets: <file:line, ...>. Check those lines in your original.
-<what it was>: seen in this conversation; it stays in this agent's history, so rotate it.
-Your agent's files were sent to the model provider to be read. The scrubber can miss a secret written as an ordinary sentence.
-(No-code path: I read your files directly, so any secret in them may be in my conversation history.)
-
-## Personal data
-This import carried <emails, phone numbers, chat ids, client contacts, ...> into <pages>. They are now stored in this agent. Tell me if any should go.
-
-## Waiting on you
-1. Defaults I took: <question → default>, including reading after the notice (<you said go ahead | default>)
-2. <soul.draft.md, instructions.proposed.md, whichever exist>: approve, edit, or reject each
-3. always.candidates.md: accept each line or not
-4. skills: approve each to install: <names>; duplicates staged, neither approved: <pairs, which looks newer>
-5. timers.proposed.md: create any you want; pick one where marked
-6. config.proposal.md: name, icon, avatar, MCP servers to install, identity entries to set
-7. Owner: <name> in <source> doesn't match your name (importer: I don't know your name), so mind/user-<source>.md is separate. Tell me if that's you.
-8. Facts that disagree: <fact: value (cite) | value (cite)>. Tell me which is right.
-9. Conflicts with <other source>: pick one of each pair in always.candidates.md and timers.proposed.md. The soul drafts stay separate.
-10. The files you dropped: <step 14's sentence>
-
-## Clean up
-- <step 14's result>
-- Keep your original files. My pages cite them by name and line.
-
-## Continuity
-I have the files, not the conversations. I don't remember anything the source agent was told outside them.
-```
+fs_read skills/agent-import/references/report-template.md now.
 
 ## 14. Hand over (importer) or remove the drop (in place)
 
-### Importer: hand over
-
-After every page and the report are written:
-1. In one `sys_code` call, `fs_list` `import-review/<source>/` and return the paths to send: `REPORT.md`, `PROVENANCE.md`, `manifest.md`, drafts, generated staged `skills/<name>/SKILL.md`, and generated `mind/` pages. Never send source resources, `assets/`, any other files under staged skill folders, `notes/` (working files), `held.json`, `risk.json`, or anything under the drop folder. Check that no path is under the drop.
-2. `msg_send` to the home agent with its bare handle as `recipient` (no address; the runtime resolves a local handle), those paths as `attachments`, and a short message: the source, the counts, "Pages only. The notes stayed in <importer name>.", and the attached paths, one per line in attachment order. The home agent needs that list: attachments arrive flattened by file name. If the send fails, say so to the owner and stop. Don't retry with the drop.
-3. Tell the owner: "I sent the handover to <home agent>. Keep me until <home agent> confirms every expected page arrived and was placed. A successful send can still skip an attachment. My file still holds your agent's files; <home agent> will tell you when it is ready for you to delete me. Keep your originals, since the pages cite them by name and line."
-
-Don't delete the drop here. The whole importer goes only after the home agent confirms complete receipt and placement. The report's Clean up says: "The importer, <name>, holds a copy of your agent's files. Keep it until <home agent> confirms every expected page arrived and was placed. Then delete <name> from the list on the left in Studio, and press Delete when it asks. That removes its file (usually in the same folder as <home agent>'s) from this computer. A copy of the importer you exported, shared, or backed up still holds them." Leave out Waiting on you item 10.
-
-### In place: remove the drop (code)
-
-The last step, after every page and the report are written. In one `sys_code` call:
-1. If the owner said no in step 7, delete nothing. If `fs_delete` is missing, delete nothing.
-2. Read the config with `adf.sys_get_config({})`. If `context.audit.files` or the legacy `audit.files` is true, delete nothing: with file auditing on, deleting a file archives its whole content into the agent's history. If the config can't be read, delete nothing.
-3. Otherwise `fs_list` each drop folder, `fs_delete` every file in it (SKIP and credential-like ones too), then `fs_list` again. Return only the counts deleted and left, and the paths left.
-
-Fill in the report's Clean up and Waiting on you item 10 with one plain sentence:
-- Deleted, none left: Clean up says "I removed the files you dropped from this agent's file list. Traces of them can stay inside the agent file, so don't share this agent with anyone you wouldn't show those files to." Drop item 10.
-- No `fs_delete`, or the owner said no: "Delete the folder <drop folder> in Studio's Files panel."
-- Auditing on: "I didn't delete the files you dropped, because file auditing is on in this agent's settings and deleting them would copy your agent's files into its history."
-- Config unreadable: "I didn't delete the files you dropped, because I couldn't check whether file auditing is on, and if it is, deleting them would copy your agent's files into this agent's history."
-- Some left: "These dropped files are still here; delete them in Studio's Files panel: <paths>."
-
-Never call the notes deleted for good, gone, or unrecoverable. Then send the owner a short message: counts, decisions waiting, credential warnings, and that sentence.
+fs_read skills/agent-import/references/hand-over.md now.
 
 ## Failure behavior
 
 - A file fails to read or parse, or its `model_invoke` call fails twice: list it under Not carried with the error type and line; continue.
 - A skill can't be mapped (unknown toolset, host-only binary with no compute): stage it with the flag and keep it off the approval list until the owner decides. If only one section can't be mapped, keep it on the list with that section flagged.
-
-## Changelog
-- 0.10.5 (Oct 28 2026): Review fixes against the ADF source. In place only on the owner's clear yes, including when `sys_create_adf` is off (it used to default to importing in place). The skill grants nothing and never turns tools on. Approval card wording: Approve for this one agent, Always approve not needed, Reject or Reject with feedback cancels. `sys_create_adf` `files` entries spelled out as `parent_path`/`child_path`. Handover: attachments arrive flattened under `imported/<importer handle>/`, so the message lists original paths in order and the home agent matches by position and refuses unknown attachments. A failed `model_invoke` or tool call logs up to 200 characters of its error. `fs_delete` isn't secure erase; file auditing is off by default; shared or exported copies keep audit history. Owner lines no longer promise that passwords don't come over or that the import is complete. Long-line guard for the 60 s code limit. Not yet run end to end with a real importer and `msg_send`.
-- 0.10.4 (Oct 28 2026): Owner lines rewritten from a user's point of view: an opening line, a recommended option, where the settings are, the approval card explained, a file checklist, how to show hidden folders, a time estimate (10 to 20 minutes, from blind run 9).
-- 0.10.3 (Oct 28 2026): Exact owner steps checked against Studio. Reject only cancels creating the importer, and the skill asks before importing in place. Studio's Delete removes the .adf from disk, but not exported or backed-up copies.
-- 0.10.2 (Oct 28 2026): Review fixes to the owner lines. Untested: creating the importer with sys_create_adf and real files, and the msg_send handover.
-- 0.10.1 (Oct 28 2026): Blind run 9 fixes. Importer: hub page only, no audit check, no notes/ in the handover. heldCheck() returns risk.json strings; scrub() catches a value that goes on below its marker; citeCheck() added. Identity facts that disagree are asked, never picked.
-- 0.10.0 (Oct 28 2026): A throwaway importer holds the notes and hands over pages only. In place stays as the fallback.
-- 0.9.0 (Oct 28 2026): No copies; drop removed after import, only with file auditing off. Scripts moved to scripts/.
-- Before 0.9.0: fixes 1 to 8, unversioned.
