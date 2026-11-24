@@ -61,7 +61,7 @@ Columns **Local** and **Remote** give editability with the local runtime and wit
 |---|---|---|---|---|---|
 | `theme`, `uiFont`, `uiFontCustom`, `uiScale`, `agentAvatars` | Appearance | Studio | C | Edit | Edit |
 | `adf-chat-width` | Appearance | Studio | L | Edit | Edit |
-| `nativeNotificationsEnabled`, `menuBarEnabled` (macOS) | Notifications | Studio | C | Edit | Edit |
+| `nativeNotificationsEnabled`, `inAppNotificationsEnabled`, `finishedNotificationsEnabled`, `notificationPreviewsEnabled`, `menuBarEnabled` (macOS) | Notifications | Studio | C | Edit | Edit |
 | `updateChecksEnabled` | Updates | Studio | C | Edit | Edit |
 | `spellcheckDownloadsEnabled` (Linux) | Privacy | Studio | C | Edit | Edit |
 | `recentFiles`, `remoteRecentFiles` | File menu | Studio | C | Edit | Edit |

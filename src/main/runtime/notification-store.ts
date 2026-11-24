@@ -8,7 +8,7 @@ import { readJsonOrQuarantine, replaceFileStrict } from '../utils/atomic-json'
 // fields needed to display history, never tool inputs or executor callbacks.
 const notice = z.object({
   id: z.string(),
-  kind: z.enum(['approval', 'ask']),
+  kind: z.enum(['approval', 'ask', 'finished']),
   requestId: z.string(),
   filePath: z.string(),
   agentName: z.string(),

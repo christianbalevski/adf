@@ -15409,7 +15409,7 @@
           "Client (internal)"
         ],
         "summary": "Set the agent the session follows",
-        "description": "The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet).",
+        "description": "The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet). `visible: false`: the client keeps the agent open but does not show it (Home, a closed window); its finished turns are recorded in the notifications history.",
         "operationId": "setClientSessionFocus",
         "x-adf-stability": "internal",
         "requestBody": {
@@ -15427,6 +15427,10 @@
                       "string",
                       "null"
                     ]
+                  },
+                  "visible": {
+                    "type": "boolean",
+                    "description": "Default true"
                   }
                 }
               }
@@ -28996,14 +29000,16 @@
           },
           "kind": {
             "type": "string",
+            "description": "`approval` and `ask` block their agent until answered. `finished` is never pending: it appears only in history, when the main loop of an agent no client had open ended a turn with a reply",
             "enum": [
               "approval",
-              "ask"
+              "ask",
+              "finished"
             ]
           },
           "requestId": {
             "type": "string",
-            "description": "The executor-side id (HIL task id, or `ask_N`)"
+            "description": "The executor-side id (HIL task id, or `ask_N`); `finished_<id>` for a finished turn"
           },
           "filePath": {
             "type": "string",
@@ -29021,7 +29027,7 @@
           },
           "preview": {
             "type": "string",
-            "description": "One line, truncated, secret-free"
+            "description": "One line, truncated. Approvals: the redacted argument summary. Asks: the question. Finished: the reply"
           },
           "question": {
             "type": "string",
@@ -29069,7 +29075,8 @@
                   "approved",
                   "rejected",
                   "answered",
-                  "expired"
+                  "expired",
+                  "completed"
                 ]
               },
               "resolvedAt": {

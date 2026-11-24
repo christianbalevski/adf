@@ -55,7 +55,7 @@ it('a running agent of another runtime opens on that runtime, never as a path on
   const opened: string[] = []
   const openedOn: Array<[string, string]> = []
   const ui = new ApprovalsUi({
-    notificationsEnabled: () => false,
+    setting: (key) => key === 'nativeNotificationsEnabled' ? false : undefined,
     menuBarEnabled: () => false,
     // The same path on two computers: two agents.
     agents: () => [{ filePath: '/srv/agents/agent-1.adf', state: 'active', runtimeId: 'remote:host-1' }, { filePath: '/srv/agents/agent-1.adf', state: 'active' }],

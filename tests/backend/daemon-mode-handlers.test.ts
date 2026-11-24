@@ -182,6 +182,13 @@ describe('daemon-mode handler registration (D2)', () => {
     await handle.clientSettings.flush()
   })
 
+  it('subscription usage on a runtime that predates the routes answers nothing to show, not an IPC error', async () => {
+    // The fake daemon has no subscription-usage routes: the framework 404 an older remote sends.
+    expect(await electronStub.handlers.get(IPC.SUBSCRIPTION_USAGE_GET)!({})).toBeNull()
+    expect(await electronStub.handlers.get(IPC.SUBSCRIPTION_USAGE_REFRESH)!({}, { auto: true })).toBeNull()
+    expect(await electronStub.handlers.get(IPC.SUBSCRIPTION_USAGE_HISTORY)!({}, {})).toEqual([])
+  })
+
   it('TOOLS_DESCRIPTIONS folds the tools of the open agent into the daemon catalog', async () => {
     const AGENT = '5f1d7a3e-2c4b-4e8a-9b6d-0a1b2c3d4e01'
     daemon.routes.set('GET /agents', () => [{ id: AGENT, filePath: join(dir, 'agent-1.adf'), name: 'agent-1', autostart: false }])

@@ -3,7 +3,7 @@
 //
 //   POST   /client/sessions                          {client, version, exitDaemonWhenClosed} → {sessionId, epoch}
 //   GET    /client/sessions/:id/events?since=&epoch= SSE stream of client frames
-//   PUT    /client/sessions/:id/focus                {agentId | null}
+//   PUT    /client/sessions/:id/focus                {agentId | null, visible?}
 //   POST   /client/sessions/:id/documents            {filePath} or {agentId}: hold an open document
 //   DELETE /client/sessions/:id/documents/:agentId   release it
 //   DELETE /client/sessions/:id                      end the session
@@ -127,10 +127,12 @@ export function registerClientRoutes(server: FastifyInstance, ctx: DaemonRouteCo
     }
   })
 
-  server.put<{ Params: SessionParams; Body: { agentId?: unknown } }>('/client/sessions/:id/focus', async (request, reply) => {
+  server.put<{ Params: SessionParams; Body: { agentId?: unknown; visible?: unknown } }>('/client/sessions/:id/focus', async (request, reply) => {
     const agentId = request.body?.agentId
+    const visible = request.body?.visible
     if (agentId !== null && (typeof agentId !== 'string' || agentId.length === 0)) return badRequest(reply, 'agentId must be an agent id or null')
-    return send(reply, () => ({ sessionId: request.params.id, focus: sessions.setFocus(request.params.id, agentId) }))
+    if (visible !== undefined && typeof visible !== 'boolean') return badRequest(reply, 'visible must be a boolean')
+    return send(reply, () => ({ sessionId: request.params.id, focus: sessions.setFocus(request.params.id, agentId, visible !== false) }))
   })
 
   server.post<{ Params: SessionParams; Body: { filePath?: unknown; agentId?: unknown } }>('/client/sessions/:id/documents', async (request, reply) => {

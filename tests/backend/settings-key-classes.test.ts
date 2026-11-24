@@ -203,8 +203,8 @@ describe('settings key classes', () => {
 
   it('keeps the client class to the keys of design §4.1', () => {
     expect([...CLIENT_SETTINGS_KEYS].sort()).toEqual([
-      'agentAvatars', 'agentWindows', 'fleetGroups', 'fleetMapState', 'fleetStewards', 'menuBarEnabled',
-      'nativeNotificationsEnabled', 'onboardingSharedAt', 'recentFiles', 'remoteRecentFiles', 'runtimeFingerprints', 'runtimeFleet', 'runtimeRecentFiles', 'spellcheckDownloadsEnabled',
+      'agentAvatars', 'agentWindows', 'finishedNotificationsEnabled', 'fleetGroups', 'fleetMapState', 'fleetStewards', 'inAppNotificationsEnabled', 'menuBarEnabled',
+      'nativeNotificationsEnabled', 'notificationPreviewsEnabled', 'onboardingSharedAt', 'recentFiles', 'remoteRecentFiles', 'runtimeFingerprints', 'runtimeFleet', 'runtimeRecentFiles', 'spellcheckDownloadsEnabled',
       'templatesMigrationSeen', 'theme', 'uiFont', 'uiFontCustom', 'uiFontSystemDefaultApplied', 'uiScale',
       'updateChecksEnabled',
     ])
@@ -229,10 +229,12 @@ describe('settings key classes', () => {
     const hostParts = ['createNativeNotifierPlatform', 'getMenuBarSnapshot', 'handleMenuBarAction', 'sendReveal', 'focusMainWindow']
       .map((name) => functionBody(ipc, name))
     hostParts.push(...ipc.split('\n').filter((line) => /menuBar|nativeNotifier/.test(line)))
+    // The notification switches both hosts read through (embedded and daemon mode).
+    hostParts.push(functionBody(readFileSync(join(ROOT, 'src', 'main', 'runtime', 'native-notifier.ts'), 'utf8'), 'notificationPreferences'))
     for (const part of hostParts) {
       for (const key of settingsReads(part)) if (settingsKeyClass(key) !== 'client') backendReads.push(`src/main/ipc/index.ts: ${key}`)
     }
     expect(backendReads).toEqual([])
-    expect(settingsReads(hostParts.join('\n'))).toEqual(expect.arrayContaining(['nativeNotificationsEnabled', 'menuBarEnabled']))
+    expect(settingsReads(hostParts.join('\n'))).toEqual(expect.arrayContaining(['nativeNotificationsEnabled', 'finishedNotificationsEnabled', 'inAppNotificationsEnabled', 'notificationPreviewsEnabled', 'menuBarEnabled']))
   })
 })

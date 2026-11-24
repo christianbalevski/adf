@@ -6,7 +6,7 @@ import { useBackgroundAgentsStore } from '../stores/background-agents.store'
 import { useEditorTabsStore, beginAgentSwitch, endAgentSwitch } from '../stores/editor-tabs.store'
 import { toDisplayState } from './useAgent'
 import { deliverSettledQueues } from '../utils/queued-delivery'
-import { loadOpenTabs, saveOpenTabs, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
+import { loadOpenTabs, saveTabState, restoredComputerTab, suspendTabPersistence, resumeTabPersistence } from '../utils/editor-tab-persistence'
 import type { ApprovalMeta } from '../../shared/types/ipc.types'
 import { restorePendingApproval, restorePendingAsk, type RestorableApproval, type RestorableAsk } from './approval-target'
 import { fileOperationDetachedForeground, reportFileOperationError } from '../utils/file-operation-errors'
@@ -258,6 +258,7 @@ export function useAdfFile() {
     // README.md content came down in the batch; the rest was read up front
     // by fetchFileContents. False for files that no longer exist.
     const openWorkspaceFile = (path: string): boolean => {
+      if (path.startsWith('browser://')) return reopenComputerTab()
       if (path === 'README.md') {
         tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
         return true
@@ -266,6 +267,16 @@ export function useAdfFile() {
       if (!file) return false
       tabStore.openTab(path, file.binary ? '' : file.content, !!file.binary, file.mimeType, file.revision)
       return true
+    }
+
+    // The Computer tab comes back at the agent's current path; a second
+    // browser:// entry refreshes that same tab in place.
+    const docPath = useDocumentStore.getState().filePath
+    const computerTab = docPath ? `browser://${docPath}` : null
+    const reopenComputerTab = (): boolean => {
+      const meta = docPath ? restoredComputerTab(docPath, batch.agentConfig) : null
+      if (meta) tabStore.openBrowserTab(meta)
+      return !!meta
     }
 
     let restoredAny = false
@@ -286,21 +297,15 @@ export function useAdfFile() {
       // Every saved file is gone. Fall back to the document rather than
       // leaving a blank editor.
       tabStore.openTab('README.md', batch.document, false, undefined, batch.documentRevision)
-    } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
-      tabStore.setActiveTab(saved.active)
+    } else {
+      const active = saved?.active?.startsWith('browser://') ? computerTab : saved?.active
+      if (active && useEditorTabsStore.getState().tabs.some((t) => t.path === active)) tabStore.setActiveTab(active)
     }
 
     // Persist the restored state now that the switch is complete (the
     // subscriber was suspended for everything above).
     resumeTabPersistence()
-    if (agentFilePath) {
-      const state = useEditorTabsStore.getState()
-      saveOpenTabs(
-        agentFilePath,
-        state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
-        state.activeTabPath
-      )
-    }
+    if (agentFilePath) saveTabState(agentFilePath, useEditorTabsStore.getState())
   }, [setDocumentContent, setConfig, setStatusText, setDirty, setLog, clearLog, setTokenUsage])
 
   /**

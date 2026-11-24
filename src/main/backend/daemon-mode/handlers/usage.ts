@@ -62,23 +62,41 @@ export const USAGE_HANDLERS: DaemonHandlerTable = {
   },
 
   // --- subscription usage: the runtime's own signed-in subscriptions -------------------
-  [IPC.SUBSCRIPTION_USAGE_GET]: async (ctx) => {
+  // These routes never answer 404 themselves: a 404 is a runtime that predates
+  // them (a remote on an older version). Null/[] is the renderer's "nothing to
+  // show"; throwing would log an IPC error on every poll.
+  [IPC.SUBSCRIPTION_USAGE_GET]: async (ctx): Promise<SubscriptionUsageState | null> => {
     const client = await ctx.ready()
-    return client.request<SubscriptionUsageState>('GET', '/runtime/subscription-usage')
+    try {
+      return await client.request<SubscriptionUsageState>('GET', '/runtime/subscription-usage')
+    } catch (err) {
+      if (isNotFound(err)) return null
+      throw err
+    }
   },
 
   [IPC.SUBSCRIPTION_USAGE_REFRESH]: async (ctx, _event, opts?: { auto?: boolean }) => {
     const client = await ctx.ready()
     // The probe has its own 8 s timeout; leave room for it.
-    return client.request<SubscriptionUsageState>('POST', '/runtime/subscription-usage/refresh', { body: opts?.auto ? { auto: true } : {}, timeoutMs: 30_000 })
+    try {
+      return await client.request<SubscriptionUsageState>('POST', '/runtime/subscription-usage/refresh', { body: opts?.auto ? { auto: true } : {}, timeoutMs: 30_000 })
+    } catch (err) {
+      if (isNotFound(err)) return null
+      throw err
+    }
   },
 
   [IPC.SUBSCRIPTION_USAGE_HISTORY]: async (ctx, _event, req?: SubscriptionUsageHistoryRequest) => {
     const client = await ctx.ready()
     const since = req?.since
-    return (await client.request<{ samples: SubscriptionUsageSample[] }>('GET', '/runtime/subscription-usage/history', {
-      query: { since: since !== undefined ? String(since) : undefined },
-    })).samples
+    try {
+      return (await client.request<{ samples: SubscriptionUsageSample[] }>('GET', '/runtime/subscription-usage/history', {
+        query: { since: since !== undefined ? String(since) : undefined },
+      })).samples
+    } catch (err) {
+      if (isNotFound(err)) return []
+      throw err
+    }
   },
 
   [IPC.TOKEN_COUNT]: async (ctx, _event, args: { text: string; provider?: string; model?: string }) => {

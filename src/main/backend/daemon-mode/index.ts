@@ -407,7 +407,7 @@ export function registerDaemonModeHandlers(deps: DaemonModeDeps): DaemonModeHand
       const main = firstWindow()
       return !!main && BrowserWindow.getFocusedWindow() === main
     },
-    notificationsEnabled: () => clientSettings.get('nativeNotificationsEnabled') !== false,
+    setting: (key) => clientSettings.get(key),
     // Every OS notification names its runtime while there is more than one (§6.1); This computer is named too.
     runtimeName: (runtimeId) => {
       if (!manager || manager.runtimes().length < 2) return null

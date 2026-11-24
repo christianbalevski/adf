@@ -364,6 +364,7 @@ adf-settings.json:
     machineCpus: 2
     machineMemoryMb: 2048
   defaultProviderId: "parity-llm"
+  finishedNotificationsEnabled: true
   globalSystemPrompt: |
     You are an ADF agent. Your `.adf` file is a SQLite database holding your config, history, files, messages, identity keys, timers, tasks, and logs. Everything you are is in that one file. The runtime wakes you on triggers: chat, inbox, timers, file changes, task completions. Between turns you are not running, so anything you did not write down is gone. Check timestamps when you wake; time has passed.
     
@@ -460,6 +461,7 @@ adf-settings.json:
     Full guide: https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides/agent-memory.md. The `agent-memory` skill in the catalog ships the audit-retrieval lambda and the lint workflow.
     
     {{mind.md}}
+  inAppNotificationsEnabled: true
   maxDirectoryScanDepth: 5
   mcpServers: []
   menuBarEnabled: false
@@ -467,6 +469,7 @@ adf-settings.json:
   meshLan: false
   meshPort: 7295
   nativeNotificationsEnabled: true
+  notificationPreviewsEnabled: true
   ownerDid: "<did:owner>"
   ownerDidSeedDerived: true
   ownerEncPublicKey: "6PZOUEhZ3xzk8dz7OlcCQ2ot9aXbGI2eHbWzFJZNxkc="

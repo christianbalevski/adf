@@ -5,7 +5,7 @@ import { useAppStore, selectChatInCenter, type AppState } from '../../stores/app
 import { useAgentStore, selectAggregateLogVersion } from '../../stores/agent.store'
 import { AgentLoop } from '../agent/AgentLoop'
 import { DEFAULT_OPEN_TABS } from '../../hooks/useAdfFile'
-import { saveOpenTabs } from '../../utils/editor-tab-persistence'
+import { saveTabState } from '../../utils/editor-tab-persistence'
 import { openTabsKey } from '../../hooks/useAdfFile'
 import { TabBar } from './TabBar'
 import { MarkdownEditor } from './MarkdownEditor'
@@ -336,18 +336,14 @@ export function EditorPanel() {
   }, [performSave])
 
   // Persist the open-tab set per agent so returning to an agent (or
-  // restarting the app) restores the same files. saveOpenTabs dedupes, so
+  // restarting the app) restores the same tabs (the Computer tab too). saveOpenTabs dedupes, so
   // per-keystroke store notifications don't hit localStorage.
   useEffect(() => {
     return useEditorTabsStore.subscribe((state) => {
       // Its path on This computer; runtime and path on another runtime (useAdfFile tabsKey).
       const agentFilePath = openTabsKey()
       if (!agentFilePath) return
-      saveOpenTabs(
-        agentFilePath,
-        state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
-        state.activeTabPath
-      )
+      saveTabState(agentFilePath, state)
     })
   }, [])
 

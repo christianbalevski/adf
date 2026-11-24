@@ -3,8 +3,12 @@
  * remembers which files were open (and which was focused) for each agent so
  * returning to an agent, or restarting the app, doesn't reset the editor to
  * just README.md. Only tab *identity* is stored; content is re-read on
- * restore, and browser:// tabs are excluded (their container/port may be gone).
+ * restore. A browser:// (Computer) tab is kept by path only: its container
+ * and port are asked for again on restore, since they may have changed.
  */
+
+import type { AgentConfig } from '../../shared/types/adf-v02.types'
+import type { BrowserTabMeta } from '../stores/editor-tabs.store'
 
 const KEY_PREFIX = 'adf-open-tabs:'
 
@@ -42,6 +46,31 @@ export function saveOpenTabs(agentFilePath: string, paths: string[], active: str
   try {
     localStorage.setItem(KEY_PREFIX + agentFilePath, payload)
   } catch { /* storage full/unavailable — non-fatal */ }
+}
+
+/** Save the tab store's state: every tab, the Computer tab included. */
+export function saveTabState(agentFilePath: string, state: { tabs: { path: string }[]; activeTabPath: string | null }): void {
+  saveOpenTabs(agentFilePath, state.tabs.map((t) => t.path), state.activeTabPath)
+}
+
+/**
+ * The Computer tab a saved `browser://` entry reopens as, for the agent open
+ * at `docPath`. The list is the agent's own, so any such entry is its
+ * Computer tab, even one saved under an older path (rename, move). Identity
+ * only: the viewer asks the container for its current state on mount. Null
+ * when the agent no longer has a visible desktop.
+ */
+export function restoredComputerTab(docPath: string, config: AgentConfig | null | undefined): BrowserTabMeta | null {
+  if (!config?.compute?.enabled || config.compute.browser === false) return null
+  return {
+    agentFilePath: docPath,
+    containerName: '',
+    agentId: config.id,
+    // eslint-disable-next-line no-restricted-syntax -- main names the isolated container from config.name (isolatedContainerName); this must match it.
+    agentName: config.name,
+    hostPort: null,
+    phase: 'ready',
+  }
 }
 
 /**

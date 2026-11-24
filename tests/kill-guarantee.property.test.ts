@@ -1,7 +1,7 @@
 // Kill is guaranteed: a start asked for before or during a Kill is never
 // carried out after it, and only a start asked for after it reopens the gate.
 // The example tests in daemon-fleet-api.test.ts pin one ordering each. Here
-// every await that matters (provider resolution, each Kill pass, each unload)
+// each interleaving point (directory scan, provider resolution, Kill pass, unload)
 // yields to a scheduler, and the outcome is checked against when each request
 // was made. fast-check explores orderings at random; orderings it found that
 // need a precise sequence are pinned below so they run every time. A start
@@ -13,6 +13,7 @@
 import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
+import { setImmediate } from 'node:timers/promises'
 import fc from 'fast-check'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
@@ -24,7 +25,6 @@ import { RuntimeService } from '../src/main/runtime/runtime-service'
 const HOLDER = '00000000-0000-4000-8000-000000000001'
 const AGENTS = 2
 
-type Step = 'provider' | 'kill pass' | 'unload'
 type Op =
   | { kind: 'kill' }
   | { kind: 'start'; agent: number }
@@ -36,10 +36,6 @@ type Op =
 
 /** Releases steps oldest first (each id in turn; more ids than any run schedules). */
 const fifo = () => fc.schedulerFor(Array.from({ length: 500 }, (_, i) => i + 1))
-
-// Real work between scheduled steps (workspace I/O, timers of 0) runs to
-// its next scheduled step before the next request.
-const nextTurn = async () => { for (let i = 0; i < 20; i++) await new Promise((resolve) => setImmediate(resolve)) }
 
 function seed(dir: string, n: number): { filePath: string; id: string } {
   const filePath = join(dir, `agent-${n}.adf`)
@@ -58,11 +54,17 @@ async function scenario(sched: fc.Scheduler, ops: Op[]): Promise<void> {
   // Reviewed, so autostart loads them.
   const reviewed = agents.map((a) => a.id)
   const settings = { get: (key: string) => (key === 'reviewedAgents' ? reviewed : undefined), set: () => {} }
-  const runtime = new RuntimeService({ settings, enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+  // Leases and asynchronous filesystem scans have their own integration
+  // tests. Here the scheduler controls when each scan and load can proceed.
+  const runtime = new RuntimeService({ settings, agentLeases: null, enforceReviewGate: false, providerFactory: () => new MockLLMProvider() })
+  vi.spyOn(runtime, 'scanAdfFilesAsync').mockImplementation(async (dirs, maxDepth) => {
+    await sched.schedule(Promise.resolve(), 'autostart scan')
+    return runtime.scanAdfFiles(dirs, maxDepth)
+  })
   const server = createDaemonHttpApi(runtime, { settingsStore: settings })
 
   type Async = (...a: unknown[]) => Promise<unknown>
-  const yieldAt = (name: string, label: Step) => {
+  const yieldAt = (name: string, label: string) => {
     const target = runtime as unknown as Record<string, Async>
     const original = target[name].bind(runtime)
     vi.spyOn(target, name).mockImplementation((...a: unknown[]) => sched.schedule(Promise.resolve(), label).then(() => original(...a)))
@@ -88,6 +90,7 @@ async function scenario(sched: fc.Scheduler, ops: Op[]): Promise<void> {
   const settle = (p: Promise<unknown>) => pending.push(p.catch(() => undefined))
 
   try {
+    await server.ready()
     for (const o of ops) {
       if (o.kind === 'kill') {
         const began = new Promise<void>((resolve) => { killBegan = resolve })
@@ -108,16 +111,13 @@ async function scenario(sched: fc.Scheduler, ops: Op[]): Promise<void> {
       } else if (sched.count() > 0) {
         await sched.waitOne()
       }
-      await nextTurn()
+      // Let promise continuations reach the next controlled step before
+      // issuing another request.
+      await setImmediate()
     }
-    // Ops schedule more steps as they run: release until every op settles.
-    let settled = false
-    void Promise.all(pending).then(() => { settled = true })
-    for (let i = 0; !settled; i++) {
-      if (i > 500) throw new Error(`ops did not settle: ${JSON.stringify(ops)}`)
-      await sched.waitAll()
-      await nextTurn()
-    }
+    // The scheduler releases new steps as they appear, including steps an
+    // earlier release queued after returning.
+    await sched.waitFor(Promise.all(pending))
 
     // A start counts only if it was asked for after the last Kill began and
     // while no Kill was running.
@@ -164,8 +164,11 @@ describe('Kill guarantee', () => {
 
   // Reaching these needs one exact order of steps, which random runs rarely hit.
   it.each<[string, Op[]]>([
-    // Shrunk from a failing random run (load guards removed): a0 is loaded,
-    // the Kill begins unloading it, and a1 is asked for meanwhile.
+    ['an autostart asked for during a Kill whose scan finishes afterwards', [
+      { kind: 'kill' }, { kind: 'autostart' }, { kind: 'tick' }, { kind: 'tick' },
+    ]],
+    // Found with the load guards removed: the Kill is unloading a0 when a1
+    // is asked for.
     ['a load asked for while the Kill unloads', [
       { kind: 'start', agent: 0 }, { kind: 'kill' }, { kind: 'tick' }, { kind: 'tick' }, { kind: 'load', agent: 1 },
     ]],

@@ -18,6 +18,8 @@ interface ViewerState {
   phase: ContainerPhase
   detail?: string
   hostPort: number | null
+  /** From the last answer: a restored tab opens without it (useAdfFile). */
+  containerName: string
 }
 
 /**
@@ -56,14 +58,16 @@ function StudioBrowserViewer({ meta, reloadNonce }: Props) {
     phase: meta.phase ?? (meta.hostPort != null ? 'ready' : 'absent'),
     detail: meta.detail,
     hostPort: meta.hostPort,
+    containerName: meta.containerName,
   }))
 
   // Re-query the port when the container becomes ready: the phase event does
   // not carry it, and the browser stack bring-up is awaited by the query.
   const fetchPort = useCallback(async () => {
-    const info = await openApi()?.getBrowserSessionInfo({ agentName: meta.agentName, agentId: meta.agentId })
+    // A failed query leaves the placeholder up, with Check again.
+    const info = await openApi()?.getBrowserSessionInfo({ agentName: meta.agentName, agentId: meta.agentId }).catch(() => null)
     if (!info) return
-    setState({ phase: info.phase, detail: info.detail, hostPort: info.hostPort })
+    setState({ phase: info.phase, detail: info.detail, hostPort: info.hostPort, containerName: info.containerName })
   }, [meta.agentName, meta.agentId])
 
   useEffect(() => {
@@ -71,23 +75,24 @@ function StudioBrowserViewer({ meta, reloadNonce }: Props) {
       phase: meta.phase ?? (meta.hostPort != null ? 'ready' : 'absent'),
       detail: meta.detail,
       hostPort: meta.hostPort,
+      containerName: meta.containerName,
     })
     if (meta.phase === 'ready' && meta.hostPort == null) void fetchPort()
-  }, [meta.phase, meta.detail, meta.hostPort, fetchPort])
+  }, [meta.phase, meta.detail, meta.hostPort, meta.containerName, fetchPort])
 
   const runtime = useOpenRuntime()
   useEffect(() => {
     if (!openApi()?.onContainerPhase) return
     return openApi().onContainerPhase((event: ContainerPhaseEvent) => {
-      if (event.containerName !== meta.containerName) return
+      if (event.containerName !== state.containerName) return
       if (event.phase === 'ready') {
         setState((s) => ({ ...s, phase: 'ready', detail: undefined }))
         void fetchPort()
       } else {
-        setState({ phase: event.phase, detail: event.detail, hostPort: null })
+        setState((s) => ({ ...s, phase: event.phase, detail: event.detail, hostPort: null }))
       }
     })
-  }, [meta.containerName, fetchPort, runtime])
+  }, [state.containerName, fetchPort, runtime])
 
   if (state.phase === 'ready' && state.hostPort != null) {
     return <DesktopWebview hostPort={state.hostPort} reloadNonce={reloadNonce} />

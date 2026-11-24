@@ -116,7 +116,7 @@ describe('OS notifications (§6.1)', () => {
     let clock = 10_000
     const platform: NativeNotifierPlatform = {
       isSupported: () => true,
-      isEnabled: () => true,
+      preferences: () => ({ enabled: true, finished: true, inApp: true, previews: true }),
       isWindowFocused: () => false,
       now: () => (clock += 5_000),
       show: (request) => { titles.push(request.title); return { close: () => {} } },

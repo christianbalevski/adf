@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest'
 import { useEditorTabsStore } from '../../../src/renderer/stores/editor-tabs.store'
+import type { AgentConfig } from '../../../src/shared/types/adf-v02.types'
 import {
-  saveOpenTabs,
+  saveTabState,
+  restoredComputerTab,
   loadOpenTabs,
   suspendTabPersistence,
   resumeTabPersistence,
@@ -20,11 +22,7 @@ let currentFilePath: string | null = null
 function attachPersistenceSubscriber(): () => void {
   return useEditorTabsStore.subscribe((state) => {
     if (!currentFilePath) return
-    saveOpenTabs(
-      currentFilePath,
-      state.tabs.filter((t) => t.kind === 'file').map((t) => t.path),
-      state.activeTabPath
-    )
+    saveTabState(currentFilePath, state)
   })
 }
 
@@ -34,7 +32,7 @@ function attachPersistenceSubscriber(): () => void {
  * document-store subscription) while the OLD agent's tabs are still present —
  * this is the mutation that used to clobber the new agent's saved list.
  */
-function switchToAgent(filePath: string, doc: string, readInternalFile: (p: string) => string | null): void {
+function switchToAgent(filePath: string, doc: string, readInternalFile: (p: string) => string | null, config: AgentConfig | null = null): void {
   currentFilePath = filePath
   suspendTabPersistence()
   try {
@@ -49,11 +47,18 @@ function switchToAgent(filePath: string, doc: string, readInternalFile: (p: stri
     const tabStore = useEditorTabsStore.getState()
     tabStore.reset()
     let restoredAny = false
+    const computerTab = `browser://${filePath}`
     for (const path of saved?.paths ?? []) {
-      if (path === 'README.md') {
+      if (path.startsWith('browser://')) {
+        const meta = restoredComputerTab(filePath, config)
+        if (meta) {
+          tabStore.openBrowserTab(meta)
+          restoredAny = true
+        }
+      } else if (path === 'README.md') {
         tabStore.openTab('README.md', doc, false)
         restoredAny = true
-      } else if (!path.startsWith('browser://')) {
+      } else {
         const content = readInternalFile(path)
         if (content != null) {
           tabStore.openTab(path, content, false)
@@ -63,13 +68,13 @@ function switchToAgent(filePath: string, doc: string, readInternalFile: (p: stri
     }
     if (!restoredAny) {
       tabStore.openTab('README.md', doc, false)
-    } else if (saved?.active && useEditorTabsStore.getState().tabs.some((t) => t.path === saved.active)) {
-      tabStore.setActiveTab(saved.active)
+    } else {
+      const active = saved?.active?.startsWith('browser://') ? computerTab : saved?.active
+      if (active && useEditorTabsStore.getState().tabs.some((t) => t.path === active)) tabStore.setActiveTab(active)
     }
 
     resumeTabPersistence()
-    const state = useEditorTabsStore.getState()
-    saveOpenTabs(filePath, state.tabs.filter((t) => t.kind === 'file').map((t) => t.path), state.activeTabPath)
+    saveTabState(filePath, useEditorTabsStore.getState())
   } finally {
     resumeTabPersistence()
   }
@@ -117,6 +122,32 @@ describe('editor tab persistence across agent switches', () => {
     } finally {
       unsub()
     }
+  })
+
+  it('brings the Computer tab back, focused, even when saved under an older path', () => {
+    const computer = { id: 'agent-a', name: 'a', compute: { enabled: true } } as AgentConfig
+    const unsub = attachPersistenceSubscriber()
+    try {
+      switchToAgent('/agents/a.adf', 'doc A', () => null, computer)
+      // Opened before a rename: the tab keeps the old path.
+      useEditorTabsStore.getState().openBrowserTab({ agentFilePath: '/agents/old.adf', containerName: 'c', agentId: 'agent-a', agentName: 'a', hostPort: 5900 })
+      expect(loadOpenTabs('/agents/a.adf')).toEqual({ paths: ['README.md', 'browser:///agents/old.adf'], active: 'browser:///agents/old.adf' })
+
+      switchToAgent('/agents/b.adf', 'doc B', () => null)
+      switchToAgent('/agents/a.adf', 'doc A', () => null, computer)
+      const state = useEditorTabsStore.getState()
+      expect(state.tabs.map((t) => t.path)).toEqual(['README.md', 'browser:///agents/a.adf'])
+      expect(state.activeTabPath).toBe('browser:///agents/a.adf')
+      // Identity only: the viewer asks the container for its port.
+      expect(state.tabs[1].browserMeta).toMatchObject({ agentId: 'agent-a', hostPort: null, phase: 'ready' })
+    } finally {
+      unsub()
+    }
+  })
+
+  it('drops the Computer tab when the agent no longer has a desktop', () => {
+    expect(restoredComputerTab('/agents/a.adf', { id: 'x', name: 'a', compute: { enabled: true, browser: false } } as AgentConfig)).toBeNull()
+    expect(restoredComputerTab('/agents/a.adf', { id: 'x', name: 'a' } as AgentConfig)).toBeNull()
   })
 
   it('falls back to README when nothing is saved', () => {

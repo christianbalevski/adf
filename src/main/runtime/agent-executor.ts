@@ -42,7 +42,7 @@ import { MAIN_LOOP, buildMainLoopsSection } from '../adf/derive-loop-config'
 import { LoopCompactionSupersededError, type AdfWorkspace } from '../adf/adf-workspace'
 // Global pending-approval registry (title-bar approvals menu). Registration is
 // unconditional: hosts with no UI never subscribe, so it costs one map write.
-import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion } from './approval-hub'
+import { approvalHub, notificationKey, summarizeApprovalArgs, summarizeQuestion, truncateLine } from './approval-hub'
 import { assemblePrompt } from './prompt-builder'
 import { collectInjectedFiles, resolveInjectedFiles } from './prompt-file-injection'
 import { assembleContextBreakdown, calibrateContextBreakdown, findLastCall, measureInjectedFiles, measureToolSchemas } from './context-breakdown'
@@ -154,6 +154,19 @@ export const TURN_INTERRUPTED_NOTICE = '[System] Turn interrupted by user.'
 function isVisibleToOwner(block: ContentBlock): boolean {
   return (block.type === 'text' && !!block.text?.trim())
     || (block.type === 'tool_use' && (block.name === 'say' || block.name === 'ask'))
+}
+
+/** The owner-visible words of a response: its text blocks and `say` messages, in order. Empty when it said nothing. */
+export function replyTextOf(content: ContentBlock[]): string {
+  const parts: string[] = []
+  for (const block of content) {
+    if (block.type === 'text' && block.text?.trim()) parts.push(block.text)
+    else if (block.type === 'tool_use' && block.name === 'say') {
+      const message = (block.input as { message?: unknown } | undefined)?.message
+      if (typeof message === 'string' && message.trim()) parts.push(message)
+    }
+  }
+  return parts.join('\n').trim()
 }
 
 const SILENT_TURN_NOTICE = 'You ended the turn without replying to your principal. They see your text and `say` messages, never your thinking. Reply now, or end the turn again if no reply is needed.'
@@ -623,6 +636,8 @@ export class AgentExecutor extends EventEmitter {
   private absorbedTurnIds: string[] = []
   /** turnId of the dispatch the current (outermost) turn is running. */
   private runningTurnId: string | null = null
+  /** The current outermost turn's last owner-visible reply (announceFinishedTurn). */
+  private turnReply: string | null = null
   /** Counts outermost agent turns, so a late approval can tell whether the
    *  turn that raised it is the one running now. */
   private agentTurnSerial = 0
@@ -1262,6 +1277,31 @@ export class AgentExecutor extends EventEmitter {
     if (this.pendingHilTasks.size === 0) return false
     for (const taskId of this.pendingHilTasks.keys()) if (!this.besideTurnHilTasks.has(taskId)) return false
     return true
+  }
+
+  /**
+   * A main loop turn that ended cleanly with a reply goes to the notifications
+   * history as 'finished' (the hub skips it while a client has the agent
+   * open). The reply is the turn's last owner-visible text: an autonomous
+   * agent that replies and then calls sys_set_state idle counts.
+   */
+  private announceFinishedTurn(): void {
+    const reply = this.turnReply
+    this.turnReply = null
+    if (!reply || this.approvalLoopName() !== MAIN_LOOP) return
+    const filePath = this.approvalFilePath()
+    if (!filePath) return
+    const requestId = `finished_${nanoid(8)}`
+    approvalHub.announce({
+      id: this.notificationKeyFor(requestId),
+      kind: 'finished',
+      requestId,
+      filePath,
+      agentName: this.config.name,
+      loop: MAIN_LOOP,
+      preview: truncateLine(reply) || 'Turn complete',
+      requestedAt: Date.now(),
+    })
   }
 
   /** The hub is keyed per agent+loop+request — `ask_1` is not globally unique. */
@@ -2432,6 +2472,7 @@ export class AgentExecutor extends EventEmitter {
     if (!opts?.nested) {
       this.runningTurnId = dispatch.turnId ?? null
       this.agentTurnSerial++
+      this.turnReply = null
     }
 
     this._isMessageTriggered = eventType === 'inbox'
@@ -2916,6 +2957,8 @@ export class AgentExecutor extends EventEmitter {
         )
 
         const responseVisible = response.content.some(isVisibleToOwner)
+        const replyText = replyTextOf(response.content)
+        if (replyText) this.turnReply = replyText
 
         if (toolUseBlocks.length > 0) {
           consecutiveTextOnly = 0
@@ -3668,6 +3711,10 @@ export class AgentExecutor extends EventEmitter {
         }
       }
     } catch (error) {
+      // A turn that threw did not finish, whatever state it settles in. A
+      // nested recovery retry that throws fails its outer turn too; one that
+      // succeeds sets the reply again.
+      this.turnReply = null
       // A model call cut off by an interrupt, an owner state change or a
       // stop: what it already streamed is the model's output and is kept.
       const cutOff = this.inFlightOutput
@@ -4019,6 +4066,7 @@ export class AgentExecutor extends EventEmitter {
         // the retry turn overwrites this checkpoint when it begins.
       } else {
         this.completeTurnCheckpoint(checkpointId)
+        if (!opts?.nested) this.announceFinishedTurn()
       }
 
       if (!opts?.nested) this.runningTurnId = null

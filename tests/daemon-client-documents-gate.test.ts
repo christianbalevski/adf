@@ -74,7 +74,7 @@ describe('MERGE GATE: session-held documents in the daemon wiring', () => {
       runtime,
       mesh: new EventEmitter(),
       compute: new EventEmitter(),
-      approvals: { subscribe: () => () => {} },
+      approvals: { subscribe: () => () => {}, setAttendedCheck: () => {} },
       trackedDirWatcher: new EventEmitter(),
       eventBus: { subscribe: () => () => {} },
       packages: { mcp: installer, python: installer, adapters: installer, sandbox: installer },

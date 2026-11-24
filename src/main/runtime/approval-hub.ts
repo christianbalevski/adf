@@ -234,6 +234,37 @@ export class ApprovalHub {
   }
 
   /**
+   * Whether a client has `filePath` open. Set by the host (daemon: a connected
+   * client session focused on the agent; embedded: the open file). Unset: no
+   * one is watching.
+   */
+  private attended: ((filePath: string) => boolean) | null = null
+
+  setAttendedCheck(check: ((filePath: string) => boolean) | null): void {
+    this.attended = check
+  }
+
+  /**
+   * Record a notice that blocks nothing ('finished') straight into history.
+   * Skipped while a client has the agent open: its chat already shows the
+   * reply. An agent keeps only its newest 'finished' row, so a timer-driven
+   * agent cannot grow the history or bury the approval receipts. Returns
+   * whether it was recorded.
+   */
+  announce(entry: PendingNotification): boolean {
+    try {
+      if (this.attended?.(entry.filePath)) return false
+    } catch (err) {
+      // The daemon's lookup refuses a file that is moving: count it as unattended.
+      console.error('[ApprovalHub] attended check failed:', err)
+    }
+    this.history = this.history.filter((row) => row.kind !== 'finished' || row.filePath !== entry.filePath)
+    this.remember(entry, 'completed')
+    this.notify()
+    return true
+  }
+
+  /**
    * Drop one entry and record how it ended. Returns false when it was already
    * gone (no notify, no duplicate history row) — which is exactly what makes a
    * double-resolve, a resolve-after-timeout and a hub-initiated resolve (the

@@ -38,8 +38,8 @@ async function revealProviderKeys(ctx: DaemonModeContext, client: DaemonClient, 
     p?.apiKey === REDACTED_API_KEY && typeof p.id === 'string' && typeof keys[p.id] === 'string' ? { ...p, apiKey: keys[p.id] } : p)
 }
 
-/** The client keys App.tsx applies to the page (theme, typeface, scale, avatars). */
-export const APPEARANCE_KEYS = ['theme', 'uiFont', 'uiFontCustom', 'uiScale', 'agentAvatars'] as const
+/** The client keys App.tsx applies to the page (theme, typeface, scale, avatars, the bell's notice switches). */
+export const APPEARANCE_KEYS = ['theme', 'uiFont', 'uiFontCustom', 'uiScale', 'agentAvatars', 'finishedNotificationsEnabled', 'inAppNotificationsEnabled'] as const
 
 export const APP_HANDLERS: DaemonHandlerTable = {
   // --- local -----------------------------------------------------------------

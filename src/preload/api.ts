@@ -58,6 +58,8 @@ export interface AdfApi {
   /** The default folder for new agents (agentsFolder setting, else Documents/adf-agents). */
   getDefaultAgentsFolder: () => Promise<{ path: string }>
   closeFile: () => Promise<FileOperationResult>
+  /** The open file's agent view is shown; false while Studio shows Home. */
+  setFileVisible: (visible: boolean) => Promise<void>
   deleteFile: (filePath: string) => Promise<FileOperationResult>
   listTables: (filePath: string) => Promise<{ tables: Array<{ name: string; row_count: number }>; error?: string }>
   cloneFile: (filePath: string, selectedTables: string[]) => Promise<FileOperationResult>

@@ -269,6 +269,12 @@ export interface AppSettings {
   promptDefaultsApplied?: string
   /** OS notifications for agent events. Absent = enabled. */
   nativeNotificationsEnabled?: boolean
+  /** 'finished' notices: an agent no client had open ended a main loop turn with a reply. Absent = enabled. */
+  finishedNotificationsEnabled?: boolean
+  /** In-app notices under the bell. While on, a focused window gets no OS notification. Absent = enabled. */
+  inAppNotificationsEnabled?: boolean
+  /** OS notification bodies carry the question or reply text. Absent = enabled. */
+  notificationPreviewsEnabled?: boolean
   /** macOS menu bar icon with running agents and pending approvals. Absent = enabled. */
   menuBarEnabled?: boolean
   /** Background update check against GitHub Releases (packaged builds). Absent = enabled. */
@@ -635,12 +641,14 @@ export interface ToolApprovalRequestPayload extends ApprovalMeta {
 }
 
 /**
- * What a global-notification row is asking the human for. Both kinds block
- * their executor until answered; they differ only in how they are answered —
- * an approval is a yes/no (resolvable inline), an ask needs typed prose (so
- * the UI jumps you to the agent's chat instead).
+ * What a global-notification row is about. 'approval' and 'ask' block their
+ * executor until answered; they differ only in how they are answered — an
+ * approval is a yes/no (resolvable inline), an ask needs typed prose (so the UI
+ * jumps you to the agent's chat instead). 'finished' blocks nothing: a main
+ * loop turn of an agent no client had open ended with a reply. It is never
+ * pending; it goes straight to history (ApprovalHub.announce).
  */
-export type PendingNotificationKind = 'approval' | 'ask'
+export type PendingNotificationKind = 'approval' | 'ask' | 'finished'
 
 /**
  * One row of the global HIL notifications menu (title bar), and the single
@@ -670,7 +678,7 @@ export interface PendingNotification {
   loop: string
   /** Approvals only. */
   toolName?: string
-  /** One line: the tool's args summary, or the question. Truncated, redacted. */
+  /** One line, truncated: the tool's redacted args summary, the question, or the reply ('finished'). */
   preview: string
   /** Asks only — every question's text, one per line. */
   question?: string

@@ -487,6 +487,8 @@ class ClientSession {
   readonly epoch = randomUUID()
   readonly createdAt = Date.now()
   focus: string | null = null
+  /** False while the client keeps the focused agent open without showing it (Home, a closed window). */
+  focusVisible = true
   readonly documents = new Map<string, ClientHeldDocument>()
   readonly ring: FrameRing
   nextCursor = 1
@@ -735,6 +737,12 @@ export class ClientSessionRegistry {
     return this.sessions.get(sessionId)?.focus
   }
 
+  /** Whether a connected session shows `agentId`: it follows it and has it on screen. */
+  showing(agentId: string): boolean {
+    for (const session of this.sessions.values()) if (session.connection && session.focusVisible && session.focus === agentId) return true
+    return false
+  }
+
   /** The client name a session was created with (`studio`, `tui`, …), or undefined for an unknown session. */
   clientOf(sessionId: string): string | undefined {
     return this.sessions.get(sessionId)?.client
@@ -760,10 +768,11 @@ export class ClientSessionRegistry {
     this.documentHost = host
   }
 
-  setFocus(sessionId: string, identifier: string | null): string | null {
+  setFocus(sessionId: string, identifier: string | null, visible = true): string | null {
     const session = this.require(sessionId)
     const focus = identifier === null ? null : this.options.resolveAgentId?.(identifier) ?? identifier
     session.focus = focus
+    session.focusVisible = visible
     return focus
   }
 

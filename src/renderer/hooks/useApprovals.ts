@@ -1,12 +1,13 @@
 import { useEffect, useRef } from 'react'
-import { approvalsBridge, useApprovalsStore } from '../stores/approvals.store'
+import { approvalsBridge, NOTIFICATIONS_SEEN_KEY, useApprovalsStore } from '../stores/approvals.store'
 import { useAppStore } from '../stores/app.store'
 import { useDocumentStore } from '../stores/document.store'
 import { useAgentStore, MAIN_LOOP } from '../stores/agent.store'
 import { useMeshGraphStore, type PendingInteraction } from '../stores/mesh-graph.store'
 import { useJumpToAgent } from './useJumpToAgent'
-import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
+import type { NotificationsSnapshot, PendingNotification, ResolvedNotification } from '../../shared/types/ipc.types'
 import { noticeKey } from '../../shared/runtime-tag'
+import { newFinished, seedFinished } from '../../shared/utils/finished-notices'
 import { agentKey } from '../../shared/types/agent-ref'
 
 /** The open agent as a ref key (agentKey), compared with each request's: refs of two runtimes never match. */
@@ -94,6 +95,9 @@ export function arrivalsToAnnounce(snapshot: NotificationsSnapshot, seen: Set<st
  */
 export function useApprovalEvents() {
   const seenIds = useRef<Set<string>>(new Set())
+  const seenFinished = useRef<Set<string>>(new Set())
+  // The first snapshot (pull or push) only seeds: its rows are not arrivals.
+  const finishedSeeded = useRef(false)
   const timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   // The initial pull is awaited, so a live push can land first. Once it has,
   // the pull's result is stale and must not overwrite it (B12).
@@ -145,7 +149,9 @@ export function useApprovalEvents() {
     const apply = (snapshot: NotificationsSnapshot): void => {
       hasAppliedPush.current = true
       const store = useApprovalsStore.getState()
-      for (const n of arrivalsToAnnounce(snapshot, seenIds.current, useAppStore.getState().showHome ? null : openRefKey(), useAgentStore.getState().viewedLoop)) {
+      const app = useAppStore.getState()
+      const openKey = app.showHome ? null : openRefKey()
+      const toast = (n: PendingNotification | ResolvedNotification, detail: string): void => {
         const key = noticeKey(n.runtimeId, n.id)
         store.pushToast({
           id: key,
@@ -153,16 +159,33 @@ export function useApprovalEvents() {
           kind: n.kind,
           agentName: n.agentName,
           loop: n.loop,
-          detail: n.kind === 'ask' ? n.preview : (n.toolName ?? 'tool'),
+          detail,
           filePath: n.filePath
         })
         scheduleExpiry(key)
+      }
+      // Computed even with notices off, so turning them on later does not replay old arrivals.
+      const arrivals = arrivalsToAnnounce(snapshot, seenIds.current, openKey, useAgentStore.getState().viewedLoop)
+      // The runtime never records a row for an agent a client has open (ApprovalHub.announce).
+      const finished = finishedSeeded.current ? newFinished(snapshot.history ?? [], seenFinished.current, Date.now()) : []
+      if (!finishedSeeded.current) {
+        finishedSeeded.current = true
+        seedFinished(snapshot.history ?? [], seenFinished.current)
+      }
+      if (app.inAppNotifications) {
+        for (const n of arrivals) toast(n, n.kind === 'ask' ? n.preview : (n.toolName ?? 'tool'))
+        if (app.finishedNotificationsEnabled) for (const n of finished) toast(n, n.preview)
       }
 
       commit(snapshot)
     }
 
     const unsubscribe = api.onPendingNotificationsChanged(apply)
+    // The panel opened in another window marks its 'finished' rows read here too.
+    const onStorage = (event: StorageEvent): void => {
+      if (event.key === NOTIFICATIONS_SEEN_KEY) useApprovalsStore.getState().syncSeen()
+    }
+    globalThis.addEventListener?.('storage', onStorage)
     void api.listPendingNotifications?.().then((snapshot) => {
       // A push already applied a (newer) snapshot while this pull was in flight
       // — the pull is stale, so drop it rather than clobber the fresher state.
@@ -174,11 +197,14 @@ export function useApprovalEvents() {
       // First paint only seeds the list — a pull is not an "arrival", so it
       // must not fire toasts for requests that were already pending.
       for (const n of seeded.pending) seenIds.current.add(noticeKey(n.runtimeId, n.id))
+      finishedSeeded.current = true
+      seedFinished(seeded.history, seenFinished.current)
       commit(seeded)
     }).catch(() => { /* hub unavailable — badge stays at 0 */ })
 
     return () => {
       unsubscribe?.()
+      globalThis.removeEventListener?.('storage', onStorage)
       for (const timer of pendingTimers.values()) clearTimeout(timer)
       pendingTimers.clear()
     }
