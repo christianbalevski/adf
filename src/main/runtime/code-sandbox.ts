@@ -184,7 +184,12 @@ interface WorkerCreation {
   promise: Promise<WorkerEntry>
   controller: AbortController
   callers: number
-  pendingDestroy?: boolean
+  /** destroy() landed while this creation was still starting. It is no longer
+   *  joinable, its worker is never registered under the id, and that worker is
+   *  terminated once the callers already waiting on it finish. */
+  detached?: boolean
+  /** The worker, once createWorker() has spawned it. */
+  entry?: WorkerEntry
 }
 
 interface AdfCallMessage {
@@ -478,8 +483,9 @@ export class CodeSandboxService {
       }, effectiveTimeout + WORKER_GUARD_BUFFER_MS) // Extra buffer for async RPC round-trips
 
       // The worker can die while we await its creation — registering on a dead
-      // one would wait out the guard timer for nothing.
-      if (this.workers.get(agentId) !== entry) {
+      // one would wait out the guard timer for nothing. A detached worker is
+      // not registered under the id but still runs what it was handed.
+      if (entry.released) {
         settle({ stdout: '', error: 'Sandbox worker terminated', errorCode: 'SANDBOX_TERMINATED' })
         return
       }
@@ -545,8 +551,19 @@ export class CodeSandboxService {
     const creation = this.creating.get(agentId)
     if (creation) {
       // These executions were accepted but their shared worker is still
-      // starting. Retire it after they finish just like a ready worker.
-      creation.pendingDestroy = true
+      // starting. Detach it like a busy ready worker: they finish on it, it is
+      // terminated after them, and the next execute() on this id starts fresh
+      // instead of joining it (clear_state: true must not inherit a doomed
+      // worker, and a clear_state: false call after it must not lose its state).
+      creation.detached = true
+      this.creating.delete(agentId)
+      this.unregisterSandbox(agentId)
+      const entry = creation.entry
+      if (entry && this.workers.get(agentId) === entry) {
+        entry.pendingDestroy = true
+        this.workers.delete(agentId)
+        this.detached.set(entry, agentId)
+      }
       return
     }
     const entry = this.workers.get(agentId)
@@ -798,7 +815,7 @@ export class CodeSandboxService {
             this.returnPermit(ephemeral)
             throw controller.signal.reason
           }
-          return this.createWorker(agentId, ephemeral)
+          return this.createWorker(agentId, ephemeral, creation!)
         })
       creation = { promise, controller, callers: 0 }
       this.creating.set(agentId, creation)
@@ -829,6 +846,10 @@ export class CodeSandboxService {
           this.cancelCreation(agentId, error)
           const entry = this.workers.get(agentId)
           if (entry?.inflight === 0) this.destroyWorker(agentId)
+        } else if (creation.callers === 0 && creation.detached) {
+          // Nobody is left to finish on the detached worker: stop it now.
+          creation.controller.abort(error)
+          if (creation.entry?.inflight === 0) this.destroyEntry(agentId, creation.entry)
         }
         reject(error)
       }
@@ -837,7 +858,7 @@ export class CodeSandboxService {
         // Pin before clearing the creation record. Admission cannot evict
         // the worker between assignment and the execution's await resuming.
         entry.inflight++
-        entry.pendingDestroy ||= creation.pendingDestroy === true
+        entry.pendingDestroy ||= creation.detached === true
         cleanup()
         resolve(entry)
       }, err => {
@@ -858,7 +879,7 @@ export class CodeSandboxService {
     creation.controller.abort(error)
   }
 
-  private async createWorker(agentId: string, ephemeral: boolean): Promise<WorkerEntry> {
+  private async createWorker(agentId: string, ephemeral: boolean, creation: WorkerCreation): Promise<WorkerEntry> {
     let readPaths: string[]
     let worker: RemoteWorker
     try {
@@ -885,7 +906,13 @@ export class CodeSandboxService {
       lastUsed: Date.now(),
       released: false
     }
-    this.workers.set(agentId, entry)
+    creation.entry = entry
+    if (creation.detached) {
+      entry.pendingDestroy = true
+      this.detached.set(entry, agentId)
+    } else {
+      this.workers.set(agentId, entry)
+    }
 
     // One router per worker, not one listener per execute() — N listeners both
     // tripped the MaxListeners warning and made every handler see every message.
@@ -906,6 +933,7 @@ export class CodeSandboxService {
       // Only evict our own entry: a dying old worker must not remove the newer
       // replacement already registered under the same id.
       if (this.workers.get(agentId) === entry) this.workers.delete(agentId)
+      this.detached.delete(entry)
       this.release(entry)
       this.settleWorkerPending(entry, 'Sandbox worker terminated')
       finishBoot(new SandboxUnavailableError(

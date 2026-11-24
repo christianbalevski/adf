@@ -137,6 +137,20 @@ describe('sys_code tool', () => {
     expect((await slow).content).toBe('Result: 1')
     expect(service.has(id)).toBe(true)
   })
+
+  it('clear_state: true while the sandbox is still starting gets a fresh one, and state saved after it survives', async () => {
+    const id = `tool-${++n}`
+    const tool = new SysCodeTool(service, id)
+    // All three are issued in one turn, so the first worker is still booting
+    // when the clear_state: true call lands.
+    const slow = tool.execute({ code: 'globalThis.old = 1; await new Promise(r => setTimeout(r, 200)); return typeof old', clear_state: false }, workspace)
+    const fresh = tool.execute({ code: 'typeof old', clear_state: true }, workspace)
+    const save = tool.execute({ code: 'const saved = 5', clear_state: false }, workspace)
+    expect((await fresh).content).toBe('Result: undefined')
+    expect((await slow).content).toMatch(/Result: number$/)
+    await save
+    expect((await tool.execute({ code: 'saved', clear_state: false }, workspace)).content).toBe('Result: 5')
+  })
 })
 
 it('PRELUDE_GLOBALS lists every global the prelude defines', () => {
