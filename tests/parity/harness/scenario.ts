@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { IPC } from '../../../src/shared/constants/ipc-channels'
+import type { NotificationsSnapshot } from '../../../src/shared/types/ipc.types'
 import type { BootedBackend, ParityBackend } from './backend'
 import { createFakeElectron, type DialogScript, type PushRecord } from './electron-fake'
 import { createParityEnv, writeSettingsFile, type ParityEnv } from './env'
@@ -67,6 +68,13 @@ export interface ScenarioContext {
   waitForPush(channel: string, description: string, match: (payload: unknown) => boolean, timeoutMs?: number): Promise<unknown>
   /** Answer native dialogs from now on. */
   setDialogs(script: DialogScript): void
+}
+
+/** Wait for the runtime's separate notification snapshot for a background reply. */
+export async function waitForFinishedNotice(ctx: ScenarioContext, filePath: string, preview: string): Promise<void> {
+  await ctx.waitForPush(IPC.APPROVALS_CHANGED, `finished notice for ${JSON.stringify(preview)}`, (value) =>
+    (value as NotificationsSnapshot | undefined)?.history.some((row) =>
+      row.kind === 'finished' && row.filePath === filePath && row.preview === preview) === true)
 }
 
 async function sleep(ms: number): Promise<void> {

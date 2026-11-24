@@ -294,7 +294,7 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   const recentHistory = useApprovalsStore((s) => s.showRecentHistory)
   const panelOpen = useApprovalsStore((s) => s.panelOpen)
   const seenAt = useApprovalsStore((s) => s.seenAt)
-  const markSeen = useApprovalsStore((s) => s.markSeen)
+  const openedSeenAt = useApprovalsStore((s) => s.openedSeenAt)
   const showFinished = useAppStore((s) => s.finishedNotificationsEnabled)
   const togglePanel = useApprovalsStore((s) => s.togglePanel)
   const setPanelOpen = useApprovalsStore((s) => s.setPanelOpen)
@@ -307,8 +307,6 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   // Agent finished off: its rows leave the bell (the runtime still records them).
   const shown = (entries: ResolvedNotification[]) => showFinished ? entries : entries.filter((entry) => entry.kind !== 'finished')
   const unread = showFinished ? unreadFinished(history, seenAt) : 0
-  // What was unread when the panel opened stays highlighted while it is open.
-  const [openedSeenAt, setOpenedSeenAt] = useState(seenAt)
 
   const clearHistory = async () => {
     setClearing(true)
@@ -339,13 +337,6 @@ export function ApprovalsMenu({ align = 'right' }: { align?: 'left' | 'right' } 
   useEffect(() => {
     if (inspectingId && !inspecting) setInspectingId(null)
   }, [inspectingId, inspecting])
-
-  // Opening the panel reads every finished row (in every window).
-  useEffect(() => {
-    if (!panelOpen) return
-    setOpenedSeenAt(useApprovalsStore.getState().seenAt)
-    markSeen()
-  }, [panelOpen, markSeen])
 
   // Ages are only interesting to the second while the panel is open.
   useEffect(() => {

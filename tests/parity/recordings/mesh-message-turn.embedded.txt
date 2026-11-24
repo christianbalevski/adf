@@ -44,7 +44,8 @@
   result:
     success: true
 7. wait adf:background-agent:event-batch — agent-2 answered the message  [matched push 25]
-8. shutdown  [pushes 26→28]
+8. wait adf:approvals:changed — finished notice for "Got it."  [matched snapshot 1]
+9. shutdown  [pushes 25→27]
 
 ## timeline <ROOT>/agents/agent-1.adf
 > 1 adf:file:open
@@ -85,11 +86,10 @@
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
-  [app] adf:approvals:changed
-> 8 shutdown
+> 9 shutdown
   [app] adf:mesh:event agent_left
   [app] adf:mesh:event agent_left
-< 8
+< 9
 
 ## timeline <ROOT>/agents/agent-2.adf
 > 1 adf:file:open
@@ -113,11 +113,10 @@
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
-  [app] adf:approvals:changed
-> 8 shutdown
+> 9 shutdown
   [app] adf:mesh:event agent_left
   [app] adf:mesh:event agent_left
-< 8
+< 9
 
 ## push adf:agent:event (17)
 #1:
@@ -378,7 +377,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 12262
+      input: 12310
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -433,7 +432,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 12295
+      input: 12343
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -519,7 +518,7 @@
       filePath: "<ROOT>/agents/agent-2.adf"
       model: "parity-model"
       usage:
-        input: 12342
+        input: 12390
         output: 0
     timestamp: "<t>"
     type: "response_metadata"

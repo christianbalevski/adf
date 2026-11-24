@@ -442,7 +442,7 @@
         path: "soul.md"
         tokens: 283
     messages_tokens: 0
-    overhead_tokens: 11117
+    overhead_tokens: 11165
     system_prompt_parts:
       base_and_sections: 3923
       instructions: 0
@@ -451,7 +451,7 @@
     tool_groups:
       -
         source: "built-in"
-        tokens: 6917
+        tokens: 6965
         tools:
           -
             name: "fs_read"
@@ -473,7 +473,7 @@
             tokens: 179
           -
             name: "sys_code"
-            tokens: 606
+            tokens: 654
           -
             name: "sys_lambda"
             tokens: 315
@@ -525,7 +525,7 @@
           -
             name: "sys_fetch"
             tokens: 379
-    tools_total_tokens: 6917
+    tools_total_tokens: 6965
 7. invoke adf:agent:invoke  [pushes 0→9]
   args:
     -
@@ -541,8 +541,8 @@
       filePath: "<ROOT>/agents/agent-1.adf"
   result:
     calibration:
-      last_call_tokens: 14452
-      ratio: 1.2990561797752809
+      last_call_tokens: 14515
+      ratio: 1.2991139353799337
       reply_tokens: 12
       since_last_call_tokens: 12
     computed_at: "<t>"
@@ -557,8 +557,8 @@
       -
         path: "soul.md"
         tokens: 368
-    messages_tokens: 22
-    overhead_tokens: 14442
+    messages_tokens: 23
+    overhead_tokens: 14504
     system_prompt_parts:
       base_and_sections: 5096
       instructions: 0
@@ -567,7 +567,7 @@
     tool_groups:
       -
         source: "built-in"
-        tokens: 8986
+        tokens: 9048
         tools:
           -
             name: "fs_read"
@@ -589,7 +589,7 @@
             tokens: 233
           -
             name: "sys_code"
-            tokens: 787
+            tokens: 850
           -
             name: "sys_lambda"
             tokens: 409
@@ -619,7 +619,7 @@
             tokens: 151
           -
             name: "loop_manage"
-            tokens: 884
+            tokens: 883
           -
             name: "say"
             tokens: 162
@@ -641,7 +641,7 @@
           -
             name: "sys_fetch"
             tokens: 492
-    tools_total_tokens: 8986
+    tools_total_tokens: 9048
 11. invoke adf:agent:stop  [pushes 9→9]
   args: []
   result:
@@ -929,7 +929,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 11125
+      input: 11173
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -956,7 +956,7 @@
     model: "parity-model"
     usage:
       cache_read: 0
-      input: 14452
+      input: 14515
       output: 12
       reasoning: 0
   timestamp: "<t>"
@@ -1860,7 +1860,7 @@ token-usage.json:
     parity-llm:
       parity-model:
         cache_read: 0
-        input: 14452
+        input: 14515
         output: 12
         reasoning: 0
 
@@ -2017,7 +2017,7 @@ hosts/<pid:this-process>.json:
   ord: null
   role: "assistant"
   seq: 3
-  tokens: "{\"input\":14452,\"output\":12,\"cache_read\":0,\"reasoning\":0}"
+  tokens: "{\"input\":14515,\"output\":12,\"cache_read\":0,\"reasoning\":0}"
 
 ## state: agents/agent-1.adf adf_meta (16 rows; key, value, protection)
 #1:
@@ -2075,7 +2075,7 @@ hosts/<pid:this-process>.json:
 #14:
   key: "context_baseline_tokens"
   protection: "readonly"
-  value: "{\"tokens\":14464,\"estimated\":false,\"updated_at\":<t>}"
+  value: "{\"tokens\":14527,\"estimated\":false,\"updated_at\":<t>}"
 #15:
   key: "runtime_umbilical_next_seq"
   protection: "none"

@@ -89,6 +89,8 @@ interface ApprovalsStoreState {
   toasts: ApprovalToast[]
   /** When the panel was last opened (ms); 'finished' rows after it are unread. */
   seenAt: number
+  /** The previous seenAt, captured when the panel opens for row highlighting. */
+  openedSeenAt: number
 
   setSnapshot: (snapshot: NotificationsSnapshot) => void
   browseHistory: (runtimeId: string, before?: number) => Promise<void>
@@ -97,8 +99,6 @@ interface ApprovalsStoreState {
   togglePanel: () => void
   pushToast: (toast: ApprovalToast) => void
   dismissToast: (id: string) => void
-  /** The panel was opened: every 'finished' row so far is read, in every window. */
-  markSeen: () => void
   /** Another window marked them read (storage event). */
   syncSeen: () => void
   reset: () => void
@@ -106,7 +106,7 @@ interface ApprovalsStoreState {
 
 let historyRequest = 0
 
-export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
+export const useApprovalsStore = create<ApprovalsStoreState>((set, get) => ({
   approvals: [],
   history: [],
   historyPage: null,
@@ -115,6 +115,7 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
   panelOpen: false,
   toasts: [],
   seenAt: readSeenAt(),
+  openedSeenAt: 0,
 
   setSnapshot: ({ pending, history }) =>
     set((state) => {
@@ -155,15 +156,17 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
     set({ historyPage: null, historyLoading: false, historyError: null })
   },
 
-  setPanelOpen: (panelOpen) => set({ panelOpen }),
-  togglePanel: () => set((state) => ({ panelOpen: !state.panelOpen })),
-
-  markSeen: () => {
-    // Newest row's time, not the clock: a remote runtime's clock may run ahead.
-    const seenAt = Math.max(Date.now(), ...useApprovalsStore.getState().history.map((entry) => entry.resolvedAt))
+  setPanelOpen: (panelOpen) => set((state) => {
+    if (state.panelOpen === panelOpen) return state
+    if (!panelOpen) return { panelOpen }
+    // Opening marks the current rows read in every window. A remote runtime
+    // may timestamp its rows ahead of the local clock.
+    const seenAt = Math.max(Date.now(), ...state.history.map((entry) => entry.resolvedAt))
     try { globalThis.localStorage?.setItem(NOTIFICATIONS_SEEN_KEY, String(seenAt)) } catch { /* storage unavailable: this window only */ }
-    set({ seenAt })
-  },
+    return { panelOpen, seenAt, openedSeenAt: state.seenAt }
+  }),
+  togglePanel: () => get().setPanelOpen(!get().panelOpen),
+
   syncSeen: () => set({ seenAt: readSeenAt() }),
 
   pushToast: (toast) =>
@@ -178,6 +181,6 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
 
   reset: () => {
     historyRequest++
-    set({ approvals: [], history: [], historyPage: null, historyLoading: false, historyError: null, panelOpen: false, toasts: [], seenAt: readSeenAt() })
+    set({ approvals: [], history: [], historyPage: null, historyLoading: false, historyError: null, panelOpen: false, toasts: [], seenAt: readSeenAt(), openedSeenAt: 0 })
   }
 }))

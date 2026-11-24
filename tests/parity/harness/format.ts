@@ -14,7 +14,8 @@ export function renderRecording(recording: ComparableRecording): string {
       return
     }
     if (step.kind === 'wait') {
-      lines.push(`${i + 1}. wait ${step.channel} — ${step.description}  [matched push ${step.pushes.matched}]`)
+      const matched = 'matchedInChannel' in step.pushes ? `snapshot ${step.pushes.matchedInChannel}` : `push ${step.pushes.matched}`
+      lines.push(`${i + 1}. wait ${step.channel} — ${step.description}  [matched ${matched}]`)
       return
     }
     if (step.kind === 'wait-timeout') {

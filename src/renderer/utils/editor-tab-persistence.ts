@@ -9,6 +9,7 @@
 
 import type { AgentConfig } from '../../shared/types/adf-v02.types'
 import type { BrowserTabMeta } from '../stores/editor-tabs.store'
+import { browserSessionAgent } from './browser-session-agent'
 
 const KEY_PREFIX = 'adf-open-tabs:'
 
@@ -65,9 +66,7 @@ export function restoredComputerTab(docPath: string, config: AgentConfig | null 
   return {
     agentFilePath: docPath,
     containerName: '',
-    agentId: config.id,
-    // eslint-disable-next-line no-restricted-syntax -- main names the isolated container from config.name (isolatedContainerName); this must match it.
-    agentName: config.name,
+    ...browserSessionAgent(config),
     hostPort: null,
     phase: 'ready',
   }

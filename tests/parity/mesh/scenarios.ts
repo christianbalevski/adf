@@ -1,6 +1,6 @@
 import { IPC } from '../../../src/shared/constants/ipc-channels'
 import type { LlmRequestView } from '../harness/mock-llm'
-import type { ParityScenario, ScenarioContext } from '../harness/scenario'
+import { waitForFinishedNotice, type ParityScenario, type ScenarioContext } from '../harness/scenario'
 
 /**
  * Mesh, fleet map and emergency stop scenarios (tracker W3-D). Each is the
@@ -109,6 +109,7 @@ export const meshMessageTurnScenario: ParityScenario = {
     // bound port in reply_to, return_path and card, as Studio's does.
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Tell agent-2 hello.', filePath: a1 })
     await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 answered the message', batchHas('turn_complete', a2))
+    await waitForFinishedNotice(ctx, a2, 'Got it.')
   },
 }
 

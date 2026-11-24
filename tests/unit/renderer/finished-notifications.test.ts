@@ -39,7 +39,9 @@ describe('bell unread state', () => {
     expect(unreadFinished(history, NOW - 5)).toBe(1)
     state().setSnapshot({ pending: [], history })
     expect(unreadFinished(state().history, state().seenAt)).toBe(2)
-    state().markSeen()
+    const previousSeenAt = state().seenAt
+    state().setPanelOpen(true)
+    expect(state().openedSeenAt).toBe(previousSeenAt)
     expect(unreadFinished(state().history, state().seenAt)).toBe(0)
     expect(Number(globalThis.localStorage?.getItem(NOTIFICATIONS_SEEN_KEY))).toBe(state().seenAt)
   })
