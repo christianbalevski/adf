@@ -239,6 +239,10 @@ export interface AppState {
   uiScale: UiScale
   /** Small agent avatars: the orbital, or the agent's emoji. Persisted as settings.agentAvatars. */
   agentAvatars: AgentAvatarMode
+  /** settings.finishedNotificationsEnabled: 'finished' rows in the bell and their in-app notices. */
+  finishedNotificationsEnabled: boolean
+  /** settings.inAppNotificationsEnabled: corner notices under the bell. */
+  inAppNotifications: boolean
   passwordDialogOpen: boolean
   passwordDialogFilePath: string | null
   ownerMismatchDialogOpen: boolean
@@ -343,6 +347,8 @@ export interface AppState {
   setUiFontCustom: (family: string) => void
   setUiScale: (scale: UiScale) => void
   setAgentAvatars: (mode: AgentAvatarMode) => void
+  setFinishedNotifications: (on: boolean) => void
+  setInAppNotifications: (on: boolean) => void
   setPasswordDialogOpen: (open: boolean, filePath?: string | null) => void
   setOwnerMismatchDialogOpen: (open: boolean, fileOwnerDid?: string | null) => void
   addStartingFilePath: (filePath: string) => void
@@ -450,6 +456,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   uiFontCustom: '',
   uiScale: 1,
   agentAvatars: AGENT_AVATAR_MODE_DEFAULT,
+  finishedNotificationsEnabled: true,
+  inAppNotifications: true,
   passwordDialogOpen: false,
   passwordDialogFilePath: null,
   ownerMismatchDialogOpen: false,
@@ -578,6 +586,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setUiFontCustom: (uiFontCustom) => set({ uiFontCustom }),
   setUiScale: (uiScale) => set({ uiScale }),
   setAgentAvatars: (agentAvatars) => set({ agentAvatars }),
+  setFinishedNotifications: (finishedNotificationsEnabled) => set({ finishedNotificationsEnabled }),
+  setInAppNotifications: (inAppNotifications) => set({ inAppNotifications }),
   setPasswordDialogOpen: (open, filePath) =>
     set({ passwordDialogOpen: open, passwordDialogFilePath: filePath ?? null }),
   setOwnerMismatchDialogOpen: (open, fileOwnerDid) =>

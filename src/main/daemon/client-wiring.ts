@@ -32,7 +32,11 @@ export interface DaemonClientSessionDeps<Npm extends Installer, Py extends Insta
   runtime: RuntimeService
   mesh: Emitter & { setConfigPersistedListener?(listener: ((filePath: string, config: AgentConfig) => void) | null): void }
   compute: Emitter
-  approvals: { subscribe(listener: (snapshot: NotificationsSnapshot) => void): () => void }
+  approvals: {
+    subscribe(listener: (snapshot: NotificationsSnapshot) => void): () => void
+    /** 'finished' notices skip an agent a connected session has open (ApprovalHub.announce). */
+    setAttendedCheck(check: ((filePath: string) => boolean) | null): void
+  }
   trackedDirWatcher: Emitter
   eventBus: { subscribe(listener: (envelope: { event: UmbilicalEvent }) => void): () => void }
   packages: { mcp: Npm; python: Py; adapters: Adapter; sandbox: Sandbox }
@@ -68,6 +72,10 @@ export function createDaemonClientSessions<Npm extends Installer, Py extends Ins
     // Sessions opened with `umbilical: true` (the terminal app) get the /events envelopes too.
     wireEventBusToClientSessions(sessions, deps.eventBus),
   ]
+  deps.approvals.setAttendedCheck((filePath) => {
+    const agentId = runtime.getAgentWorkspaceByPath(filePath)?.agentId
+    return !!agentId && sessions.showing(agentId)
+  })
   // The /client/* routes serve this registry (routes/client-routes.ts).
   registerDaemonClientSessions(sessions)
   return {
@@ -81,6 +89,7 @@ export function createDaemonClientSessions<Npm extends Installer, Py extends Ins
     },
     unwire() {
       for (const fn of unwire) fn()
+      deps.approvals.setAttendedCheck(null)
       registerDaemonClientSessions(null)
     },
   }

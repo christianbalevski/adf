@@ -487,6 +487,7 @@ function createWindow(): BrowserWindow {
   // Drop the reference so later requests recreate the window instead of
   // calling into a destroyed one (macOS keeps the app alive with no window).
   const createdWindow = mainWindow
+  for (const rt of daemonMode?.runtimes.runtimes() ?? []) rt.session.setWindowOpen(true)
   mainWindow.on('close', (event) => {
     console.log('[App] Main window close requested (user, OS, or WM_CLOSE from another process)')
     // Windows and Linux: closing the window quits, so computers connected to the daemon are asked about first.
@@ -498,6 +499,8 @@ function createWindow(): BrowserWindow {
   mainWindow.on('closed', () => {
     console.log('[App] Main window closed')
     if (mainWindow === createdWindow) mainWindow = null
+    // No window shows the open agent now: its finished turns notify again.
+    for (const rt of daemonMode?.runtimes.runtimes() ?? []) rt.session.setWindowOpen(false)
     // Windows/Linux: closing it quits (window-all-closed), so a boot dialog
     // still open must not keep Studio alive, nor be answered later. macOS: it stays.
     noteMainWindowClosed()

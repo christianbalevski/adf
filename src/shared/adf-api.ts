@@ -45,6 +45,7 @@ export const createAdfApi = (ipcRenderer: RuntimeIpc, platform: AdfApiPlatform):
   discardIdentityDraft: (draftId: string) => ipcRenderer.invoke(IPC.IDENTITY_DRAFT_DISCARD, draftId),
   getDefaultAgentsFolder: () => ipcRenderer.invoke(IPC.AGENTS_FOLDER_DEFAULT_GET),
   closeFile: () => ipcRenderer.invoke(IPC.FILE_CLOSE),
+  setFileVisible: (visible: boolean) => ipcRenderer.invoke(IPC.FILE_SET_VISIBLE, visible),
   deleteFile: (filePath: string) =>
     ipcRenderer.invoke(IPC.FILE_DELETE, { filePath }),
   listTables: (filePath: string) =>

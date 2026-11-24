@@ -39,7 +39,22 @@ export function approvalsBridge(runtimeId?: string): NotificationsBridge | undef
   return api.runtime(target)
 }
 
-/** A transient "agent X needs you" notice, shown when that agent is not open. */
+/** Where the bell remembers when its panel was last opened (unread 'finished' rows). Shared by every window of this origin. */
+export const NOTIFICATIONS_SEEN_KEY = 'adf.notifications.seenAt'
+
+function readSeenAt(): number {
+  try {
+    const value = Number(globalThis.localStorage?.getItem(NOTIFICATIONS_SEEN_KEY))
+    return Number.isFinite(value) ? value : 0
+  } catch { return 0 }
+}
+
+/** 'finished' rows newer than the last time the panel was opened. */
+export function unreadFinished(history: ResolvedNotification[], seenAt: number): number {
+  return history.reduce((n, entry) => n + (entry.kind === 'finished' && entry.resolvedAt > seenAt ? 1 : 0), 0)
+}
+
+/** A transient "agent X needs you" / "agent X finished" notice, shown when that agent is not open. */
 export interface ApprovalToast {
   /** The key of the notification it announces (noticeKey: its id, with its runtime for one other than This computer) — answering it kills the toast. */
   id: string
@@ -48,7 +63,7 @@ export interface ApprovalToast {
   kind: PendingNotification['kind']
   agentName: string
   loop: string
-  /** Tool name for an approval, question preview for an ask. */
+  /** Tool name for an approval, question preview for an ask, reply preview for a finished turn. */
   detail: string
   filePath: string
 }
@@ -72,6 +87,8 @@ interface ApprovalsStoreState {
   panelOpen: boolean
   /** Corner notices for requests that arrived while their agent was off-screen. */
   toasts: ApprovalToast[]
+  /** When the panel was last opened (ms); 'finished' rows after it are unread. */
+  seenAt: number
 
   setSnapshot: (snapshot: NotificationsSnapshot) => void
   browseHistory: (runtimeId: string, before?: number) => Promise<void>
@@ -80,6 +97,10 @@ interface ApprovalsStoreState {
   togglePanel: () => void
   pushToast: (toast: ApprovalToast) => void
   dismissToast: (id: string) => void
+  /** The panel was opened: every 'finished' row so far is read, in every window. */
+  markSeen: () => void
+  /** Another window marked them read (storage event). */
+  syncSeen: () => void
   reset: () => void
 }
 
@@ -93,6 +114,7 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
   historyError: null,
   panelOpen: false,
   toasts: [],
+  seenAt: readSeenAt(),
 
   setSnapshot: ({ pending, history }) =>
     set((state) => {
@@ -106,7 +128,8 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
         ...(changed ? { historyPage: null, historyLoading: false, historyError: null } : {}),
         // A toast for a request that no longer exists is a lie — drop it the
         // moment the snapshot says it was answered (from any surface).
-        toasts: state.toasts.filter((t) => pending.some((a) => noticeKey(a.runtimeId, a.id) === t.id))
+        // A 'finished' notice answers nothing: it stays until its timer or a click.
+        toasts: state.toasts.filter((t) => t.kind === 'finished' || pending.some((a) => noticeKey(a.runtimeId, a.id) === t.id))
         // The panel is NOT closed when the last pending row goes: answering the
         // final approval while looking at the list would yank the list out from
         // under the click, and the row you just answered is precisely what you
@@ -135,6 +158,14 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
   setPanelOpen: (panelOpen) => set({ panelOpen }),
   togglePanel: () => set((state) => ({ panelOpen: !state.panelOpen })),
 
+  markSeen: () => {
+    // Newest row's time, not the clock: a remote runtime's clock may run ahead.
+    const seenAt = Math.max(Date.now(), ...useApprovalsStore.getState().history.map((entry) => entry.resolvedAt))
+    try { globalThis.localStorage?.setItem(NOTIFICATIONS_SEEN_KEY, String(seenAt)) } catch { /* storage unavailable: this window only */ }
+    set({ seenAt })
+  },
+  syncSeen: () => set({ seenAt: readSeenAt() }),
+
   pushToast: (toast) =>
     set((state) =>
       state.toasts.some((t) => t.id === toast.id)
@@ -147,6 +178,6 @@ export const useApprovalsStore = create<ApprovalsStoreState>((set) => ({
 
   reset: () => {
     historyRequest++
-    set({ approvals: [], history: [], historyPage: null, historyLoading: false, historyError: null, panelOpen: false, toasts: [] })
+    set({ approvals: [], history: [], historyPage: null, historyLoading: false, historyError: null, panelOpen: false, toasts: [], seenAt: readSeenAt() })
   }
 }))

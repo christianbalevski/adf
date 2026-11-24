@@ -688,7 +688,7 @@ describe('client sessions: daemon wiring', () => {
     const installer = { async install(_name: string, ...rest: unknown[]) { for (const arg of rest) if (typeof arg === 'function') (arg as (m: string) => void)('step'); return {} } }
     const built = createDaemonClientSessions({
       runtime: runtime as never, mesh, compute, trackedDirWatcher: watcher,
-      approvals: { subscribe: (l) => { approvals.push(l as never); return () => {} } },
+      approvals: { subscribe: (l) => { approvals.push(l as never); return () => {} }, setAttendedCheck: () => {} },
       eventBus: { subscribe: (l) => { bus.push(l as never); return () => {} } },
       packages: { mcp: installer, python: installer, adapters: installer, sandbox: installer },
       options: { log: quiet },
@@ -719,6 +719,43 @@ describe('client sessions: daemon wiring', () => {
       built.unwire()
     }
     expect(daemonClientSessions()).toBeNull()
+  })
+})
+
+describe('client sessions: finished notices', () => {
+  it('an agent is attended while a connected session focuses it, looked up by file path', async () => {
+    const { createDaemonClientSessions } = await import('../src/main/daemon/client-wiring')
+    const runtime = Object.assign(new EventEmitter(), {
+      listAgents: () => [],
+      getAgentOrDocument: (id: string) => (id === AGENT_1 ? { id: AGENT_1 } : undefined),
+      getAgentWorkspaceByPath: (filePath: string) => (filePath === FILE_1 ? { agentId: AGENT_1 } : undefined),
+      openDocument: async () => ({}), releaseDocument: async () => ({}), releaseDocumentHolder: async () => [], setDocumentHolderCheck: vi.fn(),
+    })
+    let attended: ((filePath: string) => boolean) | null = null
+    const built = createDaemonClientSessions({
+      runtime: runtime as never, mesh: new EventEmitter(), compute: new EventEmitter(), trackedDirWatcher: new EventEmitter(),
+      approvals: { subscribe: () => () => {}, setAttendedCheck: (check) => { attended = check } },
+      eventBus: { subscribe: () => () => {} },
+      packages: { mcp: { install: async () => ({}) }, python: { install: async () => ({}) }, adapters: { install: async () => ({}) }, sandbox: { install: async () => ({}) } },
+      options: { log: quiet },
+    })
+    registries.push(built.sessions)
+    try {
+      const { sessionId } = built.sessions.create({ client: 'studio', version: '1' })
+      built.sessions.attach(sessionId, new FakeSink())
+      expect(attended!(FILE_1)).toBe(false)
+      built.sessions.setFocus(sessionId, AGENT_1)
+      expect(attended!(FILE_1)).toBe(true)
+      expect(attended!('/agents/other.adf')).toBe(false)
+      // Home or a closed window: still focused (full payloads), not shown.
+      built.sessions.setFocus(sessionId, AGENT_1, false)
+      expect(attended!(FILE_1)).toBe(false)
+      built.sessions.setFocus(sessionId, null)
+      expect(attended!(FILE_1)).toBe(false)
+    } finally {
+      built.unwire()
+    }
+    expect(attended).toBeNull()
   })
 })
 

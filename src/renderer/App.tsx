@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, Component, type ReactNode } from 'rea
 import { AppShell } from './components/layout/AppShell'
 import { useAppStore, isUiScale, resolveUiFontStack, isUiFont, type SettingsSection } from './stores/app.store'
 import { useDocumentStore } from './stores/document.store'
+import { apiFor } from './utils/runtime-api'
 import { useMessageQueueStore } from './stores/message-queue.store'
 import { useEditorTabsStore } from './stores/editor-tabs.store'
 import { saveActiveEditorTab } from './utils/editor-save'
@@ -34,6 +35,13 @@ import { useCompactNavigationStore } from './stores/compact-navigation.store'
 // Once-per-page-load guard for the session resync below — StrictMode's double
 // mount must not race two concurrent FILE_OPENs for the same path.
 let sessionResyncDone = false
+
+/** The bell's notice switches from loaded or broadcast settings; absent keys leave the store as it is. */
+function applyNoticeSwitches(settings: { finishedNotificationsEnabled?: unknown; inAppNotificationsEnabled?: unknown }): void {
+  const app = useAppStore.getState()
+  if ('finishedNotificationsEnabled' in settings) app.setFinishedNotifications(settings.finishedNotificationsEnabled !== false)
+  if ('inAppNotificationsEnabled' in settings) app.setInAppNotifications(settings.inAppNotificationsEnabled !== false)
+}
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -322,9 +330,19 @@ export default function App() {
       if (typeof settings.uiFontCustom === 'string') setUiFontCustom(settings.uiFontCustom)
       if (isUiScale(settings.uiScale)) setUiScale(settings.uiScale)
       if (isAgentAvatarMode(settings.agentAvatars)) setAgentAvatars(settings.agentAvatars)
+      applyNoticeSwitches(settings)
       setAppearanceLoaded(true)
     })
   }, [setTheme, setUiFont, setUiFontCustom, setUiScale, setAgentAvatars])
+
+  // Home keeps the agent open but off screen: its runtime records its finished turns again.
+  const showHome = useAppStore((s) => s.showHome)
+  const openFilePath = useDocumentStore((s) => s.filePath)
+  const openRuntimeId = useDocumentStore((s) => s.runtimeId)
+  useEffect(() => {
+    if (!openFilePath) return
+    void apiFor(openRuntimeId)?.setFileVisible?.(!showHome)?.catch(() => { /* runtime unreachable: notices may be skipped */ })
+  }, [showHome, openFilePath, openRuntimeId])
 
   // Appearance saved in another window (agent windows) applies here at once.
   useEffect(() => {
@@ -335,6 +353,7 @@ export default function App() {
       if (typeof changed.uiFontCustom === 'string') setUiFontCustom(changed.uiFontCustom)
       if (isUiScale(changed.uiScale)) setUiScale(changed.uiScale)
       if (isAgentAvatarMode(changed.agentAvatars)) setAgentAvatars(changed.agentAvatars)
+      applyNoticeSwitches(changed)
     })
   }, [setTheme, setUiFont, setUiFontCustom, setUiScale, setAgentAvatars])
 

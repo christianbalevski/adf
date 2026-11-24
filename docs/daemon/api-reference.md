@@ -17528,7 +17528,7 @@ Example 200 (`text/event-stream`):
 
 **Set the agent the session follows**
 
-The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet).
+The focused agent's text and thinking deltas and full tool results reach this session; `null` focuses none. An id, handle or name of a loaded agent is resolved to its id; any other string is kept as given (an agent that is not running yet). `visible: false`: the client keeps the agent open but does not show it (Home, a closed window); its finished turns are recorded in the notifications history.
 
 Operation `setClientSessionFocus` · bearer token
 
@@ -17543,10 +17543,12 @@ Operation `setClientSessionFocus` · bearer token
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `agentId` | string \| null | yes |  |
+| `visible` | boolean |  | Default true |
 
 ```json
 {
-  "agentId": "string"
+  "agentId": "string",
+  "visible": true
 }
 ```
 
@@ -22566,13 +22568,13 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Hub key `<filePath>\|<loop>\|<requestId>` |
-| `kind` | `"approval"` \| `"ask"` | yes |  |
-| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`) |
+| `kind` | `"approval"` \| `"ask"` \| `"finished"` | yes | `approval` and `ask` block their agent until answered. `finished` is never pending: it appears only in history, when the main loop of an agent no client had open ended a turn with a reply |
+| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`); `finished_<id>` for a finished turn |
 | `filePath` | string | yes | The agent file the request belongs to |
 | `agentName` | string | yes |  |
 | `loop` | string | yes | `main` or the inner loop name |
 | `toolName` | string |  |  |
-| `preview` | string | yes | One line, truncated, secret-free |
+| `preview` | string | yes | One line, truncated. Approvals: the redacted argument summary. Asks: the question. Finished: the reply |
 | `question` | string |  | Asks only: the full question |
 | `reason` | `"restricted"` \| `"protection"` |  |  |
 | `protection` | object |  |  |
@@ -22587,20 +22589,20 @@ Claude sign-in as reported by the Claude Code CLI on the daemon host.
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `id` | string | yes | Hub key `<filePath>\|<loop>\|<requestId>` |
-| `kind` | `"approval"` \| `"ask"` | yes |  |
-| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`) |
+| `kind` | `"approval"` \| `"ask"` \| `"finished"` | yes | `approval` and `ask` block their agent until answered. `finished` is never pending: it appears only in history, when the main loop of an agent no client had open ended a turn with a reply |
+| `requestId` | string | yes | The executor-side id (HIL task id, or `ask_N`); `finished_<id>` for a finished turn |
 | `filePath` | string | yes | The agent file the request belongs to |
 | `agentName` | string | yes |  |
 | `loop` | string | yes | `main` or the inner loop name |
 | `toolName` | string |  |  |
-| `preview` | string | yes | One line, truncated, secret-free |
+| `preview` | string | yes | One line, truncated. Approvals: the redacted argument summary. Asks: the question. Finished: the reply |
 | `question` | string |  | Asks only: the full question |
 | `reason` | `"restricted"` \| `"protection"` |  |  |
 | `protection` | object |  |  |
 | `canAlwaysApprove` | boolean |  |  |
 | `alwaysApproveBlockedReason` | string |  |  |
 | `requestedAt` | number | yes | Epoch ms |
-| `outcome` | `"approved"` \| `"rejected"` \| `"answered"` \| `"expired"` | yes |  |
+| `outcome` | `"approved"` \| `"rejected"` \| `"answered"` \| `"expired"` \| `"completed"` | yes |  |
 | `resolvedAt` | number | yes |  |
 
 <a id="schema-notificationhistorypage"></a>

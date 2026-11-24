@@ -25,8 +25,31 @@
  * `approvalHub.subscribe`.
  */
 
-import type { NotificationsSnapshot, PendingNotification } from '../../shared/types/ipc.types'
+import type { NotificationsSnapshot, PendingNotification, ResolvedNotification } from '../../shared/types/ipc.types'
 import { noticeKey } from '../../shared/runtime-tag'
+import { newFinished, seedFinished } from '../../shared/utils/finished-notices'
+
+/** The Settings → Notifications switches the policy reads per notification. */
+export interface NotificationPreferences {
+  /** `nativeNotificationsEnabled`: OS notifications at all. Flipping it off silences the very next one. */
+  enabled: boolean
+  /** `finishedNotificationsEnabled`: 'finished' notices (bell rows, in-app and OS notices). */
+  finished: boolean
+  /** `inAppNotificationsEnabled`: in-app notices under the bell; while on, a focused window gets no OS notification. */
+  inApp: boolean
+  /** `notificationPreviewsEnabled`: OS notification bodies carry the question or reply text. */
+  previews: boolean
+}
+
+/** Read the preferences from Studio's settings (client keys). Absent keys are on. */
+export function notificationPreferences(settings: { get(key: string): unknown } | null | undefined): NotificationPreferences {
+  return {
+    enabled: settings?.get('nativeNotificationsEnabled') !== false,
+    finished: settings?.get('finishedNotificationsEnabled') !== false,
+    inApp: settings?.get('inAppNotificationsEnabled') !== false,
+    previews: settings?.get('notificationPreviewsEnabled') !== false,
+  }
+}
 
 /** A live OS notification we can still retract. */
 export interface NativeToastHandle {
@@ -48,9 +71,8 @@ export interface NativeToastRequest {
 export interface NativeNotifierPlatform {
   /** `Notification.isSupported()` — false on headless/unsupported sessions. */
   isSupported(): boolean
-  /** The user's "System notifications" toggle. Checked per notification, so
-   *  flipping it off silences the very next one without a restart. */
-  isEnabled(): boolean
+  /** Settings → Notifications, read per notification (notificationPreferences). */
+  preferences(): NotificationPreferences
   /**
    * True when the window that shows `entry` has focus — the one case we stay
    * silent. Embedded: any app window. Daemon mode with agent windows: the
@@ -90,8 +112,9 @@ function displayName(entry: Pick<PendingNotification, 'agentName' | 'loop'>, run
   return runtime ? `${runtime} · ${agent}` : agent
 }
 
-/** 'loop2 needs approval' / 'loop2 asked a question'. */
+/** 'loop2 needs approval' / 'loop2 asked a question' / 'loop2 finished'. */
 export function notificationTitle(entry: PendingNotification, runtime?: string | null): string {
+  if (entry.kind === 'finished') return `${displayName(entry, runtime)} finished`
   return entry.kind === 'ask'
     ? `${displayName(entry, runtime)} asked a question`
     : `${displayName(entry, runtime)} needs approval`
@@ -102,18 +125,21 @@ export function notificationTitle(entry: PendingNotification, runtime?: string |
  * decides what it sits next to: an approval leads with the tool being gated,
  * a question is its own body.
  */
-export function notificationBody(entry: PendingNotification): string {
-  if (entry.kind === 'ask') return entry.preview
+export function notificationBody(entry: PendingNotification, previews = true): string {
+  if (entry.kind === 'finished') return previews ? entry.preview : 'Turn complete'
+  if (entry.kind === 'ask') return previews ? entry.preview : 'Question waiting'
+  if (!previews) return entry.toolName ?? 'Approval waiting'
   return entry.toolName ? `${entry.toolName} — ${entry.preview}` : entry.preview
 }
 
-/** '5 approvals waiting' / '5 questions waiting' / '5 notifications waiting'. */
+/** '5 approvals waiting' / '5 questions waiting' / '5 finished turns' / '5 notifications'. */
 export function summaryTitle(entries: PendingNotification[]): string {
-  const asks = entries.reduce((n, e) => n + (e.kind === 'ask' ? 1 : 0), 0)
+  const count = (kind: PendingNotification['kind']) => entries.reduce((n, e) => n + (e.kind === kind ? 1 : 0), 0)
   const total = entries.length
-  if (asks === 0) return `${total} approvals waiting`
-  if (asks === total) return `${total} questions waiting`
-  return `${total} notifications waiting`
+  if (count('approval') === total) return `${total} approvals waiting`
+  if (count('ask') === total) return `${total} questions waiting`
+  if (count('finished') === total) return `${total} finished turns`
+  return count('finished') === 0 ? `${total} notifications waiting` : `${total} notifications`
 }
 
 /** Which agents are blocked, deduped — the summary's one useful detail. */
@@ -132,8 +158,12 @@ export class NativeNotifier {
   private readonly shown = new Map<string, NativeToastHandle>()
   /** Ids we have already decided about — the "is this NEW?" test. */
   private readonly known = new Set<string>()
+  /** 'finished' history rows already decided about, pruned to the live history page. */
+  private readonly knownFinished = new Set<string>()
   private burstStartedAt = 0
   private burstEntries: PendingNotification[] = []
+  /** This burst's 'finished' toasts: not in `shown` (nothing answers them), retracted only by the summary. */
+  private burstFinishedToasts: NativeToastHandle[] = []
   private summary: NativeToastHandle | null = null
 
   constructor(private readonly platform: NativeNotifierPlatform) {}
@@ -144,8 +174,9 @@ export class NativeNotifier {
    * attach, a test) — those were not raised just now, and a toast for each
    * would be a lie about when they happened.
    */
-  seed(pending: PendingNotification[]): void {
+  seed(pending: PendingNotification[], history: ResolvedNotification[] = []): void {
     for (const entry of pending) this.known.add(noticeKey(entry.runtimeId, entry.id))
+    seedFinished(history, this.knownFinished)
   }
 
   /**
@@ -165,21 +196,31 @@ export class NativeNotifier {
       this.shown.delete(id)
       closeQuietly(handle)
     }
+    // The last pending request just left: a summary of them is stale. A push
+    // with nothing pending before or after (a 'finished' row) leaves the burst.
+    const hadPending = this.known.size > 0
     for (const id of [...this.known]) {
       if (!live.has(id)) this.known.delete(id)
     }
-    if (live.size === 0) this.endBurst()
+    if (hadPending && live.size === 0) this.endBurst()
 
     const arrivals = pending.filter((entry) => !this.known.has(noticeKey(entry.runtimeId, entry.id)))
     // Mark seen even when we decide not to toast: a request the user was
     // focused for is not "new" again the moment they alt-tab away.
     for (const entry of arrivals) this.known.add(noticeKey(entry.runtimeId, entry.id))
-    if (arrivals.length === 0) return
 
-    if (!this.platform.isEnabled()) return
+    // 'finished' never pends: it arrives as a new history row.
+    const finished = newFinished(snapshot.history ?? [], this.knownFinished, this.platform.now())
+    if (arrivals.length === 0 && finished.length === 0) return
+
+    const prefs = this.platform.preferences()
+    if (!prefs.enabled) return
     if (!this.platform.isSupported()) return
-    // The whole point: the in-app toast owns the focused case.
-    for (const entry of arrivals) if (!this.platform.isWindowFocused(entry)) this.announce(entry)
+    // A focused window shows the in-app notice and the bell; with in-app
+    // notices off, the OS notification is the only notice, focused or not.
+    const announced = (entry: PendingNotification) => !prefs.inApp || !this.platform.isWindowFocused(entry)
+    for (const entry of arrivals) if (announced(entry)) this.announce(entry, prefs)
+    if (prefs.finished) for (const entry of finished) if (announced(entry)) this.announce(entry, prefs)
   }
 
   /** Close everything still on screen (app shutdown). */
@@ -187,10 +228,11 @@ export class NativeNotifier {
     for (const handle of this.shown.values()) closeQuietly(handle)
     this.shown.clear()
     this.known.clear()
+    this.knownFinished.clear()
     this.endBurst()
   }
 
-  private announce(entry: PendingNotification): void {
+  private announce(entry: PendingNotification, prefs: NotificationPreferences): void {
     const now = this.platform.now()
     if (this.burstStartedAt === 0 || now - this.burstStartedAt > COALESCE_WINDOW_MS) {
       this.endBurst()
@@ -209,6 +251,8 @@ export class NativeNotifier {
         this.shown.delete(key)
         closeQuietly(handle)
       }
+      for (const handle of this.burstFinishedToasts) closeQuietly(handle)
+      this.burstFinishedToasts = []
       if (this.summary) closeQuietly(this.summary)
       const entries = [...this.burstEntries]
       this.summary = this.platform.show({
@@ -221,16 +265,21 @@ export class NativeNotifier {
 
     const handle = this.platform.show({
       title: notificationTitle(entry, this.platform.runtimeName?.(entry) ?? null),
-      body: notificationBody(entry),
+      body: notificationBody(entry, prefs.previews),
       onClick: () => this.platform.reveal(entry),
     })
-    if (handle) this.shown.set(noticeKey(entry.runtimeId, entry.id), handle)
+    // Only a pending request can be answered elsewhere and need retracting;
+    // a 'finished' notice stays until the OS, the user or this burst's summary closes it.
+    if (!handle) return
+    if (entry.kind === 'finished') this.burstFinishedToasts.push(handle)
+    else this.shown.set(noticeKey(entry.runtimeId, entry.id), handle)
   }
 
   private endBurst(): void {
     if (this.summary) closeQuietly(this.summary)
     this.summary = null
     this.burstEntries = []
+    this.burstFinishedToasts = []
     this.burstStartedAt = 0
   }
 }

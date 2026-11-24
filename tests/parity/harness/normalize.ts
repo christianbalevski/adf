@@ -209,6 +209,10 @@ export function normalizeRecording(recording: ComparableRecording, ctx: Normaliz
     // (`<file>|<loop>|task_…`) and the adf_tasks row. Numbered by first
     // appearance as `<task-id#n>`. Hides: the random part only.
     s = s.replace(/(?<![A-Za-z0-9_-])task_[A-Za-z0-9_-]{12}(?![A-Za-z0-9_-])/g, (m) => numbered('task-id', m))
+    // A 'finished' notice's request id (AgentExecutor.announceFinishedTurn,
+    // `finished_` + nanoid(8)), in its hub id and requestId. Numbered by first
+    // appearance as `<finished-id#n>`. Hides: the random part only.
+    s = s.replace(/(?<![A-Za-z0-9_-])finished_[A-Za-z0-9_-]{8}(?![A-Za-z0-9_-])/g, (m) => numbered('finished-id', m))
 
     // Rule R24 — owner command wall-clock duration, only in the marker's
     // JSON header (plain text or escaped inside an adf_loop JSON string).

@@ -10,6 +10,8 @@ export const IPC = {
   // setting, else Documents/adf-agents); for the home folder chip.
   AGENTS_FOLDER_DEFAULT_GET: 'adf:agents-folder:default-get',
   FILE_CLOSE: 'adf:file:close',
+  // The open file's agent view is shown (false: Home). Hidden, its finished turns notify.
+  FILE_SET_VISIBLE: 'adf:file:set-visible',
   FILE_DELETE: 'adf:file:delete',
   FILE_CLONE: 'adf:file:clone',
   FILE_LIST_TABLES: 'adf:file:list-tables',

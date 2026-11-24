@@ -45,6 +45,10 @@ export function createSettingsDefaults(): Record<string, unknown> {
     // focused. On by default: an agent blocked on a human the user cannot see
     // is exactly the failure this exists to prevent.
     nativeNotificationsEnabled: true,
+    // Notifications → Agent finished / In-app notices / Message previews.
+    finishedNotificationsEnabled: true,
+    inAppNotificationsEnabled: true,
+    notificationPreviewsEnabled: true,
     // macOS menu bar icon: running agents, requests waiting on the user, and
     // today's tokens, reachable with the window closed.
     menuBarEnabled: true,

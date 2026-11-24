@@ -115,7 +115,7 @@ import { getUserDataPath } from '../utils/user-data-path'
 import { LanReach } from '../services/lan-reach'
 import { deriveHandle } from '../utils/handle'
 import { approvalHub } from '../runtime/approval-hub'
-import { NativeNotifier, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
+import { NativeNotifier, notificationPreferences, type NativeNotifierPlatform, type NativeToastHandle } from '../runtime/native-notifier'
 import { MenuBarController } from '../tray/menu-bar'
 import type { MenuBarAction, MenuBarAgent, MenuBarSnapshot } from '../tray/menu-bar-model'
 import type { AgentExecutionEvent, AgentState, ChatAppendedPayload, FleetPendingInteraction, FleetStatusResult, FleetMessageResult, FleetStateResult, FleetSettableState, NotificationsSnapshot } from '../../shared/types/ipc.types'
@@ -215,6 +215,8 @@ import { getComputeBrowserInfo } from '../services/compute-browser-info'
 // Application state
 let currentWorkspace: AdfWorkspace | null = null
 let currentFilePath: string | null = null
+/** FILE_SET_VISIBLE: false while the renderer shows Home (the file stays open). */
+let currentFileVisible = true
 const openedAdfDirs = new Set<string>()
 let currentDerivedKey: Buffer | null = null
 // Cache derived keys by file path so we don't re-prompt within the same app session
@@ -842,9 +844,9 @@ function createNativeNotifierPlatform(): NativeNotifierPlatform {
     isSupported: () => {
       try { return Notification.isSupported() } catch { return false }
     },
-    // Read per notification, not cached: flipping the toggle off silences the
-    // very next request without a restart.
-    isEnabled: () => settings?.get('nativeNotificationsEnabled') !== false,
+    // Read per notification, not cached: flipping a switch off silences the
+    // very next notification without a restart.
+    preferences: () => notificationPreferences(settings),
     isWindowFocused: () => BrowserWindow.getFocusedWindow() !== null,
     now: () => Date.now(),
     show: (request): NativeToastHandle | null => {
@@ -1869,8 +1871,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   // policy). Attached after the renderer push so a click can never race ahead
   // of the snapshot that explains it.
   nativeNotifier = new NativeNotifier(createNativeNotifierPlatform())
-  nativeNotifier.seed(approvalHub.snapshot())
+  nativeNotifier.seed(approvalHub.snapshot(), approvalHub.fullSnapshot().history)
   approvalHub.subscribe((snapshot) => nativeNotifier?.apply(snapshot))
+  // 'finished' notices skip the agent shown in the window: its chat shows the reply.
+  // Home and a closed window (macOS keeps Studio running) show none.
+  approvalHub.setAttendedCheck((filePath) => !!currentFilePath && currentFileVisible && !!getMainWindow() && canonicalizePath(currentFilePath) === canonicalizePath(filePath))
 
   // Menu bar icon (macOS only: template images and a menu bar to put them in
   // are a Mac concept). The count beside it tracks the same hub; the menu
@@ -2469,6 +2474,11 @@ export function registerAllIpcHandlers(hooks: IpcHostHooks = {}): void {
   ipcMain.handle(IPC.FILE_CLOSE, async () => {
     await cleanupCurrentFile()
     return { success: true }
+  })
+
+  // Home keeps the file open but shows no agent: its finished turns notify.
+  ipcMain.handle(IPC.FILE_SET_VISIBLE, (_event, visible: unknown) => {
+    currentFileVisible = visible !== false
   })
 
   ipcMain.handle(IPC.FILE_DELETE, async (_event, args: { filePath: string }) => {

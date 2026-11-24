@@ -134,8 +134,8 @@ export interface ClientSession {
   start(listener: ClientStreamListener): void
   /** Wait until requests can carry this session and its stream can replay their events. */
   ready?(): Promise<string | null>
-  /** The agent whose deltas and full payloads the stream carries (D5). */
-  setFocus(agentId: string | null): Promise<void>
+  /** The agent whose deltas and full payloads the stream carries (D5); `visible: false` while it is open but not shown. */
+  setFocus(agentId: string | null, visible?: boolean): Promise<void>
   /** Hold an `.adf` (D4), preferring a known agent's identity when its path may have changed. */
   holdDocument(filePath: string, agentId?: string): Promise<HeldDocument>
   releaseDocument(agentId: string): Promise<void>
@@ -293,6 +293,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
   let clearReplay: (() => void) | null = null
   let streamGeneration = 0
   let focus: string | null = null
+  let focusVisible = true
   let ended = false
   let opening: Promise<string | null> | null = null
   let retryTimer: ReturnType<typeof setTimeout> | null = null
@@ -425,7 +426,7 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
         return null
       }
       sessionId = id
-      if (focus) await client.setClientSessionFocus(id, focus).catch((err) => log.warn(`[Backend] Could not set the session focus: ${err instanceof Error ? err.message : String(err)}`))
+      if (focus) await client.setClientSessionFocus(id, focus, focusVisible).catch((err) => log.warn(`[Backend] Could not set the session focus: ${err instanceof Error ? err.message : String(err)}`))
       return id
     })().finally(() => { opening = null })
     return opening
@@ -500,10 +501,11 @@ export function createDaemonClientSession(client: DaemonClient, options: DaemonC
       l.onConnection({ state: 'connecting' })
       void open().then((id) => { if (id && !ended) startStream(id) })
     },
-    async setFocus(agentId) {
+    async setFocus(agentId, visible = true) {
       focus = agentId
+      focusVisible = visible
       if (!sessionId) return // sent when the session opens
-      await withSession('Setting the session focus', (id) => client.setClientSessionFocus(id, agentId))
+      await withSession('Setting the session focus', (id) => client.setClientSessionFocus(id, agentId, visible))
     },
     async holdDocument(filePath, agentId) {
       return withSession('Opening the file', async (id) => {

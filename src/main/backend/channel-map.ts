@@ -143,6 +143,7 @@ export const CHANNEL_MAP = {
   }),
   [IPC.AGENTS_FOLDER_DEFAULT_GET]: proxied('invoke', ['GET /files/agents-folder']),
   [IPC.FILE_CLOSE]: proxied('invoke', ['DELETE /client/sessions/:id/documents/:agentId', 'PUT /client/sessions/:id/focus']),
+  [IPC.FILE_SET_VISIBLE]: proxied('invoke', ['PUT /client/sessions/:id/focus']),
   [IPC.FILE_DELETE]: proxied('invoke', ['DELETE /files']),
   [IPC.FILE_CLONE]: proxied('invoke', ['POST /files/clone']),
   [IPC.FILE_LIST_TABLES]: proxied('invoke', ['GET /files/agent/tables'], { note: 'Clone dialog.' }),

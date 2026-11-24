@@ -576,7 +576,7 @@ describe('native notifications', () => {
 
     const platform: NativeNotifierPlatform = {
       isSupported: () => overrides.supported ?? true,
-      isEnabled: () => overrides.enabled ?? true,
+      preferences: () => ({ enabled: overrides.enabled ?? true, finished: true, inApp: true, previews: true }),
       isWindowFocused: () => focused,
       now: () => clock,
       show: (request) => {

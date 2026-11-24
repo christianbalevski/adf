@@ -31,7 +31,7 @@ import { SIDEBAR_RUNNING_CAP_KEY, loadStoredSize, saveStoredSize } from '../../u
 import { OrbitalAvatar, useAgentAvatarMode } from '../orbital/OrbitalAvatar'
 import { orbitalSeedFor } from '../orbital/orbital-seed'
 import type { AgentState, MeshAgentStatus, BackgroundAgentStatus } from '../../../shared/types/ipc.types'
-import type { TrackedDirEntry } from '../../../shared/types/ipc.types'
+import type { PendingNotification, TrackedDirEntry } from '../../../shared/types/ipc.types'
 import type { RuntimeView } from '../../../shared/types/connection.types'
 import { LOCAL_RUNTIME, type RuntimeId } from '../../../shared/runtime-tag'
 import { agentKey } from '../../../shared/types/agent-ref'
@@ -1592,7 +1592,7 @@ const AgentFileRow = memo(function AgentFileRow({
   const isStopping = useAppStore((s) => s.stoppingFilePaths.has(key))
   const agentConfig = useAgentStore((s) => isActive ? s.config : null)
   // Same as the rail: the request the agent is blocked on, oldest first (on this row's runtime).
-  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind ?? null)
+  const waiting = useApprovalsStore((s) => blockingKind(s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind))
   const inWindow = useInAgentWindow(file.filePath, file.agentId, runtimeId)
   // The open agent's review state is live; the others come from the folder scan.
   const needsReview = useAppStore((s) => isActive ? s.agentNeedsReview : file.reviewed === false)
@@ -1840,7 +1840,7 @@ const RailAvatar = memo(function RailAvatar({
   const isStarting = useAppStore((s) => s.startingFilePaths.has(rowKey(runtimeId, file.filePath)))
   const isStopping = useAppStore((s) => s.stoppingFilePaths.has(rowKey(runtimeId, file.filePath)))
   // Oldest first, like the snapshot: the request the agent is blocked on.
-  const waiting = useApprovalsStore((s) => s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind ?? null)
+  const waiting = useApprovalsStore((s) => blockingKind(s.approvals.find((n) => n.filePath === file.filePath && n.runtimeId === runtimeId)?.kind))
 
   const isRunning = isActive ? agentState !== 'off' : backgroundStatus !== undefined
   const state: AgentState = isActive
@@ -1904,6 +1904,11 @@ const RailAvatar = memo(function RailAvatar({
     </HoverLabel>
   )
 })
+
+/** What an agent is blocked on; 'finished' blocks nothing (it is never pending). */
+function blockingKind(kind: PendingNotification['kind'] | undefined): 'approval' | 'ask' | null {
+  return kind === 'approval' || kind === 'ask' ? kind : null
+}
 
 /** What an amber ring means, on the rail and on a row. */
 function waitingLabel(kind: 'approval' | 'ask' | null): string | null {

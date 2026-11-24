@@ -44,7 +44,7 @@
   result:
     success: true
 7. wait adf:background-agent:event-batch — agent-2 answered the message  [matched push 25]
-8. shutdown  [pushes 25→27]
+8. shutdown  [pushes 26→28]
 
 ## timeline <ROOT>/agents/agent-1.adf
 > 1 adf:file:open
@@ -85,6 +85,7 @@
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
+  [app] adf:approvals:changed
 > 8 shutdown
   [app] adf:mesh:event agent_left
   [app] adf:mesh:event agent_left
@@ -112,6 +113,7 @@
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
+  [app] adf:approvals:changed
 > 8 shutdown
   [app] adf:mesh:event agent_left
   [app] adf:mesh:event agent_left
@@ -477,6 +479,22 @@
     state: "idle"
   timestamp: "<t>"
   type: "state_changed"
+
+## push adf:approvals:changed (1)
+#1:
+  history:
+    -
+      agentName: "agent-2"
+      filePath: "<ROOT>/agents/agent-2.adf"
+      id: "<ROOT>/agents/agent-2.adf|main|<finished-id#1>"
+      kind: "finished"
+      loop: "main"
+      outcome: "completed"
+      preview: "Got it."
+      requestId: "<finished-id#1>"
+      requestedAt: "<t>"
+      resolvedAt: "<t>"
+  pending: []
 
 ## push adf:background-agent:event-batch (3)
 #1:
@@ -1918,6 +1936,7 @@ adf-settings.json:
     machineCpus: 2
     machineMemoryMb: 2048
   defaultProviderId: "parity-llm"
+  finishedNotificationsEnabled: true
   globalSystemPrompt: |
     You are an ADF agent. Your `.adf` file is a SQLite database holding your config, history, files, messages, identity keys, timers, tasks, and logs. Everything you are is in that one file. The runtime wakes you on triggers: chat, inbox, timers, file changes, task completions. Between turns you are not running, so anything you did not write down is gone. Check timestamps when you wake; time has passed.
     
@@ -2014,6 +2033,7 @@ adf-settings.json:
     Full guide: https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides/agent-memory.md. The `agent-memory` skill in the catalog ships the audit-retrieval lambda and the lint workflow.
     
     {{mind.md}}
+  inAppNotificationsEnabled: true
   maxDirectoryScanDepth: 5
   mcpServers: []
   menuBarEnabled: false
@@ -2021,6 +2041,7 @@ adf-settings.json:
   meshLan: false
   meshPort: 7295
   nativeNotificationsEnabled: true
+  notificationPreviewsEnabled: true
   ownerDid: "<did:owner>"
   ownerDidSeedDerived: true
   ownerEncPublicKey: "6PZOUEhZ3xzk8dz7OlcCQ2ot9aXbGI2eHbWzFJZNxkc="
@@ -2165,7 +2186,18 @@ adf-settings.json:
 
 ## state: user-data/notification-history.embedded.json
 notification-history.embedded.json:
-  history: []
+  history:
+    -
+      agentName: "agent-2"
+      filePath: "<ROOT>/agents/agent-2.adf"
+      id: "<ROOT>/agents/agent-2.adf|main|<finished-id#1>"
+      kind: "finished"
+      loop: "main"
+      outcome: "completed"
+      preview: "Got it."
+      requestId: "<finished-id#1>"
+      requestedAt: "<t>"
+      resolvedAt: "<t>"
   pending: []
 
 ## state: user-data/token-usage.json

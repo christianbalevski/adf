@@ -164,6 +164,10 @@ export const CORE_HANDLERS: DaemonHandlerTable = {
     return { success: true }
   },
 
+  [IPC.FILE_SET_VISIBLE]: (ctx, _event, visible: unknown) => {
+    ctx.session.setFileVisible(visible !== false)
+  },
+
   // Session resync for a fresh renderer, as embedded: the open file, and whether its agent runs.
   [IPC.FILE_GET_CURRENT]: async (ctx) => {
     const filePath = ctx.session.filePath
