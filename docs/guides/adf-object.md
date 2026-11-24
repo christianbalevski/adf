@@ -323,13 +323,15 @@ await adf.db_execute({
 
 ### sys_code
 
-Execute code in the persistent sandbox. Has access to [standard library packages](code-execution.md#standard-library-packages) (xlsx, pdf-lib, mupdf, docx, jszip, sql.js, cheerio, yaml, date-fns, jimp) via standard `import` syntax.
+Execute code in the agent's sandbox. Has access to [standard library packages](code-execution.md#standard-library-packages) (xlsx, pdf-lib, mupdf, docx, jszip, sql.js, cheerio, yaml, date-fns, jimp) via standard `import` syntax.
 
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `code` | string | Yes | Code to execute |
-| `language` | string | No | Language hint (default: `"javascript"`) |
 | `timeout` | number | No | Timeout in ms (default and max: `limits.execution_timeout_ms`) |
+| `clear_state` | boolean | No | Default `true` (new sandbox each call). `false` keeps top-level declarations and imports for the next call ([details](code-execution.md#state-persistence)) |
+
+Called from code, `sys_code` runs only as a task (`_async: true`); otherwise it is refused, because it would run in, or wipe, the agent's saved state.
 
 ### sys_lambda
 

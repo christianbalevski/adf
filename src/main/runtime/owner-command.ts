@@ -6,7 +6,6 @@ import { parseLambdaRef, splitArgv } from '../../shared/utils/agent-commands'
 import { formatOwnerCommandRow } from '../../shared/utils/owner-command-row'
 import { MAIN_LOOP } from './loop-pool'
 import { loadLambdaSource } from './ts-transpiler'
-import { transformImports, transformExports } from './code-sandbox'
 import { withAuthorization } from './authorization-context'
 import { withSource, withLoop } from './execution-context'
 import { emitUmbilicalEvent } from './emit-umbilical'
@@ -54,7 +53,7 @@ export async function runOwnerCommand(host: OwnerCommandHost, req: OwnerCommandR
     const args = splitArgv(req.args).join(' ')
     const invocation: AgentCommandInvocation = { command: req.name, args, argv: splitArgv(args), invoker: 'owner', loop, authorized, id }
     const missing = `Function "${fn}" not found in "${file}". Declare it at the top level, or fix commands[].lambda for /${req.name}.`
-    const wrapped = `${transformExports(transformImports(source))}\nif (typeof ${fn} === 'function') { return await ${fn}(${JSON.stringify(invocation)}); }\nthrow new Error(${JSON.stringify(missing)});`
+    const wrapped = `${source}\nif (typeof ${fn} === 'function') { return await ${fn}(${JSON.stringify(invocation)}); }\nthrow new Error(${JSON.stringify(missing)});`
     const payload = { lambda_path: file, function_name: fn, kind: 'owner_command', command: req.name, loop, authorized }
     emitUmbilicalEvent({ event_type: 'lambda.started', agentId: config.id, source: `lambda:${file}:${fn}`, payload })
     try {

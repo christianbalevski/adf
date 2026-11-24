@@ -14,8 +14,8 @@ All code in ADF — whether run by `sys_code`, `sys_lambda`, trigger lambdas, ti
 
 | Context | Entry Point | State Persistence | Authorization | Receives |
 |---------|------------|-------------------|---------------|----------|
-| `sys_code` | LLM calls the tool | Yes — same worker per agent, variables carry over (not with `_async`: a task runs in a sandbox of its own, so `clear_state: false` is refused) | Always unauthorized | Raw code string |
-| `sys_lambda` | LLM calls the tool | No — fresh VM context per call | HIL if target is authorized; otherwise unauthorized | `args` object via destructuring |
+| `sys_code` | LLM calls the tool | With `clear_state: false` — top-level declarations and imports carry over to the next call ([details](#state-persistence)). Not with `_async`: a task runs in a sandbox of its own, so `clear_state: false` is refused | Always unauthorized | Raw code string |
+| `sys_lambda` | LLM calls the tool | Per file — the file's sandbox is reused, and the file is re-run on every call | HIL if target is authorized; otherwise unauthorized | `args` object via destructuring |
 | Trigger lambda | System scope trigger fires | No — fresh VM context per call (unless `warm: true`) | Based on file's `authorized` flag | `event` object ([details](triggers.md#lambda-event-object)) |
 | Timer lambda | `on_timer` system scope fires | No — fresh VM context per call (unless `warm: true`) | Based on file's `authorized` flag | `event` object ([details](timers.md#timer-lambda-execution)) |
 | API route handler | HTTP request matches a route | No — fresh VM context per call (unless `warm: true`) | Based on file's `authorized` flag | `request` object ([details](serving.md#lambda-functions)) |
@@ -347,21 +347,32 @@ The worker itself has an additional 2-second buffer beyond the configured timeou
 
 ## State Persistence
 
-**`sys_code`** uses a **persistent worker** per agent. Variables, functions, and state defined in one `sys_code` call carry over to the next. This makes it suitable for building up state incrementally:
+**`sys_code`** uses a sandbox per agent (each side loop has its own). With `clear_state: false`, the call's top-level `const`, `let`, `var`, `function`, `class` and `import` declarations stay defined for the next `sys_code` call that also passes `clear_state: false`:
 
 ```javascript
-// First call
+// First call: sys_code({ code, clear_state: false })
+import { parse } from 'yaml'
 let counter = 0
 function increment() { return ++counter }
 
-// Second call — counter and increment() still exist
-const val = increment() // returns 1
+// Second call: sys_code({ code, clear_state: false })
+increment()   // Result: 1
+typeof parse  // Result: function
 ```
 
-**`sys_lambda`**, **trigger lambdas**, **timer lambdas**, and **API route handlers** use **fresh VM contexts** by default. Each invocation starts clean with no leftover state.
+What carries over and what does not:
+
+- Declarations inside blocks, loops and functions stay local. `var` is the exception: it belongs to the call's top level wherever it is written.
+- Re-running `const x = …` in a later call reassigns `x` rather than failing, so a `const` is not read-only across calls.
+- A name that is already a sandbox global (`URL`, `JSON`, `setTimeout`, `adf`, …) is never overwritten. Its declaration stays local to the call.
+- The default, `clear_state: true`, starts the call in a new, empty sandbox.
+
+Saved state lives in memory, so it is also lost when the sandbox restarts: after a few idle minutes, when the runtime needs the slot for other code, after a synchronous timeout, and when the agent or app restarts. A `clear_state: false` call that runs in a new sandbox starts its result with `Note: this call ran in a new sandbox, …`. Keep data that must last in a file or a local table.
+
+**`sys_lambda`** keeps one sandbox per file (`{agentId}:fn:{file}`) and re-runs the whole file on every call. **Trigger lambdas**, **timer lambdas**, and **API route handlers** use a new sandbox per invocation by default.
 
 **Warm mode:** Trigger targets, timers, and API routes can set `warm: true` to keep the sandbox worker alive between invocations. This trades isolation for performance — useful for frequently-firing triggers or high-traffic API endpoints. The sandbox IDs are:
-- Trigger/timer lambdas: `{agentId}:lambda`
+- Trigger/timer lambdas: `{agentId}:lambda:{file}`
 - API routes: `{agentId}:api`
 
 ## Error Handling

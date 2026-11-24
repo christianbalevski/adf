@@ -35,8 +35,9 @@ function buildInputSchema(maxTimeout: number) {
 
 /**
  * Tool that executes JavaScript code in a sandboxed vm.Context.
- * Each agent gets its own persistent sandbox — variables defined in one call
- * carry over to the next. Code has access to the `adf` proxy object for calling
+ * Each agent (and each side loop) gets its own sandbox. With clear_state: false
+ * the code's top-level declarations and imports stay defined for the next call
+ * (see code-transform.ts). Code has access to the `adf` proxy object for calling
  * tools, model_invoke, and sys_lambda. Allowed Node.js modules can be imported.
  */
 export class SysCodeTool implements Tool {
@@ -50,18 +51,23 @@ export class SysCodeTool implements Tool {
     'Allowed modules: crypto, buffer, url, querystring, path, util, string_decoder, punycode, assert, events, stream, zlib. ' +
     'Standard library packages (always available): xlsx, pdf-lib, mupdf, docx, jszip, sql.js, cheerio, yaml, date-fns, jimp. ' +
     'Additional packages can be installed via npm_install (pure JS only, no native addons). ' +
-    'Set clear_state to false to preserve variables between calls. For multi-step investigations, load data once into a variable and pass clear_state: false on every follow-up call instead of re-fetching; any call with the default (true) wipes saved state.'
+    'Set clear_state to false to preserve variables between calls. For multi-step investigations, load data once into a variable and pass clear_state: false on every follow-up call instead of re-fetching; any call with the default (true) wipes saved state. ' +
+    'Saved state lives in memory and is also lost when the sandbox restarts (idle for a few minutes, a timeout, an app restart); the result says when that happened. Keep data that must last in a file or a local table.'
   private schema: { maxTimeout: number; inputSchema: ReturnType<typeof buildInputSchema> } | null = null
   readonly category = 'external' as const
 
   private service: CodeSandboxService
   private agentId: string
+  private sandboxId: string
   private adfCallHandler: AdfCallHandler | null
   private readMaxTimeout: () => number | undefined
 
-  constructor(service: CodeSandboxService, agentId: string, adfCallHandler?: AdfCallHandler, maxTimeout?: () => number | undefined) {
+  /** `sandboxId` defaults to `agentId`; a side loop passes its own so its
+   *  saved state is separate from main's. */
+  constructor(service: CodeSandboxService, agentId: string, adfCallHandler?: AdfCallHandler, maxTimeout?: () => number | undefined, sandboxId?: string) {
     this.service = service
     this.agentId = agentId
+    this.sandboxId = sandboxId ?? agentId
     this.adfCallHandler = adfCallHandler ?? null
     this.readMaxTimeout = maxTimeout ?? (() => undefined)
   }
@@ -90,9 +96,17 @@ export class SysCodeTool implements Tool {
       }
     }
 
-    if (clear_state && !taskId) {
-      this.service.destroy(this.agentId)
+    // The shell's `node` (context.isolated) also runs in a sandbox of its own,
+    // like a real node process: it neither sees nor clears saved state.
+    const isolatedId = taskId ? `${this.sandboxId}:task:${taskId}` : context?.isolated ? `${this.sandboxId}:shell` : null
+
+    if (clear_state && !isolatedId) {
+      this.service.destroy(this.sandboxId)
     }
+    // Saved state was asked for but there is no sandbox to hold it: a first
+    // call, or one that restarted since. Checked right before execute(), which
+    // reaches its worker without yielding, so nothing can reap it in between.
+    const newSandbox = clear_state === false && !isolatedId && !this.service.has(this.sandboxId)
 
     // Inline code is never authorized. setAuthorizationContext keeps the
     // legacy field in sync for any caller still reading it; withAuthorization
@@ -128,9 +142,9 @@ export class SysCodeTool implements Tool {
       // lambda; feeding that to the sandbox's auth-level tracking marked the
       // agent's main sandbox as mixed-level forever.
       const options = { handlerAuthorized: false, agent: this.agentId }
-      result = taskId
-        ? await this.service.executeIsolated(`${this.agentId}:task:${taskId}`, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig, { ...options, signal: context.signal })
-        : await this.service.execute(this.agentId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig, options)
+      result = isolatedId
+        ? await this.service.executeIsolated(isolatedId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig, { ...options, signal: context?.signal })
+        : await this.service.execute(this.sandboxId, code, timeout ?? this.maxTimeout, onAdfCall, toolConfig, { ...options, persist: true })
     } catch (err) {
       emitUmbilicalEvent({
         event_type: 'lambda.failed',
@@ -172,6 +186,10 @@ export class SysCodeTool implements Tool {
     // If nothing at all — no result, no error, no stdout
     if (parts.length === 0) {
       parts.push('Code executed successfully (no output).')
+    }
+
+    if (newSandbox) {
+      parts.unshift('Note: this call ran in a new sandbox, so nothing from earlier calls is defined. Keep data that must outlast the sandbox in a file (fs_write) or a local table.', '')
     }
 
     return {

@@ -458,4 +458,18 @@ describe('cancelling a task', () => {
       await agent.disposeAsync()
     }
   })
+
+  it("refuses sys_code from code unless it runs as a task: it would wipe the agent's saved state", async () => {
+    const { agent } = await open(newAgentFile(), new MockLLMProvider(), { sandbox: true, enable: ['sys_code'] })
+    try {
+      await agent.registry.executeTool('sys_code', { code: 'globalThis.kept = 42', clear_state: false }, agent.workspace)
+      const res = await agent.adfCallHandler!.handleCall('sys_code', { code: 'return 1' })
+      expect(res).toMatchObject({ errorCode: 'EXCLUDED_TOOL' })
+      expect(res.error).toContain('pass _async: true')
+      const after = await agent.registry.executeTool('sys_code', { code: 'return globalThis.kept', clear_state: false }, agent.workspace)
+      expect(after.content).toBe('Result: 42')
+    } finally {
+      await agent.disposeAsync()
+    }
+  })
 })

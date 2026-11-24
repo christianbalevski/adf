@@ -285,6 +285,18 @@ export class AdfCallHandler {
         }
       }
 
+      // sys_code from code would run in, or wipe, the agent's saved sys_code
+      // state behind the agent's back. As a task (_async) it runs in a sandbox
+      // of its own and cannot touch that state, so only that form is allowed.
+      const asTask = !!args && typeof args === 'object' && ((args as { _async?: unknown })._async === true || (args as { _async?: unknown })._async === 'true')
+      if (method === 'sys_code' && !asTask) {
+        this.logCall('warn', 'call_rejected', method, 'sys_code called from code')
+        return {
+          error: 'sys_code cannot be called from code: code is already running. Run the code directly, call adf.sys_lambda, or pass _async: true to run it as a separate task.',
+          errorCode: 'EXCLUDED_TOOL'
+        }
+      }
+
       // Loop-reset signals (loop_compact, loop_clear) are inert from code: the
       // executor keys off the model's top-level tool name, so this path would
       // return the tool's optimistic "initiated" text with nothing compacted.

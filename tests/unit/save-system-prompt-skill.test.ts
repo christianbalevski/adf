@@ -5,7 +5,7 @@ import { afterAll, afterEach, describe, expect, it } from 'vitest'
 
 import { AdfWorkspace } from '../../src/main/adf/adf-workspace'
 import { AgentRuntimeBuilder } from '../../src/main/runtime/agent-runtime-builder'
-import { CodeSandboxService, transformExports, transformImports } from '../../src/main/runtime/code-sandbox'
+import { CodeSandboxService } from '../../src/main/runtime/code-sandbox'
 import type { AdfCallResult } from '../../src/main/runtime/code-sandbox'
 import { createHeadlessAgent } from '../../src/main/runtime/headless'
 import { DbQueryTool } from '../../src/main/tools/built-in/db-query.tool'
@@ -85,7 +85,7 @@ function lambda(workspace: AdfWorkspace) {
     return result.isError ? { error: String(result.content), errorCode: 'TOOL_ERROR' } : { result: String(result.content) }
   }
   return async (fn: string, args: Record<string, unknown> = {}) => {
-    const code = `${transformExports(transformImports(source))}\nreturn await ${fn}(${JSON.stringify(args)});`
+    const code = `${source}\nreturn await ${fn}(${JSON.stringify(args)});`
     const out = await sandbox.execute(`save-prompt-test:${Math.random()}`, code, 10_000, onAdfCall)
     if (out.error) throw new Error(out.error)
     return (typeof out.result === 'string' ? JSON.parse(out.result) : out.result) as Record<string, unknown>

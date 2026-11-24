@@ -71,15 +71,24 @@ export const SANDBOX_PRELUDE = String.raw`
     for (var i = 0; i < args.length; i++) push(parts, toStr(args[i]));
     return join(parts, ' ');
   }
+  // A console belongs to its execution, but a function saved by one execution
+  // and called by a later one must print into the later one's output. So once
+  // its own execution has settled, a console writes to the execution that is
+  // unambiguously running: the current one, or the only one. Otherwise (its
+  // execution timed out but is still going, or several are running after an
+  // await) the line is dropped rather than shown in the wrong result.
   function makeConsole(id) {
-    var buf = outFor(id);
+    function write(line) {
+      var target = outputs.has(id) ? id : (activeRuns.has(id) ? null : soleRun());
+      if (target !== null) push(outFor(target), line);
+    }
     return {
-      log: function () { push(buf, fmt(arguments)); },
-      info: function () { push(buf, fmt(arguments)); },
-      debug: function () { push(buf, fmt(arguments)); },
-      warn: function () { push(buf, '[warn] ' + fmt(arguments)); },
-      error: function () { push(buf, '[error] ' + fmt(arguments)); },
-      trace: function () { push(buf, '[trace] ' + fmt(arguments)); }
+      log: function () { write(fmt(arguments)); },
+      info: function () { write(fmt(arguments)); },
+      debug: function () { write(fmt(arguments)); },
+      warn: function () { write('[warn] ' + fmt(arguments)); },
+      error: function () { write('[error] ' + fmt(arguments)); },
+      trace: function () { write('[trace] ' + fmt(arguments)); }
     };
   }
   function stripNl(s) {
@@ -138,6 +147,13 @@ export const SANDBOX_PRELUDE = String.raw`
     activeRuns.forEach(function (_, id) { last = id; });
     return last;
   }
+  function soleRun() {
+    if (currentRun !== null) return currentRun;
+    if (activeRuns.size !== 1) return null;
+    var only = null;
+    activeRuns.forEach(function (_, id) { only = id; });
+    return only;
+  }
   function Timeout(id) { this._id = id; }
   Timeout.prototype.ref = function () { return this; };
   Timeout.prototype.unref = function () { return this; };
@@ -173,7 +189,9 @@ export const SANDBOX_PRELUDE = String.raw`
       if (t.owner !== null) {
         var info = errorInfo(e);
         var msg = 'Uncaught exception in timer callback: ' + info[0];
-        push(outFor(t.owner), '[error] ' + msg);
+        // Only into output not yet taken: re-creating a taken buffer would
+        // leak it and capture the owner's later console output.
+        if (outputs.has(t.owner)) push(outputs.get(t.owner), '[error] ' + msg);
         B.settle(t.owner, false, msg, info[1]);
       }
     } finally {
@@ -308,7 +326,8 @@ export const SANDBOX_PRELUDE = String.raw`
     var hostGlobals = ['Buffer', 'TextEncoder', 'TextDecoder', 'URL', 'URLSearchParams'];
     for (var h = 0; h < hostGlobals.length; h++) defineGlobal(hostGlobals[h], B.hostGlobal(hostGlobals[h]));
   }
-  defineGlobal('__require', __require);
+  // Locked: rewritten imports call it, so code must not be able to replace it.
+  defineGlobal('__require', __require, true);
   defineGlobal('require', requireStub);
   defineGlobal('__stdlibPath', config.stdlibPath || null);
   var moduleObj = { exports: {} };

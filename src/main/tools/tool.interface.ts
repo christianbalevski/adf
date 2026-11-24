@@ -19,6 +19,9 @@ export interface ToolCallContext {
   signal?: AbortSignal
   /** Set when the call runs as an `adf_tasks` row (`_async`); inherited by nested calls. */
   taskId?: string
+  /** Run in a sandbox of its own, discarded after the call (the shell's `node`).
+   *  Applies to this call only; nested calls do not inherit it. */
+  isolated?: boolean
 }
 
 export interface Tool {

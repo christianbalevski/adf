@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { afterAll, describe, expect, it } from 'vitest'
-import { CodeSandboxService, transformExports, transformImports } from '../../src/main/runtime/code-sandbox'
+import { CodeSandboxService } from '../../src/main/runtime/code-sandbox'
 import type { AdfCallResult } from '../../src/main/runtime/code-sandbox'
 import { FsListTool } from '../../src/main/tools/built-in/fs-list.tool'
 import { FsReadTool } from '../../src/main/tools/built-in/fs-read.tool'
@@ -54,7 +54,7 @@ function runner(files: Record<string, StubFile>) {
   return {
     calls,
     async run(args: Record<string, unknown>, timeoutMs = 10000) {
-      const code = `${transformExports(transformImports(lambdaSource))}
+      const code = `${lambdaSource}
 return await main(${JSON.stringify(args)});`
       return sandbox.execute(`file-search-test:${Math.random()}`, code, timeoutMs, onAdfCall)
     }
