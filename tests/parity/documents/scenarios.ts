@@ -1,7 +1,7 @@
 import { dirname, join } from 'node:path'
 import { IPC } from '../../../src/shared/constants/ipc-channels'
 import { FIXTURE_CREATED_DATE } from '../harness/fixtures'
-import type { ParityScenario, ScenarioContext } from '../harness/scenario'
+import { waitForFinishedNotice, type ParityScenario, type ScenarioContext } from '../harness/scenario'
 
 /**
  * W3-A's parity scenarios (tracker W3-A acceptance): files, documents, agent
@@ -48,6 +48,7 @@ export const switchWithBackgroundScenario: ParityScenario = {
     await ctx.invoke(IPC.FILE_CHECK_REVIEW)
     await ctx.invoke(IPC.AGENT_INVOKE, { userMessage: 'Hello from the fleet bar.', filePath: agent2.filePath })
     await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 turn complete', inBatch('turn_complete', agent2.filePath))
+    await waitForFinishedNotice(ctx, agent2.filePath, 'Background reply.')
     const back = await openAgent(ctx, agent2.filePath)
     if (back?.agentWasRunning) await ctx.invoke(IPC.AGENT_START)
     await ctx.invoke(IPC.DOC_GET_CHAT, {})

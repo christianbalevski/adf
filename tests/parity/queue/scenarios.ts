@@ -4,7 +4,7 @@ import { useMessageQueueStore, queuedLoops } from '../../../src/renderer/stores/
 import { deliverSettledBackgroundQueues, deliverSettledQueues, queueOwnerMessage } from '../../../src/renderer/utils/queued-delivery'
 import { foldAgentStatuses } from '../../../src/renderer/utils/background-agent-statuses'
 import type { LlmReply, LlmRequestView } from '../harness/mock-llm'
-import type { ParityScenario, ScenarioContext } from '../harness/scenario'
+import { waitForFinishedNotice, type ParityScenario, type ScenarioContext } from '../harness/scenario'
 
 /**
  * W5-L's parity scenarios: the queued-message fix (fix/queued-message-nav)
@@ -149,12 +149,14 @@ export const queuedAcrossSwitchScenario: ParityScenario = {
       holds.main.reply.open()
       const mainIdle = await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 main idle', inBatch('agent_state_changed', agent2.filePath, (p) => p?.state === 'idle'))
       await mainTurn
+      await waitForFinishedNotice(ctx, agent2.filePath, 'Main task done.')
       await nextSecond()
       let from = renderer.sends.length
       onBatch(mainIdle)
       if (renderer.sends.length !== from + 1) throw new Error('main: the queue was not sent on its turn end')
       await sendsSettled(from)
       await ctx.waitForPush(IPC.BACKGROUND_AGENT_EVENT_BATCH, 'agent-2 main idle after the queued message', inBatch('agent_state_changed', agent2.filePath, (p) => p?.state === 'idle'))
+      await waitForFinishedNotice(ctx, agent2.filePath, 'Main got the queued note.')
 
       // critic's turn ends: its own transition (the busy count alone would not say which loop).
       holds.critic.reply.open()

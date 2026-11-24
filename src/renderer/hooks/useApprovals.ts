@@ -9,6 +9,7 @@ import type { NotificationsSnapshot, PendingNotification, ResolvedNotification }
 import { noticeKey } from '../../shared/runtime-tag'
 import { newFinished, seedFinished } from '../../shared/utils/finished-notices'
 import { agentKey } from '../../shared/types/agent-ref'
+import { apiFor } from '../utils/runtime-api'
 
 /** The open agent as a ref key (agentKey), compared with each request's: refs of two runtimes never match. */
 function openRefKey(): string | null {
@@ -104,16 +105,44 @@ export function useApprovalEvents() {
   const hasAppliedPush = useRef(false)
 
   // The Dock icon shows the bell's number: the pending count, nothing else.
-  // Pushed once on mount so a badge left by a previous run is corrected, then
-  // on every change of that count.
+  // Sync the Dock badge and the open agent's visibility at mount and when
+  // their inputs change.
   useEffect(() => {
     const setBadge = approvalsBridge()?.setBadgeCount
-    if (!setBadge) return
-    const push = (count: number): void => { setBadge(count).catch(() => { /* no dock to badge */ }) }
-    push(useApprovalsStore.getState().approvals.length)
-    return useApprovalsStore.subscribe((state, prev) => {
-      if (state.approvals.length !== prev.approvals.length) push(state.approvals.length)
+    const pushBadge = (count: number): void => { setBadge?.(count).catch(() => { /* no dock to badge */ }) }
+    pushBadge(useApprovalsStore.getState().approvals.length)
+    const offBadge = useApprovalsStore.subscribe((state, prev) => {
+      if (state.approvals.length !== prev.approvals.length) pushBadge(state.approvals.length)
     })
+
+    // Home leaves the agent open but off screen. Publish the final visibility
+    // once after synchronous navigation updates to both stores.
+    let active = true
+    let queued = false
+    const syncVisibility = () => {
+      if (queued) return
+      queued = true
+      queueMicrotask(() => {
+        queued = false
+        if (!active) return
+        const { filePath, runtimeId } = useDocumentStore.getState()
+        if (!filePath) return
+        void apiFor(runtimeId)?.setFileVisible?.(!useAppStore.getState().showHome)?.catch(() => { /* runtime unreachable */ })
+      })
+    }
+    const offHome = useAppStore.subscribe((state, prev) => {
+      if (state.showHome !== prev.showHome) syncVisibility()
+    })
+    const offDocument = useDocumentStore.subscribe((state, prev) => {
+      if (state.filePath !== prev.filePath || state.runtimeId !== prev.runtimeId) syncVisibility()
+    })
+    syncVisibility()
+    return () => {
+      active = false
+      offBadge()
+      offHome()
+      offDocument()
+    }
   }, [])
 
   useEffect(() => {

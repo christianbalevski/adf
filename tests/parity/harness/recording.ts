@@ -1,4 +1,5 @@
 import { IPC } from '../../../src/shared/constants/ipc-channels'
+import type { NotificationsSnapshot } from '../../../src/shared/types/ipc.types'
 import type { LocalCallRecord, PushRecord } from './electron-fake'
 import type { RecordedLlmRequest, StreamTiming } from './mock-llm'
 import type { PersistedState } from './state-dump'
@@ -24,7 +25,7 @@ export type StepRecord =
   | { kind: 'invoke'; channel: string; args: unknown[]; result: unknown; pushes: { before: number; after: number } }
   | { kind: 'invoke-error'; channel: string; args: unknown[]; error: { name: string; message: string; code?: unknown }; pushes: { before: number; after: number } }
   | { kind: 'send'; channel: string; args: unknown[]; pushes: { before: number } }
-  | { kind: 'wait'; channel: string; description: string; pushes: { matched: number } }
+  | { kind: 'wait'; channel: string; description: string; pushes: { matched: number } | { matchedInChannel: number } }
   /** Tolerant runs only (RunOptions.tolerant): the push never came. */
   | { kind: 'wait-timeout'; channel: string; description: string; pushes: { at: number } }
   | { kind: 'shutdown'; pushes: { before: number; after: number } }
@@ -152,40 +153,59 @@ export function isCoalescedHint(channel: string): boolean {
   return COALESCED_HINT_CHANNELS.has(channel)
 }
 
-function withoutHints(raw: RawRecording): { rest: RawRecording; hints: Map<string, unknown[]> } {
-  const hints = new Map<string, unknown[]>()
-  if (!raw.pushes.some((p) => isCoalescedHint(p.channel))) return { rest: raw, hints }
+function withoutIndependentPushes(raw: RawRecording): { rest: RawRecording; independent: Map<string, unknown[]> } {
+  const independent = new Map<string, unknown[]>()
+  // Finished-only snapshots travel independently of turn events. Keep every
+  // snapshot and its order within the channel, but omit its position among
+  // unrelated pushes and invokes. Runs with interactive notifications keep
+  // the full chronology.
+  const notices = raw.pushes.filter((push) => push.channel === IPC.APPROVALS_CHANGED)
+  const finishedOnly = notices.length > 0 && notices.every(({ args }) => {
+    const snapshot = args[0] as NotificationsSnapshot | undefined
+    return snapshot?.pending.length === 0 && snapshot.history.length > 0 && snapshot.history.every((row) => row.kind === 'finished')
+  })
+  if (!finishedOnly && !raw.pushes.some((p) => isCoalescedHint(p.channel))) return { rest: raw, independent }
+  const finished: unknown[] = []
+  const finishedWaits = new Map<number, number>()
   // keptUpTo[n]: kept pushes among the first n (a watermark or a seq maps through it).
   const keptUpTo: number[] = [0]
   const pushes: PushRecord[] = []
   for (const push of raw.pushes) {
-    if (isCoalescedHint(push.channel)) {
+    if (finishedOnly && push.channel === IPC.APPROVALS_CHANGED) {
+      finished.push(push.args[0])
+      finishedWaits.set(push.seq, finished.length)
+    } else if (isCoalescedHint(push.channel)) {
       const payload = push.args.length === 1 ? push.args[0] : push.args
-      const seen = hints.get(push.channel) ?? []
+      const seen = independent.get(push.channel) ?? []
       if (!seen.some((p) => JSON.stringify(p) === JSON.stringify(payload))) seen.push(payload)
-      hints.set(push.channel, seen)
+      independent.set(push.channel, seen)
     } else {
       pushes.push({ ...push, seq: pushes.length + 1 })
     }
     keptUpTo.push(pushes.length)
   }
-  for (const [ch, list] of hints) hints.set(ch, [...list].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))
+  for (const [ch, list] of independent) independent.set(ch, [...list].sort((a, b) => JSON.stringify(a).localeCompare(JSON.stringify(b))))
+  if (finishedOnly) independent.set(IPC.APPROVALS_CHANGED, finished)
   const at = (n: number) => keptUpTo[Math.max(0, Math.min(n, keptUpTo.length - 1))]
   const steps = raw.steps.map((step): StepRecord => {
     switch (step.kind) {
       case 'invoke': case 'invoke-error': case 'shutdown':
         return { ...step, pushes: { before: at(step.pushes.before), after: at(step.pushes.after) } } as StepRecord
       case 'send': return { ...step, pushes: { before: at(step.pushes.before) } }
-      case 'wait': return { ...step, pushes: { matched: at(step.pushes.matched) } }
+      case 'wait': {
+        if ('matchedInChannel' in step.pushes) return step
+        const matchedInChannel = finishedWaits.get(step.pushes.matched)
+        return { ...step, pushes: matchedInChannel === undefined ? { matched: at(step.pushes.matched) } : { matchedInChannel } }
+      }
       case 'wait-timeout': return { ...step, pushes: { at: at(step.pushes.at) } }
     }
   })
-  return { rest: { ...raw, steps, pushes }, hints }
+  return { rest: { ...raw, steps, pushes }, independent }
 }
 
 export function toComparable(recorded: RawRecording): ComparableRecording {
-  const { rest: raw, hints } = withoutHints(recorded)
-  const byChannel = new Map<string, unknown[]>(hints)
+  const { rest: raw, independent } = withoutIndependentPushes(recorded)
+  const byChannel = new Map<string, unknown[]>(independent)
   const seqByChannel = new Map<string, number[]>()
   for (const push of raw.pushes) {
     const list = byChannel.get(push.channel) ?? []
@@ -198,7 +218,7 @@ export function toComparable(recorded: RawRecording): ComparableRecording {
   const pushSeq: Record<string, number[]> = {}
   for (const channel of [...byChannel.keys()].sort()) {
     pushes[channel] = byChannel.get(channel)!
-    // R23's hints keep no send order: R9 compares no instants against them.
+    // Independent pushes have no cross-channel order to compare under R9.
     if (seqByChannel.has(channel)) pushSeq[channel] = seqByChannel.get(channel)!
   }
 

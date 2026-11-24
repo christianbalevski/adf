@@ -867,7 +867,8 @@
   result:
     success: true
 16. wait adf:background-agent:event-batch — agent-2 main idle  [matched push 9]
-17. invoke adf:agent:invoke  [pushes 10→11]
+17. wait adf:approvals:changed — finished notice for "Main task done."  [matched snapshot 1]
+18. invoke adf:agent:invoke  [pushes 9→10]
   args:
     -
       content:
@@ -879,8 +880,9 @@
       userMessage: "Queued for main."
   result:
     success: true
-18. wait adf:background-agent:event-batch — agent-2 main idle after the queued message  [matched push 12]
-19. invoke adf:agent:invoke  [pushes 3→13]
+19. wait adf:background-agent:event-batch — agent-2 main idle after the queued message  [matched push 11]
+20. wait adf:approvals:changed — finished notice for "Main got the queued note."  [matched snapshot 2]
+21. invoke adf:agent:invoke  [pushes 3→11]
   args:
     -
       filePath: "<ROOT>/agents/agent-2.adf"
@@ -888,8 +890,8 @@
       userMessage: "Long critic task."
   result:
     success: true
-20. wait adf:background-agent:event-batch — agent-2 critic idle  [matched push 14]
-21. invoke adf:agent:invoke  [pushes 14→15]
+22. wait adf:background-agent:event-batch — agent-2 critic idle  [matched push 12]
+23. invoke adf:agent:invoke  [pushes 12→13]
   args:
     -
       content:
@@ -901,8 +903,8 @@
       userMessage: "Queued for critic."
   result:
     success: true
-22. wait adf:background-agent:event-batch — agent-2 critic idle after the queued message  [matched push 16]
-23. invoke adf:file:open  [pushes 16→17]
+24. wait adf:background-agent:event-batch — agent-2 critic idle after the queued message  [matched push 14]
+25. invoke adf:file:open  [pushes 14→15]
   args:
     -
       filePath: "<ROOT>/agents/agent-2.adf"
@@ -910,7 +912,7 @@
     agentWasRunning: true
     filePath: "<ROOT>/agents/agent-2.adf"
     success: true
-24. invoke adf:doc:get-batch  [pushes 17→17]
+26. invoke adf:doc:get-batch  [pushes 15→15]
   args: []
   result:
     agentConfig:
@@ -1557,7 +1559,7 @@
       output: 10
       reasoning: 0
     statusText: ""
-25. invoke adf:doc:read-internal-file  [pushes 17→17]
+27. invoke adf:doc:read-internal-file  [pushes 15→15]
   args:
     -
       binaryContent: false
@@ -1580,7 +1582,7 @@
     mimeType: "text/markdown"
     revision: "<rev#3>"
     size: 380
-26. invoke adf:doc:read-internal-file  [pushes 17→17]
+28. invoke adf:doc:read-internal-file  [pushes 15→15]
   args:
     -
       binaryContent: false
@@ -1618,7 +1620,7 @@
     mimeType: "text/markdown"
     revision: "<rev#4>"
     size: 1067
-27. invoke adf:agent:start  [pushes 17→17]
+29. invoke adf:agent:start  [pushes 15→15]
   args: []
   result:
     agentState: "idle"
@@ -1629,7 +1631,7 @@
     pendingAsks: []
     sessionId: "session-<t:earlier>"
     success: true
-28. invoke adf:doc:get-chat  [pushes 17→17]
+30. invoke adf:doc:get-chat  [pushes 15→15]
   args:
     - {}
   result:
@@ -1926,7 +1928,7 @@
           timestamp: "<t>"
           type: "text"
       version: 1
-29. invoke adf:doc:get-chat  [pushes 17→17]
+31. invoke adf:doc:get-chat  [pushes 15→15]
   args:
     -
       loop: "critic"
@@ -2188,11 +2190,11 @@
           timestamp: "<t>"
           type: "text"
       version: 1
-30. invoke adf:agent:stop  [pushes 17→17]
+32. invoke adf:agent:stop  [pushes 15→15]
   args: []
   result:
     success: true
-31. shutdown  [pushes 17→17]
+33. shutdown  [pushes 15→15]
 
 ## timeline <ROOT>/agents/agent-1.adf
 > 1 adf:file:open
@@ -2206,7 +2208,7 @@
 > 5 adf:agent:start
 < 5
 > 15 adf:agent:invoke
-> 19 adf:agent:invoke
+> 21 adf:agent:invoke
 > 8 adf:file:open
   [app] adf:background-agent:event-batch agent_started:active
 < 8
@@ -2223,43 +2225,41 @@
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
-  [app] adf:approvals:changed
-> 17 adf:agent:invoke
+> 18 adf:agent:invoke
   [app] adf:background-agent:event-batch agent_state_changed:active
   [app] adf:background-agent:event-batch response_metadata
-< 17
+< 18
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
-  [app] adf:approvals:changed
-< 19
-  [app] adf:background-agent:event-batch agent_loop_state_changed:idle
-  [app] adf:background-agent:event-batch agent_loops_changed
-> 21 adf:agent:invoke
-  [app] adf:background-agent:event-batch agent_loop_state_changed:active
-  [app] adf:background-agent:event-batch agent_loops_changed
 < 21
   [app] adf:background-agent:event-batch agent_loop_state_changed:idle
   [app] adf:background-agent:event-batch agent_loops_changed
-> 23 adf:file:open
-  [app] adf:background-agent:event-batch agent_stopped
+> 23 adf:agent:invoke
+  [app] adf:background-agent:event-batch agent_loop_state_changed:active
+  [app] adf:background-agent:event-batch agent_loops_changed
 < 23
-> 24 adf:doc:get-batch
-< 24
-> 25 adf:doc:read-internal-file
+  [app] adf:background-agent:event-batch agent_loop_state_changed:idle
+  [app] adf:background-agent:event-batch agent_loops_changed
+> 25 adf:file:open
+  [app] adf:background-agent:event-batch agent_stopped
 < 25
-> 26 adf:doc:read-internal-file
+> 26 adf:doc:get-batch
 < 26
-> 27 adf:agent:start
+> 27 adf:doc:read-internal-file
 < 27
-> 28 adf:doc:get-chat
+> 28 adf:doc:read-internal-file
 < 28
-> 29 adf:doc:get-chat
+> 29 adf:agent:start
 < 29
-> 30 adf:agent:stop
+> 30 adf:doc:get-chat
 < 30
-> 31 shutdown
+> 31 adf:doc:get-chat
 < 31
+> 32 adf:agent:stop
+< 32
+> 33 shutdown
+< 33
 
 ## timeline <ROOT>/agents/agent-2.adf
 > 1 adf:file:open
@@ -2276,7 +2276,7 @@
   adf:agent:event context_injected
   adf:agent:event state_changed:thinking
   adf:agent:event response_metadata
-> 19 adf:agent:invoke
+> 21 adf:agent:invoke
   adf:agent:event context_injected
   adf:agent:event state_changed:thinking
   adf:agent:event response_metadata
@@ -2296,43 +2296,41 @@
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
-  [app] adf:approvals:changed
-> 17 adf:agent:invoke
+> 18 adf:agent:invoke
   [app] adf:background-agent:event-batch agent_state_changed:active
   [app] adf:background-agent:event-batch response_metadata
-< 17
+< 18
   [app] adf:background-agent:event-batch response_metadata
   [app] adf:background-agent:event-batch turn_complete
   [app] adf:background-agent:event-batch agent_state_changed:idle
-  [app] adf:approvals:changed
-< 19
-  [app] adf:background-agent:event-batch agent_loop_state_changed:idle
-  [app] adf:background-agent:event-batch agent_loops_changed
-> 21 adf:agent:invoke
-  [app] adf:background-agent:event-batch agent_loop_state_changed:active
-  [app] adf:background-agent:event-batch agent_loops_changed
 < 21
   [app] adf:background-agent:event-batch agent_loop_state_changed:idle
   [app] adf:background-agent:event-batch agent_loops_changed
-> 23 adf:file:open
-  [app] adf:background-agent:event-batch agent_stopped
+> 23 adf:agent:invoke
+  [app] adf:background-agent:event-batch agent_loop_state_changed:active
+  [app] adf:background-agent:event-batch agent_loops_changed
 < 23
-> 24 adf:doc:get-batch
-< 24
-> 25 adf:doc:read-internal-file
+  [app] adf:background-agent:event-batch agent_loop_state_changed:idle
+  [app] adf:background-agent:event-batch agent_loops_changed
+> 25 adf:file:open
+  [app] adf:background-agent:event-batch agent_stopped
 < 25
-> 26 adf:doc:read-internal-file
+> 26 adf:doc:get-batch
 < 26
-> 27 adf:agent:start
+> 27 adf:doc:read-internal-file
 < 27
-> 28 adf:doc:get-chat
+> 28 adf:doc:read-internal-file
 < 28
-> 29 adf:doc:get-chat
+> 29 adf:agent:start
 < 29
-> 30 adf:agent:stop
+> 30 adf:doc:get-chat
 < 30
-> 31 shutdown
+> 31 adf:doc:get-chat
 < 31
+> 32 adf:agent:stop
+< 32
+> 33 shutdown
+< 33
 
 ## push adf:agent:event (6)
 #1:
@@ -2592,7 +2590,7 @@
     estimated: true
     model: "parity-model"
     usage:
-      input: 11259
+      input: 11307
       output: 0
   timestamp: "<t>"
   type: "response_metadata"
@@ -2914,7 +2912,7 @@
       filePath: "<ROOT>/agents/agent-2.adf"
       model: "parity-model"
       usage:
-        input: 11277
+        input: 11325
         output: 0
     timestamp: "<t>"
     type: "response_metadata"

@@ -13,6 +13,7 @@ import { Tooltip } from '../../common/Tooltip'
 import { useRuntime } from '../../../stores/runtimes.store'
 import { meshWebsiteUrl } from '../../../../shared/utils/agent-website-url'
 import { openApi } from '../../../utils/runtime-api'
+import { browserSessionAgent } from '../../../utils/browser-session-agent'
 import { servesHttp } from '../../../../shared/utils/serving'
 
 /** Every card-face chip (Public, Verified owner, Website, Computer) is this box, so they share one height. */
@@ -65,17 +66,15 @@ export function useAgentSurfaces(): AgentSurfaces {
     if (!agentOn || opening || !config || !filePath) return
     setOpening(true)
     try {
-      // eslint-disable-next-line no-restricted-syntax -- main names the isolated container from config.name (isolatedContainerName); this must match it.
-      const info = await openApi()?.getBrowserSessionInfo({ agentName: config.name, agentId: config.id })
+      const agent = browserSessionAgent(config)
+      const info = await openApi()?.getBrowserSessionInfo(agent)
       // The tab opens in every phase: a container that is provisioning,
       // stopped, or failed shows that instead of a blank viewer.
       if (info) {
         useEditorTabsStore.getState().openBrowserTab({
           agentFilePath: filePath,
           containerName: info.containerName,
-          agentId: config.id,
-          // eslint-disable-next-line no-restricted-syntax -- same container key as above.
-          agentName: config.name,
+          ...agent,
           hostPort: info.hostPort,
           phase: info.phase,
           detail: info.detail,
