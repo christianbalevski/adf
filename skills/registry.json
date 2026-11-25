@@ -17,9 +17,19 @@
     },
     {
       "name": "agent-memory",
-      "description": "Maintain a mind.md wiki \u2014 small always-loaded index, mind/ pages with typed frontmatter, append-only log \u2014 with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, writing or superseding memory pages, or running a periodic memory lint.",
+      "description": "Maintain a mind.md wiki \u2014 small always-loaded index, mind/ pages with typed frontmatter, append-only log \u2014 with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, searching past loop history and files by keyword, writing or superseding memory pages, or running a periodic memory lint.",
       "path": "skills/agent-memory/SKILL.md",
-      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-memory/SKILL.md"
+      "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-memory/SKILL.md",
+      "files": [
+        {
+          "path": "scripts/memory-search.js",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-memory/scripts/memory-search.js"
+        },
+        {
+          "path": "tests/memory-search.test.mjs",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-memory/tests/memory-search.test.mjs"
+        }
+      ]
     },
     {
       "name": "browser-profile-portability",

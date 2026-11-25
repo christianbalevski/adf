@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Maintain a mind.md wiki — small always-loaded index, mind/ pages with typed frontmatter, append-only log — with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, writing or superseding memory pages, or running a periodic memory lint.
+description: Maintain a mind.md wiki — small always-loaded index, mind/ pages with typed frontmatter, append-only log — with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, searching past loop history and files by keyword, writing or superseding memory pages, or running a periodic memory lint.
 adf: ">=0.2"
 requires:
   tools: [db_query, fs_write, sys_code, sys_lambda]
@@ -61,6 +61,14 @@ Four conventions this depends on, none of them guessable:
 - Pass **`_full: true`** from sandbox code so rows are never truncated.
 - The payload is compressed with **brotli**; `zlib` is importable in the sandbox.
 - Decompress in the sandbox, never into your context. A blob can be megabytes. Return only the entry you need.
+
+## Search your whole history
+
+Use this when the answer is not in `mind.md` or a page: something mentioned once, long ago, in a loop's history or a file. Call `sys_lambda({ source: "skills/agent-memory/scripts/memory-search.js:search", args: { query: "vendor for invoices", k: 8 } })`. `k` defaults to 8, at most 20.
+
+It returns `{ results: [{ ref, date, text }], indexed: { added, removed, skipped, pending, complete, ms } }`, ranked by BM25 over the query's words (any word matches). `ref` is `[S<seq>] <loop>` for a message, so resolve it with `auditRead`, or `file:<path>` for a file. Before every search it indexes whatever is new: live and archived messages of every loop (text and tool results), and workspace text files. The index lives in `local_ms_*` tables. On a large agent the first build spans several calls; until `indexed.complete` is true, a miss is not proof of absence. Optional `budget_ms` (default and max 20000) caps indexing time per call; keep it well under your `limits.execution_timeout_ms`.
+
+It needs `db_execute`, which is off by default, plus `db_query`, `fs_list`, and `fs_read`. If `db_execute` is off, the search cannot run; use `auditRead` and the wiki instead.
 
 ## Lint workflow
 
