@@ -211,6 +211,13 @@ function migrateComputeDefaults(data: Record<string, unknown>): boolean {
 const STALE_TOOL_PROMPT_KEYS = ['adf_shell']
 
 /**
+ * Prompt keys that moved: a saved value (customized or not) carries over to
+ * the new key before backfill. dyn_idle_reminder: the idle reminder left the
+ * per-turn dynamic instructions for the cached system prompt.
+ */
+const RENAMED_TOOL_PROMPT_KEYS: Record<string, string> = { dyn_idle_reminder: '_idle_reminder' }
+
+/**
  * Superseded default texts for prompt keys whose shipped default changed.
  * A saved value that exactly matches an old default was never customized, so
  * it is upgraded in place to the current default; any other saved value is
@@ -220,7 +227,7 @@ const OUTDATED_TOOL_PROMPT_DEFAULTS: Record<string, string[]> = {
   _autonomous: [
     '## Autonomous Mode\n\nYou are in autonomous mode: no human input this session. Report progress with `say`, put results in your final response, and call `sys_set_state` when your work is complete.',
   ],
-  dyn_idle_reminder: [
+  _idle_reminder: [
     'If you have completed your current work, call `sys_set_state` with state "idle" to yield.',
   ],
   dyn_inbox_hint: [
@@ -240,6 +247,12 @@ function migrateToolPrompts(data: Record<string, unknown>): boolean {
 
   const defaults: Record<string, string> = { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
   let changed = false
+  for (const [from, to] of Object.entries(RENAMED_TOOL_PROMPT_KEYS)) {
+    if (!(from in saved)) continue
+    if (!(to in saved)) saved[to] = saved[from]
+    delete saved[from]
+    changed = true
+  }
   for (const [key, value] of Object.entries(defaults)) {
     if (!(key in saved)) {
       saved[key] = value
@@ -260,7 +273,7 @@ function migrateToolPrompts(data: Record<string, unknown>): boolean {
   }
   if (changed) {
     data.toolPrompts = saved
-    console.log('[Settings] Migrated toolPrompts — added missing keys / removed stale keys')
+    console.log('[Settings] Migrated toolPrompts — added missing keys / moved or removed stale keys')
   }
   return changed
 }

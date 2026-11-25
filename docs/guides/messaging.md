@@ -394,7 +394,7 @@ Both are gated by `context.dynamic_instructions`:
 | `mesh_updates` | `true` | The `[Mesh Update]` roster |
 | `inbox_hints` | `true` | The `[Inbox: N unread]` nudge |
 | `context_warning` | `true` | Approaching-context-limit / compaction warnings |
-| `idle_reminder` | `true` | Reminder that an autonomous agent can go idle via `sys_set_state` |
+| `idle_reminder` | `true` | For an autonomous agent with `sys_set_state`: the *Idle Reminder* section appended to the system prompt (not per turn), and the `sys_set_state` hint in the runtime's continuation nudge |
 
 Set any to `false` to suppress that injection — the config path is `context.dynamic_instructions.<key>`. The mesh roster is the same discovery information `agent_discover` returns — see [LAN Discovery](lan-discovery.md) — pushed into context automatically.
 

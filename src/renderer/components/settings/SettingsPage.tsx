@@ -1900,7 +1900,7 @@ function SettingsPageBody({ runtimeId, onPick, activeTab, setActiveTab, settings
           {/* Dynamic Instructions */}
           <SettingsGroup
             title="Dynamic instructions"
-            description="Per-turn injections: inbox status, context warnings, mesh updates, idle reminders."
+            description="Per-turn injections: inbox status, context warnings, mesh updates."
             hint={'Never part of the cached system prompt; {{token}} placeholders are filled at injection time. Each agent can toggle these under context.dynamic_instructions.'}
             docs={DOCS.settingsSystemPrompt}
           >

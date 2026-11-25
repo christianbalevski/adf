@@ -306,6 +306,9 @@ The \`ws_*\` tools manage your configured connections (schemas have the details)
   _autonomous: `## Autonomous Mode
 
 You are in autonomous mode: the runtime continues after text-only responses. Follow your current instructions, including new directions from your principal and the assignment's stopping conditions. Completing a subtask does not end an ongoing assignment.`,
+
+  /** Appended after _autonomous when the agent can yield (context.dynamic_instructions.idle_reminder). */
+  _idle_reminder: 'When your current instructions call for stopping and no authorized work remains, call `sys_set_state` with state "idle" to yield.',
 }
 
 /**
@@ -328,7 +331,6 @@ export const DEFAULT_DYNAMIC_PROMPTS: Record<string, string> = {
   dyn_context_warning_imminent: "🚨 COMPACTION IMMINENT: Your conversation history has reached {{chat_tokens}} tokens (threshold: {{threshold}}). You are {{tokens_until}} tokens away from the automatic compaction limit. Write what you want to keep to your mind pages NOW (cite [S<seq>] markers), then call 'loop_compact' at a clean stopping point, or compaction will be forced at the threshold.",
   dyn_mesh_update: '[Mesh Update] Available agents:\n{{agent_list}}',
   dyn_mesh_update_empty: '[Mesh Update] No other agents are currently available in the mesh.',
-  dyn_idle_reminder: 'When your current instructions call for stopping and no authorized work remains, call `sys_set_state` with state "idle" to yield.',
 }
 
 /** Labels for dynamic instruction templates, used in settings UI */
@@ -339,7 +341,6 @@ export const DYNAMIC_PROMPT_LABELS: Record<string, string> = {
   dyn_context_warning_imminent: 'Context Warning (Imminent)',
   dyn_mesh_update: 'Mesh Update',
   dyn_mesh_update_empty: 'Mesh Update (Empty)',
-  dyn_idle_reminder: 'Idle Reminder',
 }
 
 /**
@@ -353,7 +354,6 @@ export const DYNAMIC_PROMPT_CONDITIONS: Record<string, string> = {
   dyn_context_warning_imminent: 'Injected once within 5k tokens of the compaction threshold. Same placeholders as the soft warning.',
   dyn_mesh_update: 'Injected when the mesh topology changes (context.dynamic_instructions.mesh_updates). {{agent_list}} = the reachable-agent list.',
   dyn_mesh_update_empty: 'Injected when the mesh topology changes and no other agents are reachable.',
-  dyn_idle_reminder: 'Injected every turn for autonomous agents with sys_set_state enabled (context.dynamic_instructions.idle_reminder).',
 }
 
 /**
@@ -374,6 +374,7 @@ export const TOOL_PROMPT_LABELS: Record<string, string> = {
   database: 'Database Schema',
   state_management: 'State Management',
   _autonomous: 'Autonomous Mode',
+  _idle_reminder: 'Idle Reminder',
   _browser: 'Computer',
 }
 
@@ -392,5 +393,6 @@ export const TOOL_PROMPT_CONDITIONS: Record<string, string> = {
   database: 'Injected when db_query or db_execute is enabled.',
   state_management: 'Injected when sys_set_state is enabled (and the application base system prompt is included).',
   _autonomous: 'Appended when the agent runs in autonomous mode.',
+  _idle_reminder: 'Appended after Autonomous Mode when sys_set_state is enabled and context.dynamic_instructions.idle_reminder is on (also in bare mode). The same checkbox gates the sys_set_state hint in the runtime\'s continuation nudge.',
   _browser: 'Injected when the agent has an isolated compute environment with the visible desktop enabled (compute.enabled, compute.browser not disabled).',
 }
