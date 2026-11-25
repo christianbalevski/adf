@@ -179,7 +179,7 @@ function closeOpenAgent(): void {
 
 /**
  * A runtime left the set: what the main window kept per agent of it goes
- * (queues, drafts, starting and stopping marks, the fleet selection), so an
+ * (queues, drafts and their comments, starting and stopping marks, the fleet selection), so an
  * agent added again under the same name starts clean. Answers how many
  * queued messages were discarded.
  */
@@ -191,6 +191,8 @@ function dropAgentState(id: RuntimeId): number {
   if (Object.keys(queues).some(of)) useMessageQueueStore.setState({ queues: Object.fromEntries(Object.entries(queues).filter(([k]) => !of(k))) })
   const drafts = useDocumentStore.getState().draftInputs
   if (Object.keys(drafts).some(of)) useDocumentStore.setState({ draftInputs: Object.fromEntries(Object.entries(drafts).filter(([k]) => !of(k))) })
+  const comments = useDocumentStore.getState().draftComments
+  if (Object.keys(comments).some(of)) useDocumentStore.setState({ draftComments: Object.fromEntries(Object.entries(comments).filter(([k]) => !of(k))) })
   const app = useAppStore.getState()
   if ([...app.startingFilePaths].some(of) || [...app.stoppingFilePaths].some(of)) {
     useAppStore.setState({
@@ -239,6 +241,8 @@ function rekeyAgentState(from: RuntimeId, to: RuntimeId): void {
   if (Object.keys(queues).some(moves)) useMessageQueueStore.setState({ queues: record(queues) })
   const drafts = useDocumentStore.getState().draftInputs
   if (Object.keys(drafts).some(moves)) useDocumentStore.setState({ draftInputs: record(drafts) })
+  const comments = useDocumentStore.getState().draftComments
+  if (Object.keys(comments).some(moves)) useDocumentStore.setState({ draftComments: record(comments) })
   const app = useAppStore.getState()
   if ([...app.startingFilePaths].some(moves) || [...app.stoppingFilePaths].some(moves)) {
     useAppStore.setState({ startingFilePaths: new Set(list([...app.startingFilePaths])), stoppingFilePaths: new Set(list([...app.stoppingFilePaths])) })

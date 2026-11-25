@@ -4,6 +4,10 @@ import { getEditorExtensions } from './EditorExtensions'
 import { EditorToolbar } from './EditorToolbar'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { useRuntimeWebsiteLink } from '../../hooks/useRuntimeWebsiteLink'
+import type { SelectionGetter } from './SelectionCommentLayer'
+import { locateInSource } from '../../utils/selection-source'
+import { useEditorTabsStore } from '../../stores/editor-tabs.store'
+import { TextSelection } from '@tiptap/pm/state'
 
 const DEBUG = false // Set to true to enable verbose logging
 
@@ -26,6 +30,66 @@ interface MarkdownEditorProps {
   filePath: string
   content: string
   onChange: (content: string) => void
+  /** Filled with a reader of the current selection, for commenting on it. */
+  selectionRef?: MutableRefObject<SelectionGetter | null>
+}
+
+/**
+ * The selected range as the page shows it. ProseMirror takes a pointer
+ * selection into its state a moment after the browser draws it (and a click
+ * that collapses one only after its mouseup), so the DOM selection is the
+ * current one; the state's is the fallback when the DOM's is not in the editor.
+ */
+function domSelectionRange(editor: Editor): [number, number] | null {
+  const { view } = editor
+  const dom = view.dom.ownerDocument.getSelection()
+  if (dom && dom.anchorNode && dom.focusNode && view.dom.contains(dom.anchorNode) && view.dom.contains(dom.focusNode)) {
+    if (dom.isCollapsed) return null
+    try {
+      const a = view.posAtDOM(dom.anchorNode, dom.anchorOffset)
+      const b = view.posAtDOM(dom.focusNode, dom.focusOffset)
+      if (a !== b) return [Math.min(a, b), Math.max(a, b)]
+    } catch {
+      // A node posAtDOM cannot place: the state's selection below.
+    }
+  }
+  const { from, to, empty } = editor.state.selection
+  return empty ? null : [from, to]
+}
+
+/**
+ * The selection in the rich view, quoted from the markdown source with its
+ * lines (selection-source.ts). One that cannot be placed in the source falls
+ * back to the text as shown, without lines. `source` is read only for a
+ * real selection: it may flush the serialize debounce.
+ */
+function tiptapSelection(editor: Editor, source: () => string): ReturnType<SelectionGetter> {
+  const range = domSelectionRange(editor)
+  if (!range) return null
+  const [from, to] = range
+  const { doc } = editor.state
+  const text = doc.textBetween(from, to, '\n')
+  if (!text.trim()) return null
+  // Each end in the textblock it touches: a selection ending at the start of
+  // a block ends in the block before it, and one that starts or ends between
+  // blocks (Select All, a triple click) in the nearest one inward.
+  let $from = doc.resolve(from)
+  if (!$from.parent.isTextblock) $from = TextSelection.findFrom($from, 1, true)?.$head ?? $from
+  let end = to
+  while (end > from && doc.resolve(end).parentOffset === 0) end--
+  let $end = doc.resolve(end)
+  if (!$end.parent.isTextblock) $end = TextSelection.findFrom($end, -1, true)?.$head ?? $end
+  const quote = locateInSource(source(), {
+    text,
+    startBlock: $from.parent.textContent,
+    endBlock: $end.parent.textContent,
+    sameBlock: $from.start() === $end.start(),
+    startOffset: $from.parentOffset,
+    position: from / Math.max(1, doc.content.size),
+  })
+  const coords = editor.view.coordsAtPos(to)
+  const anchor = { left: coords.left, top: coords.top, bottom: coords.bottom }
+  return quote ? { ...quote, anchor } : { text, anchor }
 }
 
 interface RichMarkdownViewProps {
@@ -255,7 +319,7 @@ function RichMarkdownView({ content, onChange, active, onEditorChange, flushRef,
   return <EditorContent editor={editor} />
 }
 
-export function MarkdownEditor({ filePath, content: externalContent, onChange, flushRef }: MarkdownEditorProps) {
+export function MarkdownEditor({ filePath, content: externalContent, onChange, flushRef, selectionRef }: MarkdownEditorProps) {
   const text = externalContent || ''
   // Re-evaluated on every render, not frozen at open: an agent can grow (or
   // empty) the file while the tab is open, and the gate has to follow it.
@@ -273,14 +337,33 @@ export function MarkdownEditor({ filePath, content: externalContent, onChange, f
 
   const richFlushRef = useRef<(() => void) | null>(null)
   const rawFlushRef = useRef<(() => void) | null>(null)
+  // Whichever view is showing answers for the selection.
+  const rawSelectionRef = useRef<SelectionGetter | null>(null)
+  const selectionSource = useRef({ rawMode, editor, filePath, text })
+  selectionSource.current = { rawMode, editor, filePath, text }
   useEffect(() => {
-    if (!flushRef) return
-    flushRef.current = () => {
+    const flush = () => {
       richFlushRef.current?.()
       rawFlushRef.current?.()
     }
-    return () => { flushRef.current = null }
-  }, [flushRef])
+    const read: SelectionGetter = () => {
+      const { rawMode: raw, editor: rich } = selectionSource.current
+      if (raw) return rawSelectionRef.current?.() ?? null
+      if (!rich || rich.isDestroyed) return null
+      return tiptapSelection(rich, () => {
+        // The file as it will be saved: an edit still in the serialize debounce included.
+        richFlushRef.current?.()
+        const { filePath: path, text: fallback } = selectionSource.current
+        return useEditorTabsStore.getState().tabs.find((t) => t.path === path)?.content ?? fallback
+      })
+    }
+    if (flushRef) flushRef.current = flush
+    if (selectionRef) selectionRef.current = read
+    return () => {
+      if (flushRef?.current === flush) flushRef.current = null
+      if (selectionRef?.current === read) selectionRef.current = null
+    }
+  }, [flushRef, selectionRef])
   // Consumed by the next gate check: the user explicitly asked for rich mode on
   // an oversized document, so that one push is allowed through.
   const gateOverrideRef = useRef(false)
@@ -371,6 +454,7 @@ export function MarkdownEditor({ filePath, content: externalContent, onChange, f
             content={text}
             onChange={handleContentChange}
             flushRef={rawFlushRef}
+            selectionRef={rawSelectionRef}
           />
         )}
         {richMounted && (
