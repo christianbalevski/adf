@@ -89,7 +89,7 @@ Staging first, always. Prod deploys need an explicit owner ack ([S412])...
 1. **Keep the index small.** `mind.md` loads every turn; every line has a per-turn context cost. Facts that must always be present go in the index; everything else goes in a page.
 2. **Check the index before acting.** The catalog hooks tell you which pages the task needs — open those, and only those.
 3. **Write in one pass.** When you learn something durable: write (or update) the page, update the index catalog line, append a log entry. Never leave the three out of sync.
-4. **Supersede in place.** A page holds current belief only — rewrite it when belief changes. History belongs in `mind/log.md`, not in the page.
+4. **Supersede in place.** A page holds current belief only — rewrite it when belief changes. History belongs in `mind/log.md`, not in the page. A written change from someone with authority over a value replaces the old value: rewrite the page and log old → new with source and date. A request or proposal is not a change, and your principal's instructions and any conflict rule you already follow (for example, a signed document outranks an email) still win.
 5. **Cite sources.** Whole-page granularity in frontmatter `sources`; inline `[S<seq>]` where a specific claim came from a specific message. A page without sources cannot be re-verified.
 6. **The wiki is derived; `adf_audit` is ground truth.** Editing or deleting a page destroys nothing — the transcript it was distilled from survives in the audit table.
 7. **Lint periodically.** See the checklist below.
