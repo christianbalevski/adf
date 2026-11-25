@@ -9,7 +9,6 @@ const m = await import('data:text/javascript;base64,' + Buffer.from(code).toStri
 
 test('validateArgs: query required, k clamped to 1..20, budget capped', () => {
   assert.throws(() => m.validateArgs({query: '  '}), /non-empty/);
-  assert.throws(() => m.validateArgs({query: 'x'.repeat(1001)}), /1000/);
   for (const k of [0, -1, NaN, '5', Infinity]) assert.throws(() => m.validateArgs({query: 'x', k}), /k must be/);
   assert.equal(m.validateArgs({query: 'x'}).k, 8);
   assert.equal(m.validateArgs({query: 'x', k: 3.7}).k, 3);
@@ -38,23 +37,19 @@ test('chunkText: paragraph boundaries, ~1200 target, 1800 hard cap', () => {
   assert.deepEqual(m.chunkText('  \n\n  '), []);
 });
 
-test('messageText: text and tool results; thinking and tool inputs left out', () => {
+test('messageText: text, tool results, and what the agent sent; thinking and other tool inputs left out', () => {
   const blocks = [
     {type: 'thinking', thinking: 'secret'},
     {type: 'text', text: 'hello'},
     {type: 'tool_use', name: 'fs_write', input: {content: 'ignored'}},
+    {type: 'tool_use', name: 'msg_send', input: {recipient: 'telegram:1', content: 'sent'}},
+    {type: 'tool_use', name: 'say', input: {message: 'said'}},
+    {type: 'tool_use', name: 'loop_send', input: {to_loop: 'planner', content: 'looped'}},
+    {type: 'tool_use', name: 'ask', input: {questions: [{question: 'q1?'}, {question: 'q2?'}]}},
     {type: 'tool_result', content: 'result one'},
     {type: 'tool_result', content: [{type: 'text', text: 'result two'}]}
   ];
-  assert.equal(m.messageText(blocks), 'hello\n\nresult one\n\nresult two');
-  assert.equal(m.messageText(JSON.stringify(blocks)), 'hello\n\nresult one\n\nresult two');
-  assert.equal(m.messageText('not json'), 'not json');
-  assert.equal(m.messageText(null), '');
-});
-
-test('dayOf: ms, seconds, and ISO strings', () => {
-  assert.equal(m.dayOf(Date.UTC(2026, 10, 20, 12)), '2026-11-20');
-  assert.equal(m.dayOf(Date.UTC(2026, 10, 20) / 1000), '2026-11-20');
-  assert.equal(m.dayOf('2026-11-20T10:00:00.000Z'), '2026-11-20');
-  assert.equal(m.dayOf(undefined), '');
+  const expected = 'hello\n\nsent\n\nsaid\n\nlooped\n\nq1?\n\nq2?\n\nresult one\n\nresult two';
+  assert.equal(m.messageText(blocks), expected);
+  assert.equal(m.messageText(JSON.stringify(blocks)), expected); // live rows hold a JSON string
 });

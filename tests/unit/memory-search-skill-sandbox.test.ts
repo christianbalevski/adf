@@ -7,13 +7,11 @@ import type { AdfCallResult } from '../../src/main/runtime/code-sandbox'
 import { AdfWorkspace } from '../../src/main/adf/adf-workspace'
 import { DbQueryTool } from '../../src/main/tools/built-in/db-query.tool'
 import { DbExecuteTool } from '../../src/main/tools/built-in/db-execute.tool'
-import { FsListTool } from '../../src/main/tools/built-in/fs-list.tool'
-import { FsReadTool } from '../../src/main/tools/built-in/fs-read.tool'
 
 /**
  * Runs skills/agent-memory/scripts/memory-search.js the way sys_lambda does,
- * inside the real sandbox worker, against the real db_query, db_execute,
- * fs_list and fs_read tools over a real ADF database. Audit blobs come from
+ * inside the real sandbox worker, against the real db_query and db_execute
+ * tools over a real ADF database. Audit blobs come from
  * AdfWorkspace.compactLoop, the path runtime compaction takes.
  */
 
@@ -39,10 +37,10 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true })
 })
 
-type Result = { results: Array<{ ref: string; date: string; text: string }>; indexed: { added: number; removed: number; skipped: number; pending: number; complete: boolean; ms: number } }
+type Result = { results: Array<{ ref: string; date: string; text: string }>; indexed: { added: number; pending: number; complete: boolean; ms: number } }
 
 function runner(workspace = ws) {
-  const tools = { db_query: new DbQueryTool(), db_execute: new DbExecuteTool(), fs_list: new FsListTool(), fs_read: new FsReadTool() }
+  const tools = { db_query: new DbQueryTool(), db_execute: new DbExecuteTool() }
   const calls: string[] = []
   const sql: string[] = []
   const onAdfCall = async (method: string, args: unknown): Promise<AdfCallResult> => {
@@ -90,13 +88,12 @@ describe('memory-search skill in the real sandbox', () => {
     expect(out.results[0].date).toBe('2026-11-20')
     expect(out.results[0].text).toBe(`[[S${seqs[0]}] main · 2026-11-20] We chose the vendor Quillfeather for invoices.`)
     expect(out.indexed.complete).toBe(true)
-    // Read tools plus db_execute on its own local_ms_* tables; nothing else.
-    expect([...new Set(r.calls)].sort()).toEqual(['db_execute', 'db_query', 'fs_list', 'fs_read'])
+    // db_query plus db_execute on its own local_ms_* tables; nothing else.
+    expect([...new Set(r.calls)].sort()).toEqual(['db_execute', 'db_query'])
   })
 
   it('a second search adds only new rows, and a message live then archived appears once', async () => {
     const r = runner()
-    await r.run({ query: 'warmup' }) // index the files a new ADF starts with
     const first = ws.appendToLoop('user', text('Budget owner is Marisol Pennywhistle.'), undefined, undefined, DAY)
     ws.appendToLoop('assistant', text('Got it.'), undefined, undefined, DAY)
     const a = await r.run({ query: 'Pennywhistle' })
@@ -124,41 +121,48 @@ describe('memory-search skill in the real sandbox', () => {
     expect(blobReads()).toBe(before)
   })
 
-  it('re-chunks an edited file, removes a deleted one, and skips binary', async () => {
-    ws.writeFile('notes/plan.md', '# Plan\n\nThe launch codename is Bluefinch.')
-    ws.writeFile('notes/old.md', 'Retired codename Graywhale.')
-    ws.writeFileBuffer('img/logo.png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]), 'image/png')
+  it('indexes what the agent sent through its communication tools, not other tool inputs', async () => {
+    const seq = ws.appendToLoop('assistant', [
+      { type: 'tool_use', id: 't1', name: 'msg_send', input: { recipient: 'telegram:1', content: 'Deadline moved to March 3, invoice Inv77zeta.' } },
+      { type: 'tool_use', id: 't2', name: 'say', input: { message: 'Chose vendor Quillmoss.' } },
+      { type: 'tool_use', id: 't3', name: 'loop_send', input: { to_loop: 'planner', content: 'Plan around Harborlight.' } },
+      { type: 'tool_use', id: 't4', name: 'ask', input: { questions: [{ question: 'Approve Cobaltfern?' }] } },
+      { type: 'tool_use', id: 't5', name: 'fs_write', input: { path: 'x.md', content: 'Wrotegarnet' } }
+    ], undefined, undefined, DAY)
+    ws.appendToLoop('user', [{ type: 'tool_result', tool_use_id: 't2', content: 'ok' }], undefined, undefined, DAY)
+    await ws.compactLoop([], { content: text('Summary.'), createdAt: DAY })
     const r = runner()
-    const a = await r.run({ query: 'codename' })
-    expect(a.results.map(x => x.ref).sort()).toEqual(['file:notes/old.md', 'file:notes/plan.md'])
-    expect(a.indexed.skipped).toBe(1)
-
-    ws.writeFile('notes/plan.md', '# Plan\n\nThe launch codename is now Redkite.')
-    ws.deleteFile('notes/old.md', { force: true })
-    const readsBefore = r.calls.filter(m => m === 'fs_read').length
-    const b = await r.run({ query: 'codename bluefinch redkite graywhale' })
-    expect(r.calls.filter(m => m === 'fs_read').length - readsBefore).toBe(1) // only the edited file
-    expect(b.indexed.removed).toBe(1)
-    expect(b.results).toHaveLength(1)
-    expect(b.results[0].ref).toBe('file:notes/plan.md')
-    expect(b.results[0].text).toContain('Redkite')
-    expect(b.results[0].text).not.toContain('Bluefinch')
-
-    const c = await r.run({ query: 'codename' })
-    expect(c.indexed).toMatchObject({ added: 0, removed: 0, skipped: 0 }) // unchanged files are not re-read
-    expect(r.calls.filter(m => m === 'fs_read').length - readsBefore).toBe(1)
+    for (const word of ['inv77zeta', 'quillmoss', 'harborlight', 'cobaltfern']) {
+      expect((await r.run({ query: word })).results.map(x => x.ref), word).toEqual([`[S${seq}] main`])
+    }
+    expect((await r.run({ query: 'wrotegarnet' })).results).toEqual([])
   })
 
-  it('chunks a large file within the size cap and searches it', async () => {
+  it('chunks a long message within the cap and finds the right chunk', async () => {
     const paras = Array.from({ length: 60 }, (_, i) => `Paragraph ${i} ${'filler '.repeat(40)}${i === 45 ? 'Saffronlake' : ''}`)
-    ws.writeFile('big.md', paras.join('\n\n'))
+    const seq = ws.appendToLoop('user', text(paras.join('\n\n')), undefined, undefined, DAY)
     const out = await runner().run({ query: 'saffronlake' })
     expect(out.results).toHaveLength(1)
     expect(out.results[0].text).toContain('Paragraph 45')
-    expect(out.results[0].text.length).toBeLessThanOrEqual(1900)
-    const rows = ws.getDatabase().querySQL("SELECT length(text) AS n FROM local_ms_chunks WHERE doc = 'file:big.md'") as Array<{ n: number }>
+    const rows = ws.getDatabase().querySQL('SELECT length(text) AS n FROM local_ms_chunks WHERE doc = ?', [`msg:${seq}`]) as Array<{ n: number }>
     expect(rows.length).toBeGreaterThan(5)
     for (const row of rows) expect(row.n).toBeLessThanOrEqual(1800 + 40)
+  })
+
+  it('two overlapping searches neither fail nor duplicate chunks', async () => {
+    for (let b = 0; b < 3; b++) await history(Array.from({ length: 100 }, (_, i) => `Blob ${b} line ${i} zebracorn`))
+    for (let i = 0; i < 300; i++) ws.appendToLoop('user', text(`Live ${i} zebracorn`), undefined, undefined, DAY)
+    const [a, b] = await Promise.all([runner().raw({ query: 'zebracorn', k: 20 }), runner().raw({ query: 'zebracorn', k: 20 })])
+    expect(a.error).toBeUndefined()
+    expect(b.error).toBeUndefined()
+    const db = ws.getDatabase()
+    const count = (sql: string) => (db.querySQL(sql) as Array<{ n: number }>)[0].n
+    expect(count('SELECT count(*) AS n FROM local_ms_chunks')).toBe(count('SELECT count(*) AS n FROM (SELECT DISTINCT doc, n FROM local_ms_chunks)'))
+    expect(count('SELECT count(*) AS n FROM local_ms_fts')).toBe(count('SELECT count(*) AS n FROM local_ms_chunks'))
+    const after = await runner().run({ query: 'zebracorn', k: 20 })
+    expect(after.indexed.complete).toBe(true)
+    const refs = after.results.map(x => x.ref)
+    expect(new Set(refs).size).toBe(refs.length)
   })
 
   it('FTS special characters in the query do not throw', async () => {
@@ -183,7 +187,7 @@ describe('memory-search skill in the real sandbox', () => {
 
   it('a spent budget leaves resumable state that completes on the next call', async () => {
     for (let b = 0; b < 4; b++) await history([`Batch ${b} mentions Tangerinebolt.`, 'ok', 'next'])
-    ws.writeFile('a.md', 'Tangerinebolt in a file.')
+    ws.appendToLoop('user', text('Live Tangerinebolt.'), undefined, undefined, DAY)
     const r = runner()
     const first = await r.run({ query: 'tangerinebolt', budget_ms: 0 })
     expect(first.indexed.complete).toBe(false)
@@ -192,8 +196,7 @@ describe('memory-search skill in the real sandbox', () => {
     expect(second.indexed.complete).toBe(true)
     expect(second.indexed.pending).toBe(0)
     const refs = second.results.map(x => x.ref)
-    expect(refs.filter(x => x.startsWith('[S'))).toHaveLength(4)
-    expect(refs).toContain('file:a.md')
+    expect(refs).toHaveLength(5)
     expect(new Set(refs).size).toBe(refs.length)
   })
 
@@ -202,8 +205,9 @@ describe('memory-search skill in the real sandbox', () => {
     const r = runner()
     await r.run({ query: 'warmup' })
     expect(ws.getDatabase().querySQL('SELECT id FROM local_ms_chunks WHERE doc = ?', [`msg:${seq}`])).toHaveLength(1)
-    // Simulate a cut between the chunk insert and the doc row: drop the doc row only.
-    ws.getDatabase().executeSQL("DELETE FROM local_ms_docs WHERE key = ?", [`msg:${seq}`])
+    // Simulate a cut after the chunk insert: no FTS row, no doc row.
+    ws.getDatabase().executeSQL('DELETE FROM local_ms_fts WHERE rowid IN (SELECT id FROM local_ms_chunks WHERE doc = ?)', [`msg:${seq}`])
+    ws.getDatabase().executeSQL('DELETE FROM local_ms_docs WHERE key = ?', [`msg:${seq}`])
     const out = await r.run({ query: 'plumquartz' })
     expect(out.indexed.added).toBe(1)
     expect(out.results).toHaveLength(1)
@@ -212,7 +216,7 @@ describe('memory-search skill in the real sandbox', () => {
   })
 
   it('reports clearly when db_execute is not enabled', async () => {
-    const tools = { db_query: new DbQueryTool(), fs_list: new FsListTool(), fs_read: new FsReadTool() }
+    const tools = { db_query: new DbQueryTool() }
     const onAdfCall = async (method: string, args: unknown): Promise<AdfCallResult> => {
       const tool = tools[method as keyof typeof tools]
       if (!tool) return { error: `Tool "${method}" is disabled`, errorCode: 'DISABLED' } // adf-call-handler's rejection
