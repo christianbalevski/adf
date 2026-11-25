@@ -35,8 +35,8 @@ class RecordingProvider implements LLMProvider {
 describe('autonomous runtime guidance sent to the provider', () => {
   beforeEach(() => clearAllUmbilicalBuses())
 
-  it.each(['enabled', 'hidden', 'disabled', 'absent'] as const)(
-    'only recommends state control when granted (%s)', async mode => {
+  it.each(['enabled', 'hidden', 'disabled', 'absent', 'reminder_off'] as const)(
+    'only recommends state control when granted and the idle reminder is on (%s)', async mode => {
       const dir = mkdtempSync(join(tmpdir(), 'adf-autonomous-guidance-'))
       const filePath = join(dir, 'agent.adf')
       createHeadlessAgent({ filePath, name: 'agent', provider: new MockLLMProvider() }).dispose()
@@ -48,6 +48,7 @@ describe('autonomous runtime guidance sent to the provider', () => {
       if (mode !== 'absent') {
         config.tools.push({ name: 'sys_set_state', enabled: mode !== 'disabled', visible: mode !== 'hidden' })
       }
+      if (mode === 'reminder_off') config.context = { ...config.context, dynamic_instructions: { idle_reminder: false } }
       workspace.setAgentConfig(config)
       const provider = new RecordingProvider()
       const agent = await new AgentRuntimeBuilder({ basePrompt: '', toolPrompts: {} }).build({
@@ -69,17 +70,20 @@ describe('autonomous runtime guidance sent to the provider', () => {
         expect(provider.calls[1].messages).toContain('Continue working autonomously')
         expect(provider.calls[2].messages).toContain('You have responded 2 times')
         expect(provider.calls[2].messages).toContain('Reassess your latest instructions')
+        const recommends = mode === 'enabled' || mode === 'hidden'
         for (const call of provider.calls) {
           expect(call.system).not.toContain('no human input this session')
-          expect(call.system).not.toContain('sys_set_state')
-          if (mode === 'disabled' || mode === 'absent') {
-            expect(call.dynamic ?? '').not.toContain('sys_set_state')
-            expect(call.messages).not.toContain('sys_set_state')
+          // The reminder is static: it rides the cached system prompt, never
+          // the per-turn instructions, where it would sit next to fresh work.
+          expect(call.dynamic ?? '').not.toContain('sys_set_state')
+          if (recommends) {
+            expect(call.system).toContain('call `sys_set_state` with state "idle" to yield')
           } else {
-            expect(call.dynamic).toContain('sys_set_state')
+            expect(call.system).not.toContain('sys_set_state')
+            expect(call.messages).not.toContain('sys_set_state')
           }
         }
-        if (mode === 'enabled' || mode === 'hidden') {
+        if (recommends) {
           expect(provider.calls[1].messages).toContain('Use sys_set_state to yield only when consistent')
         }
       } finally {

@@ -3697,7 +3697,7 @@ export class AgentExecutor extends EventEmitter {
                 // legitimate, so it resets the narration counter.
                 consecutiveTextOnly = 0
               } else {
-                const stateGuidance = this.canSetState()
+                const stateGuidance = this.idleReminderEnabled()
                   ? ' Use sys_set_state to yield only when consistent with your current instructions.'
                   : ''
                 const nudge = consecutiveTextOnly >= 2
@@ -6488,6 +6488,7 @@ export class AgentExecutor extends EventEmitter {
         bare_prompt: this.config.bare_prompt,
         tools: enabledToolNames,
         autonomous: this.config.autonomous,
+        idle_reminder: this.config.context?.dynamic_instructions?.idle_reminder !== false,
         compute_browser: this.config.compute?.enabled && this.config.compute.browser !== false,
         // Loop roster + loop_manage drive the '## Your Loops' section below.
         // `undefined` for the loop-less majority, so JSON.stringify drops the
@@ -6583,16 +6584,13 @@ export class AgentExecutor extends EventEmitter {
       cachedPrompt = this.resolveFilePlaceholders(parts.join(SEP))
 
       // Token measurement rides the rebuild — real tokenizers are too costly
-      // per turn. The _autonomous suffix is appended AFTER the cache read
-      // (below), but configHash covers `autonomous` and the text is
-      // settings-static, so counting it here stays consistent.
-      const autonomousText = this.config.autonomous
-        ? (this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
-        : ''
-      const autonomousSuffix = autonomousText.trim() ? SEP + autonomousText : ''
+      // per turn. The autonomous suffix is appended AFTER the cache read
+      // (below), but configHash covers everything it depends on and the text
+      // is settings-static, so counting it here stays consistent.
+      const autonomousSuffix = this.autonomousSuffix(bare)
       const countTokens = getTokenCounterService().bindTokenizer(this.tokenizerProviderId())
-      const sentAutonomousTokens = bare ? undefined : countTokens(autonomousSuffix)
-      const promptTokens = countTokens(cachedPrompt) + (sentAutonomousTokens ?? 0)
+      const sentAutonomousTokens = countTokens(autonomousSuffix)
+      const promptTokens = countTokens(cachedPrompt) + sentAutonomousTokens
       const snapshot = this.injectedFileSnapshots ?? new Map<string, string>()
 
       this.systemPromptCache = {
@@ -6611,7 +6609,7 @@ export class AgentExecutor extends EventEmitter {
           return {
             promptParts: {
               base_and_sections: measureLayer(fullSections),
-              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + (sentAutonomousTokens ?? countTokens(autonomousSuffix)),
+              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + countTokens(this.autonomousSuffix(false)),
               instructions: measureLayer(instructionsBlock),
             },
             injectedFiles: measureInjectedFiles(snapshot, countTokens),
@@ -6620,15 +6618,27 @@ export class AgentExecutor extends EventEmitter {
       }
     }
 
-    // Autonomous mode: static per config, safe to include in cached prompt.
-    // Appended outside assemblePrompt so it applies even when the base prompt
-    // is excluded; text is settings-editable like any other section.
-    if (this.config.autonomous && !bare) {
-      const autonomousPrompt = this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous']
-      if (autonomousPrompt?.trim()) cachedPrompt += '\n\n---\n\n' + autonomousPrompt
-    }
+    return cachedPrompt + this.autonomousSuffix(bare)
+  }
 
-    return cachedPrompt
+  /**
+   * Autonomous-mode sections: static per config, so they ride the cached
+   * prompt. Appended outside assemblePrompt so they apply even when the base
+   * prompt is excluded; text is settings-editable like any other section.
+   * Bare mode drops `_autonomous` (runtime-authored text), but the idle
+   * reminder keeps its own owner checkbox as its only gate.
+   */
+  private autonomousSuffix(bare: boolean): string {
+    if (!this.config.autonomous) return ''
+    const sections: string[] = []
+    if (!bare) sections.push(this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
+    if (this.idleReminderEnabled()) sections.push(this.toolPrompts['_idle_reminder'] ?? DEFAULT_TOOL_PROMPTS['_idle_reminder'] ?? '')
+    return sections.filter(text => text.trim()).map(text => '\n\n---\n\n' + text).join('')
+  }
+
+  /** The owner's idle-reminder checkbox, for an agent that can actually yield. */
+  private idleReminderEnabled(): boolean {
+    return this.config.context?.dynamic_instructions?.idle_reminder !== false && this.canSetState()
   }
 
   /**
@@ -6702,16 +6712,11 @@ export class AgentExecutor extends EventEmitter {
       }
     }
 
-    // Registration alone does not grant a tool: disabled tools remain in the
-    // registry. Hidden tools can still be invoked through code or the shell.
-    if (di?.idle_reminder !== false && this.config.autonomous && this.canSetState()) {
-      const reminder = this.dynamicPrompt('dyn_idle_reminder')
-      if (reminder) parts.push(reminder)
-    }
-
     return parts.length > 0 ? parts.join('\n\n') : undefined
   }
 
+  // Registration alone does not grant a tool: disabled tools remain in the
+  // registry. Hidden tools can still be invoked through code or the shell.
   private canSetState(): boolean {
     return this.config.tools.find(t => t.name === 'sys_set_state')?.enabled === true
       && this.toolRegistry.get('sys_set_state') !== undefined
