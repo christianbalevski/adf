@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import type { ResourceWriter } from '../../shared/types/resource-revision.types'
 import type { RuntimeId } from '../../shared/runtime-tag'
 import { windowRuntime } from '../utils/window-kind'
+import type { SelectionComment } from '../utils/selection-comment'
 
 interface DocumentState {
   /** Distinguishes successive opens, including A → B → A and reopening A. */
@@ -24,6 +25,8 @@ interface DocumentState {
   runtimeId: RuntimeId
   fileName: string | null
   draftInputs: Record<string, string>
+  /** Comments on file selections waiting in an agent's composer, by agent key: part of its draft. */
+  draftComments: Record<string, SelectionComment[]>
 
   /** `meta` (W3-F): the revision and writer that came with this content; without it they stay. */
   setDocumentContent: (content: string, meta?: { revision?: number; writer?: ResourceWriter | null }) => void
@@ -32,6 +35,8 @@ interface DocumentState {
   setDirty: (dirty: boolean) => void
   setDraftInput: (filePath: string, value: string) => void
   removeDraftInput: (filePath: string) => void
+  /** An agent's waiting comments; an empty list removes the entry. */
+  setDraftComments: (key: string, comments: SelectionComment[]) => void
   reset: () => void
 }
 
@@ -43,6 +48,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
   runtimeId: windowRuntime,
   fileName: null,
   draftInputs: {},
+  draftComments: {},
 
   setDocumentContent: (content, meta) =>
     set(meta ? { documentContent: content, isDirty: true, documentRevision: meta.revision, documentWriter: meta.writer ?? null } : { documentContent: content, isDirty: true }),
@@ -65,6 +71,13 @@ export const useDocumentStore = create<DocumentState>((set) => ({
       delete next[filePath]
       return { draftInputs: next }
     }),
+  setDraftComments: (key, comments) =>
+    set((s) => {
+      const next = { ...s.draftComments }
+      if (comments.length > 0) next[key] = comments
+      else delete next[key]
+      return { draftComments: next }
+    }),
   reset: () =>
     set((s) => ({
       viewGeneration: s.viewGeneration + 1,
@@ -75,6 +88,7 @@ export const useDocumentStore = create<DocumentState>((set) => ({
       filePath: null,
       runtimeId: windowRuntime,
       fileName: null,
-      draftInputs: {}
+      draftInputs: {},
+      draftComments: {}
     }))
 }))

@@ -277,6 +277,7 @@ Notes:
 | `Cmd/Ctrl + Shift + E` | Toggle sidebar |
 | `Cmd/Ctrl + J` | Toggle panel (the dock) |
 | `Cmd/Ctrl + ,` | Settings |
+| `Cmd + Option + M` / `Ctrl + Alt + M` | In a file: comment on the selected text (adds it to the chat composer) |
 | `Esc` | In the loop view: stop the running turn |
 | `/` | In Config: jump to a section |
 | `Shift + F10` | On a sidebar row: its actions |

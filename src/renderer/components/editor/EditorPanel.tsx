@@ -12,6 +12,7 @@ import { MarkdownEditor } from './MarkdownEditor'
 import { CodeMirrorEditor } from './CodeMirrorEditor'
 import { BinaryFilePlaceholder } from './BinaryFilePlaceholder'
 import { BrowserViewer } from './BrowserViewer'
+import { SelectionCommentArea, type SelectionGetter } from './SelectionCommentLayer'
 import { ImageViewer } from './ImageViewer'
 import { resolveImageMime } from '../../../shared/utils/image-files'
 import { estimateTokens, formatTokenCount } from '../../utils/token-estimate'
@@ -19,7 +20,7 @@ import { confirmDiscardConflicts } from '../../utils/edit-conflict'
 import { captureSaveBase, registerEditorFlush, resetEditorSaves, saveEditorTab } from '../../utils/editor-save'
 import type { SaveBase } from '../../utils/edit-conflict'
 import { ChangedElsewhereNotice, ExternalUpdateNotice } from './ChangedElsewhereNotice'
-import { openApi } from '../../utils/runtime-api'
+import { openApi, useOpenAgentKey } from '../../utils/runtime-api'
 import { captureAgentView, type AgentView } from '../../utils/agent-view'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { useCompactNavigationStore } from '../../stores/compact-navigation.store'
@@ -136,6 +137,9 @@ export function EditorPanel() {
   // names it.
   const pendingSaveRef = useRef<{ path: string; content: string; owner: string | null; base: SaveBase; view: AgentView } | null>(null)
   const editorFlushRef = useRef<(() => void) | null>(null)
+  // The open text editor's selection, for commenting on it.
+  const editorSelectionRef = useRef<SelectionGetter | null>(null)
+  const openAgent = useOpenAgentKey()
 
   const [lineWrap, setLineWrap] = useState(() => localStorage.getItem(LINE_WRAP_STORAGE_KEY) !== '0')
   const toggleLineWrap = useCallback(() => {
@@ -424,7 +428,13 @@ export function EditorPanel() {
           onDismiss={() => useEditorTabsStore.getState().dismissExternalReplace(activeTab.path)}
         />
       )}
-      <div className="flex-1 overflow-hidden relative">
+      <SelectionCommentArea
+        key={`${openAgent ?? ''}\n${activeTab.path}`}
+        agentKey={openAgent}
+        path={activeTab.path}
+        getSelectionRef={editorSelectionRef}
+        className="flex-1 overflow-hidden relative"
+      >
         {activeTab.kind === 'browser' && activeTab.browserMeta ? (
           <BrowserViewer key={activeTab.path} meta={activeTab.browserMeta} reloadNonce={activeTab.browserMeta.reloadNonce} />
         ) : imageMime ? (
@@ -437,6 +447,7 @@ export function EditorPanel() {
             filePath={activeTab.path}
             content={activeTab.content}
             flushRef={editorFlushRef}
+            selectionRef={editorSelectionRef}
             onChange={(content) => handleChange(activeTab.path, content)}
           />
         ) : (
@@ -446,6 +457,7 @@ export function EditorPanel() {
               filePath={activeTab.path}
               content={activeTab.content}
               flushRef={editorFlushRef}
+              selectionRef={editorSelectionRef}
               onChange={(content) => handleChange(activeTab.path, content)}
               lineWrap={lineWrap}
             />
@@ -473,7 +485,7 @@ export function EditorPanel() {
             ~{formatTokenCount(estimateTokens(activeTab.content))} tokens
           </div>
         )}
-      </div>
+      </SelectionCommentArea>
     </div>
   )
 }
