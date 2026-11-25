@@ -1,45 +1,28 @@
 // Keyword search over every loop's message history: live adf_loop rows and
-// archived adf_audit loop blobs. The index lives in three local_ms_* tables and
-// is caught up incrementally before every search. Uses db_query and db_execute only.
+// archived adf_audit loop blobs, scanned on every call and ranked with BM25.
+// Uses db_query only; builds no index and writes nothing.
 
 import { brotliDecompressSync } from 'zlib'
-
-const DOCS = 'local_ms_docs'
-const CHUNKS = 'local_ms_chunks'
-const FTS = 'local_ms_fts'
 
 const K_DEFAULT = 8
 const K_MAX = 20
 const CHUNK_TARGET = 1200
 const CHUNK_MAX = 1800
-// Time spent indexing per call. The sandbox stops a call at
-// limits.execution_timeout_ms (60 s by default); the rest is left for the next call.
-const BUDGET_MS = 20000
-const LIVE_BATCH = 200
-const WRITE_BATCH = 100
+// BM25 as SQLite FTS5 computes it.
+const K1 = 1.2
+const B = 0.75
 
 const STOPWORDS = new Set(('a an and are as at be but by did do does for from had has have he her his how i if in into is it its ' +
   'me my no not of on or our she so than that the their them then there these they this to us was we were what when where ' +
   'which who whom why will with you your').split(' '))
 
-// --- Pure helpers -------------------------------------------------------------
+// Lowercased letter/digit runs with diacritics removed, like FTS5's default unicode61 tokenizer.
+const tokens = text => text.toLowerCase().normalize('NFD').replace(/\p{M}/gu, '').match(/[\p{L}\p{N}]+/gu) ?? []
 
-function validateArgs(args) {
-  if (!args || typeof args !== 'object') throw new Error('args must be an object.')
-  const { query, k = K_DEFAULT, budget_ms = BUDGET_MS } = args
-  if (typeof query !== 'string' || !query.trim()) throw new Error('query must be a non-empty string.')
-  if (typeof k !== 'number' || !Number.isFinite(k) || k < 1) throw new Error(`k must be a number from 1 to ${K_MAX}.`)
-  if (typeof budget_ms !== 'number' || !Number.isFinite(budget_ms) || budget_ms < 0) throw new Error('budget_ms must be a non-negative number.')
-  return { query: query.trim(), k: Math.min(Math.floor(k), K_MAX), budget_ms: Math.min(budget_ms, BUDGET_MS) }
-}
-
-// Non-stopword terms, each double-quoted so FTS5 reads it as a plain string,
-// joined with OR. Returns null when the query has no searchable term.
-function ftsQuery(query) {
-  const tokens = [...new Set(query.toLowerCase().match(/[\p{L}\p{N}]+/gu) ?? [])]
-  const terms = tokens.filter(t => !STOPWORDS.has(t))
-  const use = terms.length ? terms : tokens
-  return use.length ? use.map(t => `"${t}"`).join(' OR ') : null
+function queryTerms(query) {
+  const all = [...new Set(tokens(query))]
+  const terms = all.filter(t => !STOPWORDS.has(t))
+  return terms.length ? terms : all
 }
 
 // Split text on paragraph boundaries into pieces of about CHUNK_TARGET chars,
@@ -47,7 +30,8 @@ function ftsQuery(query) {
 // boundaries where possible.
 function chunkText(text) {
   const pieces = []
-  for (const para of String(text).split(/\n\s*\n/)) {
+  // replace + string split: in the sandbox, split() with a RegExp is ~70x slower.
+  for (const para of String(text).replace(/\n\s*\n/g, '\u0000').split('\u0000')) {
     let p = para.trim()
     while (p.length > CHUNK_MAX) {
       let cut = p.lastIndexOf('\n', CHUNK_TARGET)
@@ -68,8 +52,7 @@ function chunkText(text) {
   return chunks
 }
 
-// What the agent and others said: text blocks, tool results, and the words the
-// agent sent through its communication tools. Thinking and other tool inputs are left out.
+// The words the agent sent through its communication tools.
 function sentText(name, input) {
   if (!input) return []
   if (name === 'msg_send' || name === 'loop_send') return [input.content]
@@ -78,6 +61,11 @@ function sentText(name, input) {
   return []
 }
 
+// This lambda's own return value, stored as a sys_lambda tool result. Indexing
+// it would make later searches return earlier results instead of the sources.
+const OWN_OUTPUT = /^\{\s*"results":\s*\[\s*(\]|\{\s*"ref":\s*"\[S\d+\] )/
+
+// Text blocks, tool results, and sent words. Thinking and other tool inputs are left out.
 // Live rows hold content_json as a JSON string, archived entries as the parsed array.
 function messageText(content) {
   const blocks = typeof content === 'string' ? JSON.parse(content) : content
@@ -87,8 +75,9 @@ function messageText(content) {
     if (b.type === 'text' && typeof b.text === 'string') out.push(b.text)
     else if (b.type === 'tool_use') out.push(...sentText(b.name, b.input).filter(t => typeof t === 'string'))
     else if (b.type === 'tool_result') {
-      if (typeof b.content === 'string') out.push(b.content)
-      else if (Array.isArray(b.content)) for (const c of b.content) if (c && typeof c.text === 'string') out.push(c.text)
+      const parts = typeof b.content === 'string' ? [b.content]
+        : Array.isArray(b.content) ? b.content.map(c => c?.text).filter(t => typeof t === 'string') : []
+      out.push(...parts.filter(t => !OWN_OUTPUT.test(t)))
     }
   }
   return out.join('\n\n')
@@ -97,130 +86,100 @@ function messageText(content) {
 const dayOf = ms => new Date(ms).toISOString().slice(0, 10)
 const loopName = source => String(source).replace(/^loop:?/, '') || 'main'
 
-function messageDoc(seq, loop, createdAt, content) {
-  const key = `msg:${seq}`
+function messageChunks(seq, loop, createdAt, content) {
   const ref = `[S${seq}] ${loop}`
   const date = dayOf(createdAt)
-  return { key, chunks: chunkText(messageText(content)).map((body, n) => ({ doc: key, n, ref, date, text: `[${ref} · ${date}] ${body}` })) }
+  return chunkText(messageText(content)).map(body => ({ ref, date, text: `[${ref} · ${date}] ${body}` }))
 }
 
-// --- Index writes ---------------------------------------------------------------
+function decodeBlob(data) {
+  const blob = String(data)
+  return JSON.parse(brotliDecompressSync(Buffer.from(blob.startsWith('base64:') ? blob.slice(7) : blob, 'base64')).toString())
+}
 
-async function ensureTables() {
+async function readBlob(id) {
+  const [row] = await adf.db_query({ sql: 'SELECT source, data FROM adf_audit WHERE id = ?', params: [id], _full: true })
   try {
-    await adf.db_execute({ sql: `CREATE TABLE IF NOT EXISTS ${DOCS} (key TEXT PRIMARY KEY)` })
-  } catch (error) {
-    throw new Error(`memory-search keeps its index in local_ms_* tables and needs db_execute, which failed: ${error?.message ?? error}`)
+    return { loop: loopName(row.source), entries: decodeBlob(row.data) }
+  } catch {
+    return { loop: 'main', entries: [] } // unreadable blob: skip it
   }
-  // UNIQUE (doc, n) makes a rewrite of the same chunk a no-op, and its index is
-  // the doc index (db_execute cannot run CREATE INDEX).
-  await adf.db_execute({ sql: `CREATE TABLE IF NOT EXISTS ${CHUNKS} (id INTEGER PRIMARY KEY, doc TEXT NOT NULL, n INTEGER NOT NULL, ref TEXT NOT NULL, date TEXT, text TEXT NOT NULL, UNIQUE (doc, n))` })
-  await adf.db_execute({ sql: `CREATE VIRTUAL TABLE IF NOT EXISTS ${FTS} USING fts5(text)` })
 }
 
-// Every statement is safe to repeat, so a call killed midway, or two calls
-// indexing the same docs at once, leave one copy of each chunk. Message text
-// never changes, so (doc, n) always names the same chunk. The doc row goes last.
-async function writeDocs(docs) {
-  for (let i = 0; i < docs.length; i += WRITE_BATCH) {
-    const batch = docs.slice(i, i + WRITE_BATCH)
-    const chunks = batch.flatMap(d => d.chunks)
-    for (let j = 0; j < chunks.length; j += WRITE_BATCH) {
-      const part = chunks.slice(j, j + WRITE_BATCH)
-      await adf.db_execute({
-        sql: `INSERT OR IGNORE INTO ${CHUNKS} (doc, n, ref, date, text) VALUES ${part.map(() => '(?, ?, ?, ?, ?)').join(', ')}`,
-        params: part.flatMap(c => [c.doc, c.n, c.ref, c.date, c.text])
-      })
-    }
-    if (chunks.length) {
-      await adf.db_execute({
-        sql: `INSERT INTO ${FTS} (rowid, text) SELECT c.id, c.text FROM ${CHUNKS} c
-              WHERE c.doc IN (SELECT value FROM json_each(?)) AND NOT EXISTS (SELECT 1 FROM ${FTS} f WHERE f.rowid = c.id)`,
-        params: [JSON.stringify(batch.map(d => d.key))]
-      })
-    }
-    await adf.db_execute({
-      sql: `INSERT OR IGNORE INTO ${DOCS} (key) VALUES ${batch.map(() => '(?)').join(', ')}`,
-      params: batch.map(d => d.key)
+async function search({ query, k = K_DEFAULT } = {}) {
+  if (typeof query !== 'string' || !query.trim()) throw new Error('query must be a non-empty string.')
+  if (typeof k !== 'number' || !Number.isFinite(k) || k < 1) throw new Error(`k must be a number from 1 to ${K_MAX}.`)
+  k = Math.min(Math.floor(k), K_MAX)
+  const terms = queryTerms(query)
+  if (!terms.length) return { results: [] }
+  const index = new Map(terms.map((t, i) => [t, i]))
+
+  // One pass. Every chunk counts toward N and the average length; only chunks
+  // holding a query term keep their term counts and where they came from.
+  let n = 0
+  let totalLength = 0
+  const df = new Array(terms.length).fill(0)
+  const hits = []
+  const seen = new Set()
+  function scan(seq, loop, createdAt, content, from) {
+    if (seen.has(seq)) return
+    seen.add(seq)
+    messageChunks(seq, loop, createdAt, content).forEach((chunk, c) => {
+      const toks = tokens(chunk.text)
+      n++
+      totalLength += toks.length
+      let tf = null
+      for (const t of toks) {
+        const i = index.get(t)
+        if (i === undefined) continue
+        tf ??= new Array(terms.length).fill(0)
+        tf[i]++
+      }
+      if (!tf) return
+      tf.forEach((f, i) => { if (f) df[i]++ })
+      hits.push({ seq, c, from, ref: chunk.ref, length: toks.length, tf })
     })
   }
-}
 
-// --- Catch-up ---------------------------------------------------------------------
-
-async function catchUp(budgetMs) {
-  const started = Date.now()
-  let added = 0
-  let worked = false
-  // The first unit of work always runs, so every call makes progress.
-  const outOfTime = () => worked && Date.now() - started >= budgetMs
-
-  await ensureTables()
-  const known = new Set((await adf.db_query({ sql: `SELECT key FROM ${DOCS}`, _full: true })).map(r => r.key))
-
-  // Work list, derived fresh each call: whatever the sources hold that the index does not.
-  const liveSeqs = (await adf.db_query({ sql: 'SELECT seq FROM adf_loop ORDER BY seq', _full: true }))
-    .map(r => r.seq).filter(seq => !known.has(`msg:${seq}`))
-  const auditIds = (await adf.db_query({
+  // Live rows win; then the first archived copy of each seq.
+  const live = await adf.db_query({ sql: 'SELECT seq, loop, content_json, created_at FROM adf_loop', _full: true })
+  for (const r of live) scan(r.seq, r.loop, r.created_at, r.content_json, 'live')
+  const blobIds = await adf.db_query({
     sql: "SELECT id FROM adf_audit WHERE source = 'loop' OR source LIKE 'loop:%' ORDER BY id", _full: true
-  })).map(r => r.id).filter(id => !known.has(`audit:${id}`))
-
-  // Live messages, in batches.
-  let li = 0
-  while (li < liveSeqs.length && !outOfTime()) {
-    const seqs = liveSeqs.slice(li, li + LIVE_BATCH)
-    li += seqs.length
-    const rows = await adf.db_query({
-      sql: 'SELECT seq, loop, content_json, created_at FROM adf_loop WHERE seq IN (SELECT value FROM json_each(?))',
-      params: [JSON.stringify(seqs)], _full: true
-    })
-    const docs = rows.map(r => messageDoc(r.seq, r.loop, r.created_at, r.content_json))
-    await writeDocs(docs)
-    for (const d of docs) known.add(d.key)
-    added += docs.length
-    worked = true
-  }
-
-  // Archived loop blobs, one at a time; a blob can be megabytes. A seq already
-  // indexed (live earlier, or from an overlapping blob) is skipped.
-  let ai = 0
-  while (ai < auditIds.length && !outOfTime()) {
-    const id = auditIds[ai++]
-    const [row] = await adf.db_query({ sql: 'SELECT id, source, data FROM adf_audit WHERE id = ?', params: [id], _full: true })
-    let entries = []
-    if (row) {
-      const blob = String(row.data)
-      try {
-        entries = JSON.parse(brotliDecompressSync(Buffer.from(blob.startsWith('base64:') ? blob.slice(7) : blob, 'base64')).toString())
-      } catch { entries = [] } // unreadable blob: record it and move on
-    }
-    const loop = row ? loopName(row.source) : 'main'
-    const docs = (Array.isArray(entries) ? entries : [])
-      .filter(e => e && typeof e.seq === 'number' && !known.has(`msg:${e.seq}`))
-      .map(e => messageDoc(e.seq, loop, e.created_at, e.content_json))
-    await writeDocs(docs)
-    for (const d of docs) known.add(d.key)
-    await writeDocs([{ key: `audit:${id}`, chunks: [] }])
-    added += docs.length
-    worked = true
-  }
-
-  const pending = (liveSeqs.length - li) + (auditIds.length - ai)
-  return { added, pending, complete: pending === 0, ms: Date.now() - started }
-}
-
-// --- Entry point ----------------------------------------------------------------------
-
-async function search(args = {}) {
-  const { query, k, budget_ms } = validateArgs(args)
-  const indexed = await catchUp(budget_ms)
-  const match = ftsQuery(query)
-  if (!match) return { results: [], indexed }
-  const results = await adf.db_query({
-    sql: `SELECT c.ref, c.date, c.text FROM ${FTS} JOIN ${CHUNKS} c ON c.id = ${FTS}.rowid WHERE ${FTS} MATCH ? ORDER BY bm25(${FTS}) LIMIT ?`,
-    params: [match, k], _full: true
   })
-  return { results, indexed }
+  for (const { id } of blobIds) {
+    const { loop, entries } = await readBlob(id)
+    for (const e of Array.isArray(entries) ? entries : []) {
+      if (e && typeof e.seq === 'number') scan(e.seq, loop, e.created_at, e.content_json, id)
+    }
+  }
+
+  const avgLength = totalLength / n
+  const idf = df.map(d => Math.max(Math.log((n - d + 0.5) / (d + 0.5)), 1e-6))
+  for (const h of hits) {
+    h.score = h.tf.reduce((s, f, i) => s + idf[i] * (f * (K1 + 1)) / (f + K1 * (1 - B + B * h.length / avgLength)), 0)
+  }
+  hits.sort((a, b) => b.score - a.score)
+  const top = []
+  const refs = new Set()
+  for (const h of hits) {
+    if (top.length === k) break
+    if (refs.has(h.ref)) continue // best chunk per ref
+    refs.add(h.ref)
+    top.push(h)
+  }
+
+  // Text only for the winners: re-read their messages, each blob once.
+  const texts = new Map()
+  for (const r of live) if (top.some(h => h.from === 'live' && h.seq === r.seq)) texts.set(r.seq, messageChunks(r.seq, r.loop, r.created_at, r.content_json))
+  for (const id of new Set(top.filter(h => h.from !== 'live').map(h => h.from))) {
+    const { loop, entries } = await readBlob(id)
+    for (const h of top.filter(t => t.from === id)) {
+      const e = entries.find(x => x && x.seq === h.seq)
+      texts.set(h.seq, messageChunks(e.seq, loop, e.created_at, e.content_json))
+    }
+  }
+  return { results: top.map(h => texts.get(h.seq)[h.c]) }
 }
 
-export { search, validateArgs, ftsQuery, chunkText, messageText }
+export { search, queryTerms, tokens, chunkText, messageText }

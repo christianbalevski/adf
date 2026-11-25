@@ -10,7 +10,7 @@ requires:
 
 Your memory is a wiki. `mind.md` is the index, injected every turn, so keep it small. `mind/<slug>.md` are the pages, loaded on demand. `mind/log.md` is the append-only history. Pages cite their sources, and a source resolves to the transcript: a live `adf_loop` row, or a brotli-compressed blob in `adf_audit`. The wiki is derived; `adf_audit` is ground truth. Full pattern: `https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides/agent-memory.md`.
 
-The guide has the seven rules. This skill adds the three pieces the rules assume: the retrieval lambda, the lint workflow, and page templates.
+The guide has the seven rules. This skill adds the three pieces the rules assume: the retrieval lambda, the lint workflow, and page templates. It also ships a keyword search over your whole history.
 
 ## Install the audit_read lambda
 
@@ -66,9 +66,7 @@ Four conventions this depends on, none of them guessable:
 
 Use this when the answer is not in `mind.md` or a page: something said once, long ago, in any loop's history. Call `sys_lambda({ source: "skills/agent-memory/scripts/memory-search.js:search", args: { query: "vendor for invoices", k: 8 } })`. `k` defaults to 8, at most 20. For workspace files, use the `file-search` skill.
 
-It returns `{ results: [{ ref, date, text }], indexed: { added, pending, complete, ms } }`, ranked by BM25 over the query's words (any word matches). `ref` is `[S<seq>] <loop>`, so resolve it with `auditRead`. Before every search it indexes whatever is new: live and archived messages of every loop, meaning their text, tool results, and what you sent with `msg_send`, `say`, `loop_send`, and `ask`. The index lives in `local_ms_*` tables. On a large agent the first build spans several calls; until `indexed.complete` is true, a miss is not proof of absence. Optional `budget_ms` (default and max 20000) caps indexing time per call; keep it well under your `limits.execution_timeout_ms`.
-
-It needs `db_execute`, which is off by default, plus `db_query`. If `db_execute` is off, the search cannot run; use `auditRead` and the wiki instead.
+It returns `{ results: [{ ref, date, text }] }`: the best-matching passage of each message, ranked by BM25 over the query's words (any word matches; words match exactly, without stemming). `ref` is `[S<seq>] <loop>`, so resolve it with `auditRead`. Each call reads every loop's live and archived messages: their text, tool results, and what you sent with `msg_send`, `say`, `loop_send`, and `ask`. It writes nothing. It needs only `db_query` and `sys_lambda`, both on by default.
 
 ## Lint workflow
 

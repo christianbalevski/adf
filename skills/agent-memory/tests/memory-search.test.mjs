@@ -7,22 +7,16 @@ import {test} from 'node:test';
 const code = readFileSync(new URL('../scripts/memory-search.js', import.meta.url), 'utf8');
 const m = await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'));
 
-test('validateArgs: query required, k clamped to 1..20, budget capped', () => {
-  assert.throws(() => m.validateArgs({query: '  '}), /non-empty/);
-  for (const k of [0, -1, NaN, '5', Infinity]) assert.throws(() => m.validateArgs({query: 'x', k}), /k must be/);
-  assert.equal(m.validateArgs({query: 'x'}).k, 8);
-  assert.equal(m.validateArgs({query: 'x', k: 3.7}).k, 3);
-  assert.equal(m.validateArgs({query: 'x', k: 1e9}).k, 20);
-  assert.equal(m.validateArgs({query: 'x', budget_ms: 1e9}).budget_ms, 20000);
-  assert.throws(() => m.validateArgs({query: 'x', budget_ms: -1}), /budget_ms/);
+test('queryTerms: distinct non-stopword tokens; operators and symbols are not syntax', () => {
+  assert.deepEqual(m.queryTerms('What is the vendor for invoices? Vendor!'), ['vendor', 'invoices']);
+  assert.deepEqual(m.queryTerms('NEAR(a* "b" ^c) AND'), ['near', 'b', 'c']);
+  assert.deepEqual(m.queryTerms('the of'), ['the', 'of']); // only stopwords: keep them
+  assert.deepEqual(m.queryTerms('*** ()'), []);
 });
 
-test('ftsQuery: quoted non-stopword terms joined with OR; operators are plain terms', () => {
-  assert.equal(m.ftsQuery('What is the vendor for invoices?'), '"vendor" OR "invoices"');
-  assert.equal(m.ftsQuery('NEAR(a* "b" ^c) AND'), '"near" OR "b" OR "c"');
-  assert.equal(m.ftsQuery('the of'), '"the" OR "of"'); // only stopwords: keep them
-  assert.equal(m.ftsQuery('*** ()'), null);
-  assert.equal(m.ftsQuery('Déploiement 2026'), '"déploiement" OR "2026"');
+test('tokens: lowercased letter/digit runs with diacritics removed, like FTS5 unicode61', () => {
+  assert.deepEqual(m.tokens('Déploiement 2026, RÉSUMÉ of Zoë'), ['deploiement', '2026', 'resume', 'of', 'zoe']);
+  assert.deepEqual(m.tokens('[[S12] main · 2026-11-20]'), ['s12', 'main', '2026', '11', '20']);
 });
 
 test('chunkText: paragraph boundaries, ~1200 target, 1800 hard cap', () => {
