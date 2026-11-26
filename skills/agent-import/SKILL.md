@@ -1,16 +1,18 @@
 ---
 name: agent-import
-description: Bring an OpenClaw workspace or Hermes profile into this ADF agent when the owner asks to import, migrate, or "become" it. A throwaway importer agent reads the owner's notes and sends back only generated pages (mind pages, plus persona, rule, and skill drafts for the owner to approve), so the notes stay out of this agent. Importing in place, without copies, happens only if the owner explicitly agrees.
+description: Bring an OpenClaw workspace, a Hermes profile, or a ChatGPT or Claude chat-history export into this ADF agent when the owner asks to import, migrate, "become" it, or remember it. For OpenClaw and Hermes, a throwaway importer agent reads the owner's notes and sends back only generated pages (mind pages, plus persona, rule, and skill drafts for the owner to approve), so the notes stay out of this agent. Importing in place, without copies, happens only if the owner explicitly agrees.
 adf: ">=0.8"
 requires:
   tools: [fs_read, fs_write, fs_list, sys_code, msg_send]
   optional: [sys_create_adf, fs_delete, sys_get_config]
-version: 0.11.0
+version: 0.12.0
 ---
 
 # Import an OpenClaw or Hermes agent
 
 > **Review candidate, not for general use yet.** The separate-importer path (creating the importer with `sys_create_adf`, the owner's approval card, and the real `msg_send` handover) has not been run end to end by an owner. Tests so far used an inner-loop handover instead of `msg_send`.
+
+A ChatGPT or Claude chat-history export is different: follow "Chat-history exports" below, not steps 0 to 14.
 
 You turn a folder of the owner's notes into generated pages: mind pages, drafts for review, and staged skills. No copy of the owner's notes is written into the owner's agent, redacted or not. You never read the owner's machine.
 
@@ -57,6 +59,12 @@ What they do:
 - `flagged(text)` counts lines with broad secret words (step 6). `asText(f)` gives text from an `fs_read` record (base64 for a non-text mime type, like a `.bak`), or null for a binary. `reply(r)` turns a `model_invoke` reply into JSON.
 
 Residual risk: a secret written as an ordinary sentence, with no secret word, prefix, or telltale shape, reaches the model provider and could reach a page. The extraction prompt and the filters keep most of it out. Step 6 tells the owner first.
+
+## Chat-history exports
+
+A ChatGPT export (`conversations.json` whose conversations hold a `mapping` of messages) or Claude's export (`conversations.json` with `chat_messages`), shared so you remember it, needs no importer: attaching it in chat already put it in this agent's files. Steps 0 to 14 don't apply. Parse it in code, write mind pages from what the owner said, dated by conversation, and leave credentials out (hard rule 5). Then:
+- Never store an inference as a fact (a surname taken from an email address, a home guessed from a question). Mark it `(inferred from <what>)`, or ask. An identity fact (name, partner, children, home) the export doesn't state follows step 9: never pick, ask.
+- When the pages are written, remove the export with `fs_delete` if the owner asked, else offer to. Say what removal does and doesn't do in hard rule 7's words: `fs_delete` is not a secure erase.
 
 ## Questions and defaults
 
