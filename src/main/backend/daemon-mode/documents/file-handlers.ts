@@ -152,6 +152,8 @@ export async function createAndOpen(ctx: DaemonModeContext, body: Record<string,
     created = await client.request<CreateAnswer>('POST', '/agents/create', { body: { ...body, load: false }, timeoutMs: 60_000 })
   } catch (err) {
     const code = daemonCode(err)
+    // No provider: the daemon's sentence names its HTTP route; Studio's names Settings.
+    if (code === 'no_provider') return { ok: false, result: { success: false, code, error: 'No model provider is set up yet: add one in Settings → Providers, then create the agent.' } }
     // A refused template carries its code through (FileCreateRefusedError).
     return { ok: false, result: { success: false, ...(code && code.startsWith('template_') ? { code } : {}), error: errorMessage(err) } }
   }

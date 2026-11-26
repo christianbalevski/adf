@@ -132,6 +132,11 @@ describe('FILE_CREATE_QUICK / FILE_CREATE', () => {
     })
     daemon.routes.set('POST /agents/create', () => ({ status: 422, body: { error: 'The template was refused', code: 'template_unreviewed' } }))
     expect(await call(IPC.FILE_CREATE_QUICK, {})).toEqual({ success: false, code: 'template_unreviewed', error: 'The template was refused' })
+    // No provider: Studio's sentence, not the daemon's HTTP route.
+    daemon.routes.set('POST /agents/create', () => ({ status: 409, body: { error: 'No model provider is set up on this daemon: add one (POST /runtime/providers with an API key, or a subscription in ADF Studio under Settings → Providers), then create the agent again.', code: 'no_provider' } }))
+    const refused = await call(IPC.FILE_CREATE_QUICK, {}) as { error: string }
+    expect(refused).toEqual({ success: false, code: 'no_provider', error: 'No model provider is set up yet: add one in Settings → Providers, then create the agent.' })
+    expect(refused.error).not.toContain('/runtime/providers')
     expect(ctx.session.filePath).toBeNull()
   })
 

@@ -327,8 +327,9 @@ export class DaemonAgentFactory {
     } else if (!resolveDefaultProvider(providers, this.deps.settings.get('defaultProviderId') as string | undefined)) {
       // instantiate's fallback (applyInstanceModel): a template's own provider
       // counts only when settings has it, so with no default here the file
-      // would be stamped provider "" and could never load, even after a
-      // provider is added. Refused before anything is written, load: false too.
+      // would be stamped provider "" and fail to load until its model is
+      // re-pointed (PUT /files/agent/model). Refused before anything is
+      // written, load: false too.
       throw new AgentCreateError('no_provider', 'No model provider is set up on this daemon: add one (POST /runtime/providers with an API key, or a subscription in ADF Studio under Settings → Providers), then create the agent again.', 409)
     }
     const templateId = typeof input.template === 'string' && input.template.trim() ? input.template.trim() : undefined
