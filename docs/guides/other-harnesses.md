@@ -27,7 +27,8 @@ Language: Uses ASD-STE100 Issue 9 as a writing guide; not assessed for conforman
 The example in this guide supports one execution profile:
 
 - An `.adf` file that ADF made, at `adf_schema_version` 32. Use a copy that you can lose.
-- `config.state` is `active`, `idle` or `hibernate` ([State](#state)).
+- `config.state` is `active` or `idle` ([State](#state)).
+- `autonomous` is false or absent ([Open](#open)).
 - The loop `main` only.
 - One new owner message for each run, for example `Continue.`.
 - The tools `fs_read` and `fs_write` (modes `write` and `append`) on the text types that ADF uses in `adf_files`. No shell, network, messages, code or timers.
@@ -85,9 +86,9 @@ ADF deletes `adf_clean_close` from `adf_meta` when it opens a file. If the key i
 
 ### State
 
-The example runs only when `config.state` is `active`, `idle` or `hibernate`. It stops for `off`, `suspended` or another value. A message to the harness does not restart or resume the agent ([§6.1](../../ADF_SPEC_v0.2.md#61-agent-states)).
+The example runs only when `config.state` is `active` or `idle`. It stops for `hibernate`, `off`, `suspended` or another value. A hibernated agent wakes on timers only ([§6.1](../../ADF_SPEC_v0.2.md#61-agent-states)), so the example does not take an owner message for it. A message to the harness does not restart or resume the agent.
 
-ADF at commit `d664ea22` does not write `config.state` when you stop the agent in Studio or the daemon. A file that you stopped in the usual way keeps its state, and the example accepts it. If `config.state` is `off` or `suspended`, the owner changes it in ADF before the run, for example with `/config edit` in the terminal app.
+ADF at commit `d664ea22` does not write `config.state` when you stop the agent in Studio or the daemon. A file that you stopped in the usual way keeps its state, and the example accepts it. If `config.state` is `hibernate`, `off` or `suspended`, the owner changes it in ADF before the run, for example with `/config edit` in the terminal app.
 
 ### Copy
 
@@ -152,7 +153,7 @@ from urllib.request import pathname2url
 SCHEMA_VERSION = "32"  # the adf_schema_version this program was written against
 IDENTITY_KEYS = ("adf_did", "adf_owner_did", "adf_runtime_did", "adf_did_history")
 FINISHED = ("completed", "interrupted", "failed")  # adf_runtime_turn_checkpoint statuses of a finished turn
-RUN_STATES = ("active", "idle", "hibernate")  # config.state values that take an owner message here
+RUN_STATES = ("active", "idle")  # config.state values that take an owner message here; hibernate is refused
 KEYED = re.compile(r"^\[Context: ([a-z][a-z0-9_.-]{0,63}) \| loop_inject=v2 \| origin=([a-zA-Z0-9_.:/-]{1,128})"
                    r"(?: \| key=([a-zA-Z0-9_.:-]{1,128}))?\] ([\s\S]*)$")  # ADF agent-session.ts:524
 UNKNOWN = ("No result was recorded. The harness or runtime stopped before it recorded a result. The call may or may"
@@ -183,8 +184,12 @@ def open_writable(path):  # phase 1: check and open
     if version != SCHEMA_VERSION: sys.exit(f"stop: adf_schema_version is {version}; this program supports {SCHEMA_VERSION}")
     if json.loads(meta("adf_runtime_turn_checkpoint") or '{"status": "completed"}').get("status") not in FINISHED:
         sys.exit("stop: an ADF turn is in progress or in an unknown state; open the file in ADF first")
-    state = json.loads(db.execute("SELECT config_json FROM adf_config WHERE id = 1").fetchone()[0]).get("state", "active")
-    if state not in RUN_STATES: sys.exit(f"stop: config.state is {state}; the owner changes it in ADF first")
+    config = json.loads(db.execute("SELECT config_json FROM adf_config WHERE id = 1").fetchone()[0])
+    if config.get("state", "active") not in RUN_STATES:
+        sys.exit(f"stop: config.state is {config.get('state')}; the owner changes it in ADF first")
+    if config.get("autonomous") is True:  # spec 6.3 continuation is not in this example
+        sys.exit("stop: autonomous is true; this example runs one non-autonomous turn. Set autonomous to false"
+                 " in ADF for this file, or use ADF")
     for pragma in ("journal_mode = WAL", "synchronous = NORMAL", "busy_timeout = 5000", "foreign_keys = ON"):
         db.execute("PRAGMA " + pragma)
     db.execute("BEGIN IMMEDIATE")
@@ -220,7 +225,7 @@ def sendable(b):  # file_ref becomes text (spec 13.1); empty text and other bloc
     return b if b.get("type") in ("tool_use", "tool_result") or (b.get("type") == "text" and b.get("text")) else None
 
 def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (agent-session.ts:303-477)
-    out, held, open_ = [], [], set()
+    out, held, open_, moved, lead = [], [], set(), 0, 0
     for m in msgs:  # a user row inside an open tool pair moves after the results
         ids = {b.get("tool_use_id") for b in m["content"] if b["type"] == "tool_result"}
         if open_ and m["role"] == "user" and not ids: held.append(m); continue
@@ -228,11 +233,12 @@ def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (ag
             out += held; held = []; open_ = {b.get("id") for b in m["content"] if b["type"] == "tool_use"}
         else: open_ -= ids
         out.append(m)
-        if not open_: out += held; held = []
+        if not open_: moved += len(held); out += held; held = []
     out += held
     while out:  # the history starts with a user message and no tool_result
-        if out[0]["role"] == "assistant": out.pop(0); continue
+        if out[0]["role"] == "assistant": out.pop(0); lead += 1; continue
         kept = [b for b in out[0]["content"] if b["type"] != "tool_result"]
+        lead += len(out[0]["content"]) - len(kept)
         if kept: out[0]["content"] = kept; break
         out.pop(0)
     uses = {b.get("id") for m in out for b in m["content"] if b["type"] == "tool_use" and b.get("id")}
@@ -250,7 +256,8 @@ def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (ag
         removed += len(m["content"]) - len(keep)
         m["content"] = keep or text("[Tool call removed — no matching result in history]" if m["role"] == "assistant"
                                     else "[Tool result removed — no matching call in history]")
-    note = f"{len(tail)} call(s) with an unknown outcome, {removed} unpaired tool block(s) removed" if tail or removed else ""
+    note = (f"{len(tail)} call(s) with an unknown outcome, {removed} unpaired tool block(s) removed, {moved} row(s) moved,"
+            f" {lead} leading row(s) or block(s) removed") if tail or removed or moved or lead else ""
     if note: print(f"warning for the owner: request-only repair: {note}.{' The model was told to check the target.' if tail else ''} Inspect the files before the next run.", file=sys.stderr)
     return out, note
 
@@ -459,11 +466,12 @@ Level 2 gives write access. Before you start, do the [Copy](#copy) steps.
 2. Read `adf_meta.adf_schema_version`.
 3. If the value is not 32, close the file or open it with `immutable=1`. Do not write ([§3.5](../../ADF_SPEC_v0.2.md#35-schema-migration)).
 4. Read the `status` in `adf_runtime_turn_checkpoint`. If it is not `completed`, `interrupted` or `failed`, stop. Open the file in ADF for recovery.
-5. Read `config.state`. If it is not `active`, `idle` or `hibernate`, stop ([State](#state)).
-6. Apply the pragmas of [§3.1](../../ADF_SPEC_v0.2.md#31-sqlite-pragmas).
-7. Start a write transaction with `BEGIN IMMEDIATE`. Delete `adf_clean_close`, and make sure that the `DELETE` changed one row.
-8. If it changed no row, roll back and stop. A runtime has the file open, or a session did not close. Open the file in ADF: ADF examines it and continues. Then stop the agent and close the file in ADF again.
-9. Set `readonly` again on the four identity keys with the narrow `UPDATE` below. Then commit.
+5. Read `config.state`. If it is not `active` or `idle`, stop ([State](#state)).
+6. Read `config.autonomous`. If it is `true`, stop. The example runs one non-autonomous turn ([§6.3](../../ADF_SPEC_v0.2.md#63-turn-behaviour)). The owner can set `autonomous` to false in ADF for this file, or use ADF.
+7. Apply the pragmas of [§3.1](../../ADF_SPEC_v0.2.md#31-sqlite-pragmas).
+8. Start a write transaction with `BEGIN IMMEDIATE`. Delete `adf_clean_close`, and make sure that the `DELETE` changed one row.
+9. If it changed no row, roll back and stop. A runtime has the file open, or a session did not close. Open the file in ADF: ADF examines it and continues. Then stop the agent and close the file in ADF again.
+10. Set `readonly` again on the four identity keys with the narrow `UPDATE` below. Then commit.
 
 ```sql
 UPDATE adf_meta SET protection = 'readonly'
@@ -471,7 +479,7 @@ WHERE key IN ('adf_did', 'adf_owner_did', 'adf_runtime_did', 'adf_did_history')
   AND protection <> 'readonly';
 ```
 
-Steps 7 and 9 are runtime work on the state of the file, the same as the close record. They are not agent metadata tools. Step 9 changes the protection only, never a value, and never makes a protection weaker ([§4.4](../../ADF_SPEC_v0.2.md#44-meta-protection)). A read-only open writes nothing.
+Steps 8 and 10 are runtime work on the state of the file, the same as the close record. They are not agent metadata tools. Step 10 changes the protection only, never a value, and never makes a protection weaker ([§4.4](../../ADF_SPEC_v0.2.md#44-meta-protection)). A read-only open writes nothing.
 
 Note: ADF at commit `d664ea22` opens a newer schema in read-write mode with a warning. Spec §3.5 asks for a read-only open or a refusal. Do not write to a schema version that this guide does not name.
 
