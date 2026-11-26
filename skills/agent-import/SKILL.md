@@ -62,10 +62,10 @@ Residual risk: a secret written as an ordinary sentence, with no secret word, pr
 
 ## Chat-history exports
 
-A ChatGPT export (`conversations.json` whose conversations hold a `mapping` of messages) or Claude's export (`conversations.json` with `chat_messages`), shared so you remember it, needs no importer: attaching it in chat already put it in this agent's files. Steps 0 to 14 don't apply. Parse it in code, write mind pages from what the owner said, dated by conversation, and leave credentials out (hard rule 5). Then:
+A ChatGPT export (`conversations.json` whose conversations hold a `mapping` of messages) or Claude's export (`conversations.json` with `chat_messages`), shared so you remember it, needs no importer: attaching it in chat already put it in this agent's files. Hard rules 1 to 3 and 8 are for a drop; here code returns the conversations' text to you, so it, and any secret in it, goes to the model provider and stays in your history. Parse it in code, write mind pages from what the owner said, dated by conversation, and leave credentials out (hard rule 5). Then:
 - Never store an inference as a fact (a surname taken from an email address, a home guessed from a question). Mark it `(inferred from <what>)`, or ask. An identity fact (name, partner, children, home) the export doesn't state: never pick, ask.
 - Also keep advice from the assistant's replies that the owner acted on or asked to keep, marked as the assistant's and cited by conversation, so removing the export doesn't lose it.
-- When the pages are written, tell the owner what they leave out (the assistant's replies you didn't keep, anything you didn't carry). If the owner asked you to remove the export and still wants that, remove it with `fs_delete`; else offer to. Say what removal does and doesn't do in hard rule 7's words, and that what you read from it stays in your conversation history: `fs_delete` is not a secure erase.
+- When the pages are written, tell the owner what they leave out (the assistant's replies you didn't keep, anything you didn't carry). Remove the export with `fs_delete` only once they confirm; if they hadn't asked, offer to. Say what removal does and doesn't do in hard rule 7's words, and that what you read from it, secrets included, stays in your conversation history: `fs_delete` is not a secure erase.
 
 ## Questions and defaults
 
