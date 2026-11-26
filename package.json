@@ -92,6 +92,7 @@
     "@modelcontextprotocol/sdk": "^1.27.1",
     "@napi-rs/keyring": "^2.1.0",
     "@noble/curves": "^2.2.0",
+    "@novnc/novnc": "1.7.0",
     "@openrouter/ai-sdk-provider": "^2.9.1",
     "@scure/bip39": "^2.2.0",
     "@slack/socket-mode": "^2.0.7",

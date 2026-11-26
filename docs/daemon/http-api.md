@@ -49,7 +49,7 @@ exchanges it at `POST /web/session`. Other devices submit the host’s pairing
 code at `POST /web/pair` and wait for approval in desktop Studio or the
 `adf daemon pair` host terminal. Tokens are never returned to JavaScript.
 
-The `/web/invoke`, `/web/events`, `/web/file`, and `/web/snapshot` transport
+The `/web/invoke`, `/web/events`, `/web/desktop`, `/web/file`, and `/web/snapshot` transport
 authenticates with HttpOnly, SameSite=Strict session cookies and validates the
 current session scope. Active sessions last eight hours. Paired browsers also
 receive an HttpOnly device-credential cookie lasting 30 days, allowing a new
@@ -68,7 +68,7 @@ Paths write a parameter as `:id` (the reference writes `{id}`); `{a,b}` lists al
 | Area | Routes | Guide |
 |------|--------|-------|
 | Health and contract | `GET /health` (no token), `GET /version`, `GET /openapi.json`, `POST /daemon/shutdown` | [Authentication](api-guide.md#base-url-and-authentication), [Versioning](api-guide.md#versioning-and-compatibility) |
-| Browser Studio | `/studio/`, `/web/{launch,session,pair,invoke,events,file,snapshot}` | [Browser authentication](#browser-studio), [Studio in a browser](../guides/studio-web.md) |
+| Browser Studio | `/studio/`, `/web/{launch,session,pair,invoke,events,desktop,file,snapshot}` | [Browser authentication](#browser-studio), [Studio in a browser](../guides/studio-web.md) |
 | Events | `GET /events` (SSE), `GET /agents/:id/umbilical/events` | [The event stream](api-guide.md#the-event-stream) |
 | Agents and files | `/agents`, `/agents/load`, `/agents/:id/{start,stop,unload,interrupt,abort,state,status,vitals,activity}`, `/agents/autostart`, `/agents/review`, `/tracked-dirs` | [Agents and files](api-guide.md#agents-and-files) |
 | Loops | `/agents/:id/loops[/:name]`, `loop` on chat, history, abort, interrupt, compact and timers | [Loops](api-guide.md#loops) |

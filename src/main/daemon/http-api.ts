@@ -43,6 +43,7 @@ import { behindProxyFromEnv, type LocalAccessOptions } from './local-access'
 import { requireLocalProof } from './routes/identity-import-routes'
 import { DaemonRequestGuard, type DaemonRequestGuardOptions } from './request-guard'
 import { isWebStudioRoute, registerWebStudio, type WebStudioOptions } from './web/routes'
+import fastifyWebsocket from '@fastify/websocket'
 import { remoteListenerOf } from './remote-access/listeners'
 import { setRequestAuth } from './remote-access/request-auth'
 import { registerTemplateRoutes } from './template-routes'
@@ -782,6 +783,9 @@ export function createDaemonHttpApi(
     done()
   })
 
+  // Once, at the root: each registration listens for upgrades and would route them again.
+  // Desktop streams: compute-desktop-routes.ts, and browser Studio's in web/routes.ts.
+  void server.register(fastifyWebsocket)
   if (opts.web?.enabled !== false) registerWebStudio(server, guard, { ...opts.web, version: opts.web?.version ?? opts.version, localProof: opts.security?.localProof ?? null, remoteAccess })
 
   // Every 4xx/5xx JSON error body carries a machine-readable `code`: routes

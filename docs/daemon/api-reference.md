@@ -2,7 +2,7 @@
 
 # ADF Daemon API reference
 
-Version 0.2.0 · OpenAPI 3.1.0 · 352 operations · base URL `http://127.0.0.1:7385`
+Version 0.2.0 · OpenAPI 3.1.0 · 353 operations · base URL `http://127.0.0.1:7385`
 
 Generated from [openapi.json](openapi.json) (also served by the daemon at `GET /openapi.json`). The interactive version is [api-reference.html](api-reference.html).
 
@@ -10,7 +10,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 
 **Authentication.** Ordinary daemon routes require `Authorization: Bearer <token>`. The liveness, remote hello/pairing and browser entry routes declare their exceptions below. Browser Studio uses its same-origin cookie session instead of a browser-supplied bearer. The bearer is the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.
 
-**Browser Studio.** `/studio/` serves the shared renderer. Native local clients obtain a 60-second single-use fragment link from `POST /web/launch`; the browser exchanges it at `POST /web/session`. Another device uses `POST /web/pair` and waits for host approval. Browser JSON responses never contain a daemon/device bearer token. A host-approved device credential may be retained only in an HttpOnly cookie for 30 days; active sessions last eight hours. `/web/invoke`, `/web/events`, `/web/file` and `/web/snapshot` are version-coupled renderer transport, not replacements for the ordinary daemon REST API.
+**Browser Studio.** `/studio/` serves the shared renderer. Native local clients obtain a 60-second single-use fragment link from `POST /web/launch`; the browser exchanges it at `POST /web/session`. Another device uses `POST /web/pair` and waits for host approval. Browser JSON responses never contain a daemon/device bearer token. A host-approved device credential may be retained only in an HttpOnly cookie for 30 days; active sessions last eight hours. `/web/invoke`, `/web/events`, `/web/desktop`, `/web/file` and `/web/snapshot` are version-coupled renderer transport, not replacements for the ordinary daemon REST API.
 
 **Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.
 
@@ -55,7 +55,7 @@ The daemon is a headless ADF runtime: it loads agents from .adf files, runs them
 - [Agent files](#tag-agent-files) (28)
 - [Client (internal)](#tag-client-internal) (13)
 - [Remote access](#tag-remote-access) (13)
-- [Browser Studio](#tag-browser-studio) (10)
+- [Browser Studio](#tag-browser-studio) (11)
 - [Schemas](#schemas)
 
 <a id="tag-health"></a>
@@ -18792,6 +18792,7 @@ Browser sign-in, host-approved pairing and the shared renderer transport. These 
 | POST | [`/web/pair`](#op-claimstudiobrowserpairing) | Request host approval for this browser |
 | POST | [`/web/invoke`](#op-invokestudiobrowseroperation) | Invoke a shared Studio operation |
 | GET | [`/web/events`](#op-streamstudiobrowserevents) | Stream shared Studio events for a browser tab |
+| GET | [`/web/desktop/{container}/websockify`](#op-streamstudiobrowserdesktop) | Stream an agent container's desktop to a browser tab |
 | GET | [`/web/file`](#op-getstudiobrowserfile) | Read media from the browser tab’s open agent |
 | GET | [`/web/snapshot`](#op-getstudiobrowsersnapshot) | Download a share copy of an agent |
 
@@ -19091,6 +19092,33 @@ Example 200 (`text/event-stream`):
 ```json
 ": connected\n\ndata: {\"channel\":\"web:tab-generation\",\"args\":[\"0123456789abcdef0123456789abcdef\"]}\n\n"
 ```
+
+<a id="op-streamstudiobrowserdesktop"></a>
+
+### GET `/web/desktop/{container}/websockify`
+
+**Stream an agent container's desktop to a browser tab**
+
+WebSocket upgrade carrying the container's VNC (RFB) stream for the Computer tab, relayed byte for byte; subprotocol `binary` is passed through. Browser Studio draws it with its own bundled noVNC client: the container's noVNC page is never served on this origin. The container must be an agent's isolated container with a running display (container name and `hostPort` from COMPUTE_BROWSER_INFO through /web/invoke); otherwise the socket closes. At most four streams per browser session. Logout closes them; device revocation and remote access turning off close them at once; a stream that answers no ping for 15 seconds is closed. A request without an upgrade gets 404.
+
+Operation `streamStudioBrowserDesktop` · browser cookies
+
+**Parameters**
+
+| Name | In | Type | Required | Description |
+|---|---|---|---|---|
+| `container` | path | string | yes | Agent container name (`adf-…`). |
+| `storageScope` | query | string | yes | Current session identity from /web/session. Rejects stale tabs after another sign-in replaces the shared cookie. |
+
+**Responses**
+
+| Status | Body | Description |
+|---|---|---|
+| 101 | — | Switching Protocols: the VNC stream. |
+| 401 | [ErrorResponse](#schema-errorresponse) | Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`). |
+| 403 | [ErrorResponse](#schema-errorresponse) | Host/Origin guard or device authority refused the request. |
+| 404 | — | Not a WebSocket upgrade (empty body). |
+| 429 | [ErrorResponse](#schema-errorresponse) | The session already has four desktop streams open (`web_rate_limited`). |
 
 <a id="op-getstudiobrowserfile"></a>
 
