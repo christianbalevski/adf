@@ -246,7 +246,7 @@ def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (ag
         m["content"] = keep or text("[Tool call removed — no matching result in history]" if m["role"] == "assistant"
                                     else "[Tool result removed — no matching call in history]")
     note = f"{len(tail)} call(s) with an unknown outcome, {removed} unpaired tool block(s) removed" if tail or removed else ""
-    if note: print(f"warning for the owner: request-only repair: {note}. The model was told to check the target. Inspect the files before the next run.", file=sys.stderr)
+    if note: print(f"warning for the owner: request-only repair: {note}.{' The model was told to check the target.' if tail else ''} Inspect the files before the next run.", file=sys.stderr)
     return out, note
 
 def history(db):  # the active history: the stored transcript without context rows, repaired in memory
@@ -511,7 +511,7 @@ A request that reached the provider stays on record, also if the harness fails l
 
 Caution: After a timeout or a failed request, examine the transcript and the changed files before you try again. A failed command can already have changed files. A new try can do the same work again.
 
-Write only these block types: `text`, `tool_use` and `tool_result`. Put a `tool_result` block for each call in the row after a `tool_use` row. ADF drops other block types when it sends a request. Do not write `thinking` blocks.
+Write only these block types: `text`, `tool_use` and `tool_result`. Put a `tool_result` block for each call in the row after a `tool_use` row. Do not write `thinking` blocks.
 
 If a row has a `file_ref` block, send its path to your model as text. If the block has `deleted: true`, send `[deleted: <file name>]` ([§13.1](../../ADF_SPEC_v0.2.md#131-transcript-rows)). Keep the row as it is.
 
