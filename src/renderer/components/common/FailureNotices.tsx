@@ -9,7 +9,7 @@ export function FailureNotices() {
   const dismiss = useFailureNoticesStore((s) => s.dismiss)
   if (notices.length === 0) return null
   return (
-    <div className="fixed bottom-8 right-3 z-[60] flex flex-col gap-1.5 pointer-events-none" role="alert" aria-live="assertive">
+    <div className="fixed bottom-[calc(2rem_+_env(safe-area-inset-bottom))] right-[calc(0.75rem_+_env(safe-area-inset-right))] z-[60] flex flex-col gap-1.5 pointer-events-none" role="alert" aria-live="assertive">
       {notices.map((n) => (
         <div
           key={n.id}

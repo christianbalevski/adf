@@ -12,11 +12,13 @@ const WEB = join(__dirname, '../../src/web')
 describe('browser Studio safe area', () => {
   it('insets body by the safe area in every layout when the page covers the viewport', () => {
     expect(readFileSync(join(WEB, 'index.html'), 'utf8')).toMatch(/viewport-fit=cover/)
-    const selectors: string[] = []
-    postcss.parse(readFileSync(join(WEB, 'web.css'), 'utf8')).walkDecls('padding', (decl) => {
-      const rule = decl.parent as postcss.Rule
-      if (decl.value.includes('env(safe-area-inset-top)') && rule.selector) selectors.push(rule.selector)
+    const bodyPadding: string[] = []
+    postcss.parse(readFileSync(join(WEB, 'web.css'), 'utf8')).walkDecls(/^padding/, (decl) => {
+      if ((decl.parent as postcss.Rule).selector?.endsWith('body')) bodyPadding.push(`${(decl.parent as postcss.Rule).selector} { ${decl.prop}: ${decl.value} }`)
     })
-    expect(selectors).toContain('body')
+    // One body padding, on the plain selector, covering all four edges; no layout overrides it.
+    expect(bodyPadding).toEqual([
+      'body { padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left) }',
+    ])
   })
 })

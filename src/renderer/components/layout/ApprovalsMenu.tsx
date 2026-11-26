@@ -634,7 +634,7 @@ export function ApprovalToasts() {
   // Anchored under the title-bar nav cluster so toasts read as emerging from
   // the bell they belong to — their history lives one click above.
   return (
-    <div className="fixed top-9 left-2 z-[60] flex flex-col gap-1.5 pointer-events-none">
+    <div className="fixed top-[calc(2.25rem_+_env(safe-area-inset-top))] left-[calc(0.5rem_+_env(safe-area-inset-left))] z-[60] flex flex-col gap-1.5 pointer-events-none">
       {toasts.map((toast) => (
         <div
           key={toast.id}

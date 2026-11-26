@@ -172,7 +172,7 @@ export function SettingsToasts() {
   const { toasts, dismiss } = useContext(StatusContext)
   if (toasts.length === 0) return null
   return (
-    <div className="pointer-events-none fixed bottom-10 right-6 z-40 flex w-[min(420px,calc(100vw-3rem))] flex-col gap-2">
+    <div className="pointer-events-none fixed bottom-[calc(2.5rem_+_env(safe-area-inset-bottom))] right-[calc(1.5rem_+_env(safe-area-inset-right))] z-40 flex w-[min(420px,calc(100vw-3rem))] flex-col gap-2">
       {toasts.map((t) => t.kind === 'undo' ? (
         <div key={t.id} className="pointer-events-auto">
           <UndoToast message={t.message} onUndo={() => { dismiss(t.id); t.onUndo?.() }} onDismiss={() => dismiss(t.id)} />
