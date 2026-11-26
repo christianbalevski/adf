@@ -41,6 +41,7 @@ The example does not do these runtime actions, which the spec defines. Each omis
 
 - Skill index ([§5.1](../../ADF_SPEC_v0.2.md#51-top-level-shape)). The example does not index `skills/*` and does not put `skills-registry.json` in the prompt. It sends the last skills catalog that ADF recorded as a keyed injection ([Read access](#read-access)).
 - Tool-result limits from `limits.max_tool_result_tokens` ([§5.7](../../ADF_SPEC_v0.2.md#57-limits)).
+- File-read limits from `limits.max_file_read_tokens` ([§5.7](../../ADF_SPEC_v0.2.md#57-limits)). The example refuses a larger file. ADF returns a part of the file or a preview.
 - Dynamic instructions: inbox hints, context warnings, idle reminders and mesh updates ([§5.19](../../ADF_SPEC_v0.2.md#519-context-and-audit-configuration)).
 - Media from `file_ref` blocks. The example sends the path as text ([§13.1](../../ADF_SPEC_v0.2.md#131-transcript-rows)).
 - Autonomous turn behaviour, `say`, `ask` and owner approval ([§6.3](../../ADF_SPEC_v0.2.md#63-turn-behaviour), [§8.7](../../ADF_SPEC_v0.2.md#87-restricted-tools-and-methods)).
@@ -306,7 +307,10 @@ def run_tool(db, config, tools, name, args):  # runs inside the BEGIN of phases 
     try: old = bytes(row[0]).decode("utf-8") if row else ""
     except UnicodeDecodeError: old = None
     if row and old is None: return f"Refused: {path} is not UTF-8 text.", True  # strict decode; bytes stay as they are
-    if name == "fs_read": return (old, False) if row else (f'File not found: "{path}"', True)
+    if name == "fs_read":
+        if not row: return f'File not found: "{path}"', True
+        cap = (config.get("limits", {}).get("max_file_read_tokens") or 30000) * 4  # spec 5.7; 4 characters per token
+        return (old, False) if len(old) <= cap else (f"Refused: {path} is larger than max_file_read_tokens.", True)
     if row and row[2] == "read_only": return f'Cannot write to "{path}": file is read-only.', True
     if args.get("mode") not in ("write", "append"): return "Only modes write and append are available.", True
     data = ((old if args["mode"] == "append" else "") + str(args.get("content", ""))).encode("utf-8")
@@ -422,7 +426,7 @@ ORDER BY COALESCE(ord, seq), seq;
 
 With `immutable=1`, SQLite writes nothing, also in a read-only directory. Do not use `immutable=1` while a runtime has the file open: you can then read data that is not consistent. With `mode=ro` only, SQLite makes a `-wal` and a `-shm` file beside a WAL file, and they stay after the close. In a read-only directory, `mode=ro` fails with `attempt to write a readonly database`.
 
-Both parts of the transcript query are necessary. A compaction summary row has an `ord` value, so `COALESCE(ord, seq)` puts it before the rows that it summarizes. Rows of inner loops are in the same table, so `WHERE loop = 'main'` removes them.
+Both parts of the transcript query are necessary. A compaction summary row has an `ord` value, so `COALESCE(ord, seq)` puts it before the rows that the compaction kept. Rows of inner loops are in the same table, so `WHERE loop = 'main'` removes them.
 
 Keep three items separate: the stored transcript, the active history, and the request that you send. The stored transcript is all rows. The active history is the rows that you give to the model again, in the order of the query. The request is the active history in the form of your provider, with your system prompt.
 
@@ -595,7 +599,8 @@ old = rows(before, "SELECT * FROM adf_loop")
 top = max((r[0] for r in old), default=0)
 assert old == [r for r in rows(after, "SELECT * FROM adf_loop") if r[0] <= top]
 new = rows(after, f"SELECT seq, role, model, tokens, ord, loop FROM adf_loop WHERE seq > {top}")
-print([r for r in new if r[5] != "main" or r[4] is not None or (r[2] is None) != (r[1] == "user")])
+print([r for r in new if r[5] != "main" or r[4] is not None or (r[2] is None) != (r[1] == "user")
+       or (r[3] is not None and not {"input", "output"} <= set(json.loads(r[3])))])
 meta = lambda p: dict((k, (v, pr)) for k, v, pr in rows(p, "SELECT key, value, protection FROM adf_meta"))
 m0, m1 = meta(before), meta(after)
 print([k for k in set(m0) | set(m1) if k != "adf_clean_close" and not k.startswith("runtime_myh_") and m0.get(k) != m1.get(k)])
