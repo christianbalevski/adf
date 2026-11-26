@@ -138,8 +138,9 @@ export function NewAgentDialog({ overlay, close, width, height }: OverlayProps) 
         setErrors({ template: result.error })
         return
       case 'no_provider':
-        // The daemon's sentence names its HTTP route; here that route is /provider add.
-        setFormError('No model provider is set up yet: add one with /provider add (or sign in with /login), then create the agent.')
+        // The daemon's sentence names its HTTP route; here an API key goes through /provider add,
+        // and a subscription through ADF Studio (signing in never adds a provider).
+        setFormError('No model provider is set up yet: add one with an API key (/provider add), or add a subscription in ADF Studio under Settings → Providers, then create the agent.')
         return
       default:
         setFormError(identityErrorText(result.code, result.error))

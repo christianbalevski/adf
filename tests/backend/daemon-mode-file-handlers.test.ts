@@ -138,6 +138,10 @@ describe('FILE_CREATE_QUICK / FILE_CREATE', () => {
     expect(refused).toEqual({ success: false, code: 'no_provider', error: 'No model provider is set up yet: add one in Settings → Providers, then create the agent.' })
     expect(refused.error).not.toContain('/runtime/providers')
     expect(ctx.session.filePath).toBeNull()
+    // File → New (save dialog) goes through the same mapping.
+    native.saveDialog = { canceled: false, filePath: join(dir, 'agent-2.adf') }
+    expect(await call(IPC.FILE_CREATE, { name: 'agent-2' })).toEqual({ success: false, code: 'no_provider', error: 'No model provider is set up yet: add one in Settings → Providers, then create the agent.' })
+    expect(ctx.session.filePath).toBeNull()
   })
 
   it('FILE_CREATE: the save dialog picks the path; cancel answers Cancelled', async () => {
