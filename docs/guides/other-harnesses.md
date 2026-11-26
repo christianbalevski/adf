@@ -77,7 +77,7 @@ Caution: Nothing in the file stops two writers today. ADF keeps its lease outsid
 ADF can write to a file that you did not open in ADF:
 
 - When Studio or the daemon starts, it starts each agent with `autostart: true` in a tracked directory.
-- The daemon also starts a new file with `autostart: true` that appears in a tracked directory. A copy of an agent that ADF reviewed starts in this way.
+- Studio and the daemon also start a new file with `autostart: true` that appears in a tracked directory. A copy of an agent that ADF reviewed starts in this way.
 - ADF cannot start an agent that it did not review, or that has a password. A fleet message from Studio or the daemon to such an agent adds an owner row to its transcript.
 
 Keep the harness copy outside all tracked directories. Do not send a message to the agent from Studio or the daemon while the harness has the file.
@@ -88,7 +88,7 @@ ADF deletes `adf_clean_close` from `adf_meta` when it opens a file. If the key i
 
 The example runs only when `config.state` is `active` or `idle`. It stops for `hibernate`, `off`, `suspended` or another value. A hibernated agent wakes on timers only ([§6.1](../../ADF_SPEC_v0.2.md#61-agent-states)), so the example does not take an owner message for it. A message to the harness does not restart or resume the agent.
 
-ADF at commit `d664ea22` does not write `config.state` when you stop the agent in Studio or the daemon. A file that you stopped in the usual way keeps its state, and the example accepts it. If `config.state` is `hibernate`, `off` or `suspended`, the owner changes it in ADF before the run, for example with `/config edit` in the terminal app.
+ADF at commit `d664ea22` does not write `config.state` when you stop the agent in Studio or the daemon. A file that you stopped in the usual way keeps its state, and the example accepts it. The agent can set `config.state` with `sys_update_config`, and the owner can set it in the config editor. If `config.state` is `hibernate`, `off` or `suspended`, the owner changes it in ADF before the run, for example with `/config edit` in the terminal app.
 
 ### Copy
 
@@ -621,7 +621,7 @@ See [Single writer](#single-writer).
 When ADF opens a file that another program wrote, it does these actions:
 
 - It reads `adf_clean_close`. If the key is absent, it runs `PRAGMA integrity_check`. Then it deletes the key.
-- It runs migrations if the schema version is less than 32. A newer version opens with a warning only.
+- It runs migrations if the schema version is less than 32. It opens a newer version in read-write mode with a warning ([Open](#open), note).
 - It sets `readonly` again on the four identity keys.
 - It adds default tools that are not in `config.tools`, sets `visible` where it is absent, and can add loop tools one time (`adf_loop_tools_backfilled`). It writes the config back.
 - When it restores a loop, it repairs tool pairs in memory ([Tool pairs](#tool-pairs)). It does not change the rows.
