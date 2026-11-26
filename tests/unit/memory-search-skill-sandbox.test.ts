@@ -123,6 +123,29 @@ describe('memory-search skill in the real sandbox', () => {
     expect(refs.sort()).toEqual([`[S${live}] main`, `[S${good}] main`].sort())
   })
 
+  it('skips an entry whose created_at no date can hold, archived or live', async () => {
+    const live = append('user', 'The live note mentions Zorbanite.')
+    const json = Buffer.from(JSON.stringify([{ seq: live + 1000, role: 'user', content_json: text('Archived note about Zorbanite.'), created_at: 1e16 }]))
+    ws.getDatabase().insertAudit('loop:main', { startSeq: live + 1000, endSeq: live + 1000, entryCount: 1, sizeBytes: json.length, data: brotliCompressSync(json) })
+    append('user', 'Imported live row about Zorbanite.', 1e16)
+    expect((await runner().run({ query: 'zorbanite', k: 20 })).map(x => x.ref)).toEqual([`[S${live}] main`])
+  })
+
+  it('skips runtime context copies of the system prompt and keeps loop_inject rows', async () => {
+    const source = append('user', 'Pricing page: we settled on a flat $20 a month; the annual discount is still open.')
+    for (let i = 0; i < 40; i++) append(i % 2 ? 'assistant' : 'user', `Filler note ${i} about lunch.`)
+    // agent-session.ts appendContextEntry: the whole prompt, recopied on every change.
+    const prompt = 'Principal: "where did we end up on the pricing page?" You: open mind/pricing.md. Pricing decision and annual discount.'
+    for (let i = 0; i < 10; i++) append('user', `[Context: system_prompt] ${prompt} Revision ${i}.`)
+    const inject = append('user', '[Context: note | loop_inject=v2 | origin=lambda:x] Reminder from code about Larkspur.')
+    await ws.compactLoop([append('user', 'tail')], { content: text('Summary.'), createdAt: DAY })
+    const r = runner()
+    for (const query of ['where did we end up on the pricing page?', 'pricing decision', 'annual discount']) {
+      expect((await r.run({ query, k: 20 })).map(x => x.ref), query).toEqual([`[S${source}] main`])
+    }
+    expect((await r.run({ query: 'larkspur' })).map(x => x.ref)).toEqual([`[S${inject}] main`])
+  })
+
   it('a message archived several times counts once in the ranking statistics', async () => {
     // Counted once, A (two hits on a rare term) outranks B. Counted three times,
     // A's term looks common, its idf drops, and B would come first.

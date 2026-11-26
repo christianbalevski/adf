@@ -67,6 +67,10 @@ function sentText(name, input) {
 // instead of the sources. The full entry shape keeps the match narrow.
 const OWN_OUTPUT = /^\{\s*"results":\s*\[\s*\]|"ref":\s*"\[S\d+\] [^"]*",\s*"date":\s*"[\d-]+",\s*"text":\s*"\[\[S\d+\]/
 
+// Runtime copies of the system prompt, status and provider context (agent-session.ts
+// appendContextEntry), never sent to the model. v2 loop_inject rows have a `|` and stay.
+const RUNTIME_CONTEXT = /^\[Context: [^\]|]*\] /
+
 // Text blocks, tool results, and sent words. Thinking and other tool inputs are left out.
 // Live rows hold content_json as a JSON string, archived entries as the parsed array.
 function messageText(content) {
@@ -74,7 +78,7 @@ function messageText(content) {
   const out = []
   for (const b of Array.isArray(blocks) ? blocks : []) {
     if (!b || typeof b !== 'object') continue
-    if (b.type === 'text' && typeof b.text === 'string') { if (!OWN_OUTPUT.test(b.text)) out.push(b.text) }
+    if (b.type === 'text' && typeof b.text === 'string') { if (!OWN_OUTPUT.test(b.text) && !RUNTIME_CONTEXT.test(b.text)) out.push(b.text) }
     else if (b.type === 'tool_use') out.push(...sentText(b.name, b.input).filter(t => typeof t === 'string' && !OWN_OUTPUT.test(t)))
     else if (b.type === 'tool_result') {
       const parts = typeof b.content === 'string' ? [b.content]
@@ -86,6 +90,8 @@ function messageText(content) {
 }
 
 const dayOf = ms => new Date(ms).toISOString().slice(0, 10)
+// What dayOf can format; toISOString throws past ±8.64e15 ms.
+const validTime = ms => typeof ms === 'number' && Number.isFinite(new Date(ms).getTime())
 const loopName = source => String(source).replace(/^loop:?/, '') || 'main'
 
 function messageChunks(seq, loop, createdAt, content) {
@@ -126,7 +132,7 @@ async function search({ query, k = K_DEFAULT } = {}) {
   const hits = []
   const seen = new Set()
   function scan(seq, loop, createdAt, content, from) {
-    if (seen.has(seq)) return
+    if (seen.has(seq) || !validTime(createdAt)) return // a bad date is skipped like an unreadable blob
     seen.add(seq)
     messageChunks(seq, loop, createdAt, content).forEach((chunk, c) => {
       const toks = tokens(chunk.text)
@@ -154,9 +160,8 @@ async function search({ query, k = K_DEFAULT } = {}) {
   for (const { id } of blobIds) {
     const { loop, entries } = await readBlob(id)
     for (const e of Array.isArray(entries) ? entries : []) {
-      // The shape the runtime's reader requires (src/main/adf/archive-snapshot-index.ts isArchiveRow).
-      // Malformed entries are skipped like unreadable blobs.
-      if (e && typeof e.seq === 'number' && Array.isArray(e.content_json) && Number.isFinite(e.created_at)) {
+      // Malformed entries are skipped like unreadable blobs; scan also needs a valid created_at for the date.
+      if (e && typeof e.seq === 'number' && Array.isArray(e.content_json)) {
         scan(e.seq, loop, e.created_at, e.content_json, id)
       }
     }
