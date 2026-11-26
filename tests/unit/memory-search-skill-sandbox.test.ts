@@ -131,12 +131,14 @@ describe('memory-search skill in the real sandbox', () => {
     expect((await runner().run({ query: 'zorbanite', k: 20 })).map(x => x.ref)).toEqual([`[S${live}] main`])
   })
 
-  it('skips runtime context copies of the system prompt and keeps loop_inject rows', async () => {
+  it('skips runtime context copies of the system prompt and provider context and keeps loop_inject rows', async () => {
     const source = append('user', 'Pricing page: we settled on a flat $20 a month; the annual discount is still open.')
     for (let i = 0; i < 40; i++) append(i % 2 ? 'assistant' : 'user', `Filler note ${i} about lunch.`)
     // agent-session.ts appendContextEntry: the whole prompt, recopied on every change.
     const prompt = 'Principal: "where did we end up on the pricing page?" You: open mind/pricing.md. Pricing decision and annual discount.'
     for (let i = 0; i < 10; i++) append('user', `[Context: system_prompt] ${prompt} Revision ${i}.`)
+    // loop-parser.ts providerContextCategory: provider_context heads carry a `|` too.
+    for (let i = 0; i < 3; i++) append('user', `[Context: provider_context | from=Claude Code] ${prompt} Reminder ${i}.`)
     const inject = append('user', '[Context: note | loop_inject=v2 | origin=lambda:x] Reminder from code about Larkspur.')
     await ws.compactLoop([append('user', 'tail')], { content: text('Summary.'), createdAt: DAY })
     const r = runner()

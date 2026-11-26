@@ -68,8 +68,9 @@ function sentText(name, input) {
 const OWN_OUTPUT = /^\{\s*"results":\s*\[\s*\]|"ref":\s*"\[S\d+\] [^"]*",\s*"date":\s*"[\d-]+",\s*"text":\s*"\[\[S\d+\]/
 
 // Runtime copies of the system prompt, status and provider context (agent-session.ts
-// appendContextEntry), never sent to the model. v2 loop_inject rows have a `|` and stay.
-const RUNTIME_CONTEXT = /^\[Context: [^\]|]*\] /
+// appendContextEntry), never sent to the model. The test mirrors loop-parser.ts
+// classifyInjectedText: only a head with the `loop_inject=v2` field is model input and stays.
+const runtimeContext = t => { const m = t.match(/^\[Context: ([^\]]+)\]/); return !!m && !m[1].split(' | ').slice(1).includes('loop_inject=v2') }
 
 // Text blocks, tool results, and sent words. Thinking and other tool inputs are left out.
 // Live rows hold content_json as a JSON string, archived entries as the parsed array.
@@ -78,7 +79,7 @@ function messageText(content) {
   const out = []
   for (const b of Array.isArray(blocks) ? blocks : []) {
     if (!b || typeof b !== 'object') continue
-    if (b.type === 'text' && typeof b.text === 'string') { if (!OWN_OUTPUT.test(b.text) && !RUNTIME_CONTEXT.test(b.text)) out.push(b.text) }
+    if (b.type === 'text' && typeof b.text === 'string') { if (!OWN_OUTPUT.test(b.text) && !runtimeContext(b.text)) out.push(b.text) }
     else if (b.type === 'tool_use') out.push(...sentText(b.name, b.input).filter(t => typeof t === 'string' && !OWN_OUTPUT.test(t)))
     else if (b.type === 'tool_result') {
       const parts = typeof b.content === 'string' ? [b.content]
