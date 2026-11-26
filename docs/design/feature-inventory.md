@@ -1043,7 +1043,7 @@ Grouped by area, then category.
 ### Settings — System Prompt & Prompting
 - **Base prompt editor** — global system prompt prepended to every agent, auto-saved, resettable to default.
 - **Per-agent System Prompt select** — Full / No base prompt / Bare, each showing its resolved token count.
-- **Dynamic Instructions checkboxes** — four independent toggles for inbox hints, context warnings, mesh updates, idle reminder, decoupled from the static prompt setting since schema v30.
+- **Dynamic Instructions checkboxes** — four independent toggles: inbox hints, context warnings and mesh updates (per turn, decoupled from the static prompt setting since schema v30), and idle reminder (an autonomous agent's system-prompt section plus the `sys_set_state` hint in continuation nudges).
 - **Tool Instruction sections** — conditional prompt blocks (Tool Best Practices, Code Execution & Lambdas, ADF Shell, Multi-Agent Collaboration, HTTP Serving) injected per enabled tool/feature, each individually reset-able and "modified"-badged.
 
 ### Settings — General & Housekeeping
