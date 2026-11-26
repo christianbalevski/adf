@@ -499,7 +499,7 @@ Example 200 (`application/json`):
 
 **Create an agent from a template, then load it**
 
-Studio's "new agent", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load. With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).
+Studio's "new agent", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. its provider has no API key): fix it, then POST /agents/load. With no `provider` and none set up on the daemon, nothing is written (409 `no_provider`). With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).
 
 Operation `createAgent` · bearer token
 
@@ -540,7 +540,7 @@ Operation `createAgent` · bearer token
 | 401 | [ErrorResponse](#schema-errorresponse) | Missing or wrong bearer token (`unauthorized`) |
 | 403 | [ErrorResponse](#schema-errorresponse) | The request guard refused it: Host header not allowed (`host_not_allowed`, DNS-rebinding protection) or a browser cross-site request (`cross_origin`) |
 | 404 | [ErrorResponse](#schema-errorresponse) | X-ADF-Client-Session names no live client session |
-| 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), or a confirmed replace names a file another runtime runs (`agent_leased`) |
+| 409 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), a confirmed replace names a file another runtime runs (`agent_leased`), or no `provider` was given and none is set up on this daemon (`no_provider`; nothing is written: add one, e.g. POST /runtime/providers, and create again) |
 | 422 | [AgentCreateErrorResponse](#schema-agentcreateerrorresponse) | The template was refused (`template_missing`, `template_unreviewed`, `template_invalid`) or the new file could not load (`load_failed`) |
 | 500 | [ErrorResponse](#schema-errorresponse) | Unexpected runtime failure |
 | 503 | [ErrorResponse](#schema-errorresponse) | The subsystem is not configured on this daemon |
@@ -19501,7 +19501,7 @@ Template and agent-creation errors. `identity` is the owner identity status when
 | Field | Type | Required | Description |
 |---|---|---|---|
 | `error` | string | yes |  |
-| `code` | `"bad_request"` \| `"identity_not_ready"` \| `"name_taken"` \| `"template_missing"` \| `"template_unreviewed"` \| `"template_invalid"` \| `"password_required"` \| `"wrong_password"` \| `"load_failed"` \| `"agent_leased"` | yes |  |
+| `code` | `"bad_request"` \| `"identity_not_ready"` \| `"name_taken"` \| `"template_missing"` \| `"template_unreviewed"` \| `"template_invalid"` \| `"password_required"` \| `"wrong_password"` \| `"load_failed"` \| `"agent_leased"` \| `"no_provider"` | yes |  |
 | `identity` | [IdentityStatus](#schema-identitystatus) |  |  |
 
 <a id="schema-agentdidresponse"></a>

@@ -75,6 +75,8 @@ afterEach(async () => {
 function makeDaemon(opts: { discovered?: (args?: { force?: boolean }) => unknown[] } = {}) {
   const settingsPath = join(h.userDataDir, 'adf-settings.json')
   const settings = new FileSettingsStore(settingsPath)
+  // POST /agents/create refuses a daemon with no provider (no_provider); MockLLMProvider answers for this one.
+  if (!(settings.get('providers') as unknown[] | undefined)?.length) settings.set('providers', [{ id: 'custom:test01', type: 'openai-compatible', name: 'Test', baseUrl: 'http://127.0.0.1:9', apiKey: '', defaultModel: 'm1', params: [] }])
   const identity = new DaemonIdentity({ settings, settingsPath, encKey: ensureDaemonEncKey(h.userDataDir), backend: fakeKeychain() })
   setWorkspaceIdentityHooks(identity.workspaceHooks())
   const runtime = new RuntimeService({ settings, providerFactory: () => new MockLLMProvider() })

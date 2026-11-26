@@ -765,9 +765,11 @@ All fields are optional (`name`, `directory` absolute and existing, `template`,
 `provider` a configured provider id, `model`, `start`). Both routes answer
 `409 identity_not_ready` (with the `identity` status) until the owner identity
 is ready; offer create, restore or unlock then. Other codes: `name_taken`
-(`409`), `template_missing` / `template_unreviewed` (`422`), `load_failed`
-(`422`: the file exists, reviewed and tracked, but did not load, e.g. no
-provider; fix it and `POST /agents/load`).
+(`409`), `no_provider` (`409`: no `provider` given and none set up on the
+daemon; nothing is written, add one with `POST /runtime/providers` and create
+again), `template_missing` / `template_unreviewed` (`422`), `load_failed`
+(`422`: the file exists, reviewed and tracked, but did not load, e.g. its
+provider has no API key; fix it and `POST /agents/load`).
 
 Templates are ordinary `.adf` files in the daemon's templates folder, managed
 with `POST /templates`, `GET|PATCH|DELETE /templates/:id` and the
@@ -854,7 +856,7 @@ from Fastify as `{statusCode, code, error, message}`.
 | `403` | Refused by a guard or policy | `host_not_allowed`, `cross_origin`, `loopback_only`, `setting_not_writable`, `wrong_passphrase`, `wrong_password`, `AGENT_REVIEW_REQUIRED` |
 | `404` | Unknown agent (or not loaded), loop, task, file, template, ask | `not_found`, `ask_not_found`, `template_missing` |
 | `405` | Read-only settings store, operation not available | `read_only`, `not_supported` |
-| `409` | Valid, but not in the current state | `credentials_locked` (also a legacy password-locked agent), `ambiguous_agent`, `identity_not_ready`, `identity_exists`, `owner_mismatch`, `name_taken`, `secret_store_locked`, `nothing_to_unlock`, `agent_leased` (another runtime on this machine runs the file), `stale_revision` (see [Concurrency](#concurrency)), `duplicate_agent_id` (another loaded file has the same agent id), `agent_not_running` (a runtime action on an open document), `file_moving`, and `conflict` for the rest: task not pending, loop mid-turn or disabled, loops locked by the owner |
+| `409` | Valid, but not in the current state | `credentials_locked` (also a legacy password-locked agent), `ambiguous_agent`, `identity_not_ready`, `identity_exists`, `owner_mismatch`, `name_taken`, `no_provider` (create with no provider set up), `secret_store_locked`, `nothing_to_unlock`, `agent_leased` (another runtime on this machine runs the file), `stale_revision` (see [Concurrency](#concurrency)), `duplicate_agent_id` (another loaded file has the same agent id), `agent_not_running` (a runtime action on an open document), `file_moving`, and `conflict` for the rest: task not pending, loop mid-turn or disabled, loops locked by the owner |
 | `422` | Accepted input, but the result could not be produced | `template_unreviewed`, `load_failed` |
 | `502` | An upstream model call failed | (compaction) |
 | `503` | That service is not configured on this daemon | `unavailable` |

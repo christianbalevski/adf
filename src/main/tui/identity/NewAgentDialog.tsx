@@ -137,6 +137,10 @@ export function NewAgentDialog({ overlay, close, width, height }: OverlayProps) 
       case 'template_unreviewed':
         setErrors({ template: result.error })
         return
+      case 'no_provider':
+        // The daemon's sentence names its HTTP route; here that route is /provider add.
+        setFormError('No model provider is set up yet: add one with /provider add, then create the agent.')
+        return
       default:
         setFormError(identityErrorText(result.code, result.error))
     }

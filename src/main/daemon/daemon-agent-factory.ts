@@ -11,6 +11,7 @@ import { basename, isAbsolute, join, resolve } from 'path'
 import { agentFileBusy } from '../services/owner-identity.service'
 import { AdfWorkspace } from '../adf/adf-workspace'
 import { AgentTemplatesService, templateFilePath, templatesDir } from '../adf/agent-templates'
+import { resolveDefaultProvider } from '../adf/apply-default-provider'
 import { autoLockFields, isConfigReviewed, markConfigReviewed } from '../services/agent-review'
 import { canonicalizePath, isSameOrSubPath } from '../utils/tracked-paths'
 import { generateAgentName } from '../../shared/utils/agent-names'
@@ -90,6 +91,7 @@ export type AgentCreateErrorCode =
   | 'load_failed'
   | 'agent_file_busy'
   | 'agent_leased'
+  | 'no_provider'
 
 export class AgentCreateError extends Error {
   constructor(
@@ -316,12 +318,18 @@ export class DaemonAgentFactory {
     }
     const providerId = typeof input.provider === 'string' && input.provider.trim() ? input.provider.trim() : undefined
     const modelId = typeof input.model === 'string' && input.model.trim() ? input.model.trim() : undefined
+    const providers = (this.deps.settings.get('providers') as ProviderConfig[] | undefined) ?? []
     if (providerId) {
-      const providers = (this.deps.settings.get('providers') as ProviderConfig[] | undefined) ?? []
       if (!providers.some((p) => p.id === providerId)) {
         const known = providers.map((p) => p.id).join(', ') || 'none configured'
         throw new AgentCreateError('bad_request', `Unknown provider "${providerId}" (known: ${known}).`, 400)
       }
+    } else if (!resolveDefaultProvider(providers, this.deps.settings.get('defaultProviderId') as string | undefined)) {
+      // instantiate's fallback (applyInstanceModel): a template's own provider
+      // counts only when settings has it, so with no default here the file
+      // would be stamped provider "" and could never load, even after a
+      // provider is added. Refused before anything is written, load: false too.
+      throw new AgentCreateError('no_provider', 'No model provider is set up on this daemon: add one (POST /runtime/providers with an API key, or a subscription in ADF Studio under Settings → Providers), then create the agent again.', 409)
     }
     const templateId = typeof input.template === 'string' && input.template.trim() ? input.template.trim() : undefined
     if (input.identityDraftId !== undefined && typeof input.identityDraftId !== 'string') {
@@ -467,9 +475,9 @@ export class DaemonAgentFactory {
     }
 
     // --- runtime ---
-    // The file is made (reviewed, tracked) even when it cannot load yet (e.g. no
-    // provider configured): say so, so a retry under the same name isn't a
-    // puzzling name_taken.
+    // The file is made (reviewed, tracked) even when it cannot load yet (e.g. its
+    // provider has no API key; no provider at all is refused above): say so, so
+    // a retry under the same name isn't a puzzling name_taken.
     let ref: Awaited<ReturnType<typeof this.deps.runtime.loadAgent>>
     try {
       ref = await this.deps.runtime.loadAgent(filePath, { enforceReviewGate: false })

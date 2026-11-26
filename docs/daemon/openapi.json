@@ -499,7 +499,7 @@
           "Agents"
         ],
         "summary": "Create an agent from a template, then load it",
-        "description": "Studio's \"new agent\", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. no provider configured): fix it, then POST /agents/load. With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).",
+        "description": "Studio's \"new agent\", headless: template instance → sealed identity with owner/runtime stamps and attestations → marked reviewed → directory tracked → loaded (and started with `start: true`). Needs a ready owner identity; 409 `identity_not_ready` carries `identity` so a client can offer create / restore / unlock. `load_failed` (422) means the file was created, reviewed and tracked but could not load (e.g. its provider has no API key): fix it, then POST /agents/load. With no `provider` and none set up on the daemon, nothing is written (409 `no_provider`). With `load: false` and the header `X-ADF-Client-Session`, the new file is held open (not running) by that client session, which must be live (404 `session_not_found` otherwise); a `holder` body field is refused (400).",
         "operationId": "createAgent",
         "requestBody": {
           "required": false,
@@ -557,7 +557,7 @@
             }
           },
           "409": {
-            "description": "Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), or a confirmed replace names a file another runtime runs (`agent_leased`)",
+            "description": "Owner identity not ready (`identity_not_ready`), the name is taken in that directory (`name_taken`), a confirmed replace names a file another runtime runs (`agent_leased`), or no `provider` was given and none is set up on this daemon (`no_provider`; nothing is written: add one, e.g. POST /runtime/providers, and create again)",
             "content": {
               "application/json": {
                 "schema": {
@@ -580,6 +580,12 @@
                     "value": {
                       "error": "agent-1 is already running in another ADF Studio (pid 4242). Stop the agent there or quit that Studio, then start it here.",
                       "code": "agent_leased"
+                    }
+                  },
+                  "no_provider": {
+                    "value": {
+                      "error": "No model provider is set up on this daemon: add one (POST /runtime/providers with an API key, or a subscription in ADF Studio under Settings → Providers), then create the agent again.",
+                      "code": "no_provider"
                     }
                   }
                 }
@@ -20040,7 +20046,8 @@
               "password_required",
               "wrong_password",
               "load_failed",
-              "agent_leased"
+              "agent_leased",
+              "no_provider"
             ]
           },
           "identity": {

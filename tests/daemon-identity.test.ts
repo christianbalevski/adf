@@ -28,6 +28,7 @@ import { AgentLeaseRegistry, processAgentLeases } from '../src/main/runtime/agen
 import { MockLLMProvider } from '../src/main/runtime/headless'
 import { setWorkspaceIdentityHooks } from '../src/main/runtime/identity-provisioner'
 import { AdfWorkspace } from '../src/main/adf/adf-workspace'
+import { templateFilePath } from '../src/main/adf/agent-templates'
 import { CreateAdfTool } from '../src/main/tools/built-in/sys-create-adf.tool'
 import { SettingsService } from '../src/main/services/settings.service'
 import { readAdfAttestations, verifyAttestation } from '../src/main/services/attestation.service'
@@ -81,8 +82,12 @@ afterEach(async () => {
   rmSync(root, { recursive: true, force: true })
 })
 
-function makeDaemon(opts: { backend?: ConstructorParameters<typeof DaemonIdentity>[0]['backend'] } = {}) {
+/** A configured provider, so creates resolve one (MockLLMProvider answers for it). */
+const TEST_PROVIDER = { id: 'custom:test01', type: 'openai-compatible', name: 'Test', baseUrl: 'http://127.0.0.1:9', apiKey: '', defaultModel: 'm1', params: [] }
+
+function makeDaemon(opts: { backend?: ConstructorParameters<typeof DaemonIdentity>[0]['backend']; noProvider?: boolean } = {}) {
   const settings = new FileSettingsStore(settingsPath)
+  if (!opts.noProvider && !(settings.get('providers') as unknown[] | undefined)?.length) settings.set('providers', [TEST_PROVIDER])
   const encKey = ensureDaemonEncKey(h.userDataDir)
   const identity = new DaemonIdentity({ settings, settingsPath, encKey, backend: opts.backend ?? fakeKeychain().backend })
   // Same wiring as src/main/daemon/index.ts.
@@ -322,17 +327,84 @@ describe('daemon agent creation', () => {
     expect(readdirSync(agentsDir).filter(f => f.includes('.replacing'))).toEqual([])
   }, 60_000)
 
-  it('422 load_failed when the new file cannot load (e.g. no provider): the file stays and the message says so', async () => {
+  it('422 load_failed when the new file cannot load (e.g. its provider has no key): the file stays and the message says so', async () => {
     const { server, runtime } = makeDaemon()
     await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
-    runtime.loadAgent = (async () => { throw new Error('Provider "" not found.') }) as typeof runtime.loadAgent
+    runtime.loadAgent = (async () => { throw new Error('Provider "Test" has no API key.') }) as typeof runtime.loadAgent
     const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
     expect(res.statusCode).toBe(422)
     expect(res.json().code).toBe('load_failed')
-    expect(res.json().error).toContain('Provider "" not found.')
+    expect(res.json().error).toContain('Provider "Test" has no API key.')
     expect(res.json().error).toContain(join(agentsDir, 'agent-1.adf'))
     expect(existsSync(join(agentsDir, 'agent-1.adf'))).toBe(true)
   }, 60_000)
+
+  describe('no usable provider', () => {
+    const PROVIDER = TEST_PROVIDER
+    const noFiles = (name: string) => {
+      for (const suffix of ['', '-wal', '-shm']) expect(existsSync(join(agentsDir, `${name}.adf${suffix}`))).toBe(false)
+    }
+
+    it('no provider in settings or input: 409 no_provider, nothing written; the same name is still free', async () => {
+      const { server } = makeDaemon({ noProvider: true })
+      await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+      const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
+      expect(res.statusCode).toBe(409)
+      expect(res.json().code).toBe('no_provider')
+      expect(res.json().error).toContain('POST /runtime/providers')
+      noFiles('agent-1')
+      const again = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
+      expect(again.json().code).toBe('no_provider')
+    }, 60_000)
+
+    it('load: false is refused too: a file stamped provider "" is broken either way', async () => {
+      const { server } = makeDaemon({ noProvider: true })
+      await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+      const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, load: false } })
+      expect(res.statusCode).toBe(409)
+      expect(res.json().code).toBe('no_provider')
+      noFiles('agent-1')
+    }, 60_000)
+
+    it('a configured provider (the default resolves): created and loaded as before, stamped with it', async () => {
+      const { server } = makeDaemon()
+      await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+      const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir } })
+      expect(res.statusCode).toBe(201)
+      expect(res.json()).toMatchObject({ loaded: true })
+      const ws = AdfWorkspace.open(join(agentsDir, 'agent-1.adf'))
+      try { expect(ws.getAgentConfig().model.provider).toBe(PROVIDER.id) } finally { ws.close() }
+    }, 60_000)
+
+    it('an explicit unknown provider: still 400 bad_request, nothing written', async () => {
+      const { server } = makeDaemon({ noProvider: true })
+      await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+      const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, provider: 'nope' } })
+      expect(res.statusCode).toBe(400)
+      expect(res.json().code).toBe('bad_request')
+      expect(res.json().error).toContain('Unknown provider "nope"')
+      noFiles('agent-1')
+    }, 60_000)
+
+    it('a template naming its own provider gives none on a daemon without it (instantiate drops it), so it is refused too', async () => {
+      const { server, agentFactory } = makeDaemon({ noProvider: true })
+      await server.inject({ method: 'POST', url: '/identity/create', payload: {} })
+      expect((await server.inject({ method: 'GET', url: '/templates' })).statusCode).toBe(200)
+      // The standard template, given a provider of its own (and re-marked reviewed).
+      const ws = AdfWorkspace.open(templateFilePath('standard'))
+      try {
+        const config = ws.getAgentConfig()
+        config.model = { ...config.model, provider: PROVIDER.id, model_id: 'm1' }
+        config.providers = [{ id: PROVIDER.id, type: 'openai-compatible', name: 'Test', baseUrl: PROVIDER.baseUrl }]
+        ws.setAgentConfig(config)
+        agentFactory.templatesService().markReviewed(ws.getAgentConfig())
+      } finally { ws.close() }
+      const res = await server.inject({ method: 'POST', url: '/agents/create', payload: { name: 'agent-1', directory: agentsDir, template: 'standard' } })
+      expect(res.statusCode).toBe(409)
+      expect(res.json().code).toBe('no_provider')
+      noFiles('agent-1')
+    }, 60_000)
+  })
 
   it('sys_create_adf: DID-less child without an identity, sealed + attested child with one', async () => {
     const { server, identity } = makeDaemon()
