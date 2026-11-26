@@ -109,6 +109,20 @@ describe('memory-search skill in the real sandbox', () => {
     expect(refs.sort()).toEqual([`[S${first}] main`, `[S${later}] main`].sort())
   })
 
+  it('skips an archived entry without the archive row shape, like an unreadable blob', async () => {
+    const live = append('user', 'The live note mentions Zorbanite.')
+    // Imported blobs are untrusted: one entry has no created_at, the other is well formed.
+    const good = live + 2000
+    const json = Buffer.from(JSON.stringify([
+      { seq: live + 1000, role: 'user', content_json: text('Malformed entry about Brackleton.') },
+      { seq: good, role: 'user', content_json: text('The archived note mentions Fennimore.'), created_at: DAY }
+    ]))
+    ws.getDatabase().insertAudit('loop:main', { startSeq: live + 1000, endSeq: good, entryCount: 2, sizeBytes: json.length, data: brotliCompressSync(json) })
+
+    const refs = (await runner().run({ query: 'zorbanite fennimore', k: 20 })).map(x => x.ref)
+    expect(refs.sort()).toEqual([`[S${live}] main`, `[S${good}] main`].sort())
+  })
+
   it('a message archived several times counts once in the ranking statistics', async () => {
     // Counted once, A (two hits on a rare term) outranks B. Counted three times,
     // A's term looks common, its idf drops, and B would come first.

@@ -154,7 +154,11 @@ async function search({ query, k = K_DEFAULT } = {}) {
   for (const { id } of blobIds) {
     const { loop, entries } = await readBlob(id)
     for (const e of Array.isArray(entries) ? entries : []) {
-      if (e && typeof e.seq === 'number') scan(e.seq, loop, e.created_at, e.content_json, id)
+      // The shape the runtime's reader requires (src/main/adf/archive-snapshot-index.ts isArchiveRow).
+      // Malformed entries are skipped like unreadable blobs.
+      if (e && typeof e.seq === 'number' && Array.isArray(e.content_json) && Number.isFinite(e.created_at)) {
+        scan(e.seq, loop, e.created_at, e.content_json, id)
+      }
     }
   }
   for (const r of live) scan(r.seq, r.loop, r.created_at, r.content_json, 'live')
