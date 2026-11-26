@@ -36,6 +36,7 @@ Guides carry YAML frontmatter (`type`, `description`, `see_also`) mirroring the 
 - **inner-loops.md** — the main loop plus up to 16 inner loops (side loops) in one agent, the loop_* tools, and per-loop pacing
 - **compute.md** — shared/isolated containers and host command execution
 - **mcp-integration.md** — connecting external MCP tool servers
+- **other-harnesses.md** — continue a text conversation from an `.adf` file in another harness (your own loop or an agent SDK), then return the file to ADF: limits, read access, write rules, close, check
 
 ## Knowledge Base
 
