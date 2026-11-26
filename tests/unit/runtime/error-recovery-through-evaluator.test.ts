@@ -447,3 +447,122 @@ describe('background triggers reach an agent in error through the evaluator', ()
     }
   })
 })
+
+/**
+ * A 429 until `heal()`. After `cap` calls it hangs (until aborted) instead of
+ * throwing, so a self-wake spin reports a count instead of running forever.
+ */
+class RateLimitedProvider implements LLMProvider {
+  readonly name = 'rate-limited-provider'
+  readonly modelId = 'rate-limited-model-v1'
+  calls = 0
+  healed = false
+  constructor(private cap = 200) {}
+  heal() { this.healed = true }
+  async createMessage(opts: CreateMessageOptions): Promise<LLMResponse> {
+    this.calls++
+    if (this.calls > this.cap) return new Promise((_, reject) => opts.signal?.addEventListener('abort', () => reject(new Error('aborted'))))
+    if (!this.healed) throw Object.assign(new Error('429 rate_limit_error: weekly limit reached'), { statusCode: 429 })
+    return { id: `r${this.calls}`, content: [{ type: 'text', text: 'ok' }], stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 } }
+  }
+  async validateConfig() { return { valid: true } }
+}
+
+describe('a provider give-up does not wake the agent through its own on_logs target', () => {
+  beforeEach(() => clearAllUmbilicalBuses())
+
+  const executorErrors = { level: ['error'], origin: ['executor'] }
+  const anyErrors = { level: ['error'] }
+  const gaveUp = (workspace: AdfWorkspace) => workspace.getLogs().some(l => l.event === 'provider_error' && l.level === 'error')
+  /**
+   * Build, start, stop polling, and run one chat turn into a 429; resolves
+   * once the retry budget (max_attempts 2) is spent and the give-up is logged.
+   */
+  async function gaveUpAgent(name: string, opts: { filter?: object; extraTargets?: unknown[]; context?: object } = {}) {
+    const { filePath, workspace } = makeWorkspace(name)
+    const provider = new RateLimitedProvider()
+    const config = workspace.getAgentConfig()
+    config.triggers = { ...config.triggers, on_logs: { enabled: true, targets: [{ scope: 'agent', filter: opts.filter ?? executorErrors }, ...(opts.extraTargets ?? [])] } } as typeof config.triggers
+    if (opts.context) config.context = { ...config.context, ...opts.context } as typeof config.context
+    workspace.setAgentConfig(config)
+    const agent = await new AgentRuntimeBuilder().build({
+      workspace, filePath, provider,
+      config: { ...config, recovery: { auto_retry: true, max_attempts: 2, base_delay_ms: 20, max_delay_ms: 100 } },
+    })
+    await (agent as unknown as { start?: () => Promise<void> }).start?.()
+    agent.triggerEvaluator.stopTimerPolling()
+    await agent.executor.executeTurn(chatDispatch())
+    for (let i = 0; i < 100 && !gaveUp(workspace); i++) await sleep(20)
+    await sleep(300)
+    return { agent, workspace, provider }
+  }
+
+  // The incident shape: past its budget, every turn gives up on its first
+  // call, and each give-up's own error log must not start the next turn.
+  for (const [label, filter] of [['origin executor', executorErrors], ['level only', anyErrors]] as const) {
+    it(`SELF-WAKE (${label}): a give-up turn's error log is written but runs no further turn`, async () => {
+      const { agent, workspace, provider } = await gaveUpAgent(`self-wake-${label.replace(' ', '-')}`, { filter })
+      try {
+        const afterBudget = provider.calls
+        deliverInbox(agent, workspace, 'KICK')
+        await sleep(2000)
+        const r = { afterBudget, calls: provider.calls, state: agent.executor.getState(), giveUpLogged: gaveUp(workspace) }
+        expect(r).toEqual({ afterBudget: 3, calls: 4, state: 'idle', giveUpLogged: true })
+      } finally {
+        await agent.disposeAsync()
+      }
+    }, 20_000)
+  }
+
+  it('COMPACTION: compaction_failed logs and the give-up, with a level-only filter, run no further turn', async () => {
+    const { agent, workspace, provider } = await gaveUpAgent('compaction', { filter: anyErrors, context: { compact_threshold: 1 } })
+    try {
+      const afterBudget = provider.calls
+      deliverInbox(agent, workspace, 'KICK')
+      await sleep(1000)
+      const afterKick = provider.calls
+      await sleep(2000)
+      const r = {
+        compactionFailed: workspace.getLogs().some(l => l.event === 'compaction_failed' && l.level === 'error'),
+        settled: provider.calls === afterKick,
+        kickCalls: afterKick - afterBudget,
+        state: agent.executor.getState(),
+      }
+      // Each turn tries compaction (one summarizer call, or two once the
+      // pre-turn compaction runs too) before its own call; the budget is 8
+      // calls, the kicked turn 3, and then nothing.
+      expect({ afterBudget, ...r }).toEqual({ afterBudget: 8, compactionFailed: true, settled: true, kickCalls: 3, state: 'idle' })
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 20_000)
+
+  it('AFTER-HEAL: once the provider heals, the next inbox message runs a turn', async () => {
+    const { agent, workspace, provider } = await gaveUpAgent('after-heal')
+    try {
+      const before = provider.calls
+      provider.heal()
+      deliverInbox(agent, workspace, 'AFTER-HEAL')
+      await sleep(500)
+      expect({ before, calls: provider.calls, state: agent.executor.getState() }).toEqual({ before: 3, calls: 4, state: 'idle' })
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 20_000)
+
+  it('SYSTEM-SCOPE: a system-scope on_logs target still receives the give-up error log', async () => {
+    const seen: string[] = []
+    const { agent, provider } = await gaveUpAgent('system-scope', { extraTargets: [{ scope: 'system', lambda: 'lib/seen.js:seen', filter: executorErrors }] })
+    try {
+      agent.triggerEvaluator.on('trigger', (d: { scope?: string; event?: { type: string; data?: { entry?: { event?: string } } } }) => {
+        if (d.scope === 'system' && d.event?.type === 'log_entry') seen.push(d.event.data?.entry?.event ?? '?')
+      })
+      // Listening from here: the next failing turn's give-up log.
+      await agent.executor.executeTurn(chatDispatch('again'))
+      await sleep(300)
+      expect({ calls: provider.calls, giveUpToSystem: seen.includes('provider_error') }).toEqual({ calls: 4, giveUpToSystem: true })
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 20_000)
+})
