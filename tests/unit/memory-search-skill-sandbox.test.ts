@@ -168,6 +168,21 @@ describe('memory-search skill in the real sandbox', () => {
     expect(results.map(x => x.ref)).toEqual([`[S${source}] main`])
   })
 
+  it('its earlier results stored by _async, sys_code, or as a truncated preview do not echo', async () => {
+    const [source] = await history(['The archive vendor is Velvetcrane.', 'ok', 'next'])
+    for (let i = 0; i < 4; i++) append('user', `Unrelated note ${i} about lunch.`)
+    const r = runner()
+    const out = (await r.raw({ query: 'velvetcrane vendor' })).result!
+    // sys_lambda with _async: a task_complete trigger text block.
+    append('user', `A task has completed.\nTask ID: t1\nTool: sys_lambda\nStatus: completed\nResult: ${out}`)
+    // sys_code that calls the search: the tool_result has a "Result: " prefix.
+    ws.appendToLoop('user', [{ type: 'tool_result', tool_use_id: 'c1', content: `Result: ${out}` }], undefined, undefined, DAY)
+    // Over the tool-result cap: the runtime keeps a preview of the head.
+    ws.appendToLoop('user', [{ type: 'tool_result', tool_use_id: 'c2', content: `[TRUNCATED] Tool "sys_lambda" returned ~20,000 tokens (limit: 16,000).\n\nPreview (first 2,500 chars, last 2,500 chars; 10 chars omitted):\n${out}` }], undefined, undefined, DAY)
+    const results = await r.run({ query: 'velvetcrane vendor' })
+    expect(results.map(x => x.ref)).toEqual([`[S${source}] main`])
+  })
+
   it('ranks like SQLite FTS5 bm25 over the same chunks', async () => {
     const lines = [
       'alpha beta gamma', 'alpha alpha delta epsilon zeta', 'beta beta beta', 'alpha in a much longer message with many other words around it here',
