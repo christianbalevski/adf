@@ -86,7 +86,7 @@ ADF deletes `adf_clean_close` from `adf_meta` when it opens a file. If the key i
 
 ### State
 
-The example runs only when `config.state` is `active` or `idle`. It stops for `hibernate`, `off`, `suspended` or another value. A hibernated agent wakes on timers only ([§6.1](../../ADF_SPEC_v0.2.md#61-agent-states)), so the example does not take an owner message for it. A message to the harness does not restart or resume the agent.
+The example runs only when `config.state` is `active` or `idle`. It stops for `hibernate`, `off`, `suspended` or another value. Spec [§6.1](../../ADF_SPEC_v0.2.md#61-agent-states) says that a hibernated agent wakes on timers only. ADF sends direct owner chat outside that gate. The example follows the spec and refuses. A message to the harness does not restart or resume the agent.
 
 ADF at commit `d664ea22` does not write `config.state` when you stop the agent in Studio or the daemon. A file that you stopped in the usual way keeps its state, and the example accepts it. The agent can set `config.state` with `sys_update_config`, and the owner can set it in the config editor. If `config.state` is `hibernate`, `off` or `suspended`, the owner changes it in ADF before the run, for example with `/config edit` in the terminal app.
 
@@ -225,16 +225,19 @@ def sendable(b):  # file_ref becomes text (spec 13.1); empty text and other bloc
     return b if b.get("type") in ("tool_use", "tool_result") or (b.get("type") == "text" and b.get("text")) else None
 
 def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (agent-session.ts:303-477)
-    out, held, open_, moved, lead = [], [], set(), 0, 0
+    out, held, open_, moved, lead, passed = [], [], set(), 0, 0, False
+    def flush():  # held rows go back; they moved only if a result row passed them
+        nonlocal out, held, moved, passed
+        moved += len(held) if passed else 0; out += held; held = []; passed = False
     for m in msgs:  # a user row inside an open tool pair moves after the results
         ids = {b.get("tool_use_id") for b in m["content"] if b["type"] == "tool_result"}
         if open_ and m["role"] == "user" and not ids: held.append(m); continue
         if m["role"] == "assistant":
-            out += held; held = []; open_ = {b.get("id") for b in m["content"] if b["type"] == "tool_use"}
-        else: open_ -= ids
+            flush(); open_ = {b.get("id") for b in m["content"] if b["type"] == "tool_use"}
+        else: open_ -= ids; passed = passed or bool(held)
         out.append(m)
-        if not open_: moved += len(held); out += held; held = []
-    out += held
+        if not open_: flush()
+    flush()
     while out:  # the history starts with a user message and no tool_result
         if out[0]["role"] == "assistant": out.pop(0); lead += 1; continue
         kept = [b for b in out[0]["content"] if b["type"] != "tool_result"]
