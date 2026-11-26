@@ -1937,12 +1937,12 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               className="field-input resize-none font-mono text-xs"
             />
           </Field>
-          <Field label="Dynamic Instructions" hint="Per-turn hints appended after the system prompt. These four checkboxes are the only gate — the composition setting above does not affect them.">
+          <Field label="Dynamic Instructions" hint="Inbox hints, context warning, mesh updates: per-turn, appended after the system prompt, in every composition setting. Idle reminder: a system-prompt section for autonomous agents (not in Agent Instructions only), plus the sys_set_state hint in continuation nudges.">
             <div className="space-y-1">
               {([
                 { key: 'inbox_hints' as const, label: 'Inbox hints', desc: 'Notify agent of unread messages and reply guidance' },
                 { key: 'context_warning' as const, label: 'Context warning', desc: 'Warn agent when approaching token limit' },
-                { key: 'idle_reminder' as const, label: 'Idle reminder', desc: 'Tell an autonomous agent to call sys_set_state idle when no authorized work remains (system prompt and continuation nudge)' },
+                { key: 'idle_reminder' as const, label: 'Idle reminder', desc: 'Remind agent to call sys_set_state idle when done working' },
                 { key: 'mesh_updates' as const, label: 'Mesh updates', desc: 'Notify agent when other agents join or leave the mesh' }
               ]).map(({ key, label }) => (
                 <label key={key} className="flex items-center gap-1.5 text-xs">
@@ -6156,7 +6156,8 @@ function PromptCompositionField({
     // eslint-disable-next-line no-restricted-syntax -- config.name is part of the prompt the executor caches, so it belongs in the key.
     mode, config.instructions, enabledTools, config.autonomous, config.name,
     config.model?.provider, config.model?.model_id, config.loops?.length ?? 0,
-    config.compute?.enabled, config.messaging?.receive
+    config.compute?.enabled, config.messaging?.receive,
+    config.context?.dynamic_instructions?.idle_reminder
   ])
   useEffect(() => {
     if (!filePath) return

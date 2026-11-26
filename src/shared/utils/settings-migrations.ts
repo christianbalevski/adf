@@ -204,18 +204,17 @@ function migrateComputeDefaults(data: Record<string, unknown>): boolean {
 }
 
 /**
- * Prompt keys that no longer inject anywhere and should be dropped from saved
- * settings. adf_shell: the shell guide moved into the ShellTool description so
- * it rides with the schema (hidden shell = zero context).
+ * Prompt keys dropped from saved settings, each mapped to the key its saved
+ * value (customized or not) moves to, or null when it no longer injects
+ * anywhere. adf_shell: the shell guide moved into the ShellTool description so
+ * it rides with the schema (hidden shell = zero context). dyn_idle_reminder:
+ * the idle reminder left the per-turn dynamic instructions for the cached
+ * system prompt.
  */
-const STALE_TOOL_PROMPT_KEYS = ['adf_shell']
-
-/**
- * Prompt keys that moved: a saved value (customized or not) carries over to
- * the new key before backfill. dyn_idle_reminder: the idle reminder left the
- * per-turn dynamic instructions for the cached system prompt.
- */
-const RENAMED_TOOL_PROMPT_KEYS: Record<string, string> = { dyn_idle_reminder: '_idle_reminder' }
+const MOVED_TOOL_PROMPT_KEYS: Record<string, string | null> = {
+  adf_shell: null,
+  dyn_idle_reminder: '_idle_reminder',
+}
 
 /**
  * Superseded default texts for prompt keys whose shipped default changed.
@@ -247,21 +246,15 @@ function migrateToolPrompts(data: Record<string, unknown>): boolean {
 
   const defaults: Record<string, string> = { ...DEFAULT_TOOL_PROMPTS, ...DEFAULT_DYNAMIC_PROMPTS }
   let changed = false
-  for (const [from, to] of Object.entries(RENAMED_TOOL_PROMPT_KEYS)) {
+  for (const [from, to] of Object.entries(MOVED_TOOL_PROMPT_KEYS)) {
     if (!(from in saved)) continue
-    if (!(to in saved)) saved[to] = saved[from]
+    if (to && !(to in saved)) saved[to] = saved[from]
     delete saved[from]
     changed = true
   }
   for (const [key, value] of Object.entries(defaults)) {
     if (!(key in saved)) {
       saved[key] = value
-      changed = true
-    }
-  }
-  for (const key of STALE_TOOL_PROMPT_KEYS) {
-    if (key in saved) {
-      delete saved[key]
       changed = true
     }
   }

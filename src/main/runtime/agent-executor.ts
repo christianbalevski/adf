@@ -804,9 +804,7 @@ export class AgentExecutor extends EventEmitter {
     injectedFilesHash: string
     configHash: string
     cachedPrompt: string
-    /** Tokenized size of the full prompt as sent, incl. the _autonomous suffix
-     *  appended post-cache (configHash covers `autonomous`, so measuring it at
-     *  rebuild time stays consistent with the cache key). Tokenizer choice
+    /** Tokenized size of the full prompt as sent. Tokenizer choice
      *  follows the provider at rebuild — a provider swap without a config
      *  change keeps the old figure, which is an acceptable approximation. */
     promptTokens: number
@@ -6581,16 +6579,15 @@ export class AgentExecutor extends EventEmitter {
 
       // Resolve {{<path>}} file placeholders over the whole assembled prompt
       // (single pass — injected content is not re-scanned, so no recursion).
-      cachedPrompt = this.resolveFilePlaceholders(parts.join(SEP))
+      // The autonomous sections are appended after resolution, so a {{path}}
+      // in their settings text stays literal.
+      const autonomousSuffix = this.autonomousSuffix()
+      cachedPrompt = this.resolveFilePlaceholders(parts.join(SEP)) + (bare ? '' : autonomousSuffix)
 
       // Token measurement rides the rebuild — real tokenizers are too costly
-      // per turn. The autonomous suffix is appended AFTER the cache read
-      // (below), but configHash covers everything it depends on and the text
-      // is settings-static, so counting it here stays consistent.
-      const autonomousSuffix = this.autonomousSuffix(bare)
+      // per turn.
       const countTokens = getTokenCounterService().bindTokenizer(this.tokenizerProviderId())
-      const sentAutonomousTokens = countTokens(autonomousSuffix)
-      const promptTokens = countTokens(cachedPrompt) + sentAutonomousTokens
+      const promptTokens = countTokens(cachedPrompt)
       const snapshot = this.injectedFileSnapshots ?? new Map<string, string>()
 
       this.systemPromptCache = {
@@ -6609,7 +6606,7 @@ export class AgentExecutor extends EventEmitter {
           return {
             promptParts: {
               base_and_sections: measureLayer(fullSections),
-              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + countTokens(this.autonomousSuffix(false)),
+              runtime_blocks: measureLayer(runtimeBlocks.join(SEP)) + countTokens(autonomousSuffix),
               instructions: measureLayer(instructionsBlock),
             },
             injectedFiles: measureInjectedFiles(snapshot, countTokens),
@@ -6618,20 +6615,18 @@ export class AgentExecutor extends EventEmitter {
       }
     }
 
-    return cachedPrompt + this.autonomousSuffix(bare)
+    return cachedPrompt
   }
 
   /**
-   * Autonomous-mode sections: static per config, so they ride the cached
-   * prompt. Appended outside assemblePrompt so they apply even when the base
-   * prompt is excluded; text is settings-editable like any other section.
-   * Bare mode drops `_autonomous` (runtime-authored text), but the idle
-   * reminder keeps its own owner checkbox as its only gate.
+   * Autonomous-mode sections, runtime-authored like the other runtime blocks
+   * (bare mode omits them). Appended outside assemblePrompt so they apply even
+   * when the base prompt is excluded; text is settings-editable like any
+   * other section.
    */
-  private autonomousSuffix(bare: boolean): string {
+  private autonomousSuffix(): string {
     if (!this.config.autonomous) return ''
-    const sections: string[] = []
-    if (!bare) sections.push(this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '')
+    const sections = [this.toolPrompts['_autonomous'] ?? DEFAULT_TOOL_PROMPTS['_autonomous'] ?? '']
     if (this.idleReminderEnabled()) sections.push(this.toolPrompts['_idle_reminder'] ?? DEFAULT_TOOL_PROMPTS['_idle_reminder'] ?? '')
     return sections.filter(text => text.trim()).map(text => '\n\n---\n\n' + text).join('')
   }
