@@ -9,7 +9,6 @@
 // listener serves them only to a paired device. Studio points its viewer at a
 // loopback relay of its own that forwards here (daemon-mode/remote/desktop-relay.ts).
 
-import fastifyWebsocket from '@fastify/websocket'
 import type { FastifyInstance } from 'fastify'
 import WebSocket from 'ws'
 import { pipeWebSockets } from '../../services/ws-pipe'
@@ -29,9 +28,8 @@ export function registerComputeDesktopRoutes(server: FastifyInstance, ctx: Daemo
     return (await service?.getNovncHostPort?.(container)) ?? null
   }
 
-  // Its own context: @fastify/websocket must be registered before the routes that use it.
+  // Its own context, so the routes are added after @fastify/websocket (http-api.ts) loads.
   void server.register(async (app) => {
-    await app.register(fastifyWebsocket)
 
     app.get<{ Params: { container: string } }>('/compute/desktop/:container/websockify', { websocket: true }, (socket, request) => {
       void (async () => {

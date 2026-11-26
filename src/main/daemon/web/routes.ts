@@ -5,6 +5,8 @@ import { promisify } from 'node:util'
 import { gzip } from 'node:zlib'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { ServerResponse } from 'node:http'
+import WebSocket from 'ws'
+import { pipeWebSockets } from '../../services/ws-pipe'
 import { isLoopbackName, type DaemonRequestGuard } from '../request-guard'
 import { hasProxyHeaders, isLoopbackAddress, LOCAL_PROOF_HEADER } from '../local-access'
 import { tokensEqual } from '../daemon-token'
@@ -64,6 +66,8 @@ interface BrowserSession {
   settings: Record<string, unknown>
   requests: { remaining: number; at: number }
   inFlight: number
+  /** Computer-tab streams (/web/desktop): closed with the session. */
+  desktops: Set<WebSocket>
 }
 export interface WebStudioOptions {
   /** Set false to disable the browser entry points altogether. */
@@ -77,10 +81,16 @@ export interface WebStudioOptions {
   createTab?: (options: WebTabOptions) => Promise<WebTab>
 }
 
+/** The Computer tab's VNC stream for browser Studio (route pattern). */
+const WEB_DESKTOP_ROUTE = '/web/desktop/:container/websockify'
+/** Open desktop streams per browser session. */
+const MAX_DESKTOPS = 4
+
 /** Only these routes bypass the ordinary bearer hook; this module authenticates them. */
 export function isWebStudioRoute(path: string): boolean {
   return path === '/studio' || path === '/studio/' || path.startsWith('/studio/') ||
-    path === '/web/launch' || path === '/web/pair' || path === '/web/session' || path === '/web/invoke' || path === '/web/events' || path === '/web/file' || path === '/web/snapshot'
+    path === '/web/launch' || path === '/web/pair' || path === '/web/session' || path === '/web/invoke' || path === '/web/events' || path === '/web/file' || path === '/web/snapshot' ||
+    path === WEB_DESKTOP_ROUTE
 }
 
 /** Cookies ignore ports. Include the validated request authority in the name so
@@ -144,8 +154,15 @@ export function registerWebStudio(server: FastifyInstance, guard: DaemonRequestG
   const endSession = (id: string): void => {
     const session = sessions.get(id)
     sessions.delete(id)
-    if (session) for (const entry of session.tabs.values()) endTab(entry)
+    if (session) {
+      for (const entry of session.tabs.values()) endTab(entry)
+      for (const desktop of session.desktops) desktop.close(1008, 'Signed out')
+      session.desktops.clear()
+    }
   }
+  // Desktop streams that missed the last sweep's ping: a client that dropped
+  // off the network sends no close, and would hold its slot (MAX_DESKTOPS).
+  const unanswered = new WeakSet<WebSocket>()
   const sweep = setInterval(() => {
     const now = Date.now()
     for (const [id, until] of signedOutDevices) if (until <= now) signedOutDevices.delete(id)
@@ -162,6 +179,11 @@ export function registerWebStudio(server: FastifyInstance, guard: DaemonRequestG
           if (response.writableLength > MAX_PENDING_BYTES) response.destroy()
           else response.write(': heartbeat\n\n')
         }
+      }
+      for (const desktop of session.desktops) {
+        if (unanswered.has(desktop)) { desktop.terminate(); continue }
+        unanswered.add(desktop)
+        desktop.ping()
       }
     }
   }, 15_000)
@@ -357,7 +379,7 @@ export function registerWebStudio(server: FastifyInstance, guard: DaemonRequestG
     const principal = verdict.auth.kind === 'device' ? `device:${verdict.auth.deviceId}` : 'master'
     // Nonsecret principal identity, never an offline verifier of a user token.
     const recoveryScope = createHash('sha256').update(`adf-web-recovery-v1:${principal}`).digest('hex')
-    sessions.set(id, { deviceId, storageScope, recoveryScope, token, expires: Date.now() + SESSION_MS, remote, tabs: new Map(), settings: {}, requests: { remaining: 120, at: Date.now() }, inFlight: 0 })
+    sessions.set(id, { deviceId, storageScope, recoveryScope, token, expires: Date.now() + SESSION_MS, remote, tabs: new Map(), settings: {}, requests: { remaining: 120, at: Date.now() }, inFlight: 0, desktops: new Set() })
     const existing = reply.getHeader('Set-Cookie')
     const cookies = existing === undefined ? [] : Array.isArray(existing) ? existing.map(String) : [String(existing)]
     if (kind === 'paired') cookies.push(cookie(request, token, DEVICE_COOKIE_SECONDS, DEVICE_COOKIE))
@@ -533,6 +555,33 @@ export function registerWebStudio(server: FastifyInstance, guard: DaemonRequestG
       return reply.send(response.body)
     } catch (error) { return reject(reply, 400, error instanceof Error ? error.message : 'The file could not be read.', 'web_file_failed') }
   })
+  // The Computer tab in browser Studio. Only the VNC stream crosses: the
+  // noVNC client is Studio's own bundle (never the page served from the
+  // container, which the agent can rewrite and which would then run with this
+  // origin's session). The stream is relayed to the daemon's own desktop
+  // route with the session's token, so the agent-container check applies and
+  // a device's revocation or remote access turning off ends it at once.
+  void server.register(async (app) => {
+    app.get<{ Params: { container: string } }>(WEB_DESKTOP_ROUTE, {
+      websocket: true,
+      preValidation: (request, reply, done) => {
+        const session = authorize(request, reply, true)
+        if (!session) return
+        if (session.desktops.size >= MAX_DESKTOPS) { reject(reply, 429, 'Too many Computer tabs are open. Close one and try again.', 'web_rate_limited'); return }
+        done()
+      },
+    }, (socket, request) => {
+      const session = sessions.get(cookieId(request) ?? '')
+      if (!session) { socket.close(1008, 'Sign in to browser Studio again.'); return }
+      session.desktops.add(socket)
+      socket.once('close', () => session.desktops.delete(socket))
+      socket.on('pong', () => unanswered.delete(socket))
+      const upstream = new WebSocket(`ws://${loopbackHost()}/compute/desktop/${encodeURIComponent(request.params.container)}/websockify`,
+        socket.protocol ? [socket.protocol] : [], { headers: { authorization: `Bearer ${session.token}` } })
+      pipeWebSockets(socket, upstream)
+    })
+  })
+
   server.get('/web/events', async (request, reply) => {
     const session = authorize(request, reply, true)
     if (!session) return reply

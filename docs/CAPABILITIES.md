@@ -31,7 +31,7 @@ Browser Studio requires a build containing browser support; published npm v0.8.3
 - **Remote pairing** — `adf daemon pair` prints a browser address and a two-minute code. The host approves the named browser in the same terminal. Remote access must be enabled on an allowed network.
 - **Shared interface** — desktop and browser clients use the same renderer, typed API factory and daemon handlers for agent conversations, files, settings and approvals.
 - **Host execution** — files, providers and compute remain on the daemon's machine. Closing the browser leaves agents running.
-- **Browser boundaries** — the live Computer viewer and some native sign-in and dialog flows remain desktop integrations. Browser preferences are session-scoped; agent files and daemon settings persist. See the guide for uploads, recovery and session expiry.
+- **Browser boundaries** — some native sign-in and dialog flows remain desktop integrations. Browser preferences are session-scoped; agent files and daemon settings persist. See the guide for uploads, recovery and session expiry.
 
 ## Talking to your agent
 

@@ -131,12 +131,13 @@ export async function createWebTab(options: WebTabOptions): Promise<WebTab> {
     },
     [IPC.COMPUTE_BROWSER_INFO]: async (...args) => {
       const query = (args[0] ?? {}) as { agentName?: string; agentId?: string }
-      const info = await client.request<Record<string, unknown>>('GET', '/compute/browser-info', {
+      // The daemon's own answer, without Electron's loopback relay (a port on
+      // the daemon host the browser cannot reach). The browser streams the
+      // desktop through /web/desktop/:container/websockify; a port here only
+      // says the display is up.
+      return client.request<Record<string, unknown>>('GET', '/compute/browser-info', {
         query: { agentName: query.agentName, agentId: query.agentId }, timeoutMs: 120_000,
       })
-      // Electron's relay binds a port on its local machine. In a daemon-hosted
-      // browser it would allocate a server-side port the browser cannot reach.
-      return { ...info, hostPort: null, detail: 'Use desktop Studio to view the live computer. Agent execution and compute controls remain available here.' }
     },
     [IPC.APP_GET_VERSION]: () => options.version,
     [IPC.APP_SET_BADGE_COUNT]: () => undefined,
