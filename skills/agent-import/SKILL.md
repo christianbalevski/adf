@@ -63,9 +63,9 @@ Residual risk: a secret written as an ordinary sentence, with no secret word, pr
 ## Chat-history exports
 
 A ChatGPT export (`conversations.json` whose conversations hold a `mapping` of messages) or Claude's export (`conversations.json` with `chat_messages`), shared so you remember it, needs no importer: attaching it in chat already put it in this agent's files. Steps 0 to 14 don't apply. Parse it in code, write mind pages from what the owner said, dated by conversation, and leave credentials out (hard rule 5). Then:
-- Never store an inference as a fact (a surname taken from an email address, a home guessed from a question). Mark it `(inferred from <what>)`, or ask. An identity fact (name, partner, children, home) the export doesn't state follows step 9: never pick, ask.
+- Never store an inference as a fact (a surname taken from an email address, a home guessed from a question). Mark it `(inferred from <what>)`, or ask. An identity fact (name, partner, children, home) the export doesn't state: never pick, ask.
 - Also keep advice from the assistant's replies that the owner acted on or asked to keep, marked as the assistant's and cited by conversation, so removing the export doesn't lose it.
-- When the pages are written, remove the export with `fs_delete` if the owner asked, else offer to. Say what removal does and doesn't do in hard rule 7's words: `fs_delete` is not a secure erase.
+- When the pages are written, tell the owner what they leave out (the assistant's replies you didn't keep, anything you didn't carry), then remove the export with `fs_delete` if they still want it, else offer to. Say what removal does and doesn't do in hard rule 7's words: `fs_delete` is not a secure erase.
 
 ## Questions and defaults
 
