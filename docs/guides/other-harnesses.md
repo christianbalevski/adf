@@ -52,16 +52,12 @@ If the config asks for an action that your harness does not support, refuse the 
 | Term | Definition in this guide |
 |------|------------------------|
 | harness | A program with its own agent loop: your own code, or a loop that an agent SDK gives. |
-| runtime | A program that opens an `.adf` file and runs the agent: ADF Studio, the ADF daemon, or a harness that writes the file ([§0.3](../../ADF_SPEC_v0.2.md#03-terminology)). |
-| turn | One run of a loop, from the owner message that starts it until the loop stops. A turn can contain more than one model request. |
 | subset | A part of the runtime surfaces. The example implements a text loop and two file tools. |
 | provider | The service that runs the model, for example Anthropic or OpenAI. |
-| owner | The person who controls the agent and its keys. |
-| body | The `.adf` file of one agent. |
-| loop | A conversation stream in the agent. `main` is the loop that faces the owner. |
-| transcript | The rows of one loop in `adf_loop`. |
 | context row | A `user` row in `adf_loop` whose first block is text that starts with `[Context: `. It records prompt text that a runtime added ([§1.5](../../ADF_SPEC_v0.2.md#15-no-secrets-in-context)). |
 | tracked directory | A directory that ADF Studio or the ADF daemon watches for `.adf` files. |
+
+Other terms: [§0.3](../../ADF_SPEC_v0.2.md#03-terminology).
 
 ## Requirements
 
@@ -152,10 +148,6 @@ SCHEMA_VERSION = "32"  # the adf_schema_version this program was written against
 IDENTITY_KEYS = ("adf_did", "adf_owner_did", "adf_runtime_did", "adf_did_history")
 FINISHED = ("completed", "interrupted", "failed")  # adf_runtime_turn_checkpoint statuses of a finished turn
 RUN_STATES = ("active", "idle", "hibernate")  # config.state values that take an owner message here
-TEXT_MIME = {"application/json", "application/xml", "application/yaml", "application/x-yaml", "application/javascript",
-             "application/typescript", "application/x-sh", "application/sql", "application/graphql",
-             "application/xhtml+xml", "application/x-httpd-php", "application/x-ndjson", "application/ndjson",
-             "application/csv", "application/toml"}  # ADF's text types (src/main/tools/built-in/mime-utils.ts)
 KEYED = re.compile(r"^\[Context: ([a-z][a-z0-9_.-]{0,63}) \| loop_inject=v2 \| origin=([a-zA-Z0-9_.:/-]{1,128})"
                    r"(?: \| key=([a-zA-Z0-9_.:-]{1,128}))?\] ([\s\S]*)$")  # ADF agent-session.ts:524
 UNKNOWN = ("No result was recorded. The harness or runtime stopped before it recorded a result. The call may or may"
@@ -175,7 +167,6 @@ def now_ms():
 def now_iso(): return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 def dumps(v): return json.dumps(v, ensure_ascii=False, separators=(",", ":"))
 def text(t): return [{"type": "text", "text": t}]
-def is_text(mime): return mime.startswith("text/") or mime in TEXT_MIME or bool(re.search(r"\+(json|xml|yaml)$", mime))
 
 def open_writable(path):  # phase 1: check and open
     global last_ms
@@ -194,7 +185,8 @@ def open_writable(path):  # phase 1: check and open
     db.execute("BEGIN IMMEDIATE")
     if db.execute("DELETE FROM adf_meta WHERE key = 'adf_clean_close'").rowcount != 1:  # read and delete in one step
         db.execute("ROLLBACK"); db.close()
-        sys.exit("stop: adf_clean_close is absent; a runtime has the file open, or it did not close. Open it in ADF.")
+        sys.exit("stop: adf_clean_close is absent; a runtime has the file open, or it did not close."
+                 " Open it in ADF, and inspect the transcript and files before the next run.")
     db.execute("UPDATE adf_meta SET protection = 'readonly' WHERE key IN (?, ?, ?, ?)"
                " AND protection <> 'readonly'", IDENTITY_KEYS)  # identity-meta repair (spec 4.4)
     db.execute("COMMIT")
@@ -254,7 +246,7 @@ def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (ag
         m["content"] = keep or text("[Tool call removed — no matching result in history]" if m["role"] == "assistant"
                                     else "[Tool result removed — no matching call in history]")
     note = f"{len(tail)} call(s) with an unknown outcome, {removed} unpaired tool block(s) removed" if tail or removed else ""
-    if note: print(f"warning for the owner: request-only repair: {note}. Inspect the files first.", file=sys.stderr)
+    if note: print(f"warning for the owner: request-only repair: {note}. The model was told to check the target. Inspect the files before the next run.", file=sys.stderr)
     return out, note
 
 def history(db):  # the active history: the stored transcript without context rows, repaired in memory
@@ -299,7 +291,7 @@ def run_tool(db, config, tools, name, args):  # runs inside the BEGIN of phases 
     row = db.execute("SELECT content, mime_type, protection FROM adf_files WHERE path = ?", (path,)).fetchone()
     try: old = bytes(row[0]).decode("utf-8") if row else ""
     except UnicodeDecodeError: old = None
-    if row and (old is None or not is_text(str(row[1] or ""))): return f"Refused: {path} is not a text file.", True
+    if row and old is None: return f"Refused: {path} is not UTF-8 text.", True  # strict decode; bytes stay as they are
     if name == "fs_read": return (old, False) if row else (f'File not found: "{path}"', True)
     if row and row[2] == "read_only": return f'Cannot write to "{path}": file is read-only.', True
     if args.get("mode") not in ("write", "append"): return "Only modes write and append are available.", True
@@ -338,9 +330,10 @@ def main(path, message, model):
         for step in range(10):
             reply = call_model(model, {"system": system, "messages": messages,  # phase 3: dispatch
                                        "tools": [dict(name=n, **t) for n, t in tools.items()]})
-            calls = [{"type": "tool_use", "id": f"tu_{now_ms()}_{step}_{i}", "name": str(c.get("name")),
+            calls = [{"type": "tool_use", "id": f"tu_{int(time.time() * 1000)}_{os.urandom(4).hex()}",  # unique, not from now_ms()
+                      "name": str(c.get("name")),
                       "input": c.get("input") if isinstance(c.get("input"), dict) else {"value": c.get("input")}}
-                     for i, c in enumerate(reply.get("tool_calls") or [])]
+                     for c in reply.get("tool_calls") or []]
             blocks = (text(reply["text"]) if reply.get("text") else []) + calls
             if not blocks: print("warning: the model returned no text and no tool call", file=sys.stderr); break
             usage = reply.get("usage")
@@ -385,8 +378,7 @@ Expected result of a run with the default stub: the program prints `Stub reply. 
 | Messages | `adf_inbox`, `adf_outbox` | Do not change. |
 | Timers and tasks | `adf_timers`, `adf_tasks` | Do not change. |
 | Audit snapshots | `adf_audit` | Do not change. Do not load them into history. |
-| Harness state | your own `local_<harness>_*` tables ([§3.4](../../ADF_SPEC_v0.2.md#34-user-tables)) | Create and write. |
-| Small harness cursors | `adf_meta` keys `runtime_<harness>_*` ([§3.3](../../ADF_SPEC_v0.2.md#33-field-reference-data-dictionary)) | Create and write. Keep other `runtime_*` keys as they are. |
+| Harness state | your own tables and `adf_meta` keys | See [Write set](#write-set). |
 
 These values are different:
 
@@ -432,7 +424,7 @@ Use this replay policy for context rows. ADF at commit `d664ea22` uses the same 
 | Injection without a key | `[Context: <category> \| loop_inject=v2 \| origin=<origin>] ` | Skip. It applied one time. |
 | Compaction summary | `[Loop Compacted] ` or `[Loop Compacted, audited] ` | Send. It is not a context row. |
 
-A keyed injection is a `user` row with one `text` block that matches the header pattern in the example (`KEYED`). For each key, send the newest row. Order the keys by their newest row. Note: The skills catalog of ADF is a keyed injection with `key=skills_registry`.
+A keyed injection is a `user` row with one `text` block that matches the header pattern in the example (`KEYED`). For each key, send the newest row. Order the keys by their newest row. Note: The skills catalog of ADF is a keyed injection with `key=skills_registry`. For `loop_inject` in ADF, see [memory-management.md](memory-management.md#loop_inject-code-execution-only).
 
 Do not send empty `text` blocks. If a message then has no blocks, do not send it.
 
@@ -478,7 +470,16 @@ Steps 7 and 9 are runtime work on the state of the file, the same as the close r
 
 Note: ADF at commit `d664ea22` opens a newer schema in read-write mode with a warning. Spec §3.5 asks for a read-only open or a refusal. Do not write to a schema version that this guide does not name.
 
-Write no other `adf_*` key in `adf_meta`. Do not change protections. Do not write `adf_config` or `adf_identity`. Keep harness data in `local_<harness>_*` tables, or in `runtime_<harness>_*` keys for small values.
+### Write set
+
+A harness writes only these parts of the file. Replace `myh` with a short name for your harness.
+
+- Append rows to `adf_loop` ([Turn records](#turn-records)).
+- Write `adf_files` through the file tools ([File tools](#file-tools)).
+- In `adf_meta`: `adf_clean_close`, the identity protection repair ([Open](#open)), and keys that start with `runtime_myh_` ([§3.3](../../ADF_SPEC_v0.2.md#33-field-reference-data-dictionary)).
+- Tables that start with `local_myh_` ([§3.4](../../ADF_SPEC_v0.2.md#34-user-tables)).
+
+Write nothing else. Do not change other protections, other `runtime_*` keys, `adf_config` or `adf_identity`.
 
 Use narrow, parameterized `INSERT` and `UPDATE` statements only. Do not use `INSERT OR REPLACE`. Do not make a table again, and do not copy the data into a new database. These actions can lose columns, keys and rows that your harness does not know ([§0.2](../../ADF_SPEC_v0.2.md#02-data-conventions)).
 
@@ -510,13 +511,7 @@ A request that reached the provider stays on record, also if the harness fails l
 
 Caution: After a timeout or a failed request, examine the transcript and the changed files before you try again. A failed command can already have changed files. A new try can do the same work again.
 
-Write only these block types: `text`, `tool_use` and `tool_result`. Put a `tool_result` block for each call in the row after a `tool_use` row. ADF at commit `d664ea22` converts these blocks when it sends a request:
-
-- On `assistant` rows: `text`, `tool_use`, and `thinking` blocks that have OpenRouter `reasoning_details`. It drops media and all other types.
-- On `user` rows: `text`, `tool_result` and media.
-- It drops empty `text` blocks. It drops an `assistant` row that has nothing left to send.
-
-Do not write `thinking` blocks.
+Write only these block types: `text`, `tool_use` and `tool_result`. Put a `tool_result` block for each call in the row after a `tool_use` row. ADF drops other block types when it sends a request. Do not write `thinking` blocks.
 
 If a row has a `file_ref` block, send its path to your model as text. If the block has `deleted: true`, send `[deleted: <file name>]` ([§13.1](../../ADF_SPEC_v0.2.md#131-transcript-rows)). Keep the row as it is.
 
@@ -541,7 +536,9 @@ The example supports `fs_read` and `fs_write` in modes `write` and `append`.
 1. Refuse a write to a file with protection `read_only` ([§4.2](../../ADF_SPEC_v0.2.md#42-file-protection)).
 2. Set `authorized = 0` on each write ([§4.3](../../ADF_SPEC_v0.2.md#43-file-authorization)).
 3. Store `content` as a BLOB, `size` as its length in bytes, and `updated_at` as an ISO-8601 string.
-4. Read and write only the text types that ADF uses: `text/*`, the types in `TEXT_MIME` in the example, and types that end in `+json`, `+xml` or `+yaml`. Refuse other files. Do not decode a binary file and write it again.
+4. Read and write only files whose content is valid UTF-8. Refuse other files. Do not decode a binary file and write it again.
+
+Note: Step 4 is a rule of this guide. ADF's own `fs_write` does not examine the MIME type or the content of the file before it writes.
 
 Rationale for step 2: `authorized = 1` lets the code in a file call restricted tools. A write by the model cannot keep that permission.
 
@@ -560,7 +557,7 @@ Compaction is not in the scope of this guide. If the history is too long for the
 
 Only after a successful checkpoint and close can you move the `.adf` file alone. If the checkpoint is incomplete, stop. Keep the `.adf` and its `-wal` and `-shm` files together. Do not delete or separate them.
 
-The close does not move the parts in [Limits](#limits): accounts, channels, the provider credential, timers, messages, MCP servers and inner loops. `adf_clean_close` tells only that the file closed cleanly. It does not tell that the task is complete or that a tool ran one time.
+For the parts that the close does not move, see [Limits](#limits). `adf_clean_close` tells only that the file closed cleanly. It does not tell that the task is complete or that a tool ran one time.
 
 ## Check
 
@@ -569,9 +566,9 @@ Do these checks after the first runs. Use a copy from before the run and the fil
 1. Run `PRAGMA integrity_check` on the file after the run. The result must be `ok`.
 2. Compare the old rows. Each row of `adf_loop` in the copy must have the same values in the file after the run.
 3. Examine the new rows. Each new row must have `loop = 'main'`, `ord` NULL, and `model` on `assistant` rows only. `tokens` must be NULL or JSON with `input` and `output`.
-4. Examine tool pairs. Each `tool_use` id in a new row must have a `tool_result` in the next non-context row.
-5. Compare `adf_meta`. Only `adf_clean_close` can change, and the protection of the four identity keys can change to `readonly`.
-6. Compare the other tables. Only `adf_loop` and `adf_files` can change.
+4. Examine tool pairs. Each `tool_use` id in a new row must have a `tool_result` in the next non-context row. An interrupted run leaves a call with no result. This is correct; see [Tool pairs](#tool-pairs).
+5. Compare `adf_meta`. Only the keys in the [Write set](#write-set) can change.
+6. Compare the other tables. Only the tables in the [Write set](#write-set) can change.
 
 ```python
 import json, sqlite3
@@ -580,15 +577,18 @@ def rows(path, sql):
 before, after = "before.adf", "after.adf"
 print(rows(after, "PRAGMA integrity_check"))
 old = rows(before, "SELECT * FROM adf_loop")
-assert old == [r for r in rows(after, "SELECT * FROM adf_loop") if r[0] <= max(r[0] for r in old)]
-new = rows(after, f"SELECT seq, role, model, tokens, ord, loop FROM adf_loop WHERE seq > {max(r[0] for r in old)}")
+top = max((r[0] for r in old), default=0)
+assert old == [r for r in rows(after, "SELECT * FROM adf_loop") if r[0] <= top]
+new = rows(after, f"SELECT seq, role, model, tokens, ord, loop FROM adf_loop WHERE seq > {top}")
 print([r for r in new if r[5] != "main" or r[4] is not None or (r[2] is None) != (r[1] == "user")])
 meta = lambda p: dict((k, (v, pr)) for k, v, pr in rows(p, "SELECT key, value, protection FROM adf_meta"))
 m0, m1 = meta(before), meta(after)
-print([k for k in set(m0) | set(m1) if k != "adf_clean_close" and m0.get(k) != m1.get(k)])
+print([k for k in set(m0) | set(m1) if k != "adf_clean_close" and not k.startswith("runtime_myh_") and m0.get(k) != m1.get(k)])
+tables = lambda p: {n for (n,) in rows(p, "SELECT name FROM sqlite_master WHERE type = 'table'")}
+print(sorted(tables(after) - tables(before) - {n for n in tables(after) if n.startswith("local_myh_")}))
 ```
 
-The script prints three results: `[('ok',)]`, then the new rows that break step 3, then the changed `adf_meta` keys other than `adf_clean_close`. Each list must be empty, except for a protection that changed to `readonly` on an identity key. Steps 4 and 6 are not in this script.
+Replace `myh` with your harness name. The script prints four results. The first is `[('ok',)]`. Then come the new rows that break step 3, the changed `adf_meta` keys outside the write set, and the new tables outside the write set. Each list must be empty, except for a protection that changed to `readonly` on an identity key. Step 4 and the contents of old tables are not in this script.
 
 Two more properties are this guide's profile, not format rules: `created_at` does not decrease, and roles alternate when you skip context rows. The example keeps the first. A failed request can break the second, in the example and in ADF.
 
@@ -603,7 +603,7 @@ Do the first return on a disposable copy, on a computer with no network connecti
 
 A turn with a model in ADF is a separate step. It needs a provider that you configured in ADF.
 
-Studio does not start the agent when you open the file. When Studio or the daemon starts, it starts each agent with `autostart: true` in a tracked directory. The daemon also starts a new file with `autostart: true` in a tracked directory. A started agent can run triggers, timers and channel adapters.
+See [Single writer](#single-writer).
 
 When ADF opens a file that another program wrote, it does these actions:
 
@@ -620,12 +620,7 @@ After a failed or stopped harness run, examine the transcript and the changed fi
 
 The system prompt is different in each runtime. ADF adds its own base prompt and tool guidance from its runtime settings. These settings are not in the file: `adf_effective_runtime` holds only their hashes. A config with `bare_prompt: true` sends `instructions` only. A config with `include_base_prompt: false` removes the base prompt but keeps other sections ([§5.1](../../ADF_SPEC_v0.2.md#51-top-level-shape)). The agent can act differently in each runtime.
 
-Identity:
-
-- If this ADF install reviewed the agent before, the file opens as before.
-- If not, Studio shows a review. It offers a claim if `adf_owner_did` is absent or names another owner.
-- A claim gives the agent a new DID and adds the old DID to `adf_did_history` ([§8.4](../../ADF_SPEC_v0.2.md#84-envelope-and-lock-states)).
-- Some files have a plain `crypto:signing:private_key` and no `adf_owner_did`. If you accept the review of such a file without a claim, Studio adds the owner and runtime DIDs. It also seals the key.
+Identity: if this ADF install did not review the agent before, Studio can offer a claim, and a claim gives the agent a new DID. See [claim a foreign agent](security-and-identity.md#claiming-a-foreign-agent), and [Agent DID](security-and-identity.md#agent-did--one-per-file) for rotation and history.
 
 To make a new `.adf` file, use ADF Studio or the ADF CLI. This guide does not make files.
 
@@ -651,8 +646,8 @@ Not run. Checked: `openai-agents` 0.26.0.
 - Integration point: a custom `Session` with `get_items`, `add_items`, `pop_item` and `clear_session`. Pass it to `Runner.run(..., session=...)`.
 - `get_items` reads `adf_loop` with the transcript query and converts rows to Responses API input items.
 - `add_items` converts the items back to `text`, `tool_use` and `tool_result` blocks and appends rows. Do not store the item JSON as it is.
-- `pop_item` and `clear_session` delete items, and the SDK can rewind items for a retry. Do not let them delete committed `adf_loop` rows. Keep a cursor or staged items in a `local_<harness>_*` table, and remove items there only. A rewind of the SDK cache does not cancel a request that the provider received.
-- Map each function call id to the `tool_use` id. Keep both in a `local_<harness>_*` table if you need them later.
+- `pop_item` and `clear_session` delete items, and the SDK can rewind items for a retry. Do not let them delete committed `adf_loop` rows. Keep a cursor or staged items in your own table ([Write set](#write-set)), and remove items there only. A rewind of the SDK cache does not cancel a request that the provider received.
+- Map each function call id to the `tool_use` id. Keep both in your own table ([Write set](#write-set)) if you need them later.
 - Do not use `SQLiteSession` at the same time. Choose one store.
 
 ### LangGraph
@@ -660,7 +655,7 @@ Not run. Checked: `openai-agents` 0.26.0.
 Not run. Checked: `langgraph` 1.2.24, `langgraph-checkpoint` 4.3.2.
 
 - A checkpointer (`BaseCheckpointSaver`) holds the full graph state, not a transcript. A graph can run with no checkpointer.
-- Put the messages of `MessagesState` in `adf_loop`. Put other graph state in a `local_<harness>_*` table.
+- Put the messages of `MessagesState` in `adf_loop`. Put other graph state in your own table ([Write set](#write-set)).
 - The shortest path: compile with no checkpointer, and give the full `messages` list from `adf_loop` for each run.
 - A graph retry can run a tool again. A `COMMIT` does not prevent a second effect of the tool. The example in this guide is serial, and it does not resume a graph.
 
