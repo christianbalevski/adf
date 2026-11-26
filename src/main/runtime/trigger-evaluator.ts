@@ -175,6 +175,8 @@ export class TriggerEvaluator extends EventEmitter {
   // (`recovery_at`), the same fact the UI reads. null = parked.
   private recoveryAt: number | null = null
   private timerReceiver: TimerReceiver | null = null
+  // Whether main's agent-scope turn is running, from start to finish (see setTurnActiveProbe).
+  private agentTurnActive: () => boolean = () => false
 
   // Hibernate nudge: fires after configured interval since the last trigger while in hibernate
   private lastTriggerAt: number = Date.now()
@@ -213,6 +215,13 @@ export class TriggerEvaluator extends EventEmitter {
 
   getDisplayState(): string {
     return this.displayState
+  }
+
+  /** Ask main's executor whether an agent-scope turn is running. The display
+   *  state misses the parts of a turn outside a work state (preflight,
+   *  compaction before 'thinking', error handling). */
+  setTurnActiveProbe(probe: (() => boolean) | null): void {
+    this.agentTurnActive = probe ?? (() => false)
   }
 
   /** Route timer agent parts through the host (see TimerReceiver). */
@@ -474,8 +483,10 @@ export class TriggerEvaluator extends EventEmitter {
       if (skipAgentScope && target.scope === 'agent') continue
       if (!this.shouldFire(target.scope, triggerType, target.loop)) continue
       // The agent's own activity never wakes it while it is working: the wake
-      // would follow the very turn that caused it, endlessly.
-      if (target.scope === 'agent' && EXECUTOR_WORK_STATES.has(this.displayState) && this.observesOwnActivity(triggerType, event)) continue
+      // would follow the very turn that caused it, endlessly. A turn is its own
+      // activity from start to finish, including the parts outside a work
+      // state (preflight, compaction before 'thinking', error handling).
+      if (target.scope === 'agent' && (EXECUTOR_WORK_STATES.has(this.displayState) || this.agentTurnActive()) && this.observesOwnActivity(triggerType, event)) continue
       if (!this.matchesFilter(triggerType, target, filterData)) continue
 
       // Self-generated file writes are suppressed unless a target asks for

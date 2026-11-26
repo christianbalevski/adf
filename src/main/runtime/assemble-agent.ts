@@ -378,6 +378,7 @@ export function assembleAgent<P extends AgentProfileName>(
   const triggerEvaluator = new TriggerEvaluator(config)
   triggerEvaluator.setDisplayState(resolveStartInState(config))
   triggerEvaluator.setWorkspace(workspace)
+  triggerEvaluator.setTurnActiveProbe(() => executor.isAgentTurnActive())
 
   let state: AgentLifecycleState = 'created'
   const getLifecycleState = (): AgentLifecycleState => state

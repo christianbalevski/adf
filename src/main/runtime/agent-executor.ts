@@ -1100,6 +1100,11 @@ export class AgentExecutor extends EventEmitter {
     return this.activeTurnCount > 0
   }
 
+  /** Whether an agent-scope turn holds the agent (isTurnActive minus system-scope lambda dispatches). */
+  isAgentTurnActive(): boolean {
+    return this.activeAgentTurnCount > 0
+  }
+
   /** The last target state set by sys_set_state, or null if none. */
   private _lastTargetState: string | null = null
   getLastTargetState(): string | null {
@@ -2621,9 +2626,6 @@ export class AgentExecutor extends EventEmitter {
               'source messages by their [S<seq>] markers. Track unfinished work on an open-thread page. ' +
               'Then continue — compaction follows automatically.')
           } else {
-            // Compacting is the turn's work: enter the work state first, so a
-            // compaction_failed log is the agent's own activity, not a wake.
-            this.setState('thinking')
             this.emitEvent({
               type: 'context_injected',
               payload: { category: 'status', content: 'Auto-compacting conversation history...' },
@@ -3793,14 +3795,11 @@ export class AgentExecutor extends EventEmitter {
           timestamp: Date.now()
         })
       } else if (isTransientProviderError(error, errorMsg)) {
+        this.setState('idle')
         const scheduled = this.scheduleProviderRecovery(dispatch, error, errorMsg)
         // Severity tracks the outcome: warn while auto-recovery is handling it,
         // error once it gives up (or is disabled) and a human needs to look.
-        // Logged before leaving the turn's work state, so the agent's own
-        // on_logs targets see it as its own activity and don't wake it into
-        // another call to the provider that just failed.
         try { this.session.getWorkspace().insertLog(scheduled ? 'warn' : 'error', 'executor', 'provider_error', null, errorMsg.slice(0, 300)) } catch { /* non-fatal */ }
-        this.setState('idle')
         if (scheduled) {
           this.emitEvent({
             type: 'error',

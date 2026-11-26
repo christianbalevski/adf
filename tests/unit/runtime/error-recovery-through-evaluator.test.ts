@@ -474,13 +474,9 @@ describe('a provider give-up does not wake the agent through its own on_logs tar
   const executorErrors = { level: ['error'], origin: ['executor'] }
   const anyErrors = { level: ['error'] }
   const gaveUp = (workspace: AdfWorkspace) => workspace.getLogs().some(l => l.event === 'provider_error' && l.level === 'error')
-  /**
-   * Build, start, stop polling, and run one chat turn into a 429; resolves
-   * once the retry budget (max_attempts 2) is spent and the give-up is logged.
-   */
-  async function gaveUpAgent(name: string, opts: { filter?: object; extraTargets?: unknown[]; context?: object } = {}) {
+  /** Build and start with an agent-scope on_logs target; timer polling stopped. */
+  async function startedAgent(name: string, provider: LLMProvider, opts: { filter?: object; extraTargets?: unknown[]; context?: object } = {}) {
     const { filePath, workspace } = makeWorkspace(name)
-    const provider = new RateLimitedProvider()
     const config = workspace.getAgentConfig()
     config.triggers = { ...config.triggers, on_logs: { enabled: true, targets: [{ scope: 'agent', filter: opts.filter ?? executorErrors }, ...(opts.extraTargets ?? [])] } } as typeof config.triggers
     if (opts.context) config.context = { ...config.context, ...opts.context } as typeof config.context
@@ -491,6 +487,12 @@ describe('a provider give-up does not wake the agent through its own on_logs tar
     })
     await (agent as unknown as { start?: () => Promise<void> }).start?.()
     agent.triggerEvaluator.stopTimerPolling()
+    return { agent, workspace }
+  }
+  /** Run one chat turn into a 429; resolves once the retry budget (max_attempts 2) is spent and the give-up is logged. */
+  async function gaveUpAgent(name: string, opts: { filter?: object; extraTargets?: unknown[]; context?: object } = {}) {
+    const provider = new RateLimitedProvider()
+    const { agent, workspace } = await startedAgent(name, provider, opts)
     await agent.executor.executeTurn(chatDispatch())
     for (let i = 0; i < 100 && !gaveUp(workspace); i++) await sleep(20)
     await sleep(300)
@@ -561,6 +563,55 @@ describe('a provider give-up does not wake the agent through its own on_logs tar
       await agent.executor.executeTurn(chatDispatch('again'))
       await sleep(300)
       expect({ calls: provider.calls, giveUpToSystem: seen.includes('provider_error') }).toEqual({ calls: 4, giveUpToSystem: true })
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 20_000)
+
+  it('PREFLIGHT: a give-up at the credential preflight, before the turn is thinking, runs no further turn', async () => {
+    // validateConfig answers a 429 (providerValidated stays false, so every turn re-preflights); hangs past 200 to cap a spin.
+    const provider = new RateLimitedProvider()
+    let validations = 0
+    provider.validateConfig = async () => (++validations > 200 ? new Promise<never>(() => {}) : { valid: false, error: '429 rate_limit_error: weekly limit reached' })
+    const { agent, workspace } = await startedAgent('preflight', provider)
+    try {
+      await agent.executor.executeTurn(chatDispatch())
+      for (let i = 0; i < 100 && !gaveUp(workspace); i++) await sleep(20)
+      await sleep(300)
+      const afterBudget = validations
+      deliverInbox(agent, workspace, 'KICK')
+      await sleep(2000)
+      // Bound: one preflight per turn (the turn plus 2 retries, then the kicked turn), no model call.
+      expect({ afterBudget, validations, calls: provider.calls, state: agent.executor.getState(), giveUpLogged: gaveUp(workspace) })
+        .toEqual({ afterBudget: 3, validations: 4, calls: 0, state: 'idle', giveUpLogged: true })
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 20_000)
+
+  it('NO-OVERREACH: with no turn running, an error log from outside still wakes the agent once', async () => {
+    const provider = new RateLimitedProvider()
+    provider.heal()
+    const { agent, workspace } = await startedAgent('outside-log', provider)
+    try {
+      workspace.insertLog('error', 'executor', 'x', null, 'outside')
+      await sleep(1000)
+      expect({ calls: provider.calls, state: agent.executor.getState() }).toEqual({ calls: 1, state: 'idle' })
+    } finally {
+      await agent.disposeAsync()
+    }
+  }, 20_000)
+
+  it('NO-OVERREACH (lambda): a system-scope lambda\'s error, logged while it runs, still wakes the agent', async () => {
+    const provider = new RateLimitedProvider()
+    provider.heal()
+    const { agent } = await startedAgent('lambda-error', provider)
+    try {
+      agent.executor.setSystemScopeHandler({ execute: async () => { throw new Error('lambda boom') }, executeBatch: async () => {} } as never)
+      // The lambda_error log is written while this system-scope dispatch holds its turn slot.
+      await agent.executor.executeTurn(createDispatch(chatDispatch().event, { scope: 'system', lambda: 'lib/x.js:f' }))
+      await sleep(1000)
+      expect({ calls: provider.calls, state: agent.executor.getState() }).toEqual({ calls: 1, state: 'idle' })
     } finally {
       await agent.disposeAsync()
     }
