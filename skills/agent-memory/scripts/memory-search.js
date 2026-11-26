@@ -75,7 +75,7 @@ function messageText(content) {
   for (const b of Array.isArray(blocks) ? blocks : []) {
     if (!b || typeof b !== 'object') continue
     if (b.type === 'text' && typeof b.text === 'string') { if (!OWN_OUTPUT.test(b.text)) out.push(b.text) }
-    else if (b.type === 'tool_use') out.push(...sentText(b.name, b.input).filter(t => typeof t === 'string'))
+    else if (b.type === 'tool_use') out.push(...sentText(b.name, b.input).filter(t => typeof t === 'string' && !OWN_OUTPUT.test(t)))
     else if (b.type === 'tool_result') {
       const parts = typeof b.content === 'string' ? [b.content]
         : Array.isArray(b.content) ? b.content.map(c => c?.text).filter(t => typeof t === 'string') : []
@@ -96,7 +96,9 @@ function messageChunks(seq, loop, createdAt, content) {
 
 function decodeBlob(data) {
   const blob = String(data)
-  return JSON.parse(brotliDecompressSync(Buffer.from(blob.startsWith('base64:') ? blob.slice(7) : blob, 'base64')).toString())
+  const buf = Buffer.from(blob.startsWith('base64:') ? blob.slice(7) : blob, 'base64')
+  // Imported blobs are untrusted: the 128 MiB cap of src/main/adf/archived-loop-page.ts. Over it, readBlob skips the blob.
+  return JSON.parse(brotliDecompressSync(buf, { maxOutputLength: 128 * 1024 * 1024 }).toString())
 }
 
 async function readBlob(id) {
@@ -143,9 +145,9 @@ async function search({ query, k = K_DEFAULT } = {}) {
     })
   }
 
-  // Live rows win; then the first archived copy of each seq.
+  // The first archived copy of each seq wins, then live rows. An archived copy is
+  // the original: the runtime can strip tool blocks from live rows in place, same seq.
   const live = await adf.db_query({ sql: 'SELECT seq, loop, content_json, created_at FROM adf_loop', _full: true })
-  for (const r of live) scan(r.seq, r.loop, r.created_at, r.content_json, 'live')
   const blobIds = await adf.db_query({
     sql: "SELECT id FROM adf_audit WHERE source = 'loop' OR source LIKE 'loop:%' ORDER BY id", _full: true
   })
@@ -155,6 +157,7 @@ async function search({ query, k = K_DEFAULT } = {}) {
       if (e && typeof e.seq === 'number') scan(e.seq, loop, e.created_at, e.content_json, id)
     }
   }
+  for (const r of live) scan(r.seq, r.loop, r.created_at, r.content_json, 'live')
 
   const avgLength = totalLength / n
   const idf = df.map(d => Math.max(Math.log((n - d + 0.5) / (d + 0.5)), 1e-6))

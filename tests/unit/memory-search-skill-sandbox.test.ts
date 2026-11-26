@@ -143,6 +143,27 @@ describe('memory-search skill in the real sandbox', () => {
     expect(await r.run({ query: 'wrotegarnet' })).toEqual([])
   })
 
+  it('after the runtime strips tool blocks from live rows in place, the archived originals are found', async () => {
+    const sent = ws.appendToLoop('assistant', [
+      { type: 'text', text: 'Sending the update now.' },
+      { type: 'tool_use', id: 't1', name: 'msg_send', input: { recipient: 'telegram:1', content: 'Contract signed with Zephyrquill.' } }
+    ], undefined, undefined, DAY)
+    const result = ws.appendToLoop('user', [
+      { type: 'tool_result', tool_use_id: 't1', content: 'Delivered as ticket Brindlemoor-42.' },
+      { type: 'text', text: 'note' }
+    ], undefined, undefined, DAY)
+    // The executor's tool-mismatch recovery (agent-executor.ts): strip every tool block,
+    // keep the seqs. replaceLoop archives the unstripped originals first.
+    const cleaned = ws.getLoop()
+      .map(e => ({ ...e, content_json: e.content_json.filter(b => b.type !== 'tool_use' && b.type !== 'tool_result') }))
+      .filter(e => e.content_json.length > 0)
+    await ws.replaceLoop(cleaned.map(e => ({ role: e.role, content: e.content_json, model: e.model, tokens: e.tokens, created_at: e.created_at, seq: e.seq, ord: e.ord })))
+    expect(ws.getLoop().map(e => e.seq)).toEqual([sent, result]) // same seqs, now stripped
+    const r = runner()
+    expect((await r.run({ query: 'zephyrquill' })).map(x => x.ref)).toEqual([`[S${sent}] main`])
+    expect((await r.run({ query: 'brindlemoor' })).map(x => x.ref)).toEqual([`[S${result}] main`])
+  })
+
   it('returns the matching chunk of a long message, once', async () => {
     const paras = Array.from({ length: 60 }, (_, i) => `Paragraph ${i} ${'filler '.repeat(40)}${i === 45 || i === 50 ? 'Saffronlake' : ''}`)
     const seq = append('user', paras.join('\n\n'))
@@ -168,7 +189,7 @@ describe('memory-search skill in the real sandbox', () => {
     expect(results.map(x => x.ref)).toEqual([`[S${source}] main`])
   })
 
-  it('its earlier results stored by _async, sys_code, or as a truncated preview do not echo', async () => {
+  it('its earlier results stored by _async, sys_code, as a truncated preview, or pasted into loop_send do not echo', async () => {
     const [source] = await history(['The archive vendor is Velvetcrane.', 'ok', 'next'])
     for (let i = 0; i < 4; i++) append('user', `Unrelated note ${i} about lunch.`)
     const r = runner()
@@ -179,6 +200,9 @@ describe('memory-search skill in the real sandbox', () => {
     ws.appendToLoop('user', [{ type: 'tool_result', tool_use_id: 'c1', content: `Result: ${out}` }], undefined, undefined, DAY)
     // Over the tool-result cap: the runtime keeps a preview of the head.
     ws.appendToLoop('user', [{ type: 'tool_result', tool_use_id: 'c2', content: `[TRUNCATED] Tool "sys_lambda" returned ~20,000 tokens (limit: 16,000).\n\nPreview (first 2,500 chars, last 2,500 chars; 10 chars omitted):\n${out}` }], undefined, undefined, DAY)
+    // An inner loop that pastes a result entry into loop_send.
+    const [entry] = (JSON.parse(out) as { results: Hit[] }).results
+    ws.appendToLoop('assistant', [{ type: 'tool_use', id: 'l1', name: 'loop_send', input: { to_loop: 'main', content: `Found it: ${JSON.stringify(entry)}` } }], undefined, undefined, DAY)
     const results = await r.run({ query: 'velvetcrane vendor' })
     expect(results.map(x => x.ref)).toEqual([`[S${source}] main`])
   })
