@@ -14,11 +14,11 @@ Don't delete the drop here. The whole importer goes only after the home agent co
 The last step, after every page and the report are written. In one `sys_code` call:
 1. If the owner said no in step 7, delete nothing. If `fs_delete` is missing, delete nothing.
 2. Read the config with `adf.sys_get_config({})`. If `context.audit.files` or the legacy `audit.files` is true, delete nothing: with file auditing on, deleting a file archives its whole content into the agent's history. If the config can't be read, delete nothing.
-3. Otherwise `fs_list` each drop folder, `fs_delete` every file in it (SKIP and credential-like ones too), then `fs_list` again. Return only the counts deleted and left, and the paths left.
+3. Otherwise `fs_list` each drop folder, `fs_delete` every file in it (SKIP and credential-like ones too; for a single-file drop, that file only), then `fs_list` again. Return only the counts deleted and left, and the paths left.
 
 Fill in the report's Clean up and Waiting on you item 10 with one plain sentence:
 - Deleted, none left: Clean up says "I removed the files you dropped from this agent's file list. Traces of them can stay inside the agent file, so don't share this agent with anyone you wouldn't show those files to." Drop item 10.
-- No `fs_delete`, or the owner said no: "Delete the folder <drop folder> in Studio's Files panel."
+- No `fs_delete`, or the owner said no: "Delete the folder <drop folder> in Studio's Files panel." (For a single-file drop: "Delete the file <path> in Studio's Files panel.")
 - Auditing on: "I didn't delete the files you dropped, because file auditing is on in this agent's settings and deleting them would copy your agent's files into its history."
 - Config unreadable: "I didn't delete the files you dropped, because I couldn't check whether file auditing is on, and if it is, deleting them would copy your agent's files into this agent's history."
 - Some left: "These dropped files are still here; delete them in Studio's Files panel: <paths>."
