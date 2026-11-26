@@ -1,6 +1,6 @@
 ---
 type: guide
-description: Continue a text conversation from an .adf file in another harness (a custom loop or an agent SDK), then return the file to ADF — limits, read access, write rules, turn records, close, check
+description: Read and write an .adf file from another harness (a custom loop or an agent SDK) — limits, read access, write rules, turn records, close, check, and a stub-model example that you inspect in ADF Studio
 see_also:
   - ../../ADF_SPEC_v0.2.md — the file format; this guide links to its requirements and does not restate them
   - memory-management.md — the loop, compaction and audit inside ADF
@@ -14,7 +14,7 @@ see_also:
 
 The state of an agent stays in a file that the owner holds, so another harness can read the file and continue the agent.
 
-This guide gives one result: continue a text conversation from an `.adf` file in another harness, then return the file to ADF. The harness can be your own loop or an agent SDK. The guide applies to ADF commit `d664ea22` and `adf_schema_version` 32.
+This guide shows how a harness can read and write an `.adf` file. The supplied Python example records a turn with a stub model, then you inspect that turn in ADF Studio. A real-model run needs a model command that you supply. The SDK sections describe integration points; they were not run. The guide applies to ADF commit `d664ea22` and `adf_schema_version` 32.
 
 You need Python 3 and a terminal. This guide is for a developer who writes a harness. It is not a procedure to move an agent between Studio windows.
 
@@ -95,7 +95,7 @@ Do these steps in this order before the first run:
 
 1. Stop the agent in ADF Studio or the ADF daemon.
 2. Close the file in Studio.
-3. Make sure that `adf_meta` has the key `adf_clean_close`. The command below prints a row when the key is present and `None` when it is absent. If it prints `None`, a runtime has the file open, or the last session did not close: go back to step 1.
+3. Make sure that no runtime has the file open. Make sure that no `-wal` or `-shm` file is beside it. Make sure that `adf_meta` has the key `adf_clean_close`. The command below prints a row when the key is present and `None` when it is absent. If it prints `None`, a runtime has the file open, or the last session did not close: go back to step 1. The marker alone does not prove that the checkpoint completed or that no runtime can reopen the file. Also confirm the successful-checkpoint conditions in [Close](#close). If sidecar files remain or the checkpoint is uncertain, stop. Do not delete them, and do not copy the `.adf` file alone.
 4. Copy the `.adf` file to a directory that Studio and the daemon do not track.
 5. Do all runs on the copy. Keep the original until a run and a check succeed.
 
@@ -111,17 +111,22 @@ A copy of an open file can miss data that is still in the `-wal` file beside it.
 
 The example runs one owner turn with the Level 2 rules of this guide. It checks the schema version, the turn state, `config.state` and `adf_clean_close`. It records the owner message and the prompt before it sends a request. It gives the model `fs_read` and `fs_write`, and it closes the file cleanly.
 
-Save the program as `adf_turn.py`. Do the [Copy](#copy) steps, then run it on the copy:
+Save the program as `adf_turn.py`. Do the [Copy](#copy) steps, then run the supplied stub exercise on the copy:
 
 ```sh
 mkdir -p ~/harness-work
 cp agent.adf ~/harness-work/work.adf
 python3 adf_turn.py ~/harness-work/work.adf "Continue."
 python3 adf_turn.py ~/harness-work/work.adf "Continue." --model stub-text
-python3 adf_turn.py ~/harness-work/work.adf "Continue." --model "python3 my_model.py"
 ```
 
-`~/harness-work` is an example. Use a directory that ADF does not track. `my_model.py` is your own program; this guide does not supply it.
+`~/harness-work` is an example. Use a directory that ADF does not track.
+
+Optional: a real model. `my_model.py` is your own program; this guide does not supply it. Run this command only after you supply that program and its provider credential:
+
+```sh
+python3 adf_turn.py ~/harness-work/work.adf "Continue." --model "python3 my_model.py"
+```
 
 The model options:
 
@@ -385,7 +390,7 @@ These values are different:
 - An `adf_loop.seq` or a `tool_use` id is not an SDK run id, response id or checkpoint id.
 - SDK `reasoning` items, approval events, handoffs and graph state are not transcript rows.
 - An SDK session store is not a second source of truth. It is a cache of `adf_loop`.
-- The provider credential, the runtime settings and the base prompt of ADF are not in the file ([§16](../../ADF_SPEC_v0.2.md#16-portability)).
+- ADF's runtime settings and base prompt are not in the file. The file can hold a sealed provider credential; this harness does not unlock it ([§16](../../ADF_SPEC_v0.2.md#16-portability)).
 
 ## Read access
 
@@ -393,7 +398,7 @@ Level 1 gives read access only. Read-only access does not change the file. Most 
 
 Caution: Memory and history can contain personal information. A model command that uses a real provider sends the selected context to that provider.
 
-1. Make sure that no runtime has the file open ([Copy](#copy), step 3).
+1. Make sure that the file is safe to read: do all the [Copy](#copy) safety steps.
 2. Open the file with `sqlite3.connect("file:agent.adf?mode=ro&immutable=1", uri=True)`.
 3. Read `adf_config.config_json` and `instructions`.
 4. Read the files that the instructions name in `{{path}}` placeholders.
