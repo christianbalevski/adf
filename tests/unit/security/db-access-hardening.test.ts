@@ -116,6 +116,24 @@ describe('db access hardening (real sqlite)', () => {
       expect(r.isError).toBe(false)
     })
 
+    it('stores a semicolon inside a string literal as text', async () => {
+      const r = await execute.execute(
+        { sql: "INSERT INTO local_notes (body) VALUES ('a; b')" },
+        ws
+      )
+      expect(r.isError).toBe(false)
+      expect(ws.querySQL("SELECT body FROM local_notes WHERE body LIKE 'a;%'")).toEqual([{ body: 'a; b' }])
+    })
+
+    it('refuses an unterminated literal that hides a DROP, and the table survives', async () => {
+      const r = await execute.execute(
+        { sql: "INSERT INTO local_notes (body) VALUES ('x); DROP TABLE local_notes; --" },
+        ws
+      )
+      expect(r.isError).toBe(true)
+      expect(ws.querySQL("SELECT name FROM sqlite_master WHERE name = 'local_notes'")).toHaveLength(1)
+    })
+
     it('blocks CREATE local_x AS SELECT from a quoted adf_identity', async () => {
       const r = await execute.execute(
         { sql: "CREATE TABLE local_steal AS SELECT * FROM 'adf_identity'" },

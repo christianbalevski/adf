@@ -6,18 +6,13 @@
  * - Removes block comments: /* ... * /
  * - Replaces string literals ('...') with empty strings ('')
  * - Handles escaped quotes within strings ('' style SQL escaping)
- * - Preserves double-quoted identifiers (table/column names in SQLite)
- * - Rejects multi-statement SQL (semicolons followed by non-whitespace)
+ * - Preserves quoted identifiers ("...", `...`, [...]), scanned as one token
+ *   so a quote or comment marker inside a name is not misread
+ * - Rejects multi-statement SQL: a ; left after literals and comments are
+ *   removed, other than one trailing ;
  */
 export function sanitizeSQL(sql: string): { sanitized: string; error?: string } {
   const trimmed = sql.trim()
-
-  // Reject multi-statement SQL
-  // Allow trailing semicolons but reject embedded ones followed by more SQL
-  const withoutTrailingSemicolon = trimmed.replace(/;\s*$/, '')
-  if (withoutTrailingSemicolon.includes(';')) {
-    return { sanitized: '', error: 'Multi-statement SQL is not allowed.' }
-  }
 
   let result = ''
   let i = 0
@@ -57,19 +52,21 @@ export function sanitizeSQL(sql: string): { sanitized: string; error?: string } 
       continue
     }
 
-    // Double-quoted identifier (preserve — these are identifiers, not strings)
-    // In SQLite, double quotes are identifiers, not string literals
-    if (trimmed[i] === '"') {
-      result += '"'
+    // Quoted identifier (preserve — these are identifiers, not strings)
+    // In SQLite, "...", `...` and [...] are identifiers, not string literals;
+    // a doubled quote escapes in the first two, and [...] ends at the first ]
+    if (trimmed[i] === '"' || trimmed[i] === '`' || trimmed[i] === '[') {
+      const close = trimmed[i] === '[' ? ']' : trimmed[i]
+      result += trimmed[i]
       i++
       while (i < trimmed.length) {
-        if (trimmed[i] === '"' && trimmed[i + 1] === '"') {
-          result += '""'
+        if (trimmed[i] === close && close !== ']' && trimmed[i + 1] === close) {
+          result += close + close
           i += 2
           continue
         }
-        if (trimmed[i] === '"') {
-          result += '"'
+        if (trimmed[i] === close) {
+          result += close
           i++
           break
         }
@@ -81,6 +78,12 @@ export function sanitizeSQL(sql: string): { sanitized: string; error?: string } 
 
     result += trimmed[i]
     i++
+  }
+
+  // Literals and comments are gone, so any ; left (bar one trailing) ends a
+  // statement and starts another.
+  if (result.replace(/;\s*$/, '').includes(';')) {
+    return { sanitized: '', error: 'Multi-statement SQL is not allowed.' }
   }
 
   return { sanitized: result }
