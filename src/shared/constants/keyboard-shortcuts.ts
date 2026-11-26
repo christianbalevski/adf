@@ -27,6 +27,9 @@ export const ACCELERATORS = {
   togglePanel: 'CmdOrCtrl+J',
 } as const
 
+/** Handled by the file editor, not the menu: comment on the selected text. */
+export const COMMENT_ON_SELECTION = 'CmdOrCtrl+Alt+M'
+
 export interface ShortcutRow {
   /** One entry per key cap; each is formatted by `formatKey`. */
   keys: readonly string[]
@@ -63,6 +66,7 @@ export const SHORTCUT_SECTIONS: readonly ShortcutSection[] = [
     rows: [
       { keys: [ACCELERATORS.save], label: 'Save' },
       { keys: [ACCELERATORS.closeTab], label: 'Close tab, or an agent window with no tabs' },
+      { keys: [COMMENT_ON_SELECTION], label: 'Comment on selection' },
     ],
   },
   {

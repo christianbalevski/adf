@@ -572,7 +572,7 @@ export interface DynamicInstructionsConfig {
   inbox_hints?: boolean
   /** Show context limit warning when approaching threshold (default: true) */
   context_warning?: boolean
-  /** Remind agent it can call sys_set_state to go idle when done (default: true) */
+  /** Autonomous agents: idle-reminder section in the system prompt and the sys_set_state hint in continuation nudges (default: true) */
   idle_reminder?: boolean
   /** Notify agent when mesh topology changes (agents join/leave) (default: true) */
   mesh_updates?: boolean

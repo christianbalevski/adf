@@ -656,6 +656,9 @@ export function AgentReviewDialog() {
             const draft = docStore.draftInputs[from]
             if (draft) docStore.setDraftInput(windowAgentKey(docStore.runtimeId, result.movedTo), draft)
             docStore.removeDraftInput(from)
+            const comments = docStore.draftComments[from]
+            if (comments) docStore.setDraftComments(windowAgentKey(docStore.runtimeId, result.movedTo), comments)
+            docStore.setDraftComments(from, [])
           }
           if (docStore.filePath !== result.movedTo) docStore.setFilePath(result.movedTo)
         }

@@ -1942,7 +1942,7 @@ export function AgentConfig({ template }: { template?: AgentConfigTemplateProps 
               {([
                 { key: 'inbox_hints' as const, label: 'Inbox hints', desc: 'Notify agent of unread messages and reply guidance' },
                 { key: 'context_warning' as const, label: 'Context warning', desc: 'Warn agent when approaching token limit' },
-                { key: 'idle_reminder' as const, label: 'Idle reminder', desc: 'Remind agent to call sys_set_state idle when done working' },
+                { key: 'idle_reminder' as const, label: 'Idle reminder', desc: 'Tell an autonomous agent to call sys_set_state idle when no authorized work remains (system prompt and continuation nudge)' },
                 { key: 'mesh_updates' as const, label: 'Mesh updates', desc: 'Notify agent when other agents join or leave the mesh' }
               ]).map(({ key, label }) => (
                 <label key={key} className="flex items-center gap-1.5 text-xs">

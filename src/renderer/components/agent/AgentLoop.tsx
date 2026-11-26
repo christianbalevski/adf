@@ -71,10 +71,14 @@ import {
   type ToolFamily,
 } from './tool-presentation'
 import type { ContentBlock } from '../../../shared/types/provider.types'
+import { selectionCommentHeader, withSelectionComments, type SelectionComment } from '../../utils/selection-comment'
+import { CommentPopover, type PopoverAnchor } from '../common/CommentPopover'
 import type { ApprovalEndedBy } from '../../../shared/types/ipc.types'
 import { openApi, providerSheetReaches, useOpenAgentKey, useOpenRuntime } from '../../utils/runtime-api'
 
 const MAX_INPUT_ROWS = 10
+/** One empty list, so the composer's comments selector is stable when there are none. */
+const NO_COMMENTS: SelectionComment[] = []
 /** What an error row's Retry now sends: a message of the owner's, shown like any other. */
 const RETRY_MESSAGE = 'Try again.'
 type UploadKind = 'image' | 'audio' | 'video' | 'file'
@@ -928,6 +932,12 @@ function LoopStream({ loop }: { loop: string }) {
   const [expandedContexts, setExpandedContexts] = useState<Set<string>>(new Set())
   const [inspectedToolCall, setInspectedToolCall] = useState<AgentLogEntry | null>(null)
   const [attachments, setAttachments] = useState<PendingAttachment[]>([])
+  /** Comments on file selections, waiting to go out with the next send (selection-comment.ts). */
+  const selectionComments = useDocumentStore((s) => (agentKeyOpen && s.draftComments[agentKeyOpen]) || NO_COMMENTS)
+  const setSelectionComments = (comments: SelectionComment[]) => {
+    if (agentKeyOpen) useDocumentStore.getState().setDraftComments(agentKeyOpen, comments)
+  }
+  const [editingComment, setEditingComment] = useState<{ comment: SelectionComment; anchor: PopoverAnchor } | null>(null)
   const [draggingOverInput, setDraggingOverInput] = useState(false)
   const [uploadingFiles, setUploadingFiles] = useState(false)
   /** Files refused before upload, with the reason: shown until dismissed or the next pick. */
@@ -1674,12 +1684,17 @@ function LoopStream({ loop }: { loop: string }) {
     mountedRef.current = true
     return () => { mountedRef.current = false }
   }, [])
-  const restoreFailedSend = (text: string, items: PendingAttachment[]) => {
+  const restoreFailedSend = (text: string, items: PendingAttachment[], comments: SelectionComment[] = []) => {
     if (draftKey) {
       const docs = useDocumentStore.getState()
       docs.setDraftInput(draftKey, restoreDraft(docs.draftInputs[draftKey] ?? '', text))
     }
     if (mountedRef.current && items.length > 0) setAttachments((current) => [...items, ...current])
+    // Ahead of any added since, under the agent the message was for (this render's).
+    if (agentKeyOpen && comments.length > 0) {
+      const docs = useDocumentStore.getState()
+      docs.setDraftComments(agentKeyOpen, [...comments, ...(docs.draftComments[agentKeyOpen] ?? [])])
+    }
   }
 
   /**
@@ -1687,8 +1702,12 @@ function LoopStream({ loop }: { loop: string }) {
    * nothing else holds it (sendWithRecovery): a queued or not-started send
    * lives in the queue, a refused or thrown one comes back here.
    */
-  const sendFromComposer = (text: string, content: ContentBlock[], previews: string[], items: PendingAttachment[]) =>
-    sendWithRecovery(filePath, loop, () => sendUserMessage(text, content, previews), () => restoreFailedSend(text, items))
+  const sendFromComposer = (
+    text: string, content: ContentBlock[], previews: string[], items: PendingAttachment[],
+    // A send with selection comments gives back the typed text and the chips, not the composed message.
+    typed: string = text, comments: SelectionComment[] = [],
+  ) =>
+    sendWithRecovery(filePath, loop, () => sendUserMessage(text, content, previews), () => restoreFailedSend(typed, items, comments))
 
   // A message typed into the home composer arrives here once the agent it
   // created is the open one and its config has loaded. It goes through
@@ -1814,8 +1833,8 @@ function LoopStream({ loop }: { loop: string }) {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    if ((!input.trim() && attachments.length === 0) || starting || uploadingFiles) return
-    const message = input.trim()
+    if ((!input.trim() && attachments.length === 0 && selectionComments.length === 0) || starting || uploadingFiles) return
+    const typed = input.trim()
 
     // A `/` line is a command first and a message second. One that matches
     // nothing is sent verbatim — the palette must never swallow typed text.
@@ -1827,12 +1846,17 @@ function LoopStream({ loop }: { loop: string }) {
       return
     }
 
+    // Comments on file selections go first, as plain text; the owner's words follow.
+    const comments = selectionComments
+    setSelectionComments([])
+    const message = withSelectionComments(comments, typed)
     const content = buildSubmitContent(message)
     const previews = imagePreviewUrls
     const sentAttachments = attachments
     setInput('')
     setAttachments([])
-    await sendFromComposer(message, content, previews, sentAttachments)
+    setEditingComment(null)
+    await sendFromComposer(message, content, previews, sentAttachments, typed, comments)
   }
 
   // An error row's action. Each is the owner's click, and each is visible:
@@ -2130,7 +2154,7 @@ function LoopStream({ loop }: { loop: string }) {
   const handleLoopKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (e.key !== 'Escape' || e.isDefaultPrevented()) return
     if (inspectedToolCall || review) return
-    const composerEmpty = input.length === 0 && attachments.length === 0
+    const composerEmpty = input.length === 0 && attachments.length === 0 && selectionComments.length === 0
     if (!escStopsTurn({ turnRunning, target: e.target, composer: textareaRef.current, composerEmpty, paletteOpen: slashOpen, root: e.currentTarget })) return
     e.preventDefault()
     void handleInterrupt()
@@ -2386,7 +2410,7 @@ function LoopStream({ loop }: { loop: string }) {
         }
 
         const canSubmit = !askPending
-          && (input.trim().length > 0 || attachments.length > 0) && !starting && !uploadingFiles
+          && (input.trim().length > 0 || attachments.length > 0 || selectionComments.length > 0) && !starting && !uploadingFiles
 
         return (
           // No divider above the composer: it reads as a floating card
@@ -2492,6 +2516,59 @@ function LoopStream({ loop }: { loop: string }) {
                       </button>
                     </span>
                   ))}
+                </div>
+              )}
+              {selectionComments.length > 0 && (
+                <div className="flex flex-wrap gap-1.5 px-3 pt-2">
+                  {selectionComments.map((item) => {
+                    const lines = item.startLine == null ? '' : item.endLine != null && item.endLine !== item.startLine ? `:${item.startLine}-${item.endLine}` : `:${item.startLine}`
+                    return (
+                      <span
+                        key={item.id}
+                        className="inline-flex max-w-full items-center gap-1.5 rounded-[var(--radius-sm)] border border-[var(--rule)] bg-[var(--paper-sunken)] px-2 py-1 text-[11px] text-[var(--ink)]"
+                      >
+                        <Tooltip tip={`${selectionCommentHeader(item)}\n“${item.quote}”${item.comment ? `\n${item.comment}` : ''}`} className="inline-flex min-w-0">
+                          <button
+                            type="button"
+                            aria-label="Edit comment"
+                            onClick={(e) => {
+                              const r = e.currentTarget.getBoundingClientRect()
+                              setEditingComment({ comment: item, anchor: { left: r.left, top: r.top, bottom: r.bottom } })
+                            }}
+                            className="inline-flex min-w-0 items-center gap-1.5 text-left"
+                          >
+                            <span className="shrink-0 font-mono text-[var(--ink-faint)]">{item.path.split('/').pop()}{lines}</span>
+                            <span className="truncate max-w-[12rem]">“{item.quote}”</span>
+                            {item.comment && <span className="truncate max-w-[12rem] text-[var(--ink-faint)]">{item.comment}</span>}
+                          </button>
+                        </Tooltip>
+                        <button
+                          type="button"
+                          aria-label="Remove comment"
+                          onClick={() => setSelectionComments(selectionComments.filter((c) => c.id !== item.id))}
+                          className="shrink-0 text-[var(--ink-faint)] hover:text-[var(--ink)]"
+                        >
+                          &times;
+                        </button>
+                      </span>
+                    )
+                  })}
+                  {editingComment && (
+                    <CommentPopover
+                      key={editingComment.comment.id}
+                      anchor={editingComment.anchor}
+                      header={selectionCommentHeader(editingComment.comment)}
+                      quote={editingComment.comment.quote}
+                      initial={editingComment.comment.comment}
+                      submitLabel="Save"
+                      onCancel={() => setEditingComment(null)}
+                      onSubmit={(comment) => {
+                        const id = editingComment.comment.id
+                        setSelectionComments(selectionComments.map((c) => (c.id === id ? { ...c, comment: comment.trim() } : c)))
+                        setEditingComment(null)
+                      }}
+                    />
+                  )}
                 </div>
               )}
               {attachments.length > 0 && (

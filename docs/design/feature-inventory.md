@@ -1190,6 +1190,7 @@ Grouped by area, then category.
 - **Large-file safeguards** — files over ~128k chars auto-open in source view; confirmation prompt before forcing rich mode.
 - **Binary file placeholder** — non-renderable files show an icon + filename instead of content.
 - **Live file sync** — editor tabs auto-update when an agent writes a file via `fs_write`.
+- **Comment on selection** — select text, Comment (⌘⌥M / Ctrl+Alt+M) adds the quote with path and lines as a chip in the composer; sent as plain text, nothing stored in the file. Rich markdown selections are mapped back to source lines.
 - **Browser/webview viewer tab** — embeds a noVNC session for an agent's isolated desktop/browser via `<webview>`; browser Studio draws the same desktop with its bundled noVNC client over `/web/desktop`.
 - **Local database tables view** — lists custom SQLite tables in the `.adf` with row counts, query/drop support.
 - **Meta keys viewer** — view/set/delete `adf_meta` keys with protection-level cycling.

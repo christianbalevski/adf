@@ -328,6 +328,22 @@
         {
           "path": "scripts/selftest.js",
           "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/scripts/selftest.js"
+        },
+        {
+          "path": "references/where-it-runs.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/references/where-it-runs.md"
+        },
+        {
+          "path": "references/report-template.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/references/report-template.md"
+        },
+        {
+          "path": "references/hand-over.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/references/hand-over.md"
+        },
+        {
+          "path": "CHANGELOG.md",
+          "raw_url": "https://raw.githubusercontent.com/christianbalevski/adf/main/skills/agent-import/CHANGELOG.md"
         }
       ]
     },

@@ -91,16 +91,19 @@ describe('settings migrations — toolPrompts backfill and stale-key removal', (
     applySettingsMigrations(data)
     expect(data.toolPrompts).toMatchObject({
       _autonomous: DEFAULT_TOOL_PROMPTS._autonomous,
-      dyn_idle_reminder: DEFAULT_DYNAMIC_PROMPTS.dyn_idle_reminder,
+      _idle_reminder: DEFAULT_TOOL_PROMPTS._idle_reminder,
     })
+    expect(data.toolPrompts).not.toHaveProperty('dyn_idle_reminder')
     expect(applySettingsMigrations(data).changedKeys).not.toContain('toolPrompts')
 
+    // The idle reminder moved keys; a customized or blanked value moves with it.
     for (const value of ['', 'My own stopping policy.']) {
       const custom: Record<string, unknown> = {
         toolPrompts: { _autonomous: value, dyn_idle_reminder: value },
       }
       applySettingsMigrations(custom)
-      expect(custom.toolPrompts).toMatchObject({ _autonomous: value, dyn_idle_reminder: value })
+      expect(custom.toolPrompts).toMatchObject({ _autonomous: value, _idle_reminder: value })
+      expect(custom.toolPrompts).not.toHaveProperty('dyn_idle_reminder')
     }
   })
 
@@ -114,7 +117,7 @@ describe('settings migrations — toolPrompts backfill and stale-key removal', (
     expect(prompts._messaging).toBe(DEFAULT_TOOL_PROMPTS._messaging)
     expect(prompts._autonomous).toBe(DEFAULT_TOOL_PROMPTS._autonomous)
     expect(prompts.dyn_inbox_hint).toBe(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_hint)
-    expect(prompts.dyn_idle_reminder).toBe(DEFAULT_DYNAMIC_PROMPTS.dyn_idle_reminder)
+    expect(prompts._idle_reminder).toBe(DEFAULT_TOOL_PROMPTS._idle_reminder)
   })
 
   it('removes the stale adf_shell key — its guide moved into the ShellTool description', () => {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest'
 import { AgentExecutor } from '../../../src/main/runtime/agent-executor'
-import { DEFAULT_DYNAMIC_PROMPTS } from '../../../src/shared/constants/adf-defaults'
+import { DEFAULT_DYNAMIC_PROMPTS, DEFAULT_TOOL_PROMPTS } from '../../../src/shared/constants/adf-defaults'
 
 /**
  * Dynamic instruction templates: settings override → default resolution and
@@ -34,8 +34,8 @@ describe('dynamic instruction templates', () => {
   })
 
   it('a blanked template resolves empty so the injection is suppressed', () => {
-    const ex = makeExecutor({ dyn_idle_reminder: '' })
-    expect(dyn(ex, 'dyn_idle_reminder')).toBe('')
+    const ex = makeExecutor({ dyn_mesh_update_empty: '' })
+    expect(dyn(ex, 'dyn_mesh_update_empty')).toBe('')
   })
 
   it('context warnings substitute all three counters', () => {
@@ -73,35 +73,43 @@ describe('dynamic instruction templates', () => {
   it('every default template exists for its executor lookup key', () => {
     // dyn_inbox_reply_routing is deliberately blank by default (routing lives in
     // the msg_send tool schema) — the key still exists so settings can override it.
-    for (const key of ['dyn_inbox_hint', 'dyn_inbox_reply_routing', 'dyn_context_warning_soft', 'dyn_context_warning_imminent', 'dyn_mesh_update', 'dyn_mesh_update_empty', 'dyn_idle_reminder']) {
+    for (const key of ['dyn_inbox_hint', 'dyn_inbox_reply_routing', 'dyn_context_warning_soft', 'dyn_context_warning_imminent', 'dyn_mesh_update', 'dyn_mesh_update_empty']) {
       expect(key in DEFAULT_DYNAMIC_PROMPTS, key).toBe(true)
     }
     expect(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_hint).toBeTruthy()
     expect(DEFAULT_DYNAMIC_PROMPTS.dyn_inbox_reply_routing).toBe('')
   })
 
-  it('gates idle guidance on live grants and registration, not visibility', () => {
+  it('keeps the idle reminder out of per-turn instructions; it rides the system prompt, gated on live grants, registration and the checkbox', () => {
     const declaration = { name: 'sys_set_state', enabled: true, visible: false }
     const config = { autonomous: true, tools: [declaration] }
     let registered = true
     const registry = { get: () => registered ? {} : undefined, clearCache: () => {} }
     const executor = new AgentExecutor(config as never, {} as never, registry as never, {} as never)
-    const build = () => (executor as unknown as {
+    const internals = executor as unknown as {
       buildDynamicInstructions(chat: number, threshold: number): string | undefined
-    }).buildDynamicInstructions(0, 100)
+      autonomousSuffix(bare: boolean): string
+    }
+    const idle = (bare = false) => internals.autonomousSuffix(bare).includes(DEFAULT_TOOL_PROMPTS._idle_reminder)
 
-    expect(build()).toContain('sys_set_state')
+    // Never per turn: a fixed stop reminder next to fresh work reads as a cue to stop.
+    expect(internals.buildDynamicInstructions(0, 100) ?? '').not.toContain('sys_set_state')
+
+    expect(idle()).toBe(true)
+    // Bare drops the runtime's Autonomous Mode text; the checkbox alone gates the reminder.
+    expect(internals.autonomousSuffix(true)).not.toContain('## Autonomous Mode')
+    expect(idle(true)).toBe(true)
     registered = false
-    expect(build()).toBeUndefined()
+    expect(idle()).toBe(false)
     registered = true
     // First declaration wins, just as it does for the tool schema snapshot.
     executor.updateConfig({ ...config, tools: [{ ...declaration, enabled: false }, declaration] } as never)
-    expect(build()).toBeUndefined()
+    expect(idle()).toBe(false)
     executor.updateConfig(config as never)
-    expect(build()).toContain('sys_set_state')
+    expect(idle()).toBe(true)
     executor.updateConfig({ ...config, context: { dynamic_instructions: { idle_reminder: false } } } as never)
-    expect(build()).toBeUndefined()
+    expect(idle()).toBe(false)
     executor.updateConfig({ ...config, autonomous: false } as never)
-    expect(build()).toBeUndefined()
+    expect(internals.autonomousSuffix(false)).toBe('')
   })
 })

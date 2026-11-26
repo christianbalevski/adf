@@ -8,6 +8,7 @@ import { autocompletion, closeBrackets, closeBracketsKeymap } from '@codemirror/
 import { githubLight, githubDarkDimmed, readOnlyChrome } from './codemirror-theme'
 import { loadLanguage } from './codemirror-languages'
 import { useAppStore } from '../../stores/app.store'
+import type { SelectionGetter } from './SelectionCommentLayer'
 
 // Stringifying the whole doc on every keystroke is the expensive part of the
 // change path; debounce it and flush on any teardown.
@@ -28,9 +29,25 @@ interface Props {
   lineWrap?: boolean
   /** Filled with an "emit now" callback so a parent can flush before swapping views. */
   flushRef?: MutableRefObject<(() => void) | null>
+  /** Filled with a reader of the current selection, for commenting on it. */
+  selectionRef?: MutableRefObject<SelectionGetter | null>
 }
 
-export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWrap = true, flushRef }: Props) {
+/** The selection in `view`, with exact lines; null when it is empty. */
+export function codeMirrorSelection(view: EditorView): ReturnType<SelectionGetter> {
+  const { from, to, head } = view.state.selection.main
+  if (from === to) return null
+  const doc = view.state.doc
+  const startLine = doc.lineAt(from).number
+  const last = doc.lineAt(to)
+  // A selection ending at the very start of a line does not include that line.
+  const endLine = to === last.from && last.number > startLine ? last.number - 1 : last.number
+  const coords = view.coordsAtPos(head) ?? view.coordsAtPos(to)
+  if (!coords) return null
+  return { text: view.state.sliceDoc(from, to), startLine, endLine, anchor: { left: coords.left, top: coords.top, bottom: coords.bottom } }
+}
+
+export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWrap = true, flushRef, selectionRef }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
   const themeCompartment = useRef(new Compartment())
@@ -74,10 +91,14 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
   }, [])
 
   useEffect(() => {
-    if (!flushRef) return
-    flushRef.current = flushChange
-    return () => { flushRef.current = null }
-  }, [flushRef, flushChange])
+    const read: SelectionGetter = () => (viewRef.current ? codeMirrorSelection(viewRef.current) : null)
+    if (flushRef) flushRef.current = flushChange
+    if (selectionRef) selectionRef.current = read
+    return () => {
+      if (flushRef?.current === flushChange) flushRef.current = null
+      if (selectionRef?.current === read) selectionRef.current = null
+    }
+  }, [flushRef, flushChange, selectionRef])
 
   // Create editor on mount
   useEffect(() => {

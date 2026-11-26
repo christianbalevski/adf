@@ -136,6 +136,7 @@ Key features:
 - **Syntax highlighting** — Automatic language detection based on file extension (TypeScript, JavaScript, Python, JSON, Markdown, etc.)
 - **Dirty-state tracking** — Unsaved changes are indicated with a dot on the tab; save with `Cmd/Ctrl + S`
 - **Live updates** — When an agent modifies a file (e.g., via `fs_write`), the editor tab updates automatically
+- **Comment on a selection** — Select text in a file and click **Comment**, or press `Cmd + Option + M` (`Ctrl + Alt + M` elsewhere). The comment waits as a chip in the chat composer; on send, each chip goes ahead of your message as the file path and lines, the selected file text in triple quotes, and `comment:` with what you wrote. Nothing is saved in the file. In the rich markdown view the quote is the markdown source; a selection Studio cannot place in the source is sent as the rendered text and marked so
 - **Image viewing** — PNG, JPEG, GIF, WebP, SVG, BMP, ICO, and AVIF files open in a read-only image tab, fitted to the view; click the image or use **Actual size** to see it at 100%. The footer shows dimensions, file size, and type. Images over 25 MB are not displayed. An image tab does not update while it is showing — use **Reload** after the agent rewrites the file
 - **Binary file handling** — Other binary files show a placeholder instead of attempting to render content
 
