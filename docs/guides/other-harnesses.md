@@ -225,19 +225,17 @@ def sendable(b):  # file_ref becomes text (spec 13.1); empty text and other bloc
     return b if b.get("type") in ("tool_use", "tool_result") or (b.get("type") == "text" and b.get("text")) else None
 
 def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (agent-session.ts:303-477)
-    out, held, open_, moved, lead, passed = [], [], set(), 0, 0, False
-    def flush():  # held rows go back; they moved only if a result row passed them
-        nonlocal out, held, moved, passed
-        moved += len(held) if passed else 0; out += held; held = []; passed = False
+    out, held, open_, lead = [], [], set(), 0
     for m in msgs:  # a user row inside an open tool pair moves after the results
         ids = {b.get("tool_use_id") for b in m["content"] if b["type"] == "tool_result"}
         if open_ and m["role"] == "user" and not ids: held.append(m); continue
         if m["role"] == "assistant":
-            flush(); open_ = {b.get("id") for b in m["content"] if b["type"] == "tool_use"}
-        else: open_ -= ids; passed = passed or bool(held)
+            out += held; held = []; open_ = {b.get("id") for b in m["content"] if b["type"] == "tool_use"}
+        else: open_ -= ids
         out.append(m)
-        if not open_: flush()
-    flush()
+        if not open_: out += held; held = []
+    out += held
+    moved = [id(m) for m in out] != [id(m) for m in msgs]  # the same rows; true if the order changed
     while out:  # the history starts with a user message and no tool_result
         if out[0]["role"] == "assistant": out.pop(0); lead += 1; continue
         kept = [b for b in out[0]["content"] if b["type"] != "tool_result"]
@@ -259,8 +257,9 @@ def repair(msgs):  # tool-pair repair in memory, as ADF restoreMessages does (ag
         removed += len(m["content"]) - len(keep)
         m["content"] = keep or text("[Tool call removed — no matching result in history]" if m["role"] == "assistant"
                                     else "[Tool result removed — no matching call in history]")
-    note = (f"{len(tail)} call(s) with an unknown outcome, {removed} unpaired tool block(s) removed, {moved} row(s) moved,"
-            f" {lead} leading row(s) or block(s) removed") if tail or removed or moved or lead else ""
+    note = (f"{len(tail)} call(s) with an unknown outcome, {removed} unpaired tool block(s) removed,"
+            f" {'rows moved after results' if moved else 'no rows moved'}, {lead} leading row(s) or block(s) removed"
+            ) if tail or removed or moved or lead else ""
     if note: print(f"warning for the owner: request-only repair: {note}.{' The model was told to check the target.' if tail else ''} Inspect the files before the next run.", file=sys.stderr)
     return out, note
 
