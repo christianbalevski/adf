@@ -324,7 +324,7 @@ export class AgentSession implements FileRefHolder {
   /** Move user rows without tool results that sit inside an open tool pair
    *  (after an assistant tool_use, before its results) to just after the last
    *  result. A pair that never completes keeps them in place (the orphan
-   *  repair below strips the call). */
+   *  repair below answers the call with an unknown outcome). */
   private moveRowsOutOfToolPairs(): void {
     const out: LLMMessage[] = []
     let open = new Set<string>()
@@ -410,7 +410,7 @@ export class AgentSession implements FileRefHolder {
       if (next?.role === 'user') {
         const rest: ContentBlock[] = Array.isArray(next.content)
           ? next.content
-          : [{ type: 'text' as const, text: next.content }]
+          : next.content ? [{ type: 'text' as const, text: next.content }] : []
         next.content = [
           ...rest.filter(b => b.type === 'tool_result'),
           ...missing,

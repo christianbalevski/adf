@@ -73,6 +73,15 @@ describe('a tool call with no recorded result', () => {
     expect(callVisible(out, 'b')).toBe(true)
     expect(out.some(m => blocks(m).some(b => b.type === 'tool_result' && b.tool_use_id === 'a' && b.content === 'ok'))).toBe(true)
   })
+  it('a call held open by rows written before its real result (a long ask): the real result is used', () => {
+    const rows: LLMMessage[] = [{ role: 'user', content: text('hi') }, { role: 'assistant', content: [use('a')] }]
+    for (let i = 0; i < 22; i++) rows.push({ role: 'user', content: text(`timer ${i}`) })
+    rows.push({ role: 'user', content: [res('a')] }, { role: 'assistant', content: text('thanks') })
+    const out = restore(rows)
+    expect(valid(out)).toBe(true)
+    expect(JSON.stringify(out)).not.toContain('No result was recorded')
+    expect(out.filter(m => blocks(m).some(b => b.type === 'text' && b.text?.startsWith('timer '))).length).toBe(22)
+  })
   it('the repair is stable: restoring the repaired history again changes nothing', () => {
     const rows: LLMMessage[] = [
       { role: 'user', content: text('hi') }, { role: 'assistant', content: [use('a')] },
