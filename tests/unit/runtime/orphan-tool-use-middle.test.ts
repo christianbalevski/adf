@@ -6,6 +6,8 @@
 import { describe, it, expect } from 'vitest'
 import { AgentSession } from '../../../src/main/runtime/agent-session'
 import type { LLMMessage, ContentBlock } from '../../../src/shared/types/provider.types'
+import { convertMessages } from '../../../src/main/providers/ai-sdk-provider'
+import { splitForColdStart } from '../../../src/main/providers/claude-subscription/provider'
 
 const text = (t: string) => [{ type: 'text' as const, text: t }]
 const use = (id: string) => ({ type: 'tool_use' as const, id, name: 'fs_write', input: { path: 'a.md', content: 'x' } })
@@ -72,6 +74,29 @@ describe('a tool call with no recorded result', () => {
     expect(valid(out)).toBe(true)
     expect(callVisible(out, 'b')).toBe(true)
     expect(out.some(m => blocks(m).some(b => b.type === 'tool_result' && b.tool_use_id === 'a' && b.content === 'ok'))).toBe(true)
+  })
+  it('an owner row after an unanswered call keeps its own rendering (seq marker, cold-start prompt)', () => {
+    const out = restore([
+      { role: 'user', content: text('hi'), seq: 1, created_at: 1795780800000 },
+      { role: 'assistant', content: [{ type: 'text', text: 'writing' }, use('a')], seq: 2 },
+      { role: 'user', content: text('did it work?'), seq: 3, created_at: 1795780900000 },
+    ])
+    expect(valid(out)).toBe(true)
+    expect(callVisible(out, 'a')).toBe(true)
+    const owner = out[out.length - 1]
+    expect(blocks(owner).some(b => b.type === 'tool_result')).toBe(false)
+    expect(JSON.stringify(convertMessages(out))).toContain('[S3] did it work?')
+    expect(JSON.stringify(splitForColdStart(out).prompt)).toContain('did it work?')
+  })
+  it('the live pre-send guard answers a middle call the same way', () => {
+    const s = new AgentSession({} as never)
+    s.restoreMessages([{ role: 'user', content: text('hi') }])
+    const live = s.getMessages()
+    live.push({ role: 'assistant', content: [use('a')] }, { role: 'user', content: text('next') }, { role: 'assistant', content: text('ok') })
+    s.repairToolPairing()
+    const out = s.getMessages()
+    expect(valid(out)).toBe(true)
+    expect(callVisible(out, 'a')).toBe(true)
   })
   it('a call held open by rows written before its real result (a long ask): the real result is used', () => {
     const rows: LLMMessage[] = [{ role: 'user', content: text('hi') }, { role: 'assistant', content: [use('a')] }]

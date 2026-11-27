@@ -391,8 +391,8 @@ export class AgentSession implements FileRefHolder {
     }
 
     // Answer every tool_use that has no result, wherever it sits, with an
-    // unknown outcome: in the next user message (after its tool_results) or a
-    // new one. The model keeps the call; the request stays valid.
+    // unknown outcome, in the next message. The model keeps the call; the
+    // request stays valid.
     for (let i = 0; i < this.messages.length; i++) {
       const msg = this.messages[i]
       if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
@@ -406,16 +406,13 @@ export class AgentSession implements FileRefHolder {
         content: UNKNOWN_OUTCOME,
         is_error: true
       }))
+      // Merge only into a row that already carries results (parallel or
+      // partial batches); a plain row keeps its own rendering, so the answers
+      // get a row of their own.
       const next = this.messages[i + 1]
-      if (next?.role === 'user') {
-        const rest: ContentBlock[] = Array.isArray(next.content)
-          ? next.content
-          : next.content ? [{ type: 'text' as const, text: next.content }] : []
-        next.content = [
-          ...rest.filter(b => b.type === 'tool_result'),
-          ...missing,
-          ...rest.filter(b => b.type !== 'tool_result')
-        ]
+      if (next?.role === 'user' && Array.isArray(next.content) && next.content.some(b => b.type === 'tool_result')) {
+        const k = next.content.findIndex(b => b.type !== 'tool_result')
+        next.content = k < 0 ? [...next.content, ...missing] : [...next.content.slice(0, k), ...missing, ...next.content.slice(k)]
       } else {
         this.messages.splice(i + 1, 0, { role: 'user', content: missing })
       }
