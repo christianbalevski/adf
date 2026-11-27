@@ -12,7 +12,7 @@ We're making several assumptions that shape the protocol:
 
 **These agents are primarily LLM-powered.** They have context windows, token budgets, and reason better with structured input. Some fields exist purely for LLM practicality — `subject` helps an agent triage a full inbox without loading every message body into context. `content_type` lets agents route structured content to deterministic handlers without burning tokens parsing unfamiliar JSON. These aren't universal truths about agents; they're practical concessions to how current AI agents work.
 
-**Communication is asynchronous.** Sovereign agents can't assume the other party is online, reachable, or running on the same infrastructure. Store-and-forward is the default. Synchronous communication can be negotiated on top.
+**Communication is asynchronous.** Sovereign agents can't assume the other party is online, reachable, or running on the same infrastructure. Each ALF message is self-contained, so it can be delivered directly, queued, or relayed. How delivery happens is up to the infrastructure. Synchronous communication can be negotiated on top.
 
 **Agents understand web conventions.** LLMs are trained on internet-scale data. They know REST, JSON, HTTP, email patterns. The protocol leverages these rather than inventing new conventions where existing ones work.
 
@@ -212,7 +212,7 @@ Open dictionary. Signed by the sender — immutable after creation. This is the 
 }
 ```
 
-All keys optional. Middleware processes what it recognizes, ignores the rest. New capabilities are meta keys plus middleware, not protocol changes.
+All keys optional. Recipients process the keys they recognize and ignore the rest. New capabilities are new meta keys and conventions; the message format does not change. See [Extension Points](#extension-points).
 
 #### `meta.owner` and `meta.owner_sig` — Ownership
 
@@ -241,7 +241,7 @@ Receivers fetch this once on first contact, cache the result, and use it for ful
 
 A lingua franca needs a default dialect. If Alice uses Hashcash, Bob uses Solana micro-transactions, and Charlie uses a staking mechanism, they can't reach each other without bilateral negotiation — which defeats the purpose of a shared language.
 
-ALF specifies **Hashcash v1** as the Tier 2 baseline for spam prevention. No external dependencies, no blockchain, no payment infrastructure, just CPU. The `pow` meta field uses the standard Hashcash format:
+ALF specifies **Hashcash v1** as the baseline for spam prevention. No external dependencies, no blockchain, no payment infrastructure, just CPU. The `pow` meta field uses the standard Hashcash format:
 
 ```
 pow: "1:20:2026-02-28:did:key:z6MkBob...::abc123:0000f"
@@ -249,7 +249,7 @@ pow: "1:20:2026-02-28:did:key:z6MkBob...::abc123:0000f"
 
 The difficulty (number of leading zero bits) is set by the recipient and advertised in their agent card. Default: 20 bits.
 
-Agents can upgrade to crypto-economics, staking, reputation systems, or anything else via custom middleware. But if two stock agents meet for the first time with no prior arrangement, Hashcash is the fallback that always works.
+Agents can agree on crypto-economics, staking, reputation systems, or any other mechanism, carried in `meta`. But if two stock agents meet for the first time with no prior arrangement, Hashcash is the fallback that always works.
 
 ---
 
@@ -287,7 +287,7 @@ Receivers that don't understand the content type fall back to treating `content`
 
 ```jsonc
 "meta": {
-  // Wrapper hint — helps middleware select unwrap behavior
+  // Wrapper hint — helps recipients select unwrap behavior
   "wrapper": "fanout",
 
   // Adapter context — round-trip data for channel adapters
@@ -610,7 +610,7 @@ Bob receives:
 
 **Accountability over deniability.** Deniable encryption is a well-understood and often desirable feature in communication systems — but those systems have primarily been designed for human users, where privacy from third parties is a reasonable default. For AI agents, the calculus is different. Autonomous agents acting on behalf of users, spending resources, making commitments, and interacting with other agents' resources need to be accountable for their actions. We think accountability is the more important default for agentic systems.
 
-Deniability is always available — agents can use middleware to strip payload signatures or implement deniable signature schemes — but it requires both parties to agree and accept the implications. The protocol doesn't prevent it; it just doesn't start there.
+Deniability is always available — agents can omit payload signatures or agree on deniable signature schemes — but it requires both parties to agree and accept the implications. The protocol doesn't prevent it; it just doesn't start there.
 
 Both signatures are optional. Recipients that require them reject messages without them.
 
@@ -738,15 +738,15 @@ Signature present. No encryption. Content readable by anyone on the path. For pu
 
 ### Level 2: Signed + Encrypted
 
-Signature present. Payload encrypted using **X25519 static key agreement** — the recipient's public key is derived from their `did:key`. Simple, stateless, works for async store-and-forward without requiring session state.
+Signature present. Payload encrypted using **X25519 static key agreement** — the recipient's public key is derived from their `did:key`. Simple, stateless, works for asynchronous delivery without requiring session state.
 
 The practical minimum for sovereign agents on public infrastructure. Without it: content is interceptable, aliases leak to intermediaries, authorship isn't provable.
 
-**Tradeoff: no forward secrecy.** Static key encryption means that if an agent's private key is ever compromised, past captured traffic can be retroactively decrypted. This is a deliberate choice — forward secrecy requires session state, which conflicts with the async store-and-forward model. Agents that need forward secrecy upgrade via Level 3.
+**Tradeoff: no forward secrecy.** Static key encryption means that if an agent's private key is ever compromised, past captured traffic can be retroactively decrypted. This is a deliberate choice — forward secrecy requires session state, which conflicts with stateless asynchronous delivery. Agents that need forward secrecy upgrade via Level 3.
 
 ### Level 3: Advanced
 
-Level 2 plus additional guarantees via middleware and meta conventions. What "advanced" means is up to the agent:
+Level 2 plus additional guarantees via conventions agreed between agents and carried in `meta` and `transit`. What "advanced" means is up to the agents:
 
 - Forward secrecy — Double Ratchet or similar, ephemeral key material exchanged via `meta` fields
 - Path tracing — signed relay chain in `transit`
@@ -759,29 +759,26 @@ Level 3 is a space, not a feature. The protocol provides extensibility mechanism
 
 ---
 
-## Middleware Pipeline
+## Extension Points
 
-Three tiers on both ingress and egress.
+ALF fixes a small core: the message schema, identity, signatures, and baseline encryption. Everything else is carried in open fields and agreed between agents.
 
-### Tier 1: Runtime
+| Field | Written by | Carries |
+|-------|-----------|---------|
+| `meta` | Sender (signed) | Proof of work, source routing, payments, runtime attestation, owner attestation, key material for additional encryption schemes |
+| `payload.meta` | Sender (encrypted) | Application conventions visible only to the recipient |
+| `transit` | Relays (append-only) | Hop records for path tracing and verification |
+| `content_type` | Sender | New payload types |
+| Agent card `policies` | Recipient | Declared send and receive requirements |
+| Endpoints | Recipient | Paths the agent exposes |
 
-Ships with the runtime. Core crypto — signing, encryption, decryption, signature verification, wrapper recognition.
+Recipients process what they recognize and ignore the rest. Encryption beyond Level 2 (forward secrecy, onion routing, post-quantum schemes) is a convention between agents; ALF does not define a field that names the scheme.
 
-### Tier 2: Standard
-
-Ships with the default stack. Common operations — DID resolution, Hashcash v1 PoW generation/verification, thread resolution, peer auto-discovery, rate limiting, owner attestation verification. Swappable and lockable by owner.
-
-### Tier 3: Custom
-
-Installed by agent owner. PQC, custom DID resolution, content filtering, payment verification, protocol bridges (A2A, ACP), onion routing, ZK attestation, whatever the agent needs.
-
-### Middleware Locking
-
-Owners can lock middleware to prevent modification. A locked encryption requirement can't be downgraded. A locked PoW requirement can't be bypassed.
+How a runtime processes these fields (signing, verification, encryption, policy enforcement) is outside ALF. ADF, for example, uses a configurable middleware pipeline (ADF specification §12.3).
 
 ### DID Resolution
 
-Tier 2. Default resolves from local peer table. Alternatives: relay query, registry lookup, DHT, blockchain. Swap the resolver middleware to change the strategy.
+Resolution strategy is implementation-defined: local peer table, relay query, registry lookup, DHT, blockchain, or other methods. The agent card's `resolution` block declares the method for a given DID.
 
 ---
 
@@ -1019,7 +1016,7 @@ Relays set their own terms. Payment requests are standard ALF messages:
 }
 ```
 
-The agent reasons about it. Payment mechanisms are middleware concerns. Costs compound through relay chains, creating natural pressure toward flatter topologies.
+The agent reasons about it. Payment mechanisms are agreed between agents and carried in `meta` (for example `fee_tx`). Costs compound through relay chains, creating natural pressure toward flatter topologies.
 
 ---
 
@@ -1031,12 +1028,12 @@ These are runtime, application, or agent-level concerns:
 |---------|---------------|
 | Endpoint definitions | Agent cards |
 | Message categories | `payload.meta` or endpoint selection |
-| Group chat mechanics | Group agent implementation |
+| Group chat mechanics | Relay implementation (see [The Wrapper Pattern](#the-wrapper-pattern)) |
 | Message storage | Runtime (inbox/outbox schema) |
 | Audit trails | Runtime (hash-chaining, attestation) |
 | Contact management | Agent (peer tables) |
-| Moderation | Custom middleware |
-| Protocol bridging | Custom middleware |
+| Moderation | Runtime |
+| Protocol bridging | Runtime |
 | Cost tracking | Agent |
 | Identity providers | Runtime (sovereign, platform-managed, custodial) |
 | Key derivation | Runtime (SLIP-0010, private concern) |
@@ -1078,7 +1075,7 @@ Relays can advertise lower limits in their terms. Runtimes can enforce their own
 
 ### Stream Control Messages — `application/alf-stream-*+json`
 
-Agents negotiating continuous byte streams (shell sessions, log tailing, CDC replication, TCP forwarding, WebRTC signaling, LLM token streaming) SHOULD use the `application/alf-stream-*+json` content_type family so tooling — UIs, audit systems, middleware — can recognize stream control messages without understanding every underlying stream protocol.
+Agents negotiating continuous byte streams (shell sessions, log tailing, CDC replication, TCP forwarding, WebRTC signaling, LLM token streaming) SHOULD use the `application/alf-stream-*+json` content_type family so tooling — UIs, audit systems, runtimes — can recognize stream control messages without understanding every underlying stream protocol.
 
 Canonical verbs:
 
@@ -1089,7 +1086,7 @@ Canonical verbs:
 | `application/alf-stream-reject+json` | Responder refuses, provides reason |
 | `application/alf-stream-close+json` | Either side signals end of session |
 
-Payload shapes are agent-defined by convention. These are ordinary ALF messages — existing middleware, signature verification, owner attestation, and trust gates apply unchanged.
+Payload shapes are agent-defined by convention. These are ordinary ALF messages — signature verification, owner attestation, and trust gates apply unchanged.
 
 This is a non-normative reservation. No changes to the message schema, no new fields, no new sections in the normative protocol. Adherence enables interop; ignorance does not break conformance.
 
