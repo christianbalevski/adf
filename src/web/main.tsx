@@ -4,6 +4,7 @@ import { takeLaunchTicket, readBrowserSession, redeemLaunchTicket, startBrowserP
 import { browserMediaUrl } from './media-url'
 import { claimBrowserClient, readStored } from './browser-storage'
 import { setMediaUrlResolver } from '../renderer/utils/media-url'
+import { setDesktopStreamResolver } from '../renderer/utils/desktop-stream'
 import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { createAdfApi } from '../shared/adf-api'
@@ -77,6 +78,8 @@ async function mountStudio(storageScope: string, recoveryScope: string, onState:
     clientId, storageScope, runtime: params.get('runtime') || 'local',
     view: useDocumentStore.getState().viewGeneration, filePath: useDocumentStore.getState().filePath,
   }))
+  setDesktopStreamResolver((containerName) =>
+    `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/web/desktop/${encodeURIComponent(containerName)}/websockify?${new URLSearchParams({ storageScope })}`)
   transport.connect()
   // Renderer modules read adfApi during initialization: load only after the
   // shared facade exists, exactly as Electron's preload runs before the page.

@@ -4,7 +4,7 @@
     "title": "ADF Daemon API",
     "version": "0.2.0",
     "summary": "HTTP API of the headless ADF runtime (adf daemon).",
-    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Ordinary daemon routes require `Authorization: Bearer <token>`. The liveness, remote hello/pairing and browser entry routes declare their exceptions below. Browser Studio uses its same-origin cookie session instead of a browser-supplied bearer. The bearer is the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Browser Studio.** `/studio/` serves the shared renderer. Native local clients obtain a 60-second single-use fragment link from `POST /web/launch`; the browser exchanges it at `POST /web/session`. Another device uses `POST /web/pair` and waits for host approval. Browser JSON responses never contain a daemon/device bearer token. A host-approved device credential may be retained only in an HttpOnly cookie for 30 days; active sessions last eight hours. `/web/invoke`, `/web/events`, `/web/file` and `/web/snapshot` are version-coupled renderer transport, not replacements for the ordinary daemon REST API.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import`, the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and full exports (`GET /agents/{id}/export`, `GET /files/snapshot?mode=export`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**The token is as powerful as the owner phrase.** A token holder can run code as the daemon (an agent's stdio MCP server or adapter, `POST /agents/{id}/start`), and code running as the daemon can read the owner phrase from the OS keychain or the unlocked identity file. Keep the token as you keep the 12 words: never paste it into a chat, a ticket or a shared shell history, and give a remote client a machine you trust.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
+    "description": "The daemon is a headless ADF runtime: it loads agents from .adf files, runs them, streams their events and resolves human-in-the-loop requests. This document is the contract; docs/daemon/api-reference.md and api-reference.html are generated from it (`npm run docs:api`).\n\n**Authentication.** Ordinary daemon routes require `Authorization: Bearer <token>`. The liveness, remote hello/pairing and browser entry routes declare their exceptions below. Browser Studio uses its same-origin cookie session instead of a browser-supplied bearer. The bearer is the per-install token in `<settings dir>/daemon-token` (print it with `adf daemon token`) or `ADF_DAEMON_TOKEN`. Local adf clients send it automatically. Missing or wrong: 401 `unauthorized`.\n\n**Browser Studio.** `/studio/` serves the shared renderer. Native local clients obtain a 60-second single-use fragment link from `POST /web/launch`; the browser exchanges it at `POST /web/session`. Another device uses `POST /web/pair` and waits for host approval. Browser JSON responses never contain a daemon/device bearer token. A host-approved device credential may be retained only in an HttpOnly cookie for 30 days; active sessions last eight hours. `/web/invoke`, `/web/events`, `/web/desktop`, `/web/file` and `/web/snapshot` are version-coupled renderer transport, not replacements for the ordinary daemon REST API.\n\n**Request guard.** A Host header that does not name this daemon (403 `host_not_allowed`, DNS-rebinding protection) and browser cross-site requests — a foreign `Origin` or `Sec-Fetch-Site: cross-site|same-site` (403 `cross_origin`) — are refused on every route. No CORS headers are ever sent.\n\n**Errors** are JSON `{ \"error\": \"<message>\", \"code\": \"<code>\" }`. Every error body carries a stable machine-readable `code`: a specific one where the route defines it (listed per response), otherwise the status default: 400 `bad_request`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`, 405 `not_supported`, 409 `conflict`, 500 `internal_error`, 502 `upstream_error`, 503 `unavailable`. Branch on `code`, not on the message. A body Fastify cannot parse — malformed JSON, or an empty body sent with `Content-Type: application/json` — is refused before the route with 400 in Fastify's shape `{ \"statusCode\": 400, \"code\": \"FST_ERR_CTP_EMPTY_JSON_BODY\", \"error\": \"Bad Request\", \"message\": \"…\" }`: send no Content-Type (or `{}`) on bodiless POSTs.\n\n**Local-only routes.** Owner identity secrets (`POST /identity/create|restore|unlock|lock|confirm-backup|import`), the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and `POST /daemon/shutdown` answer callers on the daemon's own machine only (403 `loopback_only`). A request carrying a proxy header (`Forwarded`, `X-Forwarded-For|Host|Proto`, `X-Real-IP`, `Via`) is never local, whatever its peer address: forwarded headers can only take \"local\" away, never grant it. Behind a same-host reverse proxy set `ADF_DAEMON_BEHIND_PROXY=1`: these routes then also need `X-ADF-Local-Proof`, a secret the daemon writes at every start to `<settings dir>/daemon-local-proof` (readable by the daemon's user only: mode 0600, on Windows an explicit ACL with inheritance removed), which the adf CLI and terminal app on that host send automatically to their own daemon. Run these commands on the daemon host, against its loopback port, not through the proxy. `POST /identity/import`, the stored-value reveal routes (`POST /agents/{id}/identity/reveal`, `POST /files/agent/identity/reveal`) and full exports (`GET /agents/{id}/export`, `GET /files/snapshot?mode=export`) need `X-ADF-Local-Proof` in every mode, not only behind a proxy: the token alone, forwarded to the loopback port (`ssh -L`, socat), does not pass.\n\n**The token is as powerful as the owner phrase.** A token holder can run code as the daemon (an agent's stdio MCP server or adapter, `POST /agents/{id}/start`), and code running as the daemon can read the owner phrase from the OS keychain or the unlocked identity file. Keep the token as you keep the 12 words: never paste it into a chat, a ticket or a shared shell history, and give a remote client a machine you trust.\n\n**Secrets.** Credential and identity reads return metadata only; key material never leaves the daemon. The one exception is the stored-value reveal routes (tag `Client (internal)`): they return stored values, never key material, to a local caller that presents this run's local proof, so Studio on the same machine can show what the owner asks to see. The owner seed phrase appears in exactly one response (`POST /identity/create`).\n\n**Agents** are addressed by id, handle or name (`{id}`). Loop-aware routes take `loop` (absent = `main`).",
     "license": {
       "name": "MIT",
       "identifier": "MIT"
@@ -18070,6 +18070,74 @@
             "$ref": "#/components/parameters/WebStorageScope"
           }
         ]
+      }
+    },
+    "/web/desktop/{container}/websockify": {
+      "get": {
+        "tags": [
+          "Browser Studio"
+        ],
+        "summary": "Stream an agent container's desktop to a browser tab",
+        "description": "WebSocket upgrade carrying the container's VNC (RFB) stream for the Computer tab, relayed byte for byte; subprotocol `binary` is passed through. Browser Studio draws it with its own bundled noVNC client: the container's noVNC page is never served on this origin. The container must be an agent's isolated container with a running display (container name and `hostPort` from COMPUTE_BROWSER_INFO through /web/invoke); otherwise the socket closes. At most four streams per browser session. Logout closes them; device revocation and remote access turning off close them at once; a stream that answers no ping for 15 seconds is closed. A request without an upgrade gets 404.",
+        "operationId": "streamStudioBrowserDesktop",
+        "x-adf-stability": "experimental",
+        "security": [
+          {
+            "browserCookies": []
+          }
+        ],
+        "parameters": [
+          {
+            "name": "container",
+            "in": "path",
+            "required": true,
+            "description": "Agent container name (`adf-…`).",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "$ref": "#/components/parameters/WebStorageScope"
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols: the VNC stream."
+          },
+          "401": {
+            "description": "Missing, expired, revoked or replaced browser session (`web_session_required`, `device_revoked`, `remote_access_off`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Host/Origin guard or device authority refused the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Not a WebSocket upgrade (empty body)."
+          },
+          "429": {
+            "description": "The session already has four desktop streams open (`web_rate_limited`).",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            }
+          }
+        }
       }
     },
     "/web/file": {

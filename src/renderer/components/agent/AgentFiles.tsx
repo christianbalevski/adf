@@ -4,6 +4,7 @@ import { useEditorTabsStore } from '../../stores/editor-tabs.store'
 import { Dialog } from '../common/Dialog'
 import { DocsLink } from '../common/DocsLink'
 import { DOCS } from '../../../shared/constants/docs-links'
+import { CORE_FILES, deleteAgentFile, downloadAgentFile, renameAgentFile, renameAgentFolder } from '../../utils/agent-file-actions'
 import { MAX_INLINE_BINARY_BYTES, resolveImageMime } from '../../../shared/utils/image-files'
 import { useWorkspaceImage } from '../editor/ImageViewer'
 import type { AgentExecutionEvent } from '../../../shared/types/ipc.types'
@@ -29,7 +30,6 @@ interface LocalTable {
   row_count: number
 }
 
-const CORE_FILES = new Set(['README.md', 'mind.md'])
 /** Files every agent is seeded with. While these are all it has, the panel
  *  shows a getting-started hint with the docs link. */
 const SEEDED_FILES = new Set(['README.md', 'mind.md', 'soul.md'])
@@ -369,8 +369,7 @@ export function AgentFiles() {
 
   const handleDelete = async (path: string) => {
     if (!window.confirm(`Delete ${path}? This cannot be undone.`)) return
-    await openApi()?.deleteInternalFile(path)
-    useEditorTabsStore.getState().closeTab(path)
+    await deleteAgentFile(path)
     fetchFiles()
   }
 
@@ -406,8 +405,7 @@ export function AgentFiles() {
       setEditingPath(null)
       return
     }
-    const result = await openApi()?.renameInternalFile(editingPath, editValue)
-    if (result?.success) {
+    if (await renameAgentFile(editingPath, editValue)) {
       setViewingFile((prev) => prev && prev.path === editingPath ? { ...prev, path: editValue } : prev)
     } else {
       setEditValue(editingPath)
@@ -425,7 +423,7 @@ export function AgentFiles() {
       setRenamingFolder(null)
       return
     }
-    await openApi()?.renameFolder(renamingFolder, newFullPath)
+    await renameAgentFolder(renamingFolder, newFullPath)
     setRenamingFolder(null)
     fetchFiles()
   }
@@ -998,7 +996,7 @@ export function AgentFiles() {
               <div className="flex-1" />
 
               <button
-                onClick={() => openApi()?.downloadInternalFile(viewingFile.path)}
+                onClick={() => { void downloadAgentFile(viewingFile.path) }}
                 className="px-3 py-1.5 text-xs font-medium text-neutral-700 dark:text-neutral-300 border border-neutral-300 dark:border-neutral-600 rounded-lg hover:bg-neutral-50 dark:hover:bg-neutral-800 cursor-pointer"
                 title="Download file to disk"
               >

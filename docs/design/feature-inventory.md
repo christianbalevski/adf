@@ -1043,7 +1043,7 @@ Grouped by area, then category.
 ### Settings — System Prompt & Prompting
 - **Base prompt editor** — global system prompt prepended to every agent, auto-saved, resettable to default.
 - **Per-agent System Prompt select** — Full / No base prompt / Bare, each showing its resolved token count.
-- **Dynamic Instructions checkboxes** — four independent toggles for inbox hints, context warnings, mesh updates, idle reminder, decoupled from the static prompt setting since schema v30.
+- **Dynamic Instructions checkboxes** — four independent toggles: inbox hints, context warnings and mesh updates (per turn, decoupled from the static prompt setting since schema v30), and idle reminder (an autonomous agent's system-prompt section plus the `sys_set_state` hint in continuation nudges).
 - **Tool Instruction sections** — conditional prompt blocks (Tool Best Practices, Code Execution & Lambdas, ADF Shell, Multi-Agent Collaboration, HTTP Serving) injected per enabled tool/feature, each individually reset-able and "modified"-badged.
 
 ### Settings — General & Housekeeping
@@ -1191,7 +1191,7 @@ Grouped by area, then category.
 - **Binary file placeholder** — non-renderable files show an icon + filename instead of content.
 - **Live file sync** — editor tabs auto-update when an agent writes a file via `fs_write`.
 - **Comment on selection** — select text, Comment (⌘⌥M / Ctrl+Alt+M) adds the quote with path and lines as a chip in the composer; sent as plain text, nothing stored in the file. Rich markdown selections are mapped back to source lines.
-- **Browser/webview viewer tab** — embeds a noVNC session for an agent's isolated desktop/browser via `<webview>`.
+- **Browser/webview viewer tab** — embeds a noVNC session for an agent's isolated desktop/browser via `<webview>`; browser Studio draws the same desktop with its bundled noVNC client over `/web/desktop`.
 - **Local database tables view** — lists custom SQLite tables in the `.adf` with row counts, query/drop support.
 - **Meta keys viewer** — view/set/delete `adf_meta` keys with protection-level cycling.
 

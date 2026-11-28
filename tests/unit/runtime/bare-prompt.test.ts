@@ -104,24 +104,23 @@ describe('bare_prompt', () => {
     // no tool-prompt sections, no identity block, no heading, no autonomous
     // suffix, no `---` separators.
     expect(provider.systems[0]).toBe('ONLY MY WORDS.')
-    // Per-turn injections and the idle reminder are governed by their
-    // checkboxes alone — all four off here, so nothing arrives later either.
+    // Per-turn injections are governed by their checkboxes alone — all four
+    // off here, so nothing arrives on the later hop either.
     expect(provider.dynamics[0]).toBeUndefined()
     // Tool schemas are an API concern and are untouched.
     expect(provider.toolCounts[0]).toBeGreaterThan(0)
   })
 
-  it('leaves the idle reminder to its checkbox', async () => {
-    // bare_prompt drops the runtime's text. With the idle-reminder checkbox
-    // on (the default), an autonomous bare agent still gets the reminder,
-    // in the system prompt rather than per turn.
+  it('drops the idle reminder with the other runtime sections', async () => {
+    // The reminder is a system-prompt section, so bare omits it even with its
+    // checkbox on (the default). Only the continuation nudge can still name
+    // sys_set_state.
     const provider = await promptFor('bare-dynamic', {
       instructions: 'ONLY MY WORDS.',
       bare_prompt: true,
       autonomous: true,
     })
-    expect(provider.systems[0]).toBe(`ONLY MY WORDS.\n\n---\n\n${DEFAULT_TOOL_PROMPTS._idle_reminder}`)
-    expect(provider.systems[0]).not.toContain('AUTONOMOUS MARKER')
+    expect(provider.systems[0]).toBe('ONLY MY WORDS.')
     expect(provider.dynamics[0] ?? '').not.toContain('sys_set_state')
   })
 

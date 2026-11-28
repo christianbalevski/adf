@@ -1,8 +1,12 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../../stores/app.store'
 import type { BrowserTabMeta } from '../../stores/editor-tabs.store'
 import type { ContainerPhase, ContainerPhaseEvent } from '../../../shared/types/compute.types'
 import { openApi, useOpenRuntime } from '../../utils/runtime-api'
+import { desktopStreamUrl } from '../../utils/desktop-stream'
+
+// Browser Studio only; its own chunk, so the desktop app never loads noVNC.
+const WebDesktopView = lazy(() => import('./WebDesktopView'))
 
 interface Props {
   meta: BrowserTabMeta
@@ -24,7 +28,8 @@ interface ViewerState {
 
 /**
  * Live view of an agent's container desktop (the Computer tab): a <webview>
- * hosting the noVNC page published on host loopback. The user watches and
+ * hosting the noVNC page published on host loopback (browser Studio:
+ * WebDesktopView, through the daemon). The user watches and
  * interacts with the same X display (:99) the agent's automation drives —
  * Openbox/tint2 desktop, managed Chromium, and whatever else the agent launches.
  *
@@ -44,16 +49,7 @@ interface ViewerState {
  * reconnect=1 retries every 2s while the display stack is down, so a restart
  * reattaches by itself.
  */
-export function BrowserViewer(props: Props) {
-  if (window.adfApi?.platform === 'web') {
-    return <div className="flex h-full items-center justify-center p-8 text-center text-sm text-[var(--adf-ui-text-muted)]">
-      The live Computer view is available in the desktop app. Your agent’s computer continues running on the daemon.
-    </div>
-  }
-  return <StudioBrowserViewer {...props} />
-}
-
-function StudioBrowserViewer({ meta, reloadNonce }: Props) {
+export function BrowserViewer({ meta, reloadNonce }: Props) {
   const [state, setState] = useState<ViewerState>(() => ({
     phase: meta.phase ?? (meta.hostPort != null ? 'ready' : 'absent'),
     detail: meta.detail,
@@ -95,7 +91,12 @@ function StudioBrowserViewer({ meta, reloadNonce }: Props) {
   }, [state.containerName, fetchPort, runtime])
 
   if (state.phase === 'ready' && state.hostPort != null) {
-    return <DesktopWebview hostPort={state.hostPort} reloadNonce={reloadNonce} />
+    // Browser Studio streams through the daemon (WebDesktopView): there the port, on the
+    // daemon host, only says the display is up.
+    const stream = desktopStreamUrl(state.containerName)
+    return stream
+      ? <Suspense fallback={null}><WebDesktopView url={stream} reloadNonce={reloadNonce} /></Suspense>
+      : <DesktopWebview hostPort={state.hostPort} reloadNonce={reloadNonce} />
   }
   return <PhasePlaceholder agentName={meta.agentName} state={state} onRetry={fetchPort} />
 }

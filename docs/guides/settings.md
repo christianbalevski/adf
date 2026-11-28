@@ -487,7 +487,7 @@ Each prompt editor holds a draft: typing changes nothing until **Save**, and **R
 | No base prompt | `include_base_prompt: false` | runtime blocks and agent instructions |
 | Bare | `bare_prompt: true` | agent instructions and nothing else |
 
-The select governs the static system prompt only. Per-turn dynamic instructions (inbox hints, context warnings, mesh updates) and the idle reminder are gated solely by the four *Dynamic Instructions* checkboxes in the same section — see [Auto-Injected Context](messaging.md#auto-injected-context-dynamic-instructions). Before schema v30, Bare also silenced them; that migration ticked all four off for agents that were already bare, so their behaviour did not change. Tool schemas are unaffected in every setting — they travel with the API request, not the prompt — so a bare agent is still fully capable, just unbriefed. `{{path}}` placeholders you write into the agent's own instructions still resolve. Locking the Instructions section locks all three fields.
+The select governs the static system prompt only. Per-turn dynamic instructions (inbox hints, context warnings, mesh updates) are gated solely by their *Dynamic Instructions* checkboxes in the same section — see [Auto-Injected Context](messaging.md#auto-injected-context-dynamic-instructions). The fourth checkbox, idle reminder, controls the **Idle Reminder** system-prompt section of an autonomous agent (a runtime section, so Bare omits it) and the `sys_set_state` hint in the runtime's continuation nudge. Before schema v30, Bare also silenced the per-turn instructions; that migration ticked all four off for agents that were already bare, so their behaviour did not change. Tool schemas are unaffected in every setting — they travel with the API request, not the prompt — so a bare agent is still fully capable, just unbriefed. `{{path}}` placeholders you write into the agent's own instructions still resolve. Locking the Instructions section locks all three fields.
 
 A section whose text you blank in Settings is skipped entirely rather than emitted as an empty block.
 
@@ -502,6 +502,7 @@ Below the base prompt, the **Tool instructions** group lists conditional prompt 
 | **ADF Shell** | `adf_shell` tool is enabled — replaces Tool Best Practices with comprehensive shell syntax, command reference, tips, and environment variables |
 | **Multi-Agent Collaboration** | `messaging.receive` is enabled — behavioral rules for responding to messages, using exact names, managing inbox |
 | **HTTP Serving** | Any serving feature is configured (`serving.public`, `serving.shared`, or `serving.api`) — explains public folders, shared files, API route definitions, and lambda handlers |
+| **Idle Reminder** | The agent is autonomous, `sys_set_state` is enabled, and `context.dynamic_instructions.idle_reminder` is on — appended after Autonomous Mode; tells the agent to yield with `sys_set_state` once its instructions call for stopping |
 
 When the adf_shell tool is enabled, the **Tool Best Practices** section is replaced by the **ADF Shell** section — they are mutually exclusive. All other sections are additive. Sections are joined with `---` separators.
 

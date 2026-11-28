@@ -160,8 +160,6 @@ integration:
 
 - Each browser session connects to one daemon. To use another daemon, open its
   Studio URL; the desktop client's saved multi-server connections are not used.
-- The live **Computer** viewer requires desktop Studio. Agent execution and
-  compute controls still run through the daemon.
 - ChatGPT subscription sign-in and MCP authorization steps that require a
   desktop callback or native dialog are unavailable in the browser UI. Set up
   ChatGPT through [CLI sign-in](../cli/models-and-providers.md) or desktop

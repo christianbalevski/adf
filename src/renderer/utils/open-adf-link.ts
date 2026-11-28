@@ -1,6 +1,8 @@
 import { useEditorTabsStore } from '../stores/editor-tabs.store'
 import { useAppStore } from '../stores/app.store'
 import { openApi } from './runtime-api'
+import { resolveImageMime } from '../../shared/utils/image-files'
+import { downloadAgentFile } from './agent-file-actions'
 
 const ADF_FILE_PREFIX = 'adf-file://'
 
@@ -14,11 +16,21 @@ export function extractAdfFilePath(href: string): string {
   )
 }
 
+/** A binary file no editor tab can show (anything but an image): the link saves it to disk. */
+function downloadsInstead(path: string, binary: boolean, mimeType?: string | null): boolean {
+  return binary && !resolveImageMime(path, mimeType)
+}
+
 export async function openAdfFileLink(href: string): Promise<void> {
   const filePath = extractAdfFilePath(href)
+  const api = openApi()
 
   // If tab is already open, just activate it
   const existing = useEditorTabsStore.getState().tabs.find(t => t.path === filePath)
+  if (existing && existing.kind === 'file' && downloadsInstead(filePath, existing.isBinary, existing.mimeType)) {
+    await downloadAgentFile(filePath)
+    return
+  }
   if (existing) {
     useEditorTabsStore.getState().setActiveTab(filePath)
     // Loops can cover the editor while this file is still its active tab.
@@ -27,9 +39,12 @@ export async function openAdfFileLink(href: string): Promise<void> {
     return
   }
 
-  const result = await openApi()?.readInternalFile(filePath)
-  if (result?.content != null) {
-    useEditorTabsStore.getState().openTab(filePath, result.binary ? '' : result.content, result.binary, result.mimeType, result.revision)
-    useAppStore.getState().setCenterChatTabActive(false)
+  const result = await api?.readInternalFile(filePath)
+  if (result?.content == null) return
+  if (downloadsInstead(filePath, result.binary, result.mimeType)) {
+    await downloadAgentFile(filePath)
+    return
   }
+  useEditorTabsStore.getState().openTab(filePath, result.binary ? '' : result.content, result.binary, result.mimeType, result.revision)
+  useAppStore.getState().setCenterChatTabActive(false)
 }

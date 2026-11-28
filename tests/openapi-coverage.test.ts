@@ -94,9 +94,11 @@ function resolveRef<T>(value: T): T {
   return target as T
 }
 
-function routeTable(): Map<string, { method: string; path: string }> {
+async function routeTable(): Promise<Map<string, { method: string; path: string }>> {
   registered.length = 0
   const server = createDaemonHttpApi(new RuntimeService({ enforceReviewGate: false }))
+  // Routes added inside server.register (the desktop streams) exist only once plugins load.
+  await server.ready()
   const table = new Map<string, { method: string; path: string }>()
   for (const route of registered) {
     // Fastify adds a HEAD route for every GET (exposeHeadRoutes).
@@ -104,7 +106,7 @@ function routeTable(): Map<string, { method: string; path: string }> {
     const path = toSpecPath(route.url)
     table.set(`${route.method} ${path}`, { method: route.method.toLowerCase(), path })
   }
-  void server.close()
+  await server.close()
   return table
 }
 
@@ -119,8 +121,9 @@ function specTable(): Map<string, { method: string; path: string; op: Json; path
   return table
 }
 
+const routes = await routeTable()
+
 describe('OpenAPI contract coverage', () => {
-  const routes = routeTable()
   const documented = specTable()
 
   it('registers a meaningful route table', () => {
@@ -169,7 +172,8 @@ describe('OpenAPI contract coverage', () => {
       else if (ids.has(id)) problems.push(`${key}: duplicate operationId ${id}`)
       else ids.add(id)
       const codes = Object.keys((op.responses as Json | undefined) ?? {})
-      if (!codes.some(code => /^2/.test(code))) problems.push(`${key}: no 2xx response`)
+      // 101: a WebSocket upgrade's success.
+      if (!codes.some(code => /^(2|101$)/.test(code))) problems.push(`${key}: no success (2xx or 101) response`)
     }
     expect(problems).toEqual([])
   })

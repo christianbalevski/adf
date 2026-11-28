@@ -393,6 +393,6 @@ export const TOOL_PROMPT_CONDITIONS: Record<string, string> = {
   database: 'Injected when db_query or db_execute is enabled.',
   state_management: 'Injected when sys_set_state is enabled (and the application base system prompt is included).',
   _autonomous: 'Appended when the agent runs in autonomous mode.',
-  _idle_reminder: 'Appended after Autonomous Mode when sys_set_state is enabled and context.dynamic_instructions.idle_reminder is on (also in bare mode). The same checkbox gates the sys_set_state hint in the runtime\'s continuation nudge.',
+  _idle_reminder: 'Appended after Autonomous Mode for autonomous agents when sys_set_state is enabled and context.dynamic_instructions.idle_reminder is on. The same checkbox gates the sys_set_state hint in the runtime\'s continuation nudge.',
   _browser: 'Injected when the agent has an isolated compute environment with the visible desktop enabled (compute.enabled, compute.browser not disabled).',
 }

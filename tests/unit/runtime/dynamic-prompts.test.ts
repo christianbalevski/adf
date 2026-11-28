@@ -88,17 +88,14 @@ describe('dynamic instruction templates', () => {
     const executor = new AgentExecutor(config as never, {} as never, registry as never, {} as never)
     const internals = executor as unknown as {
       buildDynamicInstructions(chat: number, threshold: number): string | undefined
-      autonomousSuffix(bare: boolean): string
+      autonomousSuffix(): string
     }
-    const idle = (bare = false) => internals.autonomousSuffix(bare).includes(DEFAULT_TOOL_PROMPTS._idle_reminder)
+    const idle = () => internals.autonomousSuffix().includes(DEFAULT_TOOL_PROMPTS._idle_reminder)
 
     // Never per turn: a fixed stop reminder next to fresh work reads as a cue to stop.
     expect(internals.buildDynamicInstructions(0, 100) ?? '').not.toContain('sys_set_state')
 
     expect(idle()).toBe(true)
-    // Bare drops the runtime's Autonomous Mode text; the checkbox alone gates the reminder.
-    expect(internals.autonomousSuffix(true)).not.toContain('## Autonomous Mode')
-    expect(idle(true)).toBe(true)
     registered = false
     expect(idle()).toBe(false)
     registered = true
@@ -110,6 +107,6 @@ describe('dynamic instruction templates', () => {
     executor.updateConfig({ ...config, context: { dynamic_instructions: { idle_reminder: false } } } as never)
     expect(idle()).toBe(false)
     executor.updateConfig({ ...config, autonomous: false } as never)
-    expect(internals.autonomousSuffix(false)).toBe('')
+    expect(internals.autonomousSuffix()).toBe('')
   })
 })

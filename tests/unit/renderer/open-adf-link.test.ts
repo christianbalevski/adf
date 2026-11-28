@@ -3,13 +3,14 @@ import { useAppStore } from '../../../src/renderer/stores/app.store'
 import { useEditorTabsStore } from '../../../src/renderer/stores/editor-tabs.store'
 import { openAdfFileLink } from '../../../src/renderer/utils/open-adf-link'
 
-const { readInternalFile } = vi.hoisted(() => ({ readInternalFile: vi.fn() }))
+const { readInternalFile, downloadInternalFile } = vi.hoisted(() => ({ readInternalFile: vi.fn(), downloadInternalFile: vi.fn() }))
 vi.mock('../../../src/renderer/utils/runtime-api', () => ({
-  openApi: () => ({ readInternalFile }),
+  openApi: () => ({ readInternalFile, downloadInternalFile }),
 }))
 
 beforeEach(() => {
   readInternalFile.mockReset()
+  downloadInternalFile.mockReset()
   useEditorTabsStore.getState().reset()
   useAppStore.setState({ chatPlacement: 'center', centerChatTabActive: true })
 })
@@ -64,5 +65,34 @@ describe('file links from the center Loops tab', () => {
 
     expect(useEditorTabsStore.getState().tabs).toHaveLength(0)
     expect(useAppStore.getState().centerChatTabActive).toBe(true)
+  })
+
+  it('downloads a binary file no tab can show, leaving Loops in view', async () => {
+    readInternalFile.mockResolvedValue({ content: '', binary: true, mimeType: 'application/pdf' })
+
+    await openAdfFileLink('adf-file://out/report%20final.pdf')
+
+    expect(downloadInternalFile).toHaveBeenCalledWith('out/report final.pdf')
+    expect(useEditorTabsStore.getState().tabs).toHaveLength(0)
+    expect(useAppStore.getState().centerChatTabActive).toBe(true)
+  })
+
+  it('downloads a binary file already open as a placeholder tab', async () => {
+    useEditorTabsStore.getState().openTab('data.xlsx', '', true, 'application/octet-stream')
+
+    await openAdfFileLink('adf-file://data.xlsx')
+
+    expect(downloadInternalFile).toHaveBeenCalledWith('data.xlsx')
+    expect(readInternalFile).not.toHaveBeenCalled()
+  })
+
+  it('still opens an image in its viewer tab', async () => {
+    readInternalFile.mockResolvedValue({ content: '', binary: true, mimeType: 'image/png' })
+
+    await openAdfFileLink('adf-file://chart.png')
+
+    expect(downloadInternalFile).not.toHaveBeenCalled()
+    expect(useEditorTabsStore.getState().activeTabPath).toBe('chart.png')
+    expect(useAppStore.getState().centerChatTabActive).toBe(false)
   })
 })

@@ -256,7 +256,7 @@ function buildMarkdown() {
       out.push('**Responses**', '', '| Status | Body | Description |', '|---|---|---|')
       for (const [code, response] of Object.entries(op.responses)) out.push(responseCodeText(code, response))
       out.push('')
-      const [okCode, okResponse] = Object.entries(op.responses).find(([code]) => code.startsWith('2'))
+      const [okCode, okResponse] = Object.entries(op.responses).find(([code]) => code === '101' || code.startsWith('2')) // 101: a WebSocket upgrade
       const okMedia = resolve(okResponse).content && Object.entries(resolve(okResponse).content)[0]
       if (okMedia) {
         out.push(`Example ${okCode} (\`${okMedia[0]}\`):`, '', ...jsonBlock(exampleOf(okMedia[1])), '')

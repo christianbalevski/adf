@@ -157,7 +157,7 @@ Designed for agents that work independently without human interaction.
 | `sys_set_state` | Ends loop and changes state |
 | Hit `max_active_turns` | Agent is suspended |
 
-In autonomous mode, the runtime appends to the system prompt: *"You are in autonomous mode. You will not receive human input during this session. Use the say tool to report progress. Use respond to communicate results. Call sys_set_state when your work is complete."*
+In autonomous mode, the runtime appends an **Autonomous Mode** section to the system prompt: *"You are in autonomous mode: the runtime continues after text-only responses. Follow your current instructions, including new directions from your principal and the assignment's stopping conditions. Completing a subtask does not end an ongoing assignment."* When `sys_set_state` is enabled and `context.dynamic_instructions.idle_reminder` is on, an **Idle Reminder** section follows it: *"When your current instructions call for stopping and no authorized work remains, call `sys_set_state` with state "idle" to yield."*
 
 #### Messages Sent While the Agent Works
 
