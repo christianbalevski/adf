@@ -146,8 +146,12 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
           const snapshot = (await ctx.waitForPush(IPC.APPROVALS_CHANGED, 'both requests pending', both, TURN_MS)) as { pending: Entry[] }
           expect(b.electron.pushes.filter((p) => p.channel === IPC.APPROVALS_CHANGED).every((p) => !isTagged(p))).toBe(true)
           for (const entry of snapshot.pending.filter((e) => e.toolName === 'fs_write')) {
+            const from = b.electron.pushes.length
             const result = await ctx.invoke<{ success?: boolean }>(IPC.APPROVALS_RESOLVE, ...(entry.runtimeId ? [{ $runtime: entry.runtimeId }] : []), { filePath: entry.filePath, approvalId: entry.id, approved: true })
             expect(result?.success).not.toBe(false)
+            // The requests must coexist in the merged list. Finish each approved
+            // turn before releasing the next so their follow-up streams do not compete.
+            await waitPush(b, IPC.AGENT_EVENT, entry.runtimeId === REMOTE, (p) => (p as AgentEvent)?.type === 'turn_complete', from, `${entry.runtimeId ?? 'local'} approved turn complete`)
           }
           await Promise.all(turns)
           await ctx.waitForPush(IPC.APPROVALS_CHANGED, 'both answered', (p) => !((p as { pending?: Entry[] })?.pending ?? []).some((e) => e.toolName === 'fs_write'), TURN_MS)
