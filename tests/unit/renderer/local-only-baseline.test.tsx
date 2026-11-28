@@ -23,6 +23,8 @@
  * The five status-bar baselines were updated on 2026-11-14 for the
  * requested narrow-width status bar (labels give way to icons, the model
  * name loses its middle, Kill always stays on screen).
+ * toasts.html was updated on 2026-11-26 for the requested safe-area toast
+ * offset (iPad PWA: toasts sit below the inset title bar).
  * Every other baseline is d00491a0's.
  *
  * Normalization: React's useId ids (`:R…:` / `«r…»`) are replaced by their

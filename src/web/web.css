@@ -1,4 +1,6 @@
-body { display: flex; flex-direction: column; min-width: 360px; }
+/* viewport-fit=cover (index.html) draws under the status bar and notch in every
+   layout, including an iPad home-screen app in landscape, so every layout insets. */
+body { display: flex; flex-direction: column; min-width: 360px; padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
 #root { flex: 1; min-height: 0; height: auto; }
 .web-session-bar { display: flex; align-items: center; justify-content: flex-end; gap: 16px; padding: 3px 12px; min-height: 26px; font-size: 11px; color: var(--adf-ui-text-muted); background: var(--adf-ui-surface-2); border-bottom: 1px solid var(--adf-ui-border); }
 .web-session-bar button { text-decoration: underline; cursor: pointer; }
@@ -28,7 +30,6 @@ body { display: flex; flex-direction: column; min-width: 360px; }
   min-width: 0;
   height: var(--web-viewport-height, 100dvh);
   box-sizing: border-box;
-  padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left);
   overscroll-behavior: none;
 }
 .adf-web[data-compact-web] #root { min-width: 0; }
