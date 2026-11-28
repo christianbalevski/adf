@@ -83,11 +83,29 @@ export function saveEditorTab(path: string, content: string, owner: string | nul
  * its debounced save now; without an editor mounted the active tab is saved
  * directly. A tab showing the notice is not saved: the notice gets focus.
  */
-let flushEditor: (() => void | Promise<unknown>) | null = null
+type EditorFlush = (path?: string) => void | Promise<SaveOutcome | null | undefined>
+let flushEditor: EditorFlush | null = null
 
-export function registerEditorFlush(flush: () => void | Promise<unknown>): () => void {
+/** `path`: deliver only that file's pending save (and nothing for the active tab). */
+export function registerEditorFlush(flush: EditorFlush): () => void {
   flushEditor = flush
   return () => { if (flushEditor === flush) flushEditor = null }
+}
+
+/**
+ * One file's unsaved text, written now: the editors' debounces, then a dirty
+ * tab whose save never went out. Before an operation on the file itself
+ * (rename, delete, download, duplicate), so no save lands after it. False:
+ * the text could not be saved (a refusal leaves the notice on the tab).
+ */
+export async function saveFileNow(path: string): Promise<boolean> {
+  const flushed = await flushEditor?.(path)
+  if (flushed && flushed.kind !== 'saved') return false
+  const tab = useEditorTabsStore.getState().tabs.find((t) => t.path === path && t.kind === 'file')
+  if (tab?.conflict) return false
+  if (!tab?.isDirty) return true
+  const outcome = await saveEditorTab(path, tab.content, useDocumentStore.getState().filePath)
+  return outcome?.kind === 'saved'
 }
 
 /** Drain both editor debounces before main replaces its open workspace. */
