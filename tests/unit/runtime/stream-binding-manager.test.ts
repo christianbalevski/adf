@@ -479,40 +479,39 @@ describe('StreamBindingManager', () => {
   })
 
   it('tracks multiple simultaneous bindings independently', async () => {
-    const one = await createTcpSink('one')
-    const two = await createTcpSink('two')
+    const one = await createTcpSink('\n')
+    const two = await createTcpSink('\n')
+    const bus = ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
+    const manager = createManager({
+      allow_tcp_bind: true,
+      tcp_allowlist: [
+        { host: one.host, port: one.port },
+        { host: two.host, port: two.port },
+      ]
+    })
     try {
-      ensureUmbilicalBus('00000000-0000-0000-0000-000000000001')
-      const manager = createManager({
-        host_process_bind: true,
-        allow_tcp_bind: true,
-        tcp_allowlist: [
-          { host: '127.0.0.1', port: one.port },
-          { host: '127.0.0.1', port: two.port },
-        ]
-      })
-
       const first = await manager.bind({
-        a: { kind: 'process', isolation: 'host', command: [process.execPath, '-e', 'process.stdout.write("one"); setTimeout(()=>{}, 1000)'] },
+        a: { kind: 'umbilical', filter: { event_types: ['test.first'] } },
         b: { kind: 'tcp', host: one.host, port: one.port },
-        options: { flow_summary_interval_ms: 100 }
       })
       const second = await manager.bind({
-        a: { kind: 'process', isolation: 'host', command: [process.execPath, '-e', 'process.stdout.write("two"); setTimeout(()=>{}, 1000)'] },
+        a: { kind: 'umbilical', filter: { event_types: ['test.second'] } },
         b: { kind: 'tcp', host: two.host, port: two.port },
-        options: { flow_summary_interval_ms: 100 }
       })
 
-      await expect(one.received).resolves.toContain('one')
-      await expect(two.received).resolves.toContain('two')
-      const summaries = manager.bindingsSummary()
-      expect(summaries.map(binding => binding.binding_id)).toEqual(expect.arrayContaining([first.binding_id, second.binding_id]))
-      expect(summaries.find(binding => binding.binding_id === first.binding_id)?.bytes_a_to_b).toBe(3)
-      expect(summaries.find(binding => binding.binding_id === second.binding_id)?.bytes_a_to_b).toBe(3)
-      manager.stopAll('agent_stopped')
+      bus.publish({ event_type: 'test.first', timestamp: Date.now(), source: 'test', payload: {} })
+      bus.publish({ event_type: 'test.second', timestamp: Date.now(), source: 'test', payload: {} })
+
+      const [firstLine, secondLine] = await Promise.all([one.received, two.received])
+      expect(JSON.parse(firstLine)).toMatchObject({ event_type: 'test.first' })
+      expect(JSON.parse(secondLine)).toMatchObject({ event_type: 'test.second' })
+      expect(manager.bindingsSummary()).toEqual(expect.arrayContaining([
+        expect.objectContaining({ binding_id: first.binding_id, bytes_a_to_b: Buffer.byteLength(firstLine) }),
+        expect.objectContaining({ binding_id: second.binding_id, bytes_a_to_b: Buffer.byteLength(secondLine) }),
+      ]))
     } finally {
-      await one.close()
-      await two.close()
+      manager.stopAll('agent_stopped')
+      await Promise.all([one.close(), two.close()])
     }
   })
 
