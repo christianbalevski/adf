@@ -2633,6 +2633,11 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         try { mapRootRef.current?.releasePointerCapture(g.pointerId) } catch { /* released with the pointer */ }
         if (mapRootRef.current) mapRootRef.current.style.cursor = ''
         endPanGesture()
+        // Windows fires contextmenu after this pointerup, at whatever is under
+        // the cursor (the dock composer, a chrome input): the pan swallows it.
+        const swallow = (ce: Event): void => ce.preventDefault()
+        window.addEventListener('contextmenu', swallow, { capture: true, once: true })
+        setTimeout(() => window.removeEventListener('contextmenu', swallow, true), 0)
         return
       }
       if (cancelled || !nodeId) return
