@@ -299,7 +299,7 @@ export class AgentSession implements FileRefHolder {
    *
    *  Repairs orphaned tool blocks so the API doesn't reject:
    *  - Orphaned tool_result at the start (missing preceding tool_use)
-   *  - Orphaned tool_use at the end (missing following tool_result) */
+   *  - Tool_use with no result anywhere (answered with an unknown outcome) */
   restoreMessages(messages: LLMMessage[]): void {
     const undelivered = this.pendingContextInjections
     this.messages = []
@@ -324,7 +324,7 @@ export class AgentSession implements FileRefHolder {
   /** Move user rows without tool results that sit inside an open tool pair
    *  (after an assistant tool_use, before its results) to just after the last
    *  result. A pair that never completes keeps them in place (the orphan
-   *  repair below strips the call). */
+   *  repair below answers the call with an unknown outcome). */
   private moveRowsOutOfToolPairs(): void {
     const out: LLMMessage[] = []
     let open = new Set<string>()
@@ -354,10 +354,10 @@ export class AgentSession implements FileRefHolder {
     this.messages = out
   }
 
-  /** Scan ALL messages for tool_use blocks without matching tool_result
-   *  (and vice versa) and strip them. This handles orphans in the middle of
-   *  history (e.g. from pruning, compaction, or copying an .adf file
-   *  mid-execution), not just at the head/tail. */
+  /** Scan ALL messages for tool_use blocks without a tool_result and answer
+   *  them with an unknown outcome; strip tool_results without a tool_use.
+   *  Orphans can sit anywhere (a restart mid-call, pruning, compaction,
+   *  copying an .adf file mid-execution). */
   private repairOrphanedToolUse(): void {
     if (this.messages.length === 0) return
 
@@ -390,42 +390,33 @@ export class AgentSession implements FileRefHolder {
       }
     }
 
-    // For the last assistant message with orphaned tool_use, add synthetic results
-    // (preserves context for the next LLM turn)
-    const last = this.messages[this.messages.length - 1]
-    if (last.role === 'assistant' && Array.isArray(last.content)) {
-      const orphanedTail = last.content.filter(
-        (b): b is ContentBlock & { type: 'tool_use'; id: string } =>
-          b.type === 'tool_use' && !!b.id && !toolResultIds.has(b.id)
-      )
-      if (orphanedTail.length > 0) {
-        const syntheticResults: ContentBlock[] = orphanedTail.map((block) => ({
-          type: 'tool_result' as const,
-          tool_use_id: block.id,
-          content: '[System: This tool call was interrupted by an application restart and never completed.]',
-          is_error: true
-        }))
-        this.messages.push({ role: 'user', content: syntheticResults })
-        // Add these to the set so the middle-scan below doesn't also strip them
-        for (const block of orphanedTail) toolResultIds.add(block.id)
-      }
-    }
-
-    // Strip orphaned tool_use blocks from assistant messages in the middle of history
-    for (const msg of this.messages) {
+    // Answer every tool_use that has no result, wherever it sits, with an
+    // unknown outcome, in the next message. The model keeps the call; the
+    // request stays valid.
+    for (let i = 0; i < this.messages.length; i++) {
+      const msg = this.messages[i]
       if (msg.role !== 'assistant' || !Array.isArray(msg.content)) continue
-      const hasOrphan = msg.content.some(
-        b => b.type === 'tool_use' && b.id && !toolResultIds.has(b.id)
+      const missingIds = msg.content.flatMap(
+        b => b.type === 'tool_use' && b.id && !toolResultIds.has(b.id) ? [b.id] : []
       )
-      if (!hasOrphan) continue
-
-      msg.content = msg.content.filter(
-        b => !(b.type === 'tool_use' && b.id && !toolResultIds.has(b.id))
-      )
-      // If all content was stripped, replace with placeholder text
-      if (msg.content.length === 0) {
-        msg.content = [{ type: 'text' as const, text: '[Tool call removed — no matching result in history]' }]
+      if (missingIds.length === 0) continue
+      const missing: ContentBlock[] = missingIds.map(id => ({
+        type: 'tool_result' as const,
+        tool_use_id: id,
+        content: UNKNOWN_OUTCOME,
+        is_error: true
+      }))
+      // Merge only into a row that already carries results (parallel or
+      // partial batches); a plain row keeps its own rendering, so the answers
+      // get a row of their own.
+      const next = this.messages[i + 1]
+      if (next?.role === 'user' && Array.isArray(next.content) && next.content.some(b => b.type === 'tool_result')) {
+        const k = next.content.findIndex(b => b.type !== 'tool_result')
+        next.content = k < 0 ? [...next.content, ...missing] : [...next.content.slice(0, k), ...missing, ...next.content.slice(k)]
+      } else {
+        this.messages.splice(i + 1, 0, { role: 'user', content: missing })
       }
+      for (const id of missingIds) toolResultIds.add(id)
     }
 
     // Strip orphaned tool_result blocks from user messages (reverse of above)
@@ -495,6 +486,8 @@ export class AgentSession implements FileRefHolder {
   }
 
 }
+
+const UNKNOWN_OUTCOME = '[System: No result was recorded for this tool call. It may or may not have run. Check its effect before you retry it.]'
 
 /** Inline base64 media: never persisted (media in history is a `file_ref`). */
 function isInlineMediaBlock(block: ContentBlock): boolean {

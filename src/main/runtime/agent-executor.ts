@@ -3316,7 +3316,7 @@ export class AgentExecutor extends EventEmitter {
               // before propagating. Discarding them leaves the assistant
               // tool_use batch in the loop with no results, and the restart
               // repair then reports tools that actually ran (with real side
-              // effects) as "never completed".
+              // effects) as having an unknown outcome.
               this.commitPartialToolResults(toolUseBlocks, toolResults)
               throw toolError
             }
