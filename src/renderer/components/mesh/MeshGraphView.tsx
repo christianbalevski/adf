@@ -46,6 +46,7 @@ import { computeFleetLayout, districtKeyOf, hexDistance, hexSpiral, NODE_WIDTH, 
 import { FleetPeerAgentReadout } from './FleetPeerAgentReadout'
 import { FleetApprovalModal } from './FleetApprovalModal'
 import { FleetStationReadout } from './FleetStationReadout'
+import { suppressPanContextMenu } from './fleet-pan-context-menu'
 import { useDocumentStore } from '../../stores/document.store'
 import { isTypingElement, mapOwnsKey } from '../../utils/keyboard'
 import { AgentTitleCluster, OpenAgentNavButton } from '../layout/TitleBar'
@@ -2599,6 +2600,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
   // per-pointermove React state — with the same
   // fleet-panning gating the edge-scroll ticker uses.
   const rightPanRef = useRef<{ pointerId: number; cleanup: () => void } | null>(null)
+  const cancelPanContextMenu = useRef<(() => void) | undefined>(undefined)
   const onRightPointerDownCapture = useCallback((e: React.PointerEvent) => {
     if (e.button !== 2 || rightPanRef.current || !isCanvasTarget(e.target)) return
     const nodeId = (e.target as Element).closest('.react-flow__node-meshNode')?.getAttribute('data-id') ?? null
@@ -2633,11 +2635,7 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
         try { mapRootRef.current?.releasePointerCapture(g.pointerId) } catch { /* released with the pointer */ }
         if (mapRootRef.current) mapRootRef.current.style.cursor = ''
         endPanGesture()
-        // Windows fires contextmenu after this pointerup, at whatever is under
-        // the cursor (the dock composer, a chrome input): the pan swallows it.
-        const swallow = (ce: Event): void => ce.preventDefault()
-        window.addEventListener('contextmenu', swallow, { capture: true, once: true })
-        setTimeout(() => window.removeEventListener('contextmenu', swallow, true), 0)
+        if (!cancelled) cancelPanContextMenu.current = suppressPanContextMenu(window)
         return
       }
       if (cancelled || !nodeId) return
@@ -2672,8 +2670,10 @@ function MeshGraphCanvas({ onHome, onSettings, onOpenAgent }: { onHome: () => vo
     e.stopPropagation()
   }, [])
 
-  // Stray-listener guard — an unmount mid-gesture drops the window listeners
-  useEffect(() => () => { rightPanRef.current?.cleanup() }, [])
+  useEffect(() => () => {
+    rightPanRef.current?.cleanup()
+    cancelPanContextMenu.current?.()
+  }, [])
 
   // Center the viewport on an agent and highlight it
   const focusAgent = useCallback((filePath: string) => {
