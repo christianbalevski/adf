@@ -212,6 +212,14 @@ See [Code Execution > State Persistence](code-execution.md#state-persistence) an
 
 Timer lambdas have full access to the [`adf` proxy object](adf-object.md) — all enabled tools, `model_invoke`, and `sys_lambda` are available.
 
+### When a Timer Lambda Fails
+
+A failing timer lambda does not wake the agent: each failure is written to `adf_logs` at level `error` with origin `lambda`, and a recurring timer keeps firing on schedule. To be told, enable [`triggers.on_logs`](logging.md#on_logs-trigger) and add an agent target for those entries with an `interval_ms` window: the first failure wakes the agent with its message and lambda, and further failures within the window are dropped (they stay in [`adf_logs`](logging.md#querying-logs)), so a timer that fails every minute wakes it once per window instead of on every failure (a `debounce_ms` longer than the timer's interval would never fire). The agent hears it only in states where agent-scope `on_logs` can fire ([State Gating](triggers.md#state-gating)): not in `hibernate`, where system-scope timers keep running, and not for failures logged while a turn is running:
+
+```json
+{ "scope": "agent", "filter": { "level": ["error"], "origin": ["lambda"] }, "interval_ms": 3600000 }
+```
+
 ## Timer Scope and Trigger Interaction
 
 For a timer to actually execute, two conditions must be met:
