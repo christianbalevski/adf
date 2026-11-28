@@ -123,7 +123,8 @@ describe.skipIf(!BUNDLE)('parity: two runtimes (multi-runtime.md §9.1)', () => 
         shownStream: localOnly,
         llm: (req) => {
           if (req.isPreflight) return { text: 'ok' }
-          if (req.last?.role === 'tool') return { text: 'Wrote note.md.' }
+          // Keep the approval reply to one slice. Multi-chat covers batching.
+          if (req.last?.role === 'tool') return { text: '✓' }
           return { toolCalls: [{ name: 'fs_write', arguments: { mode: 'write', path: 'note.md', content: localOnly(req) ? 'from This computer' : 'from host-1' } }] }
         },
         async run(ctx) {

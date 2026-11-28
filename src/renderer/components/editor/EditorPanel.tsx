@@ -24,6 +24,9 @@ import { openApi, useOpenAgentKey } from '../../utils/runtime-api'
 import { captureAgentView, type AgentView } from '../../utils/agent-view'
 import { useCompactWebLayout } from '../../hooks/useCompactWebLayout'
 import { useCompactNavigationStore } from '../../stores/compact-navigation.store'
+import type { ContextMenuItem } from '../common/ContextMenu'
+import { adfFileUrl } from '../../../shared/utils/file-ref'
+import { CORE_FILES, deleteAgentFile, downloadAgentFile, duplicateAgentFile, renameAgentFile } from '../../utils/agent-file-actions'
 
 const MD_EXTENSIONS = new Set(['md', 'markdown'])
 
@@ -111,15 +114,17 @@ export function EditorPanel() {
 
   // A file opened from anywhere else — the sidebar, the Files panel, the agent's
   // browser — has to take the stage, or the click looks like it did nothing.
-  // Two exemptions: an agent switch (restoring the incoming agent's tabs is not
-  // the user asking for a file) and a close (activeTabPath moving because a tab
-  // went away must not yank the user off the chat).
+  // Three exemptions: an agent switch (restoring the incoming agent's tabs is not
+  // the user asking for a file), a close (activeTabPath moving because a tab
+  // went away must not yank the user off the chat) and a rename.
   useEffect(() => {
     return useEditorTabsStore.subscribe((state, prev) => {
       if (
         state.activeTabPath &&
         state.activeTabPath !== prev.activeTabPath &&
         state.tabs.length >= prev.tabs.length &&
+        // A rename moves the active tab to a new path without opening anything.
+        (state.tabs.length > prev.tabs.length || prev.tabs.some((t) => t.path === state.activeTabPath)) &&
         !isAgentSwitching()
       ) {
         setCenterChatTabActive(false)
@@ -192,20 +197,26 @@ export function EditorPanel() {
     return saveEditorTab(path, content, owner, base, view)
   }, [])
 
-  // Ctrl+S / File > Save (App.tsx): the debounced save now, else the active tab if it has unsaved text.
-  useEffect(() => registerEditorFlush(() => {
-    editorFlushRef.current?.()
+  // The save waiting for its debounce, delivered now over its own base (all
+  // of them, or only `path`'s).
+  const deliverPending = useCallback((path?: string) => {
     const pending = pendingSaveRef.current
-    if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-    saveTimerRef.current = null
-    pendingSaveRef.current = null
-    if (pending) {
-      return performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
-    }
+    if (!pending || (path !== undefined && pending.path !== path)) return undefined
+    cancelPendingSave()
+    return performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
+  }, [cancelPendingSave, performSave])
+
+  // Ctrl+S / File > Save (App.tsx): the debounced save now, else the active tab
+  // if it has unsaved text. With a path (saveFileNow): only that file's.
+  const flushSaves = useCallback((path?: string) => {
+    editorFlushRef.current?.()
+    const delivered = deliverPending(path)
+    if (delivered || path !== undefined) return delivered
     const store = useEditorTabsStore.getState()
     const active = store.tabs.find((t) => t.path === store.activeTabPath)
     if (active && active.kind === 'file' && active.isDirty && !active.conflict) return performSave(active.path, active.content, useDocumentStore.getState().filePath)
-  }), [performSave])
+  }, [deliverPending, performSave])
+  useEffect(() => registerEditorFlush(flushSaves), [flushSaves])
 
   // What this window's saves produced belongs to the agent they were for.
   useEffect(() => { resetEditorSaves() }, [viewGeneration, runtimeId])
@@ -216,15 +227,43 @@ export function EditorPanel() {
   const handleCloseTab = useCallback((path: string) => {
     const tab = useEditorTabsStore.getState().tabs.find((t) => t.path === path)
     if (tab?.conflict && !confirmDiscardConflicts([path])) return
-    const pending = pendingSaveRef.current
-    if (pending?.path === path) {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-      saveTimerRef.current = null
-      pendingSaveRef.current = null
-      if (!tab?.conflict) void performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
-    }
+    if (!tab?.conflict) void deliverPending(path)
+    else if (pendingSaveRef.current?.path === path) cancelPendingSave()
     closeTab(path)
-  }, [closeTab, performSave])
+  }, [closeTab, deliverPending, cancelPendingSave])
+
+  // The tab menu. The file operations are the Files panel's (agent-file-actions).
+  const tabMenuItems = useCallback((tab: (typeof tabs)[number], rename: () => void): ContextMenuItem[] => {
+    const all = useEditorTabsStore.getState().tabs
+    const index = all.findIndex((t) => t.path === tab.path)
+    const closeEach = (paths: string[]) => paths.forEach(handleCloseTab)
+    const closeItems: ContextMenuItem[] = [
+      { label: 'Close', onSelect: () => handleCloseTab(tab.path) },
+      { label: 'Close others', disabled: all.length < 2, onSelect: () => closeEach(all.filter((t) => t.path !== tab.path).map((t) => t.path)) },
+      { label: 'Close to the right', disabled: index === all.length - 1, onSelect: () => closeEach(all.slice(index + 1).map((t) => t.path)) },
+      { label: 'Close all', onSelect: () => closeEach(all.map((t) => t.path)) },
+    ]
+    if (tab.kind !== 'file') return closeItems
+    const core = CORE_FILES.has(tab.path) ? `${tab.path} is a core file of the agent.` : undefined
+    return [
+      ...closeItems,
+      {
+        label: 'Rename…', separatorBefore: true, onSelect: rename,
+        disabled: !!core || !!tab.conflict,
+        hint: core ?? (tab.conflict ? 'Resolve the change notice first.' : undefined),
+      },
+      { label: 'Duplicate', onSelect: () => { void duplicateAgentFile(tab.path) } },
+      { label: 'Download', onSelect: () => { void downloadAgentFile(tab.path) } },
+      { label: 'Copy path', separatorBefore: true, onSelect: () => { void navigator.clipboard.writeText(tab.path) } },
+      { label: 'Copy link', onSelect: () => { void navigator.clipboard.writeText(adfFileUrl(tab.path)) } },
+      {
+        label: 'Delete…', separatorBefore: true, danger: true, disabled: !!core, hint: core,
+        onSelect: () => {
+          if (window.confirm(`Delete ${tab.path}? This cannot be undone.`)) void deleteAgentFile(tab.path)
+        },
+      },
+    ]
+  }, [handleCloseTab])
 
   // The notice's answers. Reload: their text (read again when the refusal did
   // not carry it). Overwrite: save this text over their revision now.
@@ -331,13 +370,8 @@ export function EditorPanel() {
   // Flush pending saves on unmount. Editors flush their own debounce as they tear
   // down, which lands here — writing it out is the last chance before the timer dies.
   useEffect(() => {
-    return () => {
-      if (saveTimerRef.current) clearTimeout(saveTimerRef.current)
-      const pending = pendingSaveRef.current
-      pendingSaveRef.current = null
-      if (pending) void performSave(pending.path, pending.content, pending.owner, pending.base, pending.view)
-    }
-  }, [performSave])
+    return () => { void deliverPending() }
+  }, [deliverPending])
 
   // Persist the open-tab set per agent so returning to an agent (or
   // restarting the app) restores the same tabs (the Computer tab too). saveOpenTabs dedupes, so
@@ -369,6 +403,8 @@ export function EditorPanel() {
           onClose={handleCloseTab}
           onReload={reloadBrowserTab}
           chatTab={chatTab}
+          menuItems={tabMenuItems}
+          onRename={renameAgentFile}
         />
         <div className="flex-1 min-h-0">
           <AgentLoop key={`center:${agentFilePath ?? ''}`} />
@@ -408,7 +444,7 @@ export function EditorPanel() {
 
   return (
     <div className="h-full flex flex-col">
-      <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={handleCloseTab} onReload={reloadBrowserTab} chatTab={chatTab} />
+      <TabBar tabs={tabs} activeTabPath={activeTabPath} onSelect={selectFileTab} onClose={handleCloseTab} onReload={reloadBrowserTab} chatTab={chatTab} menuItems={tabMenuItems} onRename={renameAgentFile} />
       {activeTab.conflict && (
         <ChangedElsewhereNotice
           what={activeTab.path}
