@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useState } from 'react'
 import RFB from '@novnc/novnc'
 import { useAppStore } from '../../stores/app.store'
 
@@ -13,50 +13,53 @@ import { useAppStore } from '../../stores/app.store'
  * desktop resized to the tab with "Match tab size". noVNC's default quality:
  * this stream crosses the network, unlike the desktop app's loopback one.
  * A dropped stream reconnects every 2 s, as the desktop viewer's reconnect=1.
+ *
+ * One RFB client per target div: the div is keyed by url, attempt and reload,
+ * so a reconnect or reload mounts a fresh div, and its ref callback owns the
+ * client until the div unmounts.
  */
 export default function WebDesktopView({ url, reloadNonce }: { url: string; reloadNonce?: number }) {
-  const matchTab = useAppStore((s) => s.computerMatchTab)
-  const targetRef = useRef<HTMLDivElement | null>(null)
-  const rfbRef = useRef<RFB | null>(null)
   const [attempt, setAttempt] = useState(0)
   const [connected, setConnected] = useState(false)
 
-  useEffect(() => {
-    const target = targetRef.current
-    if (!target) return
-    const rfb = new RFB(target, url, { wsProtocols: ['binary'] })
-    rfb.background = 'var(--adf-ui-canvas)'
-    rfb.scaleViewport = !useAppStore.getState().computerMatchTab
-    rfb.resizeSession = useAppStore.getState().computerMatchTab
-    rfbRef.current = rfb
-    let closed = false
-    // noVNC logs an error when a disconnected client is told to disconnect.
-    let dead = false
-    let retry: ReturnType<typeof setTimeout> | undefined
-    rfb.addEventListener('connect', () => setConnected(true))
-    rfb.addEventListener('disconnect', () => {
-      dead = true
+  const attach = useCallback(
+    (target: HTMLDivElement) => {
       setConnected(false)
-      if (!closed) retry = setTimeout(() => setAttempt((n) => n + 1), 2000)
-    })
-    return () => {
-      closed = true
-      clearTimeout(retry)
-      rfbRef.current = null
-      if (!dead) rfb.disconnect()
-    }
-  }, [url, attempt, reloadNonce])
-
-  useEffect(() => {
-    const rfb = rfbRef.current
-    if (!rfb) return
-    rfb.scaleViewport = !matchTab
-    rfb.resizeSession = matchTab
-  }, [matchTab])
+      const rfb = new RFB(target, url, { wsProtocols: ['binary'] })
+      rfb.background = 'var(--adf-ui-canvas)'
+      const applyMatchTab = (matchTab: boolean) => {
+        rfb.scaleViewport = !matchTab
+        rfb.resizeSession = matchTab
+      }
+      applyMatchTab(useAppStore.getState().computerMatchTab)
+      const unsubscribe = useAppStore.subscribe((s, prev) => {
+        if (s.computerMatchTab !== prev.computerMatchTab) applyMatchTab(s.computerMatchTab)
+      })
+      // noVNC logs an error when a disconnected client is told to disconnect.
+      let dead = false
+      let retry: ReturnType<typeof setTimeout> | undefined
+      const onConnect = () => setConnected(true)
+      const onDisconnect = () => {
+        dead = true
+        setConnected(false)
+        retry = setTimeout(() => setAttempt((n) => n + 1), 2000)
+      }
+      rfb.addEventListener('connect', onConnect)
+      rfb.addEventListener('disconnect', onDisconnect)
+      return () => {
+        clearTimeout(retry)
+        unsubscribe()
+        rfb.removeEventListener('connect', onConnect)
+        rfb.removeEventListener('disconnect', onDisconnect)
+        if (!dead) rfb.disconnect()
+      }
+    },
+    [url],
+  )
 
   return (
     <div className="relative h-full w-full bg-[var(--adf-ui-canvas)]">
-      <div ref={targetRef} className="h-full w-full" />
+      <div key={`${url}|${attempt}|${reloadNonce}`} ref={attach} className="h-full w-full" />
       {!connected && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] text-[var(--adf-ui-text-muted)]">
           Connecting to the display…
