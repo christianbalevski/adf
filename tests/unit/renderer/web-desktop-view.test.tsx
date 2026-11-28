@@ -39,7 +39,7 @@ import { mount as hostMount } from './support/host-render'
 function mount(element: React.ReactElement) {
   let view!: ReturnType<typeof hostMount>
   act(() => { view = hostMount(element) })
-  return { render: (el: React.ReactElement) => act(() => view.rerender(el)), unmount: () => act(() => view.unmount()) }
+  return { text: view.text, render: (el: React.ReactElement) => act(() => view.rerender(el)), unmount: () => act(() => view.unmount()) }
 }
 
 // Only the component's timers are faked: React schedules its own work on setImmediate.
@@ -108,6 +108,22 @@ describe('WebDesktopView', () => {
     expect(first.disconnects).toBe(1)
     expect(instances).toHaveLength(2)
     expect(live().disconnects).toBe(0)
+    view.unmount()
+  })
+
+  it('a reloaded display waits for its new client and ignores late events from the old one', () => {
+    fakeTimers()
+    const view = mount(<WebDesktopView url={URL} reloadNonce={1} />)
+    const first = live()
+    act(() => first.dispatchEvent(new Event('connect')))
+    expect(view.text()).toBe('')
+    view.render(<WebDesktopView url={URL} reloadNonce={2} />)
+    expect(view.text()).toBe('Connecting to the display…')
+    act(() => live().dispatchEvent(new Event('connect')))
+    drop(first)
+    advance(2000)
+    expect(view.text()).toBe('')
+    expect(instances).toHaveLength(2)
     view.unmount()
   })
 

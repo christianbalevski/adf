@@ -24,6 +24,7 @@ export default function WebDesktopView({ url, reloadNonce }: { url: string; relo
 
   const attach = useCallback(
     (target: HTMLDivElement) => {
+      setConnected(false)
       const rfb = new RFB(target, url, { wsProtocols: ['binary'] })
       rfb.background = 'var(--adf-ui-canvas)'
       const applyMatchTab = (matchTab: boolean) => {
@@ -34,20 +35,22 @@ export default function WebDesktopView({ url, reloadNonce }: { url: string; relo
       const unsubscribe = useAppStore.subscribe((s, prev) => {
         if (s.computerMatchTab !== prev.computerMatchTab) applyMatchTab(s.computerMatchTab)
       })
-      let closed = false
       // noVNC logs an error when a disconnected client is told to disconnect.
       let dead = false
       let retry: ReturnType<typeof setTimeout> | undefined
-      rfb.addEventListener('connect', () => setConnected(true))
-      rfb.addEventListener('disconnect', () => {
+      const onConnect = () => setConnected(true)
+      const onDisconnect = () => {
         dead = true
         setConnected(false)
-        if (!closed) retry = setTimeout(() => setAttempt((n) => n + 1), 2000)
-      })
+        retry = setTimeout(() => setAttempt((n) => n + 1), 2000)
+      }
+      rfb.addEventListener('connect', onConnect)
+      rfb.addEventListener('disconnect', onDisconnect)
       return () => {
-        closed = true
         clearTimeout(retry)
         unsubscribe()
+        rfb.removeEventListener('connect', onConnect)
+        rfb.removeEventListener('disconnect', onDisconnect)
         if (!dead) rfb.disconnect()
       }
     },
@@ -56,7 +59,7 @@ export default function WebDesktopView({ url, reloadNonce }: { url: string; relo
 
   return (
     <div className="relative h-full w-full bg-[var(--adf-ui-canvas)]">
-      <div key={`${url}|${attempt}|${reloadNonce ?? 0}`} ref={attach} className="h-full w-full" />
+      <div key={`${url}|${attempt}|${reloadNonce}`} ref={attach} className="h-full w-full" />
       {!connected && (
         <div className="pointer-events-none absolute inset-0 flex items-center justify-center text-[12px] text-[var(--adf-ui-text-muted)]">
           Connecting to the display…

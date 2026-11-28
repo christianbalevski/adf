@@ -96,6 +96,11 @@ interface EditorTabsState {
   openBrowserTab: (meta: BrowserTabMeta, opts?: { activate?: boolean }) => void
   reloadBrowserTab: (path: string) => void
   closeTab: (path: string) => void
+  /**
+   * The file was renamed: its tab (or, for a folder, every tab under it) moves
+   * to the new path, keeping its text and its place in the bar.
+   */
+  renameTabPath: (from: string, to: string, opts?: { folder?: boolean }) => void
   setActiveTab: (path: string) => void
   updateTabContent: (path: string, content: string) => void
   /**
@@ -236,6 +241,26 @@ export const useEditorTabsStore = create<EditorTabsState>((set, get) => ({
       }
     }
     set({ tabs: newTabs, activeTabPath: newActive })
+  },
+
+  renameTabPath: (from, to, opts) => {
+    const moved = (t: EditorTab): string | null =>
+      t.kind !== 'file' ? null
+        : opts?.folder ? (t.path.startsWith(`${from}/`) ? `${to}/${t.path.slice(from.length + 1)}` : null)
+        : t.path === from ? to : null
+    set((s) => {
+      // A tab still open on a destination (its file was deleted elsewhere) gives way: one tab per path.
+      const destinations = new Set(s.tabs.map(moved).filter((p): p is string => p !== null))
+      const tabs = s.tabs
+        .filter((t) => moved(t) !== null || !destinations.has(t.path))
+        .map((t) => {
+          const path = moved(t)
+          return path ? { ...t, path, extension: getExtension(path) } : t
+        })
+      // A tab that gave way leaves its path to the tab that took it, so the active path stays valid.
+      const active = s.tabs.find((t) => t.path === s.activeTabPath)
+      return { tabs, activeTabPath: (active && moved(active)) ?? s.activeTabPath }
+    })
   },
 
   setActiveTab: (path) => {

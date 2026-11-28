@@ -677,8 +677,10 @@ async function drainPendingWork(execId, deadline, timeoutMs) {
   let lastSize = vmApi.outSize(execId);
   let quietSince = Date.now();
   while (Date.now() < stop) {
-    await new Promise(function (r) { setImmediate(r); });
     await new Promise(function (r) { setTimeout(r, DRAIN_TICK_MS); });
+    // Let other due timers run before measuring quiet. After a scheduling
+    // pause, the drain tick may run before timers that are already due.
+    await new Promise(function (r) { setImmediate(r); });
     const size = vmApi.outSize(execId);
     if (size !== lastSize || countPendingFor(execId) > 0) {
       lastSize = size;

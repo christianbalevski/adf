@@ -54,7 +54,6 @@ export function ApprovalControls({
   const [feedback, setFeedback] = useState('')
   // Screen rect of the caret that opened the feedback box (overlay mode)
   const [anchor, setAnchor] = useState<DOMRect | null>(null)
-  const feedbackRef = useRef<HTMLTextAreaElement>(null)
   const approveCaretRef = useRef<HTMLButtonElement>(null)
   const rejectCaretRef = useRef<HTMLButtonElement>(null)
   // The menu closes on the caret's own pointerdown (outside the menu); the
@@ -103,11 +102,6 @@ export function ApprovalControls({
     ;(current.which === 'approve' ? approveCaretRef : rejectCaretRef).current?.focus()
   }, [])
 
-  const openFeedback = () => {
-    setFeedbackOpen(true)
-    setTimeout(() => feedbackRef.current?.focus(), 0)
-  }
-
   const closeFeedback = () => {
     setFeedbackOpen(false)
     rejectCaretRef.current?.focus()
@@ -126,7 +120,7 @@ export function ApprovalControls({
         hint: alwaysApproveDisabled ? alwaysApproveDisabledReason : undefined,
         onSelect: onAlwaysApprove
       }]
-    : [{ label: 'Reject with feedback…', onSelect: openFeedback }]
+    : [{ label: 'Reject with feedback…', onSelect: () => setFeedbackOpen(true) }]
 
   return (
     <span className="relative inline-flex gap-1.5" onClick={(e) => e.stopPropagation()}>
@@ -204,7 +198,7 @@ export function ApprovalControls({
               Reject with feedback
             </div>
             <textarea
-              ref={feedbackRef}
+              autoFocus
               value={feedback}
               onChange={(e) => setFeedback(e.target.value)}
               onKeyDown={(e) => {

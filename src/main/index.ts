@@ -57,6 +57,7 @@ import { AGENT_WINDOWS_KEY, AgentWindows, checkSavedAgent, titleStripVisible, ty
 import { QueueHandover } from './backend/queue-handover'
 import { ADF_FILE_WINDOW, ADF_WINDOW_HEADER } from './backend/daemon-mode/windows'
 import { samePath } from './backend/daemon-mode/session'
+import { attachContextMenu } from './context-menu'
 import { actsOnFocusedWindow, buildApplicationMenu, deliverMenuAction, setMenuWindowResolver, takePendingMenuActions } from './menu'
 import { LocalRuntimeName } from './backend/local-runtime-name'
 
@@ -626,9 +627,10 @@ function notifyQueueHandover(): void {
   mainWindow.webContents.send(IPC.QUEUE_HANDOVER_READY)
 }
 
-/** What every Studio window registers: webview and navigation rules, renderer log, fullscreen and title bar colours. */
+/** What every Studio window registers: webview and navigation rules, text context menu, renderer log, fullscreen and title bar colours. */
 function prepareStudioWindow(win: BrowserWindow): void {
   const isMac = process.platform === 'darwin'
+  attachContextMenu(win.webContents)
   // Webview guests may only load the local agent-browser (noVNC) pages, with
   // no preload and no node access.
   win.webContents.on('will-attach-webview', (event, webPreferences, params) => {
