@@ -47,6 +47,9 @@ export function codeMirrorSelection(view: EditorView): ReturnType<SelectionGette
   return { text: view.state.sliceDoc(from, to), startLine, endLine, anchor: { left: coords.left, top: coords.top, bottom: coords.bottom } }
 }
 
+/** Prose files get spellcheck; code does not. */
+const PROSE_EXTENSIONS = new Set(['md', 'markdown', 'txt'])
+
 export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWrap = true, flushRef, selectionRef }: Props) {
   const containerRef = useRef<HTMLDivElement>(null)
   const viewRef = useRef<EditorView | null>(null)
@@ -104,6 +107,7 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
   useEffect(() => {
     if (!containerRef.current) return
 
+    const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     const isDark = theme === 'dark' || (theme === 'system' && window.matchMedia('(prefers-color-scheme: dark)').matches)
 
     const state = EditorState.create({
@@ -129,6 +133,8 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
         languageCompartment.current.of([]),
         readOnlyCompartment.current.of(readOnlyExtensions(!!readOnly)),
         lineWrapCompartment.current.of(lineWrap ? EditorView.lineWrapping : []),
+        // CodeMirror turns spellcheck off by default.
+        EditorView.contentAttributes.of({ spellcheck: PROSE_EXTENSIONS.has(ext) ? 'true' : 'false' }),
         EditorView.updateListener.of((update) => {
           if (!update.docChanged || isExternalUpdate.current) return
           hasPendingChange.current = true
@@ -148,7 +154,6 @@ export function CodeMirrorEditor({ filePath, content, onChange, readOnly, lineWr
     lastSynced.current = content
 
     // Load language support
-    const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
     loadLanguage(ext).then((lang) => {
       if (lang && !disposed) {
         view.dispatch({

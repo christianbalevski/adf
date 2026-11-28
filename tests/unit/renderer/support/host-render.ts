@@ -91,6 +91,8 @@ export interface Mounted {
   text(): string
   /** Host nodes whose props match `match`. */
   find(match: (node: HostNode) => boolean): HostNode[]
+  /** Render a new element into the same root (a prop change). */
+  rerender(element: ReactNode): void
   unmount(): void
 }
 
@@ -107,6 +109,7 @@ export function mount(element: ReactNode): Mounted {
     errors,
     text: () => walk(root, []).filter((n) => n.type === '#text').map((n) => n.text).join(' ').replace(/\s+/g, ' ').trim(),
     find: (match) => walk(root, []).filter(match),
+    rerender: (el) => { reconciler.updateContainerSync(el, container, null, () => {}); reconciler.flushSyncWork() },
     unmount: () => { reconciler.updateContainerSync(null, container, null, () => {}); reconciler.flushSyncWork() },
   }
 }
