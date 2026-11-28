@@ -1,6 +1,6 @@
 ---
 name: agent-memory
-description: Maintain a mind.md wiki — small always-loaded index, mind/ pages with typed frontmatter, append-only log — with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, writing or superseding memory pages, or running a periodic memory lint.
+description: Maintain a mind.md wiki — small always-loaded index, mind/ pages with typed frontmatter, append-only log — with whole-page source citations resolvable to adf_audit ground truth. Use when setting up durable memory, installing the audit_read retrieval lambda, searching past loop history by keyword, writing or superseding memory pages, or running a periodic memory lint.
 adf: ">=0.2"
 requires:
   tools: [db_query, fs_write, sys_code, sys_lambda]
@@ -10,7 +10,7 @@ requires:
 
 Your memory is a wiki. `mind.md` is the index, injected every turn, so keep it small. `mind/<slug>.md` are the pages, loaded on demand. `mind/log.md` is the append-only history. Pages cite their sources, and a source resolves to the transcript: a live `adf_loop` row, or a brotli-compressed blob in `adf_audit`. The wiki is derived; `adf_audit` is ground truth. Full pattern: `https://raw.githubusercontent.com/christianbalevski/adf/main/docs/guides/agent-memory.md`.
 
-The guide has the seven rules. This skill adds the three pieces the rules assume: the retrieval lambda, the lint workflow, and page templates.
+The guide has the seven rules. This skill adds the three pieces the rules assume: the retrieval lambda, the lint workflow, and page templates. It also ships a keyword search over your whole history.
 
 ## Install the audit_read lambda
 
@@ -61,6 +61,12 @@ Four conventions this depends on, none of them guessable:
 - Pass **`_full: true`** from sandbox code so rows are never truncated.
 - The payload is compressed with **brotli**; `zlib` is importable in the sandbox.
 - Decompress in the sandbox, never into your context. A blob can be megabytes. Return only the entry you need.
+
+## Search your whole history
+
+Use this when the answer is not in `mind.md` or a page: something said once, long ago, in any loop's history. Call `sys_lambda({ source: "skills/agent-memory/scripts/memory-search.js:search", args: { query: "vendor for invoices", k: 8 } })`. `k` defaults to 8, at most 20. For workspace files, use the `file-search` skill.
+
+It returns `{ results: [{ ref, date, text }] }`: the best-matching passage of each message, ranked by BM25 over the query's words (any word matches; words match exactly, without stemming). `ref` is `[S<seq>] <loop>`, so resolve it with `auditRead`. Each call reads every loop's live and archived messages: their text, tool results, and what you sent with `msg_send`, `say`, `loop_send`, and `ask`. It writes nothing. It needs only `db_query` and `sys_lambda`, both on by default.
 
 ## Lint workflow
 
