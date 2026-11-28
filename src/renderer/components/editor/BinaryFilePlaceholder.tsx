@@ -1,3 +1,5 @@
+import { downloadAgentFile } from '../../utils/agent-file-actions'
+
 interface Props {
   filePath: string
 }
@@ -13,6 +15,12 @@ export function BinaryFilePlaceholder({ filePath }: Props) {
       </svg>
       <span className="text-sm font-medium text-neutral-500 dark:text-neutral-400">{fileName}</span>
       <span className="text-xs">Binary file cannot be edited</span>
+      <button
+        onClick={() => { void downloadAgentFile(filePath) }}
+        className="px-3 py-1.5 text-xs font-medium rounded-md border border-neutral-200 dark:border-neutral-700 text-neutral-600 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800"
+      >
+        Download
+      </button>
     </div>
   )
 }
