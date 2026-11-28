@@ -1100,6 +1100,11 @@ export class AgentExecutor extends EventEmitter {
     return this.activeTurnCount > 0
   }
 
+  /** Whether an agent-scope turn holds the agent (isTurnActive minus system-scope lambda dispatches). */
+  isAgentTurnActive(): boolean {
+    return this.activeAgentTurnCount > 0
+  }
+
   /** The last target state set by sys_set_state, or null if none. */
   private _lastTargetState: string | null = null
   getLastTargetState(): string | null {
