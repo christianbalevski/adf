@@ -1,0 +1,4 @@
+docs/daemon/openapi.json:
+  operation-2xx-response:
+    # A successful VNC WebSocket handshake returns HTTP 101 Switching Protocols.
+    - '#/paths/~1web~1desktop~1{container}~1websockify/get/responses'
